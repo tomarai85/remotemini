@@ -1,0 +1,125 @@
+// tmux 注入層 — 動いている対話 Claude に iPhone からの入力を届ける。
+//
+// なぜこの形か(DESIGN.md §2.9):
+//   Tom 裁定「返答待ちであれ作業中であれいつでも見て干渉できればいい」。
+//   別プロセスで claude -p を起こすと同じ会話を2実行が読む(lost-update)。
+//   動いているペインに直接注入すれば会話は1プロセスのままで、その問題が原理的に消える。
+//
+// 実機で確かめたこと(2026-07-31, edith 使い捨てセッション):
+//   - send-keys -l で本文、別コマンドで Enter → 入力欄に入り送信まで到達した
+//   - 上限到達時に選択肢画面が出る。ここに Enter を送ると
+//     "2. Switch to usage credits" を選びかねない = 課金事故。だから CHOICE は絶対に送らない。
+//
+// Codex レビュー(同日)で確定した3規約をそのまま実装している:
+//   1. 本文と Enter は別送信(生成中の一括送信はバッファされ、完了後に誤送信される)
+//   2. 「入力受付中か」を知る確実な tmux API は無い → 状態不明なら送らない(fail-closed)
+//   3. 割り込みは Escape。C-c は画面状態で消去/中断/終了に化けるので緊急専用
+
+/** 画面テキストから「今なら何を送ってよいか」を判定する。純関数。 */
+export function classifyPane(text) {
+  if (typeof text !== "string" || text.trim() === "") return "UNKNOWN";
+
+  // CHOICE を最優先で見る。ここを取りこぼすと課金や誤承認に直結するため、
+  // 他のどの状態よりも先に判定する(READY の記号が同じ画面に混在しても CHOICE が勝つ)。
+  const choiceSignals = [
+    /Enter to confirm/i,
+    /What do you want to do\?/i,
+    /Do you want to (proceed|continue)/i,
+    /^\s*[❯>]?\s*\d\.\s+\S/m, // 番号付き選択肢
+  ];
+  if (choiceSignals.some((re) => re.test(text))) return "CHOICE";
+
+  // BUSY: 生成中。Claude Code は作業中に経過表示と esc-to-interrupt を出す。
+  if (/esc to interrupt/i.test(text)) return "BUSY";
+  if (/^\s*[✻✽✢·*]\s+\w+.*for\s+\d+s/im.test(text)) return "BUSY";
+
+  // READY: 入力プロンプトが見えている。
+  if (/^\s*❯\s/m.test(text) || /shortcuts/i.test(text)) return "READY";
+
+  return "UNKNOWN";
+}
+
+export class TmuxInjector {
+  /**
+   * @param {object} opts
+   * @param {{run:(args:string[])=>string}} opts.tmux tmux 実行の注入(テスト容易性)
+   * @param {number} [opts.captureLines] 判定に使う末尾行数
+   */
+  constructor({ tmux, captureLines = 30 }) {
+    if (!tmux || typeof tmux.run !== "function") {
+      throw new Error("TmuxInjector: tmux runner injection required");
+    }
+    this.tmux = tmux;
+    this.captureLines = captureLines;
+    this.queues = new Map(); // pane -> string[]
+  }
+
+  /** 今の画面状態。送信の可否はここだけを根拠にする。 */
+  state(pane) {
+    const text = this.tmux.run(["capture-pane", "-t", pane, "-p", "-S", `-${this.captureLines}`]);
+    return classifyPane(text);
+  }
+
+  pending(pane) {
+    return this.queues.get(pane) || [];
+  }
+
+  _enqueue(pane, text) {
+    const q = this.queues.get(pane) || [];
+    q.push(text);
+    this.queues.set(pane, q);
+  }
+
+  /**
+   * 本文を送る。READY の時だけ実際に送信し、それ以外はキューに積む。
+   * CHOICE / UNKNOWN では**何も送らない**(fail-closed)。
+   */
+  send(pane, text) {
+    const st = this.state(pane);
+    if (st !== "READY") {
+      // CHOICE は人が画面を見て選ぶべき状態。キューに積むと後で誤爆するので積まない。
+      if (st === "CHOICE") return { sent: false, queued: false, state: st };
+      this._enqueue(pane, text);
+      return { sent: false, queued: true, state: st };
+    }
+    this._write(pane, text);
+    return { sent: true, queued: false, state: st };
+  }
+
+  _write(pane, text) {
+    // 規約1: 本文はリテラル、Enter は別コマンド。まとめない。
+    this.tmux.run(["send-keys", "-t", pane, "-l", "--", text]);
+    this.tmux.run(["send-keys", "-t", pane, "Enter"]);
+  }
+
+  /**
+   * キューを1件だけ流す。READY でなければ何もしない。
+   * 一度に1件なのは、連続送信が誤爆の主因だから(規約1・3)。
+   * @returns {number} 実際に送った件数(0 or 1)
+   */
+  drain(pane) {
+    const q = this.queues.get(pane);
+    if (!q || q.length === 0) return 0;
+    if (this.state(pane) !== "READY") return 0;
+    this._write(pane, q.shift());
+    return 1;
+  }
+
+  /** 割り込み。規約3: Escape のみ。C-c はここでは送らない。 */
+  interrupt(pane) {
+    this.tmux.run(["send-keys", "-t", pane, "Escape"]);
+    return true;
+  }
+
+  /** cwd から対象ペインを引く。会話(セッション)と机のペインを結び付けるのに使う。 */
+  findPaneByCwd(cwd) {
+    const out = this.tmux.run([
+      "list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index} #{pane_current_path} #{pane_current_command}",
+    ]);
+    for (const line of String(out).split("\n")) {
+      const [pane, path] = line.trim().split(/\s+/);
+      if (pane && path === cwd) return pane;
+    }
+    return null;
+  }
+}
