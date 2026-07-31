@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync } from "node:child_process";
 import { extractSessionMeta, buildListing, extractHistory } from "./sessions.mjs";
 import { WorkerManager } from "./worker.mjs";
+import { TmuxInjector } from "./inject.mjs";
 
 const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
@@ -24,6 +25,7 @@ const BIND = process.env.RC_BIND || "127.0.0.1";
 const PORT = Number(process.env.RC_PORT || 8787);
 const KEY_DIR = process.env.RC_KEY_DIR || join(HOME, ".rc-backend");
 const KEY_FILE = join(KEY_DIR, "api.key");
+const TMUX_BIN = process.env.RC_TMUX_BIN || "/opt/homebrew/bin/tmux";
 
 // ---- 認証キー(無ければ生成、0600) --------------------------------------
 function loadOrCreateKey() {
@@ -97,43 +99,38 @@ function findSessionFile(sessionId) {
   return null;
 }
 
-// ---- TUI 保持判定(fail-closed: 判定不能 = 保持扱い = 書かない) ----------
-// 「今 tmux の対話 TUI が掴んでいるセッション」への書き込みは lost-update 未検証のため 409。
-// 判定: 対話 claude プロセス(-p 無し)の cwd 集合に、セッションの cwd が含まれるか。
-// lsof が失敗したら null を返し、呼び出し側は保持扱いに倒す。
-function tuiHeldCwds() {
-  try {
-    const psOut = execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
-    const pids = [];
-    for (const line of psOut.split("\n")) {
-      const m = /^\s*(\d+)\s+(.*)$/.exec(line);
-      if (!m) continue;
-      const cmd = m[2];
-      // 対話 TUI: コマンド名が claude(ラッパ経由でも最終形は claude)で、-p を含まない
-      if (/(^|\/)claude(\s|$)/.test(cmd) && !/\s-p(\s|$)/.test(cmd) && !cmd.includes("--input-format")) {
-        pids.push(m[1]);
-      }
+// ---- 経路の振り分け(2026-07-31 に設計が変わった箇所) ---------------------
+// 旧: 対話 TUI が開いているセッションは lost-update を恐れて 409 で拒否していた。
+// 新: Tom 裁定「返答待ちであれ作業中であれいつでも見て干渉できればいい」(DESIGN §2.9)。
+//     拒否する代わりに **そのペインへ注入** する。会話は1プロセスのままなので
+//     二重実行(lost-update)は原理的に起きない — 拒否より安全で、要求も満たす。
+//
+// 振り分け:
+//   机で開かれている(cwd に一致する tmux ペインがある) -> 注入経路(TmuxInjector)
+//   開かれていない                                      -> ワーカー経路(-p --resume)
+const tmuxRunner = {
+  run: (args) => {
+    try {
+      return execFileSync(TMUX_BIN, args, { encoding: "utf8" });
+    } catch {
+      return ""; // tmux が無い/対象が消えた -> 空文字。呼び側は UNKNOWN 扱いになり fail-closed。
     }
-    const cwds = new Set();
-    for (const pid of pids) {
-      try {
-        const out = execFileSync("lsof", ["-a", "-p", pid, "-d", "cwd", "-Fn"], { encoding: "utf8" });
-        const n = out.split("\n").find((l) => l.startsWith("n"));
-        if (n) cwds.add(n.slice(1));
-      } catch {
-        /* そのプロセスは読めない — 他は続ける */
-      }
-    }
-    return cwds;
-  } catch {
-    return null; // 判定不能
-  }
-}
+  },
+};
+const injector = new TmuxInjector({ tmux: tmuxRunner });
 
-function isTuiHeld(sessionCwd) {
-  const cwds = tuiHeldCwds();
-  if (cwds === null) return true; // fail-closed
-  return sessionCwd ? cwds.has(sessionCwd) : false;
+/**
+ * その会話が今どのペインで開かれているか。
+ * 決められない時は pane=null + 理由。**理由で扱いが変わる**(ここを潰すと事故る):
+ *   none        -> tmux に居ない。ワーカー経路に落として安全。
+ *   not-claude  -> cwd は合うが claude ではない(素のシェル等)。注入しない。ワーカー経路。
+ *   ambiguous   -> 同じ cwd に claude が複数。**どちらの会話か決められない**ので
+ *                  ワーカーにも落とさない(落とすと同じ会話を2プロセスが触る = lost-update)。
+ * @param {ReturnType<TmuxInjector["listPanes"]>} [panes] 一覧描画時に使い回す(tmux 起動回数を1回に)
+ */
+function livePaneFor(sessionCwd, panes) {
+  if (!sessionCwd) return { pane: null, reason: "none", candidates: 0 };
+  return injector.resolvePane(sessionCwd, panes || injector.listPanes());
 }
 
 // ---- ワーカー ---------------------------------------------------------------
@@ -148,6 +145,12 @@ const manager = new WorkerManager({
     ], { stdio: ["pipe", "pipe", "pipe"], cwd: HOME }),
 });
 setInterval(() => manager.sweep(), 30_000).unref();
+// 注入キューの掃き出し: BUSY で待たせた分を READY になり次第1件ずつ流す(連続送信しない)
+setInterval(() => {
+  for (const pane of injector.queues.keys()) {
+    try { injector.drain(pane); } catch { /* ペイン消滅など。次周期で再評価 */ }
+  }
+}, 3_000).unref();
 
 // SSE 購読者: sessionId -> Set<res>
 const subscribers = new Map();
@@ -205,10 +208,18 @@ const server = createServer(async (req, res) => {
     if (!authorized(req)) return json(res, 401, { error: "unauthorized" });
 
     if (path === "/api/sessions" && req.method === "GET") {
-      const listing = buildListing(scanSessions()).map((s) => ({
-        ...s,
-        live: manager.status(s.id),
-      }));
+      // ペイン一覧は1回だけ引いて全セッションで使い回す(会話数ぶん tmux を起動しない)
+      const panes = injector.listPanes();
+      const listing = buildListing(scanSessions()).map((s) => {
+        // 机で開かれている会話は画面が真実。開かれていなければワーカーの状態。
+        const r = livePaneFor(s.cwd, panes);
+        const live = r.pane
+          ? { route: "tmux", pane: r.pane, screen: injector.state(r.pane), queued: injector.pending(r.pane).length }
+          : r.reason === "ambiguous"
+            ? { route: "blocked", reason: "ambiguous", candidates: r.candidates }
+            : { route: "worker", ...manager.status(s.id) };
+        return { ...s, live };
+      });
       return json(res, 200, { sessions: listing });
     }
 
@@ -242,16 +253,24 @@ const server = createServer(async (req, res) => {
     }
 
     if (action === "status" && req.method === "GET") {
-      return json(res, 200, manager.status(sessionId));
+      const meta = extractSessionMeta(readFileSync(file, "utf8"));
+      const r = livePaneFor(meta.cwd);
+      if (r.pane) {
+        // 机で開かれている会話。真実は画面から取る。
+        return json(res, 200, {
+          route: "tmux",
+          pane: r.pane,
+          screen: injector.state(r.pane),
+          queued: injector.pending(r.pane).length,
+        });
+      }
+      if (r.reason === "ambiguous") {
+        return json(res, 200, { route: "blocked", reason: "ambiguous", candidates: r.candidates });
+      }
+      return json(res, 200, { route: "worker", ...manager.status(sessionId) });
     }
 
     if (action === "messages" && req.method === "POST") {
-      const meta = extractSessionMeta(readFileSync(file, "utf8"));
-      if (isTuiHeld(meta.cwd)) {
-        return json(res, 409, {
-          error: "session is held by an interactive TUI — read-only from phone (lost-update untested)",
-        });
-      }
       let body;
       try {
         body = JSON.parse(await readBody(req));
@@ -260,15 +279,59 @@ const server = createServer(async (req, res) => {
       }
       const text = typeof body.text === "string" ? body.text.trim() : "";
       if (!text) return json(res, 400, { error: "text required" });
+
+      const meta = extractSessionMeta(readFileSync(file, "utf8"));
+      const found = livePaneFor(meta.cwd);
+
+      if (found.reason === "ambiguous") {
+        // 同じ cwd で claude が複数。どれがこの会話か決められないので送らない。
+        // ワーカー経路にも落とさない(開かれている会話を別プロセスで触ると二重実行になる)。
+        return json(res, 409, {
+          error: `同じフォルダで Claude が ${found.candidates} 個開いています。どの画面かを特定できないため送信しません。`,
+          route: "blocked", reason: "ambiguous", candidates: found.candidates,
+        });
+      }
+
+      if (found.pane) {
+        const pane = found.pane;
+        // 注入経路。CHOICE(承認/上限の選択肢)には何も送らない — Enter が課金や承認になる。
+        const r = injector.send(pane, text);
+        if (r.sent) return json(res, 202, { accepted: true, route: "tmux", pane });
+        if (r.state === "CHOICE") {
+          return json(res, 409, {
+            error: "画面が選択待ちです。Enter が承認や課金の選択になるため送信しません。画面を確認してください。",
+            route: "tmux", pane, screen: r.state,
+          });
+        }
+        // BUSY / UNKNOWN はキューに積んだ(UNKNOWN は積むだけで流れない = fail-closed)
+        return json(res, 202, {
+          accepted: true, queued: true, route: "tmux", pane, screen: r.state,
+          note: "生成中のため待機列に入れました。入力可能になったら1件ずつ流します。",
+        });
+      }
+
+      // 机で開かれていない会話 = ワーカー経路(-p --resume)
       const seq = manager.send(sessionId, text, {
         onEvent: (s, d) => pushToSubscribers(sessionId, s, d),
       });
-      return json(res, 202, { accepted: true, seq });
+      return json(res, 202, { accepted: true, route: "worker", seq });
     }
 
     if (action === "interrupt" && req.method === "POST") {
+      const meta = extractSessionMeta(readFileSync(file, "utf8"));
+      const r = livePaneFor(meta.cwd);
+      if (r.reason === "ambiguous") {
+        return json(res, 409, {
+          error: `同じフォルダで Claude が ${r.candidates} 個開いています。どの画面を止めるか特定できません。`,
+          route: "blocked", reason: "ambiguous", candidates: r.candidates,
+        });
+      }
+      if (r.pane) {
+        injector.interrupt(r.pane); // Escape のみ。C-c は送らない。
+        return json(res, 200, { interrupted: true, route: "tmux", pane: r.pane });
+      }
       const had = manager.interrupt(sessionId);
-      return json(res, 200, { interrupted: had });
+      return json(res, 200, { interrupted: had, route: "worker" });
     }
 
     if (action === "stream" && req.method === "GET") {
@@ -345,7 +408,13 @@ async function load(){
   const r=await fetch("/api/sessions",{headers:H()});const j=await r.json();
   const ul=document.getElementById("list");ul.innerHTML="";
   for(const s of j.sessions||[]){const li=document.createElement("li");
-    li.textContent=(s.live&&s.live.worker==="running"?"● ":"○ ")+s.title+" — "+s.updatedAt+" ("+s.project+")";
+    const L=s.live||{};
+    // 経路と画面状態をそのまま出す(机で開いている=tmux / 開いてない=worker / 特定不能=blocked)
+    const mark=L.route==="tmux"?({READY:"● ",BUSY:"◐ ",CHOICE:"⚠ ",UNKNOWN:"? "}[L.screen]||"? ")
+              :L.route==="blocked"?"✖ ":(L.worker==="running"?"● ":"○ ");
+    const tail=L.route==="tmux"?" ["+L.screen+(L.queued?" +"+L.queued:"")+"]"
+              :L.route==="blocked"?" [同cwdに"+L.candidates+"個 — 特定不能]":"";
+    li.textContent=mark+s.title+" — "+s.updatedAt+" ("+s.project+")"+tail;
     li.onclick=()=>open(s.id);ul.appendChild(li);}
   const a=await fetch("/api/account",{headers:H()});document.getElementById("acct").textContent=(await a.json()).account||"";
 }

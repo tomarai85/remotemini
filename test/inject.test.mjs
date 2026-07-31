@@ -6,17 +6,18 @@
 //   WORKLOG 2026-07-31 19:4x(実機で注入成立 + 上限画面 = 送ってはいけない状態の実例)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TmuxInjector, classifyPane } from "../src/inject.mjs";
+import { TmuxInjector, classifyPane, parsePaneList, looksLikeClaudePane } from "../src/inject.mjs";
 
 // 実行されたコマンドを記録するだけの偽 tmux
-function fakeTmux(paneText = "") {
+// paneList は実物と同じタブ区切り(#{pane_id}\t#{pane_current_command}\t#{pane_current_path})
+function fakeTmux(paneText = "", paneList = "%1\t2.1.220\t/Users/Shared/dev/roundtrip\n") {
   const calls = [];
   return {
     calls,
     run: (args) => {
       calls.push(args);
       if (args[0] === "capture-pane") return paneText;
-      if (args[0] === "list-panes") return "sess:0.0 /Users/Shared/dev/roundtrip claude\n";
+      if (args[0] === "list-panes") return paneList;
       return "";
     },
   };
@@ -130,10 +131,51 @@ test("割り込み直後に本文を続けて送らない", () => {
 });
 
 // ---- ペイン特定 ----
+// 出典: 2026-07-31 edith 実測 `tmux list-panes -a`
+//   work:0.0 | cmd=2.1.220 | path=/Users/Shared/dev/roundtrip   ← 対話 claude
+//   rc-inject-test-99017:0.0 | cmd=zsh | path=/private/tmp      ← 素のシェル
 
-test("cwd からペインを引ける", () => {
+test("cwd からペインを引ける(実物の cmd は claude でなくバージョン文字列)", () => {
   const t = fakeTmux();
   const inj = new TmuxInjector({ tmux: t });
-  assert.equal(inj.findPaneByCwd("/Users/Shared/dev/roundtrip"), "sess:0.0");
+  assert.equal(inj.findPaneByCwd("/Users/Shared/dev/roundtrip"), "%1");
   assert.equal(inj.findPaneByCwd("/nope"), null);
+});
+
+test("パスに空白があっても壊れない(空白分割していない)", () => {
+  const panes = parsePaneList("%3\t2.1.220\t/Users/tom/My Docs/proj\n");
+  assert.deepEqual(panes, [{ pane: "%3", command: "2.1.220", path: "/Users/tom/My Docs/proj" }]);
+});
+
+test("★cwd は一致するが claude でないペインには送らない(素の zsh に打ち込む事故)", () => {
+  const t = fakeTmux("❯ ", "%9\tzsh\t/private/tmp\n");
+  const inj = new TmuxInjector({ tmux: t });
+  const r = inj.resolvePane("/private/tmp");
+  assert.equal(r.pane, null);
+  assert.equal(r.reason, "not-claude");
+});
+
+test("★同じ cwd に claude が2つある時は決めない(別の会話へ届く事故)", () => {
+  const list = "%1\t2.1.220\t/Users/Shared/dev/roundtrip\n%2\t2.1.220\t/Users/Shared/dev/roundtrip\n";
+  const inj = new TmuxInjector({ tmux: fakeTmux("", list) });
+  const r = inj.resolvePane("/Users/Shared/dev/roundtrip");
+  assert.equal(r.pane, null);
+  assert.equal(r.reason, "ambiguous");
+  assert.equal(r.candidates, 2);
+});
+
+test("cwd に何も無ければ none(ワーカー経路へ落として良い唯一の理由)", () => {
+  const inj = new TmuxInjector({ tmux: fakeTmux() });
+  assert.equal(inj.resolvePane("/nowhere").reason, "none");
+});
+
+test("claude 判定は許可制(未知のコマンド名は通さない)", () => {
+  assert.equal(looksLikeClaudePane("2.1.220"), true, "実測の形");
+  assert.equal(looksLikeClaudePane("claude"), true);
+  assert.equal(looksLikeClaudePane("node"), true);
+  assert.equal(looksLikeClaudePane("zsh"), false);
+  assert.equal(looksLikeClaudePane("vim"), false);
+  assert.equal(looksLikeClaudePane("ssh"), false);
+  assert.equal(looksLikeClaudePane(""), false);
+  assert.equal(looksLikeClaudePane(undefined), false);
 });

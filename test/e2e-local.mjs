@@ -1,10 +1,13 @@
-// ローカル E2E — 偽 claude-work を注入してサーバの8機能を通す。
-// 実 claude・実セッションに一切触れない。実行: node test/e2e-local.mjs
+// ローカル E2E — 偽 claude-work と**偽 tmux** を注入してサーバの全経路を通す。
+// 実 claude・実セッション・実 tmux に一切触れない。実行: node test/e2e-local.mjs
 //
-// 409 の陽性対照について: RC_TEST_HELD_CWD に「実際に対話 claude が今掴んでいる cwd」を
-// 渡すと、その cwd の fixture への書き込みが 409 になることまで検証する(渡さなければ skip)。
+// 経路は3つ(DESIGN §2.9 / HANDOFF §1-A):
+//   tmux 注入  = 机で開かれている会話。画面状態で送る/積む/送らないが決まる
+//   ワーカー   = 開かれていない会話(-p --resume)
+//   blocked    = 同じ cwd に claude が複数で特定不能 → どちらにも送らない
+// 偽 tmux は send-keys を**全部ログに残す**ので「1文字も送っていない」を実測で言える。
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,8 +17,18 @@ const SB = mkdtempSync(join(tmpdir(), "rc-e2e-"));
 const PROJ = join(SB, "projects", "-Users-Shared-dev-roundtrip");
 mkdirSync(PROJ, { recursive: true });
 const SID1 = "11111111-1111-1111-1111-111111111111";
-const SID3 = "33333333-3333-3333-3333-333333333333";
-const HELD_CWD = process.env.RC_TEST_HELD_CWD || null;
+// 注入経路の fixture。cwd は SID1(/Users/Shared/dev/roundtrip)と必ず別にする —
+// 同じにすると既存のワーカー経路テストが注入経路に化けて、何を測ったか分からなくなる。
+const SID_READY  = "44444444-4444-4444-4444-444444444444"; // READY のペインがある
+const SID_CHOICE = "55555555-5555-5555-5555-555555555555"; // 選択待ちのペインがある
+const SID_SHELL  = "66666666-6666-6666-6666-666666666666"; // cwd は合うが素の zsh しか居ない
+const SID_AMBIG  = "77777777-7777-7777-7777-777777777777"; // 同 cwd に claude が2つ
+const SID_BUSY   = "88888888-8888-8888-8888-888888888888"; // 生成中
+const CWD_READY  = "/Users/Shared/dev/ready";
+const CWD_CHOICE = "/Users/Shared/dev/choice";
+const CWD_SHELL  = "/private/tmp";
+const CWD_AMBIG  = "/Users/Shared/dev/ambig";
+const CWD_BUSY   = "/Users/Shared/dev/busy";
 
 writeFileSync(join(PROJ, `${SID1}.jsonl`), [
   JSON.stringify({ entrypoint: "cli", cwd: "/Users/Shared/dev/roundtrip", type: "user", message: { role: "user", content: "最初の質問" } }),
@@ -25,11 +38,69 @@ writeFileSync(join(PROJ, `${SID1}.jsonl`), [
 ].join("\n"));
 writeFileSync(join(PROJ, "22222222-2222-2222-2222-222222222222.jsonl"),
   JSON.stringify({ entrypoint: "sdk-cli", cwd: "/x", type: "user", message: { content: "noise" } }));
-if (HELD_CWD) {
-  writeFileSync(join(PROJ, `${SID3}.jsonl`), [
-    JSON.stringify({ entrypoint: "cli", cwd: HELD_CWD, type: "user", message: { role: "user", content: "保持中" } }),
-    JSON.stringify({ type: "ai-title", aiTitle: "TUI保持テスト" }),
+function fixture(sid, cwd, title) {
+  writeFileSync(join(PROJ, `${sid}.jsonl`), [
+    JSON.stringify({ entrypoint: "cli", cwd, type: "user", message: { role: "user", content: "q" } }),
+    JSON.stringify({ type: "ai-title", aiTitle: title }),
   ].join("\n"));
+}
+fixture(SID_READY, CWD_READY, "注入READY");
+fixture(SID_CHOICE, CWD_CHOICE, "注入CHOICE");
+fixture(SID_SHELL, CWD_SHELL, "シェルのみ");
+fixture(SID_AMBIG, CWD_AMBIG, "特定不能");
+fixture(SID_BUSY, CWD_BUSY, "生成中");
+
+// ---- 偽 tmux ----------------------------------------------------------------
+// 実物の観測に合わせてある(2026-07-31 edith):
+//   list-panes -F "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}"
+//   → 対話 claude の command は "2.1.220"(バージョン文字列)、素のシェルは "zsh"
+const PANES = [
+  `%10\t2.1.220\t${CWD_READY}`,
+  `%11\t2.1.220\t${CWD_CHOICE}`,
+  `%12\tzsh\t${CWD_SHELL}`,
+  `%13\t2.1.220\t${CWD_AMBIG}`,
+  `%14\t2.1.220\t${CWD_AMBIG}`, // 同じ cwd に2つめ
+  `%15\t2.1.220\t${CWD_BUSY}`,
+].join("\n") + "\n";
+const SCREENS = {
+  "%10": '╰─────╯\n❯ Try "how does <filepath> work?"\n  ? for shortcuts',
+  // 実機で撮った上限到達画面(WORKLOG 2026-07-31)。Enter は "2. Switch to usage credits" になりうる
+  "%11": "  ⎿  You've hit your weekly limit\n   What do you want to do?\n   ❯ 1. Stop and wait\n     2. Switch to usage credits\n     3. Upgrade your plan\n   Enter to confirm · Esc to cancel",
+  // ★わざと最悪ケースにしてある: プロンプトが "❯" の zsh(starship/pure 等)。
+  //   画面だけ見ると READY と区別がつかない = 画面判定では止まらない。
+  //   止めているのは「そのペインで動いているのが claude か」の判定だけ、という対照。
+  "%12": "~/dev on  main\n❯ ",
+  "%13": '❯ Try "x"\n  ? for shortcuts',
+  "%14": '❯ Try "x"\n  ? for shortcuts',
+  "%15": "✻ Brewed for 12s\n  esc to interrupt",
+};
+writeFileSync(join(SB, "tmux-panes.txt"), PANES);
+for (const [pane, text] of Object.entries(SCREENS)) {
+  writeFileSync(join(SB, `screen-${pane.replace("%", "")}.txt`), text);
+}
+const SENT_LOG = join(SB, "tmux-sent.log");
+writeFileSync(SENT_LOG, "");
+const fakeTmux = join(SB, "fake-tmux");
+writeFileSync(fakeTmux, `#!/usr/bin/env python3
+import sys, os, json
+SB = ${JSON.stringify(SB)}
+args = sys.argv[1:]
+if args and args[0] == "list-panes":
+    sys.stdout.write(open(os.path.join(SB, "tmux-panes.txt")).read())
+elif args and args[0] == "capture-pane":
+    pane = args[args.index("-t") + 1] if "-t" in args else ""
+    p = os.path.join(SB, "screen-" + pane.replace("%", "") + ".txt")
+    sys.stdout.write(open(p).read() if os.path.exists(p) else "")
+elif args and args[0] == "send-keys":
+    with open(os.path.join(SB, "tmux-sent.log"), "a") as f:
+        f.write(json.dumps(args, ensure_ascii=False) + "\\n")
+sys.exit(0)
+`);
+chmodSync(fakeTmux, 0o755);
+/** これまでに偽 tmux が受け取った send-keys の一覧 */
+function sentKeys() {
+  if (!existsSync(SENT_LOG)) return [];
+  return readFileSync(SENT_LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
 }
 
 const fakeWork = join(SB, "fake-claude-work");
@@ -58,6 +129,7 @@ const sv = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
     RC_FLEET_ACCOUNT: fakeAcct,
     RC_KEY_DIR: join(SB, "keys"),
     RC_PORT: String(PORT),
+    RC_TMUX_BIN: fakeTmux,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -151,16 +223,70 @@ try {
   check("unknown session -> 404",
     (await fetch(`${B}/api/sessions/99999999-9999-9999-9999-999999999999/history`, { headers: H })).status === 404);
 
-  // 10. 409 陽性対照(環境が実 TUI cwd を提供した時のみ)
-  if (HELD_CWD) {
-    const held = await fetch(`${B}/api/sessions/${SID3}/messages`, {
-      method: "POST", headers: { ...H, "content-type": "application/json" },
-      body: JSON.stringify({ text: "書けないはず" }),
-    });
-    check("TUI-held session -> 409 (positive control)", held.status === 409, `status=${held.status}`);
-  } else {
-    console.log("SKIP  409 positive control (RC_TEST_HELD_CWD not provided)");
-  }
+  // ---- 10. 注入経路(旧「TUI保持 → 409」の置き換え) --------------------------
+  const send = (sid, text) => fetch(`${B}/api/sessions/${sid}/messages`, {
+    method: "POST", headers: { ...H, "content-type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+
+  // 10-a. READY のペイン → 実際に注入され、本文と Enter が**別コマンド**で出る
+  const before = sentKeys().length;
+  const rReady = await send(SID_READY, "注入されるはず");
+  const jReady = await rReady.json();
+  check("READY pane -> 202 route=tmux", rReady.status === 202 && jReady.route === "tmux" && jReady.pane === "%10",
+    JSON.stringify(jReady));
+  const injected = sentKeys().slice(before);
+  check("本文と Enter が別コマンドで届く",
+    injected.length === 2 &&
+    injected[0][0] === "send-keys" && injected[0].includes("-l") && injected[0].at(-1) === "注入されるはず" &&
+    injected[1].at(-1) === "Enter", JSON.stringify(injected));
+
+  // 10-b. ★陽性対照: 選択待ち画面には 1 文字も送らない(Enter が課金選択になりうる)
+  const beforeChoice = sentKeys().length;
+  const rChoice = await send(SID_CHOICE, "うっかり送信");
+  const jChoice = await rChoice.json();
+  check("★CHOICE 画面 -> 409(陽性対照)", rChoice.status === 409 && jChoice.screen === "CHOICE",
+    `status=${rChoice.status} ${JSON.stringify(jChoice)}`);
+  check("★CHOICE 画面へは send-keys が0件", sentKeys().length === beforeChoice,
+    JSON.stringify(sentKeys().slice(beforeChoice)));
+
+  // 10-c. ★陽性対照: cwd は合うが素の zsh しか居ない → 注入せずワーカー経路へ
+  const beforeShell = sentKeys().length;
+  const jShell = await (await send(SID_SHELL, "シェルに打ち込まれてはいけない")).json();
+  check("★zsh だけの cwd -> 注入しない(ワーカー経路)", jShell.route === "worker", JSON.stringify(jShell));
+  check("★zsh ペインへは send-keys が0件", sentKeys().length === beforeShell);
+
+  // 10-d. ★陽性対照: 同 cwd に claude が2つ → どちらにも送らずワーカーにも落とさない
+  const beforeAmbig = sentKeys().length;
+  const rAmbig = await send(SID_AMBIG, "どっちか分からない");
+  const jAmbig = await rAmbig.json();
+  check("★特定不能 -> 409 blocked", rAmbig.status === 409 && jAmbig.reason === "ambiguous" && jAmbig.candidates === 2,
+    JSON.stringify(jAmbig));
+  check("★特定不能で send-keys が0件", sentKeys().length === beforeAmbig);
+
+  // 10-e. BUSY → 送らずキューに積む(生成後の誤送信を防ぐ)
+  const beforeBusy = sentKeys().length;
+  const jBusy = await (await send(SID_BUSY, "あとで流す")).json();
+  check("BUSY -> 202 queued", jBusy.queued === true && jBusy.screen === "BUSY", JSON.stringify(jBusy));
+  check("BUSY 中は send-keys が0件", sentKeys().length === beforeBusy);
+  const stBusy = await (await fetch(`${B}/api/sessions/${SID_BUSY}/status`, { headers: H })).json();
+  check("status に待機件数が出る", stBusy.route === "tmux" && stBusy.queued === 1, JSON.stringify(stBusy));
+
+  // 10-f. 割り込みは Escape のみ(C-c を出さない)
+  const beforeIntr = sentKeys().length;
+  const jIntr = await (await fetch(`${B}/api/sessions/${SID_BUSY}/interrupt`, { method: "POST", headers: H })).json();
+  const intrKeys = sentKeys().slice(beforeIntr);
+  check("interrupt は Escape 1回だけ", jIntr.route === "tmux" && intrKeys.length === 1 && intrKeys[0].at(-1) === "Escape",
+    JSON.stringify(intrKeys));
+  check("C-c は一度も出ていない", !JSON.stringify(sentKeys()).includes("C-c"));
+
+  // 10-g. 一覧に経路と画面状態が出る
+  const list2 = await (await fetch(`${B}/api/sessions`, { headers: H })).json();
+  const byId = Object.fromEntries(list2.sessions.map((s) => [s.id, s.live]));
+  check("一覧: READY は tmux/READY", byId[SID_READY]?.route === "tmux" && byId[SID_READY]?.screen === "READY",
+    JSON.stringify(byId[SID_READY]));
+  check("一覧: 特定不能は blocked", byId[SID_AMBIG]?.route === "blocked", JSON.stringify(byId[SID_AMBIG]));
+  check("一覧: 開いていない会話は worker", byId[SID1]?.route === "worker", JSON.stringify(byId[SID1]));
 
   sseCtl.abort();
   await ssePromise;

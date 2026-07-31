@@ -39,6 +39,37 @@ export function classifyPane(text) {
   return "UNKNOWN";
 }
 
+// 区切りはタブ。cwd に空白が入りうるので空白分割は使えない(実在する: "/Users/tom/My Docs")。
+// 対象は #{pane_id}(= "%12" 形式)。session:window.pane と違いウィンドウ番号の振り直しで動かない。
+const PANE_FORMAT = "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}";
+
+/** list-panes の出力を行ごとに構造化する。純関数。 */
+export function parsePaneList(out) {
+  const panes = [];
+  for (const line of String(out || "").split("\n")) {
+    if (!line.trim()) continue;
+    const [pane, command, ...rest] = line.split("\t");
+    if (!pane || rest.length === 0) continue;
+    panes.push({ pane, command: command || "", path: rest.join("\t") });
+  }
+  return panes;
+}
+
+/**
+ * そのペインで動いているのが Claude Code か。
+ *
+ * 2026-07-31 edith 実測: 対話 claude のペインは `pane_current_command` が `2.1.220`。
+ * Claude Code が自身のバージョンをプロセス名にしているため、名前での照合はできない。
+ * よって「semver 形か、claude/node と名乗るもの」だけを通す**許可制**にする。
+ * 未知の名前は通さない(拒否側に倒す)= zsh/bash/vim 等への誤注入がここで止まる。
+ */
+export function looksLikeClaudePane(command) {
+  const c = String(command || "").trim();
+  if (!c) return false;
+  if (/^\d+\.\d+\.\d+/.test(c)) return true; // 実測の形
+  return /^(claude|node)$/i.test(c);
+}
+
 export class TmuxInjector {
   /**
    * @param {object} opts
@@ -111,15 +142,41 @@ export class TmuxInjector {
     return true;
   }
 
-  /** cwd から対象ペインを引く。会話(セッション)と机のペインを結び付けるのに使う。 */
-  findPaneByCwd(cwd) {
-    const out = this.tmux.run([
-      "list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index} #{pane_current_path} #{pane_current_command}",
-    ]);
-    for (const line of String(out).split("\n")) {
-      const [pane, path] = line.trim().split(/\s+/);
-      if (pane && path === cwd) return pane;
+  /** 今ある全ペイン。1回の tmux 呼び出しで取り、呼び側で使い回す。 */
+  listPanes() {
+    return parsePaneList(this.tmux.run(["list-panes", "-a", "-F", PANE_FORMAT]));
+  }
+
+  /**
+   * 会話(cwd)から注入先ペインを決める。**曖昧なら決めない**。
+   *
+   * 2026-07-31 実測で分かったこと:
+   *   - 対話 claude のペインは `pane_current_command` が **`2.1.220`**(バージョン文字列)。
+   *     `claude` でも `node` でもない → 「cwd が一致したペイン」だけで送ると、
+   *     同じ cwd に居る**素の zsh ペインに本文と Enter を打ち込む**(= 任意コマンド実行)。
+   *   - 同じ cwd で claude を2つ開くのは普通にある → 先頭一致で決めると**別の会話に届く**。
+   * どちらも「送ってから気づく」類なので、ここは決められない時に null を返す(fail-closed)。
+   *
+   * @returns {{pane: string|null, reason: "ok"|"none"|"not-claude"|"ambiguous", candidates: number}}
+   */
+  resolvePane(cwd, panes = this.listPanes()) {
+    if (!cwd) return { pane: null, reason: "none", candidates: 0 };
+    const atCwd = panes.filter((p) => p.path === cwd);
+    if (atCwd.length === 0) return { pane: null, reason: "none", candidates: 0 };
+    const claudePanes = atCwd.filter((p) => looksLikeClaudePane(p.command));
+    if (claudePanes.length === 0) {
+      // cwd は合うが claude ではない = シェル等。ここに送ると事故る。
+      return { pane: null, reason: "not-claude", candidates: atCwd.length };
     }
-    return null;
+    if (claudePanes.length > 1) {
+      // どの会話か決められない。cwd だけでは原理的に解けない(→ 登録簿が要る)。
+      return { pane: null, reason: "ambiguous", candidates: claudePanes.length };
+    }
+    return { pane: claudePanes[0].pane, reason: "ok", candidates: 1 };
+  }
+
+  /** 後方互換の薄い糖衣。決められない時は null(理由は resolvePane で取る)。 */
+  findPaneByCwd(cwd) {
+    return this.resolvePane(cwd).pane;
   }
 }
