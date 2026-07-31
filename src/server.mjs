@@ -15,7 +15,8 @@ import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync } from "node:child_process";
 import { extractSessionMeta, buildListing, extractHistory } from "./sessions.mjs";
 import { WorkerManager } from "./worker.mjs";
-import { TmuxInjector } from "./inject.mjs";
+import { TmuxInjector, looksLikeClaudePane } from "./inject.mjs";
+import { PaneRegistry, resolveSessionPane } from "./registry.mjs";
 
 const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
@@ -118,19 +119,53 @@ const tmuxRunner = {
   },
 };
 const injector = new TmuxInjector({ tmux: tmuxRunner });
+const registry = new PaneRegistry({ dir: join(KEY_DIR, "panes") });
 
 /**
  * その会話が今どのペインで開かれているか。
+ *
+ * 第一の根拠は**登録簿**(会話自身が statusline から名乗った session_id -> pane)。
+ * cwd 一致は登録が無い会話のためのフォールバックでしかない — 同じ cwd に会話が
+ * 何十件も居るのが常態なので、cwd だけでは原理的に特定できない(DESIGN §2.10)。
+ *
  * 決められない時は pane=null + 理由。**理由で扱いが変わる**(ここを潰すと事故る):
- *   none        -> tmux に居ない。ワーカー経路に落として安全。
- *   not-claude  -> cwd は合うが claude ではない(素のシェル等)。注入しない。ワーカー経路。
- *   ambiguous   -> 同じ cwd に claude が複数。**どちらの会話か決められない**ので
- *                  ワーカーにも落とさない(落とすと同じ会話を2プロセスが触る = lost-update)。
- * @param {ReturnType<TmuxInjector["listPanes"]>} [panes] 一覧描画時に使い回す(tmux 起動回数を1回に)
+ *   none         -> tmux に居ない。ワーカー経路に落として安全。
+ *   not-claude   -> ペインは在るが claude ではない(素のシェル等)。注入しない。ワーカー経路。
+ *   ambiguous    -> cwd 経路で複数候補。どちらの会話か決められない。
+ *   stale        -> 登録簿が現実と矛盾(同じペインをより新しい会話が名乗っている)。
+ *   cwd-mismatch -> 登録されたペインの居場所が会話の cwd と違う。
+ * 後半3つは**ワーカーにも落とさない**。開いたままの会話を別プロセスで触ると
+ * 同じ会話を2実行が読む(lost-update)ため、拒否する方が安全。
+ *
+ * @param {ReturnType<TmuxInjector["listPanes"]>} [panes]   一覧描画時に使い回す(tmux 起動を1回に)
+ * @param {ReturnType<PaneRegistry["read"]>}      [entries] 同上(登録簿の読み直しを1回に)
  */
-function livePaneFor(sessionCwd, panes) {
-  if (!sessionCwd) return { pane: null, reason: "none", candidates: 0 };
-  return injector.resolvePane(sessionCwd, panes || injector.listPanes());
+function livePaneFor(sessionId, sessionCwd, panes, entries) {
+  return resolveSessionPane({
+    sessionId,
+    cwd: sessionCwd,
+    entries: entries || registry.read(),
+    panes: panes || injector.listPanes(),
+    isClaude: looksLikeClaudePane,
+    resolveByCwd: (cwd, free) => injector.resolvePane(cwd, free),
+  });
+}
+
+/** 決められなかった理由のうち、ワーカー経路にも落としてはいけないもの。 */
+const UNDECIDABLE = new Set(["ambiguous", "stale", "cwd-mismatch"]);
+
+/** 拒否理由を Tom が読める1文にする(画面にそのまま出る)。 */
+function blockedMessage(r) {
+  if (r.reason === "ambiguous") {
+    return `同じフォルダで Claude が ${r.candidates} 個開いています。どの画面かを特定できないため送信しません。`;
+  }
+  if (r.reason === "stale") {
+    return "この会話が登録したペインは、今は別の会話が使っています。宛先を確定できないため送信しません。";
+  }
+  return `登録されたペインの現在地(${r.panePath || "不明"})が、この会話のフォルダと一致しません。宛先を確定できないため送信しません。`;
+}
+function blockedBody(r) {
+  return { route: "blocked", reason: r.reason, candidates: r.candidates, source: r.source };
 }
 
 // ---- ワーカー ---------------------------------------------------------------
@@ -208,15 +243,17 @@ const server = createServer(async (req, res) => {
     if (!authorized(req)) return json(res, 401, { error: "unauthorized" });
 
     if (path === "/api/sessions" && req.method === "GET") {
-      // ペイン一覧は1回だけ引いて全セッションで使い回す(会話数ぶん tmux を起動しない)
+      // ペイン一覧と登録簿は1回だけ引いて全セッションで使い回す
+      // (会話数ぶん tmux を起動したり登録簿を読み直したりしない)
       const panes = injector.listPanes();
+      const entries = registry.read();
       const listing = buildListing(scanSessions()).map((s) => {
         // 机で開かれている会話は画面が真実。開かれていなければワーカーの状態。
-        const r = livePaneFor(s.cwd, panes);
+        const r = livePaneFor(s.id, s.cwd, panes, entries);
         const live = r.pane
           ? { route: "tmux", pane: r.pane, screen: injector.state(r.pane), queued: injector.pending(r.pane).length }
-          : r.reason === "ambiguous"
-            ? { route: "blocked", reason: "ambiguous", candidates: r.candidates }
+          : UNDECIDABLE.has(r.reason)
+            ? blockedBody(r)
             : { route: "worker", ...manager.status(s.id) };
         return { ...s, live };
       });
@@ -254,7 +291,7 @@ const server = createServer(async (req, res) => {
 
     if (action === "status" && req.method === "GET") {
       const meta = extractSessionMeta(readFileSync(file, "utf8"));
-      const r = livePaneFor(meta.cwd);
+      const r = livePaneFor(sessionId, meta.cwd);
       if (r.pane) {
         // 机で開かれている会話。真実は画面から取る。
         return json(res, 200, {
@@ -262,11 +299,10 @@ const server = createServer(async (req, res) => {
           pane: r.pane,
           screen: injector.state(r.pane),
           queued: injector.pending(r.pane).length,
+          source: r.source,
         });
       }
-      if (r.reason === "ambiguous") {
-        return json(res, 200, { route: "blocked", reason: "ambiguous", candidates: r.candidates });
-      }
+      if (UNDECIDABLE.has(r.reason)) return json(res, 200, blockedBody(r));
       return json(res, 200, { route: "worker", ...manager.status(sessionId) });
     }
 
@@ -281,22 +317,19 @@ const server = createServer(async (req, res) => {
       if (!text) return json(res, 400, { error: "text required" });
 
       const meta = extractSessionMeta(readFileSync(file, "utf8"));
-      const found = livePaneFor(meta.cwd);
+      const found = livePaneFor(sessionId, meta.cwd);
 
-      if (found.reason === "ambiguous") {
-        // 同じ cwd で claude が複数。どれがこの会話か決められないので送らない。
-        // ワーカー経路にも落とさない(開かれている会話を別プロセスで触ると二重実行になる)。
-        return json(res, 409, {
-          error: `同じフォルダで Claude が ${found.candidates} 個開いています。どの画面かを特定できないため送信しません。`,
-          route: "blocked", reason: "ambiguous", candidates: found.candidates,
-        });
+      if (UNDECIDABLE.has(found.reason)) {
+        // 宛先を確定できない。送らないし、ワーカー経路にも落とさない
+        // (開かれている会話を別プロセスで触ると同じ会話を2実行が読む = lost-update)。
+        return json(res, 409, { error: blockedMessage(found), ...blockedBody(found) });
       }
 
       if (found.pane) {
         const pane = found.pane;
         // 注入経路。CHOICE(承認/上限の選択肢)には何も送らない — Enter が課金や承認になる。
         const r = injector.send(pane, text);
-        if (r.sent) return json(res, 202, { accepted: true, route: "tmux", pane });
+        if (r.sent) return json(res, 202, { accepted: true, route: "tmux", pane, source: found.source });
         if (r.state === "CHOICE") {
           return json(res, 409, {
             error: "画面が選択待ちです。Enter が承認や課金の選択になるため送信しません。画面を確認してください。",
@@ -319,12 +352,10 @@ const server = createServer(async (req, res) => {
 
     if (action === "interrupt" && req.method === "POST") {
       const meta = extractSessionMeta(readFileSync(file, "utf8"));
-      const r = livePaneFor(meta.cwd);
-      if (r.reason === "ambiguous") {
-        return json(res, 409, {
-          error: `同じフォルダで Claude が ${r.candidates} 個開いています。どの画面を止めるか特定できません。`,
-          route: "blocked", reason: "ambiguous", candidates: r.candidates,
-        });
+      const r = livePaneFor(sessionId, meta.cwd);
+      if (UNDECIDABLE.has(r.reason)) {
+        // 止める先を確定できない = 別の会話を止めうる。何もしない。
+        return json(res, 409, { error: blockedMessage(r), ...blockedBody(r) });
       }
       if (r.pane) {
         injector.interrupt(r.pane); // Escape のみ。C-c は送らない。
@@ -412,8 +443,9 @@ async function load(){
     // 経路と画面状態をそのまま出す(机で開いている=tmux / 開いてない=worker / 特定不能=blocked)
     const mark=L.route==="tmux"?({READY:"● ",BUSY:"◐ ",CHOICE:"⚠ ",UNKNOWN:"? "}[L.screen]||"? ")
               :L.route==="blocked"?"✖ ":(L.worker==="running"?"● ":"○ ");
+    const why={ambiguous:"同cwdに"+L.candidates+"個",stale:"ペインを別会話が使用中","cwd-mismatch":"登録ペインの居場所が不一致"}[L.reason]||L.reason;
     const tail=L.route==="tmux"?" ["+L.screen+(L.queued?" +"+L.queued:"")+"]"
-              :L.route==="blocked"?" [同cwdに"+L.candidates+"個 — 特定不能]":"";
+              :L.route==="blocked"?" [特定不能: "+why+"]":"";
     li.textContent=mark+s.title+" — "+s.updatedAt+" ("+s.project+")"+tail;
     li.onclick=()=>open(s.id);ul.appendChild(li);}
   const a=await fetch("/api/account",{headers:H()});document.getElementById("acct").textContent=(await a.json()).account||"";
