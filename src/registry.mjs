@@ -120,6 +120,48 @@ export function resolveSessionPane({ sessionId, cwd, entries, panes, isClaude, r
   return { pane: entry.pane, reason: "ok", candidates: 1, source: "registry" };
 }
 
+/**
+ * 「開いたばかりでまだ一度も発言していない会話」を一覧に足す。
+ *
+ * なぜ必要か(2026-07-31 edith 実測): transcript の jsonl は**最初のメッセージが入るまで
+ * 作られない**。一覧は jsonl の走査で作っているので、Tom が edith でセッションを開いて
+ * 席を立った状態は電話から見えない。だが登録簿には居るので、ペインは分かっている
+ * = 電話から最初の一言を送れる。Tom 裁定「返答待ちであれ作業中であれいつでも見て、
+ * 干渉できればいい」に照らすと、ここが見えないのは穴。
+ *
+ * 採用条件は resolveSessionPane に委ねる(判定を二重に書かない)。
+ * cwd は jsonl が無いので突き合わせられない → ペインの現在地をその会話の cwd として採る。
+ */
+export function registryOnlySessions({ listing, entries, panes, isClaude }) {
+  const known = new Set(listing.map((s) => s.id));
+  const out = [];
+  for (const e of entries) {
+    if (known.has(e.sessionId)) continue;
+    const r = resolveSessionPane({
+      sessionId: e.sessionId,
+      cwd: "", // 突き合わせる相手が無い(jsonl が未生成)
+      entries,
+      panes,
+      isClaude,
+      resolveByCwd: () => ({ pane: null, reason: "none", candidates: 0 }),
+    });
+    if (r.reason !== "ok") continue; // stale / not-claude / 消えたペインは出さない
+    const info = panes.find((p) => p.pane === e.pane);
+    out.push({
+      id: e.sessionId,
+      project: null,
+      cwd: info?.path || "",
+      // 中身が無いので中身から題を作れない。何であるかをそのまま書く。
+      title: "(未発言)",
+      lastPrompt: "",
+      turns: 0,
+      updatedAt: new Date(e.mtimeMs).toISOString(),
+      fromRegistryOnly: true,
+    });
+  }
+  return out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+}
+
 /** fs を持つ薄い読み手。サーバはこれを1リクエストにつき1回叩く。 */
 export class PaneRegistry {
   constructor({ dir, fs }) {

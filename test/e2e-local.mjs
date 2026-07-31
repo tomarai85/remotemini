@@ -38,6 +38,11 @@ const SID_STALE    = "aaaaaaaa-0000-0000-0000-00000000000d"; // %20 を古く名
 const SID_MISMATCH = "aaaaaaaa-0000-0000-0000-00000000000e"; // 登録先ペインの居場所が違う
 const CWD_REG   = "/Users/Shared/dev/reg";
 const CWD_OTHER = "/Users/Shared/dev/other";
+// 「開いただけでまだ一度も発言していない会話」= jsonl が存在しない(2026-07-31 edith 実測)。
+// **わざと fixture を作らない** — それがこの状態の定義そのもの。
+const SID_FRESH = "aaaaaaaa-0000-0000-0000-00000000000f"; // 登録あり・ペイン %23 が生きている
+const SID_GONE  = "aaaaaaaa-0000-0000-0000-000000000010"; // 登録あり・そのペインはもう無い
+const CWD_FRESH = "/Users/Shared/dev/fresh";
 
 writeFileSync(join(PROJ, `${SID1}.jsonl`), [
   JSON.stringify({ entrypoint: "cli", cwd: "/Users/Shared/dev/roundtrip", type: "user", message: { role: "user", content: "最初の質問" } }),
@@ -75,6 +80,7 @@ const PANES = [
   `%20\t2.1.220\t${CWD_REG}`,   // 登録簿検証: 同じ cwd に claude が3つ並ぶ
   `%21\t2.1.220\t${CWD_REG}`,
   `%22\t2.1.220\t${CWD_OTHER}`, // 居場所不一致の検証用
+  `%23\t2.1.220\t${CWD_FRESH}`, // 未発言の会話が居るペイン(jsonl は無い)
 ].join("\n") + "\n";
 const SCREENS = {
   "%10": '╰─────╯\n❯ Try "how does <filepath> work?"\n  ? for shortcuts',
@@ -90,6 +96,7 @@ const SCREENS = {
   "%20": '❯ Try "x"\n  ? for shortcuts',
   "%21": '❯ Try "x"\n  ? for shortcuts',
   "%22": '❯ Try "x"\n  ? for shortcuts',
+  "%23": '❯ Try "how does <filepath> work?"\n  ? for shortcuts',
 };
 writeFileSync(join(SB, "tmux-panes.txt"), PANES);
 for (const [pane, text] of Object.entries(SCREENS)) {
@@ -415,6 +422,60 @@ try {
   const jBroken = await (await fetch(`${B}/api/sessions/${SID_REG_A}/status`, { headers: H })).json();
   check("壊れた登録が1件あっても A は解決できる", jBroken.route === "tmux" && jBroken.pane === "%20", JSON.stringify(jBroken));
   register(SID_REG_B, "%21", 2000); // 後続に影響させない
+
+  // ---- 12. 未発言の会話(jsonl がまだ無い) -----------------------------------
+  // 出典: DESIGN §2.10。transcript は最初のメッセージまで作られないので、
+  // 「開いて席を立った会話」は jsonl 走査の一覧に出ない = 電話から最初の一言を送れない。
+  // Tom 裁定「返答待ちであれ作業中であれいつでも見て、干渉できればいい」に反するので通す。
+  register(SID_FRESH, "%23", 3000);
+  register(SID_GONE, "%90", 3000); // %90 は list-panes に存在しない
+
+  const list4 = await (await fetch(`${B}/api/sessions`, { headers: H })).json();
+  const fresh = list4.sessions.find((s) => s.id === SID_FRESH);
+  check("★未発言の会話が一覧に出る", !!fresh, JSON.stringify(list4.sessions.map((s) => s.id)));
+  check("★未発言: 中身が無いことを名乗る(捏造しない)",
+    fresh?.title === "(未発言)" && fresh?.turns === 0 && fresh?.lastPrompt === "" && fresh?.fromRegistryOnly === true,
+    JSON.stringify(fresh));
+  check("★未発言: cwd はペインの現在地", fresh?.cwd === CWD_FRESH, JSON.stringify(fresh));
+  check("★未発言: 一覧の live は tmux/%23", fresh?.live?.route === "tmux" && fresh?.live?.pane === "%23",
+    JSON.stringify(fresh?.live));
+  // ★陽性対照: ペインが消えた登録は一覧に出さない(叩いても送れない行を並べない)
+  check("★陽性対照: ペインが消えた登録は一覧に出ない", !list4.sessions.some((s) => s.id === SID_GONE),
+    JSON.stringify(list4.sessions.map((s) => s.id)));
+
+  // 12-b. jsonl が無くても 404 にしない(履歴は空)
+  const rHF = await fetch(`${B}/api/sessions/${SID_FRESH}/history`, { headers: H });
+  const jHF = await rHF.json();
+  check("★未発言: history は 404 でなく空配列", rHF.status === 200 && Array.isArray(jHF.history) && jHF.history.length === 0,
+    `${rHF.status} ${JSON.stringify(jHF)}`);
+  const stF = await (await fetch(`${B}/api/sessions/${SID_FRESH}/status`, { headers: H })).json();
+  check("★未発言: status は tmux/registry", stF.route === "tmux" && stF.pane === "%23" && stF.source === "registry",
+    JSON.stringify(stF));
+
+  // 12-c. 本題: 電話から最初の一言が %23 に届く
+  const beforeF = sentKeys().length;
+  const jF = await (await send(SID_FRESH, "最初の一言")).json();
+  const keysF = sentKeys().slice(beforeF);
+  check("★未発言: 最初の一言が %23 へ注入される",
+    jF.route === "tmux" && jF.pane === "%23" && jF.source === "registry", JSON.stringify(jF));
+  check("★未発言: 本文は %23 だけに届いた",
+    keysF.length === 2 && keysF.every((k) => k[2] === "%23") && keysF[0].at(-1) === "最初の一言",
+    JSON.stringify(keysF));
+
+  // 12-d. ★陽性対照: jsonl も無くペインも無い = 掴めるものが無い。
+  //       ワーカー(-p --resume)に落とすと存在しない会話を再開しようとする。落とさない。
+  const beforeG = sentKeys().length;
+  const rG = await send(SID_GONE, "掴む先が無い");
+  const jG = await rG.json();
+  check("★陽性対照: 未発言+ペイン消失 -> 409 pane-gone(ワーカーに落とさない)",
+    rG.status === 409 && jG.reason === "pane-gone" && jG.route === "blocked", `${rG.status} ${JSON.stringify(jG)}`);
+  check("★陽性対照: pane-gone で send-keys が0件", sentKeys().length === beforeG);
+  const rIG = await fetch(`${B}/api/sessions/${SID_GONE}/interrupt`, { method: "POST", headers: H });
+  check("未発言+ペイン消失の interrupt は落ちず「止める物が無い」", rIG.status === 200 && (await rIG.json()).interrupted === false);
+
+  // 12-e. 登録簿にも jsonl にも居ない ID は今まで通り 404
+  check("登録も jsonl も無い ID -> 404",
+    (await fetch(`${B}/api/sessions/aaaaaaaa-0000-0000-0000-0000000000ff/status`, { headers: H })).status === 404);
 
   sseCtl.abort();
   await ssePromise;

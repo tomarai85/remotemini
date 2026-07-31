@@ -16,7 +16,7 @@ import { spawn as nodeSpawn, execFileSync } from "node:child_process";
 import { extractSessionMeta, buildListing, extractHistory } from "./sessions.mjs";
 import { WorkerManager } from "./worker.mjs";
 import { TmuxInjector, looksLikeClaudePane } from "./inject.mjs";
-import { PaneRegistry, resolveSessionPane } from "./registry.mjs";
+import { PaneRegistry, resolveSessionPane, registryOnlySessions } from "./registry.mjs";
 
 const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
@@ -247,7 +247,17 @@ const server = createServer(async (req, res) => {
       // (会話数ぶん tmux を起動したり登録簿を読み直したりしない)
       const panes = injector.listPanes();
       const entries = registry.read();
-      const listing = buildListing(scanSessions()).map((s) => {
+      const scanned = buildListing(scanSessions());
+      // jsonl がまだ無い会話(開いただけ・未発言)も、登録簿に居てペインが生きていれば出す。
+      // 見えないと電話から最初の一言を送れない = Tom 裁定「いつでも干渉できる」に反する。
+      // 並びは updatedAt の新しい順で混ぜる。未発言の会話の updatedAt は登録簿の mtime
+      // = 「まだ生きている」の心拍なので、開きっぱなしの間ずっと上に居座る。承知の上:
+      // 未発言の会話に対して電話からできる唯一の操作が「最初の一言を送る」であり、
+      // それを一覧の底に埋めると D5 裁定(いつでも干渉できる)を満たせない。
+      const listing = [
+        ...scanned,
+        ...registryOnlySessions({ listing: scanned, entries, panes, isClaude: looksLikeClaudePane }),
+      ].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0)).map((s) => {
         // 机で開かれている会話は画面が真実。開かれていなければワーカーの状態。
         const r = livePaneFor(s.id, s.cwd, panes, entries);
         const live = r.pane
@@ -281,17 +291,26 @@ const server = createServer(async (req, res) => {
     if (!m) return json(res, 404, { error: "not found" });
     const [, sessionId, action] = m;
     const file = findSessionFile(sessionId);
-    if (!file) return json(res, 404, { error: "unknown session" });
+    // 登録簿は1リクエストにつき1回だけ読む。2回読むと、その間に書き手(statusLine が
+    // 2秒ごとに書く)が挟まって「存在すると判定した直後の解決では別内容」になりうる。
+    const regEntries = registry.read();
+    // jsonl は最初の発言まで作られない(2026-07-31 edith 実測)。開いただけの会話は
+    // 登録簿にしか居ないので、そこにペインがあるなら操作対象として通す。
+    const registeredOnly = !file && regEntries.some((e) => e.sessionId === sessionId);
+    if (!file && !registeredOnly) return json(res, 404, { error: "unknown session" });
+    // cwd は jsonl 由来。無い場合は空 = 突き合わせを省く(resolveSessionPane の仕様)。
+    const sessionCwd = () => (file ? extractSessionMeta(readFileSync(file, "utf8")).cwd : "");
+    const resolvePane = () => livePaneFor(sessionId, sessionCwd(), undefined, regEntries);
 
     if (action === "history" && req.method === "GET") {
       const limit = Math.min(Number(url.searchParams.get("limit") || 50), 500);
+      if (!file) return json(res, 200, { history: [] }); // まだ何も言っていない会話
       const text = readFileSync(file, "utf8");
       return json(res, 200, { history: extractHistory(text, limit) });
     }
 
     if (action === "status" && req.method === "GET") {
-      const meta = extractSessionMeta(readFileSync(file, "utf8"));
-      const r = livePaneFor(sessionId, meta.cwd);
+      const r = resolvePane();
       if (r.pane) {
         // 机で開かれている会話。真実は画面から取る。
         return json(res, 200, {
@@ -316,8 +335,16 @@ const server = createServer(async (req, res) => {
       const text = typeof body.text === "string" ? body.text.trim() : "";
       if (!text) return json(res, 400, { error: "text required" });
 
-      const meta = extractSessionMeta(readFileSync(file, "utf8"));
-      const found = livePaneFor(sessionId, meta.cwd);
+      const found = resolvePane();
+
+      if (!file && !found.pane) {
+        // 発言も無く、開いていたペインも無い = 掴めるものが何も無い。
+        // ワーカー(-p --resume)に落とすと存在しない会話を再開しようとして失敗する。
+        return json(res, 409, {
+          error: "この会話はまだ発言が無く、開いていたペインも見つかりません。",
+          route: "blocked", reason: "pane-gone", candidates: 0, source: "registry",
+        });
+      }
 
       if (UNDECIDABLE.has(found.reason)) {
         // 宛先を確定できない。送らないし、ワーカー経路にも落とさない
@@ -351,8 +378,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (action === "interrupt" && req.method === "POST") {
-      const meta = extractSessionMeta(readFileSync(file, "utf8"));
-      const r = livePaneFor(sessionId, meta.cwd);
+      const r = resolvePane();
       if (UNDECIDABLE.has(r.reason)) {
         // 止める先を確定できない = 別の会話を止めうる。何もしない。
         return json(res, 409, { error: blockedMessage(r), ...blockedBody(r) });

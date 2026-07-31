@@ -7,7 +7,12 @@
 // だから「決められない」を返すケースを、決められるケースより厚く検査する。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseEntry, readRegistry, resolveSessionPane } from "../src/registry.mjs";
+import {
+  parseEntry,
+  readRegistry,
+  resolveSessionPane,
+  registryOnlySessions,
+} from "../src/registry.mjs";
 import { looksLikeClaudePane, TmuxInjector } from "../src/inject.mjs";
 
 const S1 = "1b5c9362-aaaa-bbbb-cccc-000000000001";
@@ -169,4 +174,61 @@ test("★他の会話が名乗り済みのペインは cwd 経路の候補から
 
 test("tmux にペインが1つも無ければ none", () => {
   assert.equal(resolve(S1, CWD, [], []).reason, "none");
+});
+
+// ---- 未発言の会話を一覧に足す(registryOnlySessions) ----
+//
+// なぜ要るか: transcript の jsonl は最初のメッセージまで作られない(2026-07-31 edith 実測)。
+// 一覧は jsonl の走査なので、開いて席を立った会話は電話から見えない = 最初の一言を送れない。
+// ここで守りたいのは逆方向の事故: **操作できないものを一覧に出さない**こと。
+// 出したのに送れない行は、Tom から見れば壊れている。だから採否は resolveSessionPane と同じ判定に委ねる。
+
+const only = (listing, entries, panes) =>
+  registryOnlySessions({ listing, entries, panes, isClaude: looksLikeClaudePane });
+
+test("jsonl がまだ無い登録は一覧に足される。cwd はペインの現在地を採る", () => {
+  const got = only([], [{ sessionId: S1, pane: "%12", mtimeMs: 1000 }], [claudePane("%12")]);
+  assert.equal(got.length, 1);
+  assert.equal(got[0].id, S1);
+  assert.equal(got[0].cwd, CWD, "jsonl が無いので突き合わせる相手が無い -> ペインの居場所");
+  assert.equal(got[0].turns, 0);
+  assert.equal(got[0].fromRegistryOnly, true, "UI が普通の会話と区別できる印");
+  assert.equal(got[0].updatedAt, new Date(1000).toISOString());
+});
+
+test("★既に jsonl で一覧に居る会話を二重に出さない", () => {
+  const listing = [{ id: S1, updatedAt: "2026-07-31T00:00:00.000Z" }];
+  assert.deepEqual(only(listing, [{ sessionId: S1, pane: "%12", mtimeMs: 1000 }], [claudePane("%12")]), []);
+});
+
+test("★登録時のペインが消えている -> 出さない(送れない行を並べない)", () => {
+  assert.deepEqual(only([], [{ sessionId: S1, pane: "%12", mtimeMs: 1000 }], [claudePane("%99")]), []);
+});
+
+test("★ペインは在るが claude でない(シェルに戻った) -> 出さない", () => {
+  const panes = [{ pane: "%12", command: "zsh", path: CWD }];
+  assert.deepEqual(only([], [{ sessionId: S1, pane: "%12", mtimeMs: 1000 }], panes), []);
+});
+
+test("★★同じペインをより新しい会話が名乗っている(stale) -> 古い方は出さない", () => {
+  // ペイン使い回し。stale を一覧に出すと、その行を叩いた時に別の会話へ届きうる。
+  const entries = [
+    { sessionId: S1, pane: "%12", mtimeMs: 100 },
+    { sessionId: S2, pane: "%12", mtimeMs: 200 },
+  ];
+  const got = only([], entries, [claudePane("%12")]);
+  assert.deepEqual(got.map((s) => s.id), [S2], "新しい方だけ");
+});
+
+test("未発言が複数なら新しい順", () => {
+  const entries = [
+    { sessionId: S1, pane: "%12", mtimeMs: 100 },
+    { sessionId: S2, pane: "%13", mtimeMs: 900 },
+  ];
+  const got = only([], entries, [claudePane("%12"), claudePane("%13")]);
+  assert.deepEqual(got.map((s) => s.id), [S2, S1]);
+});
+
+test("登録簿が空なら何も足さない", () => {
+  assert.deepEqual(only([], [], [claudePane("%12")]), []);
 });
