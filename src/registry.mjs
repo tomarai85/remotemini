@@ -68,6 +68,10 @@ export function readRegistry(dir, fs = { readdirSync, readFileSync, statSync }) 
  *   none          -> tmux に居ない。ワーカー経路(-p --resume)に落として安全
  *   not-claude    -> そのペインは claude ではない(claude が終了しシェルに戻った等)。ワーカー経路
  *   ambiguous     -> cwd 経路で複数候補。どれか決められない
+ *   unregistered  -> 未登録の会話だが、その cwd に claude のペインが在る。cwd 一致は
+ *                    同定ではないので注入しない。ワーカーにも落とさない(そのペインが
+ *                    この会話本人である可能性を否定できず、落とすと lost-update)。
+ *                    登録を有効にすれば ok になる = Tom に手当てを案内する理由。
  *   stale         -> 登録簿が現実と矛盾(同じペインをより新しい会話が名乗っている)。
  *                    ワーカーにも落とさない — その会話が別ペインで開いたままの可能性を
  *                    否定できず、落とすと同じ会話を2プロセスが触る(lost-update)。
@@ -86,11 +90,24 @@ export function resolveSessionPane({ sessionId, cwd, entries, panes, isClaude, r
 
   if (!entry) {
     // 登録が無い = この会話は登録機構の入る前から開いている、または tmux 外。
-    // cwd 経路に落とすが、**他の会話が名乗り済みのペインは候補から外す**。
+    // cwd 経路で場所を見るが、**他の会話が名乗り済みのペインは候補から外す**。
     // 候補が減る方向にしか動かないので、素の cwd 一致より必ず安全側。
     const claimed = new Set(entries.map((e) => e.pane));
     const free = panes.filter((p) => !claimed.has(p.pane));
-    return { ...resolveByCwd(cwd, free), source: "cwd" };
+    const byCwd = { ...resolveByCwd(cwd, free), source: "cwd" };
+
+    // ★cwd 経路は "ok" を返せない(2026-07-31 Codex 同意)。
+    // 「その cwd に claude のペインが1つだけ在る」は**同定ではない**。実測で
+    // ~/.claude だけに192会話が同じ cwd を共有しており、たまたま今開いている1枚が
+    // 電話で選んだ会話である保証はどこにも無い。当たれば速い・外れれば他人の会話に
+    // 本文と Enter が入って実際に動き出す = 取り返しがつかない。期待値は明確にマイナス。
+    // 名乗り(登録簿)だけが同定で、それ以外は「速いかもしれない推測」にすぎない。
+    if (byCwd.reason === "ok") {
+      return { pane: null, reason: "unregistered", candidates: byCwd.candidates, source: "cwd" };
+    }
+    // none / not-claude(= 注入できる claude が居ない)はワーカー経路のままでよい。
+    // ambiguous は元から拒否。
+    return byCwd;
   }
 
   const info = panes.find((p) => p.pane === entry.pane);

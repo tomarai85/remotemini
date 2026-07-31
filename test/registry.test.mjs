@@ -156,10 +156,22 @@ test("会話の cwd が不明な時は突き合わせを省く(登録だけで�
 
 // ---- 登録が無い会話(フォールバック) ----
 
-test("登録が無ければ cwd 経路。source で由来が分かる", () => {
+test("★未登録の会話は、cwd に claude が1つしか無くても注入しない(unregistered)", () => {
+  // 「その cwd に claude が1枚だけ」は**同定ではない**。実測で ~/.claude だけに192会話が
+  // 同じ cwd を共有している = 今開いている1枚が選んだ会話である保証は無い。
+  // 外れると他人の会話に本文と Enter が入って動き出すので、当てにいかず拒否する。
   const r = resolve(S1, CWD, [], [claudePane("%12")]);
-  assert.equal(r.pane, "%12");
-  assert.equal(r.source, "cwd");
+  assert.equal(r.pane, null, "推測で注入先を決めない");
+  assert.equal(r.reason, "unregistered");
+  assert.equal(r.source, "cwd", "由来が cwd 経路だと分かる");
+  assert.equal(r.candidates, 1);
+});
+
+test("★unregistered はワーカーにも落とさない(UNDECIDABLE 側)", () => {
+  // そのペインがこの会話本人である可能性を否定できない。ワーカー(-p --resume)に
+  // 落とすと同じ会話を2プロセスが読む(lost-update)ので、拒否で止める。
+  const r = resolve(S1, CWD, [], [claudePane("%12")]);
+  assert.notEqual(r.reason, "none", "none はワーカー経路 = ここに落としてはいけない");
 });
 
 test("★他の会話が名乗り済みのペインは cwd 経路の候補から外す(候補は減る方向にしか動かない)", () => {
@@ -167,8 +179,12 @@ test("★他の会話が名乗り済みのペインは cwd 経路の候補から
   const entries = [{ sessionId: S2, pane: "%13", mtimeMs: 200 }];
   const panes = [claudePane("%12"), claudePane("%13")];
   const r = resolve(S1, CWD, entries, panes);
-  assert.equal(r.pane, "%12", "名乗り済みを除けば候補は1つに定まる");
-  // 名乗り済みを除いた結果ゼロになるなら、ワーカー経路(注入はしない)
+  // 絞り込みは効いている(効いていなければ候補2で ambiguous になる)。ただし絞れても
+  // cwd 経路は ok を返さない = unregistered で止まる。
+  assert.equal(r.reason, "unregistered");
+  assert.equal(r.candidates, 1, "名乗り済みを除けば候補は1つに定まる");
+  // 名乗り済みを除いた結果ゼロになるなら、注入できる claude が居ない = ワーカー経路でよい。
+  // (この行が絞り込みそのものの対照: 絞り込みを外すと unregistered になって落ちる)
   assert.equal(resolve(S1, CWD, [{ sessionId: S2, pane: "%12", mtimeMs: 1 }], [claudePane("%12")]).reason, "none");
 });
 

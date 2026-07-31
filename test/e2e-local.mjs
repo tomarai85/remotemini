@@ -38,6 +38,10 @@ const SID_STALE    = "aaaaaaaa-0000-0000-0000-00000000000d"; // %20 を古く名
 const SID_MISMATCH = "aaaaaaaa-0000-0000-0000-00000000000e"; // 登録先ペインの居場所が違う
 const CWD_REG   = "/Users/Shared/dev/reg";
 const CWD_OTHER = "/Users/Shared/dev/other";
+// 未登録のまま、その cwd に claude が**1つだけ**居る会話。cwd 一致を同定として使うと
+// ここが注入されてしまう(= 他人の会話に本文が入る事故)。設計上ここは必ず拒否する。
+const SID_UNREG = "aaaaaaaa-0000-0000-0000-000000000011";
+const CWD_UNREG = "/Users/Shared/dev/unreg";
 // 「開いただけでまだ一度も発言していない会話」= jsonl が存在しない(2026-07-31 edith 実測)。
 // **わざと fixture を作らない** — それがこの状態の定義そのもの。
 const SID_FRESH = "aaaaaaaa-0000-0000-0000-00000000000f"; // 登録あり・ペイン %23 が生きている
@@ -64,6 +68,7 @@ fixture(SID_SHELL, CWD_SHELL, "シェルのみ");
 fixture(SID_AMBIG, CWD_AMBIG, "特定不能");
 fixture(SID_BUSY, CWD_BUSY, "生成中");
 for (const sid of [SID_REG_A, SID_REG_B, SID_REG_C, SID_STALE]) fixture(sid, CWD_REG, `登録${sid.slice(-1)}`);
+fixture(SID_UNREG, CWD_UNREG, "未登録");
 fixture(SID_MISMATCH, CWD_REG, "居場所不一致"); // 会話は CWD_REG。登録先ペインは CWD_OTHER に居る
 
 // ---- 偽 tmux ----------------------------------------------------------------
@@ -81,6 +86,7 @@ const PANES = [
   `%21\t2.1.220\t${CWD_REG}`,
   `%22\t2.1.220\t${CWD_OTHER}`, // 居場所不一致の検証用
   `%23\t2.1.220\t${CWD_FRESH}`, // 未発言の会話が居るペイン(jsonl は無い)
+  `%24\t2.1.220\t${CWD_UNREG}`, // 未登録の会話の cwd に居る唯一の claude
 ].join("\n") + "\n";
 const SCREENS = {
   "%10": '╰─────╯\n❯ Try "how does <filepath> work?"\n  ? for shortcuts',
@@ -97,10 +103,21 @@ const SCREENS = {
   "%21": '❯ Try "x"\n  ? for shortcuts',
   "%22": '❯ Try "x"\n  ? for shortcuts',
   "%23": '❯ Try "how does <filepath> work?"\n  ? for shortcuts',
+  "%24": '❯ Try "x"\n  ? for shortcuts',
 };
 writeFileSync(join(SB, "tmux-panes.txt"), PANES);
 for (const [pane, text] of Object.entries(SCREENS)) {
   writeFileSync(join(SB, `screen-${pane.replace("%", "")}.txt`), text);
+}
+
+// 注入経路(§10)の会話は**登録済み**にしておく。cwd 一致だけでは注入しない設計に
+// なったため(reason=unregistered)、画面判定 CHOICE/BUSY/READY を測るには先に
+// 宛先が確定していなければならない。ここで測りたいのは「宛先が確定した後、画面を見て
+// 何を送るか」であって、宛先の決め方(§11 で測る)ではない。
+const PANE_DIR_SETUP = join(SB, "keys", "panes");
+mkdirSync(PANE_DIR_SETUP, { recursive: true });
+for (const [sid, pane] of [[SID_READY, "%10"], [SID_CHOICE, "%11"], [SID_BUSY, "%15"]]) {
+  writeFileSync(join(PANE_DIR_SETUP, `${sid}.json`), JSON.stringify({ session_id: sid, pane, model: "Opus 5" }) + "\n");
 }
 const SENT_LOG = join(SB, "tmux-sent.log");
 writeFileSync(SENT_LOG, "");
@@ -476,6 +493,33 @@ try {
   // 12-e. 登録簿にも jsonl にも居ない ID は今まで通り 404
   check("登録も jsonl も無い ID -> 404",
     (await fetch(`${B}/api/sessions/aaaaaaaa-0000-0000-0000-0000000000ff/status`, { headers: H })).status === 404);
+
+  // ---- 13. ★未登録の会話には、cwd が一致しても注入しない -------------------
+  //
+  // ここが今回いちばん危ない経路。SID_UNREG の cwd には claude のペインが %24 の
+  // **1つだけ**居るので、素朴に cwd で引くと「1つに定まった」と読めてしまう。
+  // だがそれは同定ではない: 実測で ~/.claude だけに192会話が同じ cwd を共有しており、
+  // 今そこに開いている1枚が電話で選んだ会話である保証はどこにも無い。外れた時の
+  // 結果は「他人の会話に本文と Enter が入り、実際に動き出す」= 取り返しがつかない。
+  // 拒否が正しい(2026-07-31 Codex 同意)。
+  const beforeUnreg = sentKeys().length;
+  const rUnreg = await send(SID_UNREG, "他人の会話に入ってはいけない本文");
+  const jUnreg = await rUnreg.json();
+  check("★未登録+同cwdに claude 1つ -> 409 unregistered(推測で注入しない)",
+    rUnreg.status === 409 && jUnreg.reason === "unregistered", `status=${rUnreg.status} ${JSON.stringify(jUnreg)}`);
+  check("★陽性対照: そのペインへ send-keys が0件", sentKeys().length === beforeUnreg,
+    JSON.stringify(sentKeys().slice(beforeUnreg)));
+  check("★拒否文が直し方(rc-claude)を含む", typeof jUnreg.error === "string" && jUnreg.error.includes("rc-claude"),
+    JSON.stringify(jUnreg.error));
+  // ワーカーにも落ちていないこと。落とすと同じ会話を2プロセスが読む(lost-update)。
+  check("★unregistered はワーカー経路にも落ちない", jUnreg.route === "blocked", JSON.stringify(jUnreg));
+  const stUnreg = await (await fetch(`${B}/api/sessions/${SID_UNREG}/status`, { headers: H })).json();
+  check("status も unregistered を返す", stUnreg.route === "blocked" && stUnreg.reason === "unregistered",
+    JSON.stringify(stUnreg));
+  const lsUnreg = (await (await fetch(`${B}/api/sessions`, { headers: H })).json()).sessions
+    .find((s) => s.id === SID_UNREG);
+  check("一覧でも blocked/unregistered として見える", lsUnreg?.live?.reason === "unregistered",
+    JSON.stringify(lsUnreg?.live));
 
   sseCtl.abort();
   await ssePromise;

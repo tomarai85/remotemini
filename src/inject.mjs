@@ -29,9 +29,21 @@ export function classifyPane(text) {
   ];
   if (choiceSignals.some((re) => re.test(text))) return "CHOICE";
 
-  // BUSY: 生成中。Claude Code は作業中に経過表示と esc-to-interrupt を出す。
+  // BUSY: 生成中。判定材料は "esc to interrupt" **だけ**にする。
+  //
+  // かつてここに「スピナー記号 + "... for N秒"」の行を BUSY と見なす規則があった。
+  // それは生成中の行ではなく**完了行**に当たる(2026-07-31 edith 実機で判明):
+  //   生成中  "✻ Baking… (12s · esc to interrupt)"   ← 下の規則が捕まえる
+  //   完了後  "✻ Baked for 0s"                        ← 過去形。scrollback に残り続ける
+  // 完了行は消えないので、一度でも喋ったペインが永久に BUSY になっていた。実測: 画面は
+  // 入力待ち、/status は BUSY、送った本文は queued:true のままペインに 0 件しか届かず、
+  // キューは READY でしか流れないので**永久に滞留**する。電話から復旧する手段は無い。
+  // しかも週次上限に当たった画面がまさにこの形 = 渡米中に必ず踏む。
+  // 削除の代償(生成中に "esc to interrupt" を出さない画面があれば送ってしまう)は、
+  // 本文と Enter を別送信しているので人が生成中に打つのと同じ挙動に落ち着き、
+  // 課金事故に繋がる CHOICE は上で先に弾いている。Codex 同意(同日)。
+  // 今後 BUSY の変種を実測したら、過去形を巻き込まない「進行中の形」だけを足すこと。
   if (/esc to interrupt/i.test(text)) return "BUSY";
-  if (/^\s*[✻✽✢·*]\s+\w+.*for\s+\d+s/im.test(text)) return "BUSY";
 
   // READY: 入力プロンプトが見えている。
   if (/^\s*❯\s/m.test(text) || /shortcuts/i.test(text)) return "READY";

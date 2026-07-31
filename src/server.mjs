@@ -152,12 +152,16 @@ function livePaneFor(sessionId, sessionCwd, panes, entries) {
 }
 
 /** 決められなかった理由のうち、ワーカー経路にも落としてはいけないもの。 */
-const UNDECIDABLE = new Set(["ambiguous", "stale", "cwd-mismatch"]);
+const UNDECIDABLE = new Set(["ambiguous", "unregistered", "stale", "cwd-mismatch"]);
 
 /** 拒否理由を Tom が読める1文にする(画面にそのまま出る)。 */
 function blockedMessage(r) {
   if (r.reason === "ambiguous") {
     return `同じフォルダで Claude が ${r.candidates} 個開いています。どの画面かを特定できないため送信しません。`;
+  }
+  if (r.reason === "unregistered") {
+    // 直せる拒否なので、直し方まで書く。ここが「エラーで終わり」だと電話側で詰む。
+    return "この会話はペイン登録をしていないため、宛先を確定できません(同じフォルダの画面に送ると別の会話に入る恐れがあります)。その画面を rc-claude で開き直すと送れるようになります。";
   }
   if (r.reason === "stale") {
     return "この会話が登録したペインは、今は別の会話が使っています。宛先を確定できないため送信しません。";
@@ -469,7 +473,7 @@ async function load(){
     // 経路と画面状態をそのまま出す(机で開いている=tmux / 開いてない=worker / 特定不能=blocked)
     const mark=L.route==="tmux"?({READY:"● ",BUSY:"◐ ",CHOICE:"⚠ ",UNKNOWN:"? "}[L.screen]||"? ")
               :L.route==="blocked"?"✖ ":(L.worker==="running"?"● ":"○ ");
-    const why={ambiguous:"同cwdに"+L.candidates+"個",stale:"ペインを別会話が使用中","cwd-mismatch":"登録ペインの居場所が不一致"}[L.reason]||L.reason;
+    const why={ambiguous:"同cwdに"+L.candidates+"個",unregistered:"ペイン未登録",stale:"ペインを別会話が使用中","cwd-mismatch":"登録ペインの居場所が不一致"}[L.reason]||L.reason;
     const tail=L.route==="tmux"?" ["+L.screen+(L.queued?" +"+L.queued:"")+"]"
               :L.route==="blocked"?" [特定不能: "+why+"]":"";
     li.textContent=mark+s.title+" — "+s.updatedAt+" ("+s.project+")"+tail;

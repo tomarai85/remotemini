@@ -23,14 +23,41 @@ function fakeTmux(paneText = "", paneList = "%1\t2.1.220\t/Users/Shared/dev/roun
   };
 }
 
+// 生成中の画面(実物の形)。過去形の完了行と**別物**であることがこの層の要。
+const IN_FLIGHT = "✻ Baking… (12s · ↓ 1.2k tokens · esc to interrupt)";
+// 完了後に scrollback へ残り続ける行(2026-07-31 edith 実測)。BUSY ではない。
+const FINISHED = "✻ Baked for 0s";
+
 // ---- 画面状態の判定(何を送ってよいか) ----
 
 test("入力プロンプトが見えれば READY", () => {
   assert.equal(classifyPane("╰────╯\n❯ Try \"how does <filepath> work?\"\n  ⏸ manual mode on"), "READY");
 });
 
-test("生成中(Brewed/Thinking 等)は BUSY", () => {
-  assert.equal(classifyPane("✻ Brewed for 3s\n  esc to interrupt"), "BUSY");
+test("生成中(esc to interrupt が出ている)は BUSY", () => {
+  assert.equal(classifyPane(IN_FLIGHT), "BUSY");
+});
+
+test("★完了行が残っているだけの入力待ち画面は READY(BUSY と読むとキューが永久に滞留する)", () => {
+  // 2026-07-31 edith 実測の再現。週次上限に当たると turn が即終わり、この過去形の行が
+  // scrollback に残る。かつてこれを BUSY と判定していたため、そのペインは二度と
+  // READY にならず、電話から送った本文が永久に届かなかった(実測 0 件到達)。
+  const real = [
+    "❯ reply with exactly: MARK_ALPHA",
+    "  ⎿ You've hit your weekly limit · resets Aug 3 at 12am (Asia/Tokyo)",
+    "     /usage-credits to finish what you're working on.",
+    FINISHED,
+    "────────",
+    "❯ ",
+    "────────",
+    "  Sonnet 5 | /private/tmp/rc-smoke [rc %18]",
+  ].join("\n");
+  assert.equal(classifyPane(real), "READY");
+});
+
+test("★完了行だけでは BUSY にしない(過去形は進行中の証拠ではない)", () => {
+  // 入力欄が見えない状態でも、過去形の行を根拠に BUSY を名乗ってはいけない。
+  assert.notEqual(classifyPane(FINISHED), "BUSY");
 });
 
 test("★上限到達の選択肢画面は CHOICE(実機で観測した実物)", () => {
@@ -89,7 +116,7 @@ test("UNKNOWN にも送らない(状態不明なら fail-closed)", () => {
 });
 
 test("BUSY は送らずキューに積む(生成後の誤送信を防ぐ)", () => {
-  const t = fakeTmux("✻ Brewed for 3s");
+  const t = fakeTmux(IN_FLIGHT);
   const inj = new TmuxInjector({ tmux: t });
   const r = inj.send("sess:0.0", "あとで");
   assert.equal(r.sent, false);
@@ -99,7 +126,7 @@ test("BUSY は送らずキューに積む(生成後の誤送信を防ぐ)", () =
 });
 
 test("READY に戻った時、キューの先頭が1件だけ流れる", () => {
-  const busy = fakeTmux("✻ Brewed for 3s");
+  const busy = fakeTmux(IN_FLIGHT);
   const inj = new TmuxInjector({ tmux: busy });
   inj.send("sess:0.0", "A");
   inj.send("sess:0.0", "B");
@@ -114,7 +141,7 @@ test("READY に戻った時、キューの先頭が1件だけ流れる", () => {
 // ---- 割り込み(Codex §1-B-3) ----
 
 test("割り込みは Escape。C-c は使わない", () => {
-  const t = fakeTmux("✻ Brewed for 3s");
+  const t = fakeTmux(IN_FLIGHT);
   const inj = new TmuxInjector({ tmux: t });
   inj.interrupt("sess:0.0");
   const sends = t.calls.filter((c) => c[0] === "send-keys");
@@ -123,7 +150,7 @@ test("割り込みは Escape。C-c は使わない", () => {
 });
 
 test("割り込み直後に本文を続けて送らない", () => {
-  const t = fakeTmux("✻ Brewed for 3s");
+  const t = fakeTmux(IN_FLIGHT);
   const inj = new TmuxInjector({ tmux: t });
   inj.interrupt("sess:0.0");
   const r = inj.send("sess:0.0", "すぐ本文");
