@@ -68,10 +68,13 @@ export function readRegistry(dir, fs = { readdirSync, readFileSync, statSync }) 
  *   none          -> tmux に居ない。ワーカー経路(-p --resume)に落として安全
  *   not-claude    -> そのペインは claude ではない(claude が終了しシェルに戻った等)。ワーカー経路
  *   ambiguous     -> cwd 経路で複数候補。どれか決められない
- *   unregistered  -> 未登録の会話だが、その cwd に claude のペインが在る。cwd 一致は
+ *   unregistered  -> 有効な登録が無く、その cwd に claude のペインが在る。cwd 一致は
  *                    同定ではないので注入しない。ワーカーにも落とさない(そのペインが
  *                    この会話本人である可能性を否定できず、落とすと lost-update)。
  *                    登録を有効にすれば ok になる = Tom に手当てを案内する理由。
+ *                    source="cwd" = 一度も名乗っていない / source="registry" = 名乗ったが
+ *                    その登録がもう現実と合っていない(ペイン消滅・シェルに戻った)。
+ *                    どちらも電話側の直し方は同じ(rc-claude で開き直す)。
  *   stale         -> 登録簿が現実と矛盾(同じペインをより新しい会話が名乗っている)。
  *                    ワーカーにも落とさない — その会話が別ペインで開いたままの可能性を
  *                    否定できず、落とすと同じ会話を2プロセスが触る(lost-update)。
@@ -85,6 +88,25 @@ export function readRegistry(dir, fs = { readdirSync, readFileSync, statSync }) 
  * @param {(cmd:string)=>boolean} a.isClaude
  * @param {(cwd:string, panes:Array)=>object} a.resolveByCwd 登録が無い時のフォールバック
  */
+/**
+ * 「この会話が生きているかもしれない claude ペインが、他に在るか」。
+ *
+ * cwd 一致は**同定には弱すぎるが、警戒には十分強い**。この非対称がこの関数の全て:
+ *   - 「cwd が一致したから本人だ」→ 誤り(同じ cwd を192会話が共有している)
+ *   - 「cwd が一致する claude が居るから、本人でない**とは言い切れない**」→ 正しい
+ * ワーカー(別プロセス)を起こす前にこれを見て、少しでも当たりが在れば起こさない。
+ * 誤判定の代償は「送れない」だけで、逆側は同じ会話への二重実行。
+ *
+ * 誰も名乗っていないペインだけを見る(名乗り済み = 別の会話だと分かっている)。
+ */
+function livePaneNearby({ cwd, entries, panes, isClaude, exclude }) {
+  if (!cwd) return false; // 突き合わせる相手が無い(jsonl 未生成など)。ここでは判断しない
+  const claimed = new Set(entries.map((e) => e.pane));
+  return panes.some(
+    (p) => p.pane !== exclude && !claimed.has(p.pane) && p.path === cwd && isClaude(p.command),
+  );
+}
+
 export function resolveSessionPane({ sessionId, cwd, entries, panes, isClaude, resolveByCwd }) {
   const entry = entries.find((e) => e.sessionId === sessionId);
 
@@ -112,11 +134,24 @@ export function resolveSessionPane({ sessionId, cwd, entries, panes, isClaude, r
 
   const info = panes.find((p) => p.pane === entry.pane);
   if (!info) {
-    // 登録時のペインが消えている = その会話の TUI はもう無い。ワーカー経路でよい。
+    // 登録時のペインが消えている。「その会話の TUI はもう無い」と読みたくなるが、
+    // **それは証明されていない**(2026-07-31 二次レビュー、Codex 指摘):
+    //   rc-claude で開いて %7 を登録 → 終了 → 後で素の `claude --resume` で %19 に開き直す
+    // という順序を踏むと、登録簿は %7 のまま古くなり、会話は %19 で生きている。ここで
+    // ワーカー(`-p --resume`)を起こすと、同じ会話を2プロセスが触る = lost-update。
+    // 実際にこの案件は「登録が無い機械でも動くように」ラッパ方式を採っているので、
+    // 登録あり→登録なしで開き直す順序は例外ではなく通常運転。
+    if (livePaneNearby({ cwd, entries, panes, isClaude, exclude: entry.pane })) {
+      return { pane: null, reason: "unregistered", candidates: 1, source: "registry" };
+    }
     return { pane: null, reason: "none", candidates: 0, source: "registry" };
   }
   if (!isClaude(info.command)) {
     // ペインは在るが claude ではない(終了してシェルに戻った)。注入したら任意コマンド実行。
+    // 上と同じ理由で、その会話が別ペインで生きている可能性を潰してからでないと落とせない。
+    if (livePaneNearby({ cwd, entries, panes, isClaude, exclude: entry.pane })) {
+      return { pane: null, reason: "unregistered", candidates: 1, source: "registry" };
+    }
     return { pane: null, reason: "not-claude", candidates: 1, source: "registry" };
   }
 

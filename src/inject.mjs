@@ -15,6 +15,11 @@
 //   2. 「入力受付中か」を知る確実な tmux API は無い → 状態不明なら送らない(fail-closed)
 //   3. 割り込みは Escape。C-c は画面状態で消去/中断/終了に化けるので緊急専用
 
+// Claude Code の進行中スピナーが使う記号。中黒(`·`)はここに入れない —
+// 文章中にも普通に出るので、中黒は「`· esc to interrupt` という区切り付きの並び」の時だけ
+// 進行中の証拠として使う(下の classifyPane 参照)。
+const SPINNER = /[✻✽✢✶✳*]/;
+
 /** 画面テキストから「今なら何を送ってよいか」を判定する。純関数。 */
 export function classifyPane(text) {
   if (typeof text !== "string" || text.trim() === "") return "UNKNOWN";
@@ -43,7 +48,21 @@ export function classifyPane(text) {
   // 本文と Enter を別送信しているので人が生成中に打つのと同じ挙動に落ち着き、
   // 課金事故に繋がる CHOICE は上で先に弾いている。Codex 同意(同日)。
   // 今後 BUSY の変種を実測したら、過去形を巻き込まない「進行中の形」だけを足すこと。
-  if (/esc to interrupt/i.test(text)) return "BUSY";
+  //
+  // ★さらに絞る(2026-07-31 二次レビュー、Codex 指摘)。"esc to interrupt" が**文章として**
+  // 画面に残っている場合も BUSY になってしまう。この案件はまさに Claude Code の割り込みを
+  // 扱っているので、この語が応答本文に出るのは仮定ではなくほぼ確実に起きる。そこで
+  // **1行の中で**「進行中の状態行の形」まで確かめる:
+  //   進行中  "✻ Baking… (12s · ↓ 1.2k tokens · esc to interrupt)" ← 記号 or 中黒が同じ行に居る
+  //   文章    "esc to interrupt を押すと生成を止められます"          ← どちらも無い = BUSY にしない
+  //
+  // 絞った側の代償(生成中を READY と読む)が小さいことが、この方向に倒す根拠:
+  // Claude Code 自身が生成中の入力をキューする = 人が打つのと同じ。対して BUSY 側に誤ると
+  // 我々のキューに滞留し、電話から流す手段が無い。**非対称なので締める方に倒す**。
+  for (const line of text.split("\n")) {
+    if (!/esc to interrupt/i.test(line)) continue;
+    if (SPINNER.test(line) || /·\s*esc to interrupt/i.test(line)) return "BUSY";
+  }
 
   // READY: 入力プロンプトが見えている。
   if (/^\s*❯\s/m.test(text) || /shortcuts/i.test(text)) return "READY";

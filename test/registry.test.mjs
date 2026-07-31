@@ -115,9 +115,28 @@ test("★同じ cwd に claude が2つでも、登録があれば正しく特定
   assert.equal(resolve(S1, CWD, [], panes).reason, "ambiguous");
 });
 
-test("登録時のペインが消えている -> tmux に居ない(ワーカー経路で安全)", () => {
-  const r = resolve(S1, CWD, [{ sessionId: S1, pane: "%12", mtimeMs: 100 }], [claudePane("%99")]);
+test("登録時のペインが消え、近くに claude も居ない -> tmux に居ない(ワーカー経路で安全)", () => {
+  // claude は居るが**別の cwd**。この会話が生きている手掛かりが1つも無いので落として良い。
+  const elsewhere = { pane: "%99", command: "2.1.220", path: "/somewhere/else" };
+  const r = resolve(S1, CWD, [{ sessionId: S1, pane: "%12", mtimeMs: 100 }], [elsewhere]);
   assert.equal(r.pane, null);
+  assert.equal(r.reason, "none");
+});
+
+test("★登録時のペインが消えたが、同じ cwd に名乗っていない claude が居る -> ワーカーを起こさない", () => {
+  // 現実に起きる順序: rc-claude で開いて %12 を登録 → 終了 → 素の `claude --resume` で
+  // %99 に開き直す。登録簿は %12 のまま古く、会話は %99 で生きている。ここでワーカーを
+  // 起こすと同じ会話を2プロセスが触る(lost-update)。
+  const r = resolve(S1, CWD, [{ sessionId: S1, pane: "%12", mtimeMs: 100 }], [claudePane("%99")]);
+  assert.equal(r.pane, null, "推測で %99 に注入もしない");
+  assert.equal(r.reason, "unregistered");
+  assert.equal(r.source, "registry", "登録はあったが現実と合っていない、と区別できる");
+});
+
+test("★同じ cwd の claude を別の会話が名乗っていれば、それは警戒の材料にならない", () => {
+  // %99 は S2 のものだと分かっている = S1 がそこで生きている可能性は消える。
+  const entries = [{ sessionId: S1, pane: "%12", mtimeMs: 100 }, { sessionId: S2, pane: "%99", mtimeMs: 100 }];
+  const r = resolve(S1, CWD, entries, [claudePane("%99")]);
   assert.equal(r.reason, "none");
 });
 
@@ -126,6 +145,14 @@ test("★ペインは在るが claude が終了してシェルに戻っている
   const r = resolve(S1, CWD, [{ sessionId: S1, pane: "%12", mtimeMs: 100 }], panes);
   assert.equal(r.pane, null);
   assert.equal(r.reason, "not-claude");
+});
+
+test("★シェルに戻っていて、かつ同じ cwd に名乗っていない claude が居る -> ワーカーも起こさない", () => {
+  const panes = [{ pane: "%12", command: "zsh", path: CWD }, claudePane("%99")];
+  const r = resolve(S1, CWD, [{ sessionId: S1, pane: "%12", mtimeMs: 100 }], panes);
+  assert.equal(r.pane, null);
+  assert.equal(r.reason, "unregistered");
+  assert.equal(r.source, "registry");
 });
 
 test("★★そのペインをより新しい会話が名乗っている -> stale。ワーカーにも落とさない", () => {

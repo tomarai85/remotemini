@@ -60,6 +60,25 @@ test("★完了行だけでは BUSY にしない(過去形は進行中の証拠�
   assert.notEqual(classifyPane(FINISHED), "BUSY");
 });
 
+test("★「esc to interrupt」が**文章として**画面に残っているだけなら BUSY にしない", () => {
+  // この案件そのものが Claude Code の割り込みを扱っているので、応答本文にこの語が出るのは
+  // 仮定ではなく通常運転。state() は scrollback を30行読むので、過去の応答文が判定に混ざる。
+  const prose = [
+    "❯ esc to interrupt って何を止めるの?", "",
+    "  生成中に esc to interrupt と表示されている間だけ、Escape で生成を止められます。", "",
+    "────────", "❯ ", "────────",
+    "  Opus 5 | /Users/Shared/dev/roundtrip [rc %18]",
+  ].join("\n");
+  assert.equal(classifyPane(prose), "READY");
+});
+
+test("★スピナー記号が折り返しで消えても、中黒区切りが残っていれば BUSY と読む", () => {
+  // 判定は**行単位**。狭い端末で記号と語が別行に割れると BUSY を取り逃す(= READY 側に倒れる)。
+  // その代償は Claude Code 自身が入力をキューするだけなので許容し、締める側を優先する。
+  assert.equal(classifyPane("(12s · ↓ 1.2k tokens ·\n esc to interrupt)"), "UNKNOWN");
+  assert.equal(classifyPane("(12s · ↓ 1.2k tokens · esc to interrupt)"), "BUSY");
+});
+
 test("★上限到達の選択肢画面は CHOICE(実機で観測した実物)", () => {
   // 2026-07-31 実測: ここに Enter を送ると "2. Switch to usage credits" を選びかねない = 課金事故
   const real = [

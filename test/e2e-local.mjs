@@ -98,7 +98,10 @@ const SCREENS = {
   "%12": "~/dev on  main\n❯ ",
   "%13": '❯ Try "x"\n  ? for shortcuts',
   "%14": '❯ Try "x"\n  ? for shortcuts',
-  "%15": "✻ Brewed for 12s\n  esc to interrupt",
+  // ★実物の生成中の行(edith 実測)。以前ここは "✻ Brewed for 12s\n  esc to interrupt" だったが、
+  //   それは実在しない画面だった: "Brewed for 12s" は**完了行(過去形)**で、生成中の行と同時には
+  //   出ない。コードと同じ誤解で作った fixture なので、両方が同時に間違っていても緑になっていた。
+  "%15": "✻ Baking… (12s · ↓ 1.2k tokens · esc to interrupt)",
   "%20": '❯ Try "x"\n  ? for shortcuts',
   "%21": '❯ Try "x"\n  ? for shortcuts',
   "%22": '❯ Try "x"\n  ? for shortcuts',
