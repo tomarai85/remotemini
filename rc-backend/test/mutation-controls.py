@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+# 変異検査 (mutation controls) — 実行: python3 test/mutation-controls.py
+#
+# なぜ要るか: 2026-07-31 まで、この層のテストは 74 件すべて緑だったのに、
+# 検査していた状態(BUSY)は**画面に一度も現れていなかった**。緑は「守りが働いている」の
+# 証明ではなく「その検査が何も掴んでいなくても出る色」だった。
+#
+# だから守りを1つずつ壊して、テストが落ちることを確かめる。落ちない変異があれば、
+# そこは誰も見ていないという報告になる。exit 1 = 素通りした変異あり。
+#
+# 変異検査 — 守りを1つずつ壊して、テストが**落ちること**を確かめる。
+# 通る検査が並んでいることは、その検査が守りを掴んでいる証明にならない。
+# 落ちない変異 = そこは誰も見ていない、という報告。
+import shutil, subprocess, sys, os, tempfile
+
+SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+INJ = "src/inject.mjs"
+
+MUT = [
+ ("M1 メニュー判定を外す(CHOICE を返さない)", INJ,
+  'if (menuAt(s)) return { state: "CHOICE", activity, composer: -1 };',
+  '// mutated: menuAt 無効'),
+ ("M2 入力欄の罫線条件を外す(裸の ❯ を入力欄と認める)", INJ,
+  'if (BOX_RULE.test(lines[i - 1] ?? "") && BOX_RULE.test(lines[i + 1] ?? "")) return i;',
+  'return i;'),
+ ("M3 入力欄の下部限定を外す(画面のどこの ❯ でも拾う)", INJ,
+  'const floor = Math.max(0, lines.length - 8);',
+  'const floor = 0;'),
+ ("M4 本文送信後の再観測を外す(modal の割り込みを見ない)", INJ,
+  'if (s1.state === "CHOICE") {',
+  'if (false) {'),
+ ("M5 本文が載ったかの確認を外す(送れた事にして Enter を押す)", INJ,
+  'if (countOf(mid, probe) <= seenBefore) {',
+  'if (false) {'),
+ ("M6 メニューを番号行1つで成立させる(自己ロックが復活する)", INJ,
+  'if (cluster.length >= 2 && cluster.some((x) => x.cursor)) return true;',
+  'if (cluster.length >= 1) return true;'),
+ ("M7 生成中を送信の遮断条件に戻す(旧設計への退行)", INJ,
+  'if (menuAt(s)) return { state: "CHOICE", activity, composer: -1 };',
+  'if (activity === "observed") return { state: "UNKNOWN", activity, composer: -1 };\n  if (menuAt(s)) return { state: "CHOICE", activity, composer: -1 };'),
+ ("M8 scrollback を読む(-S を付ける)", INJ,
+  'return this.tmux.run(["capture-pane", "-t", pane, "-p"]);',
+  'return this.tmux.run(["capture-pane", "-t", pane, "-p", "-S", "-200"]);'),
+ ("M9 Enter 後に入力欄が消えていたら verified と言う", INJ,
+  'const delivered = left !== null && !left.includes(probe) ? "verified" : "unverified";',
+  'const delivered = (left || "").includes(probe) ? "unverified" : "verified";'),
+ ("M10 claude 判定の許可制を外す(どのコマンドにも送る)", INJ,
+  'if (/^\\d+\\.\\d+\\.\\d+/.test(c)) return true; // 実測の形',
+  'return true;'),
+]
+
+rows = []
+for name, f, old, new in MUT:
+    d = tempfile.mkdtemp(prefix="mut-")
+    dst = os.path.join(d, "rc")
+    shutil.copytree(SRC, dst, ignore=shutil.ignore_patterns("node_modules", ".git"))
+    p = os.path.join(dst, f)
+    s = open(p).read()
+    if old not in s:
+        rows.append((name, "変異を適用できない(対象の行が無い)", "?", "?")); continue
+    open(p, "w").write(s.replace(old, new, 1))
+    u = subprocess.run(["npm", "test", "--silent"], cwd=dst, capture_output=True, text=True)
+    e = subprocess.run(["node", "test/e2e-local.mjs"], cwd=dst, capture_output=True, text=True)
+    ufail = "# fail 0" not in u.stdout
+    efail = "fail=0" not in e.stdout
+    rows.append((name, "検出" if (ufail or efail) else "★素通り",
+                 "unit落ちる" if ufail else "unit通る", "e2e落ちる" if efail else "e2e通る"))
+    shutil.rmtree(d, ignore_errors=True)
+
+w = max(len(r[0]) for r in rows)
+print(f"{'変異'.ljust(w)} | 結果   | unit       | e2e")
+for r in rows:
+    print(f"{r[0].ljust(w)} | {r[1]:6} | {r[2]:10} | {r[3]}")
+print()
+missed = [r[0] for r in rows if r[1] != "検出"]
+print("素通りした変異:", missed if missed else "なし")
+sys.exit(1 if missed else 0)

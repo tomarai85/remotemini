@@ -122,6 +122,33 @@ const injector = new TmuxInjector({ tmux: tmuxRunner });
 const registry = new PaneRegistry({ dir: join(KEY_DIR, "panes") });
 
 /**
+ * 電話に返す画面状態。**送信可否(screen)と進行中(activity)は別項目**にする。
+ * 進行中は 6.5 秒の生成中に 31% しか観測できない(DESIGN.md §2.9 M3)ので、
+ * これを送信可否と同じ enum に入れると必ずまた遮断条件に流用される。
+ * 「観測されなかった」は「待機中」を意味しない。
+ */
+function screenOf(pane) {
+  try {
+    const s = injector.state(pane);
+    return { screen: s.state, activity: s.activity };
+  } catch {
+    return { screen: "UNKNOWN", activity: "unknown" }; // ペイン消滅など。fail-closed
+  }
+}
+
+/** 送信を断った理由 -> 電話に出す文。injector.send() の reason と 1:1。 */
+const SEND_REFUSAL = {
+  choice:
+    "画面が選択待ちです。Enter が承認や課金の選択になるため送信しません。画面を確認してください。",
+  unknown:
+    "入力欄が見つかりません(起動中・別画面・ペイン消滅のいずれか)。安全側に倒して送信しませんでした。",
+  "modal-appeared":
+    "本文を入れた直後に選択画面が出ました。Enter を押さずに中断しました。画面を確認してください。",
+  "composer-mismatch":
+    "本文が入力欄に載りませんでした。Enter は押していません。もう一度お試しください。",
+};
+
+/**
  * その会話が今どのペインで開かれているか。
  *
  * 第一の根拠は**登録簿**(会話自身が statusline から名乗った session_id -> pane)。
@@ -184,12 +211,10 @@ const manager = new WorkerManager({
     ], { stdio: ["pipe", "pipe", "pipe"], cwd: HOME }),
 });
 setInterval(() => manager.sweep(), 30_000).unref();
-// 注入キューの掃き出し: BUSY で待たせた分を READY になり次第1件ずつ流す(連続送信しない)
-setInterval(() => {
-  for (const pane of injector.queues.keys()) {
-    try { injector.drain(pane); } catch { /* ペイン消滅など。次周期で再評価 */ }
-  }
-}, 3_000).unref();
+// 注入キューは撤去した(2026-08-01 実測)。生成中に送っても Claude Code 自身がキューして
+// 次のターンとして処理することを実機で確認したので、我々のキューは二重実装だった。
+// 固有の挙動は「状態判定を外した時に本文を滞留させる」ことだけで、その状態判定は
+// 画面から7割外れる(DESIGN.md §2.9 M3)。契約は最善努力 + 拒否の明示 + 電話から再送。
 
 // SSE 購読者: sessionId -> Set<res>
 const subscribers = new Map();
@@ -265,7 +290,7 @@ const server = createServer(async (req, res) => {
         // 机で開かれている会話は画面が真実。開かれていなければワーカーの状態。
         const r = livePaneFor(s.id, s.cwd, panes, entries);
         const live = r.pane
-          ? { route: "tmux", pane: r.pane, screen: injector.state(r.pane), queued: injector.pending(r.pane).length }
+          ? { route: "tmux", pane: r.pane, ...screenOf(r.pane) }
           : UNDECIDABLE.has(r.reason)
             ? blockedBody(r)
             : { route: "worker", ...manager.status(s.id) };
@@ -320,8 +345,7 @@ const server = createServer(async (req, res) => {
         return json(res, 200, {
           route: "tmux",
           pane: r.pane,
-          screen: injector.state(r.pane),
-          queued: injector.pending(r.pane).length,
+          ...screenOf(r.pane),
           source: r.source,
         });
       }
@@ -358,19 +382,22 @@ const server = createServer(async (req, res) => {
 
       if (found.pane) {
         const pane = found.pane;
-        // 注入経路。CHOICE(承認/上限の選択肢)には何も送らない — Enter が課金や承認になる。
+        // 注入経路。入力欄(composer)が実在する時だけ送る。CHOICE(承認/上限の選択肢)には
+        // 何も送らない — Enter が課金や承認になる。生成中でも composer はあるので送れる
+        // (Claude Code 自身が次ターンとして扱う = 自前のキューは持たない)。
         const r = injector.send(pane, text);
-        if (r.sent) return json(res, 202, { accepted: true, route: "tmux", pane, source: found.source });
-        if (r.state === "CHOICE") {
-          return json(res, 409, {
-            error: "画面が選択待ちです。Enter が承認や課金の選択になるため送信しません。画面を確認してください。",
-            route: "tmux", pane, screen: r.state,
+        if (r.sent) {
+          return json(res, 202, {
+            accepted: true, route: "tmux", pane, source: found.source,
+            delivered: r.delivered, // verified = 入力欄から消えた / unverified = 残っている
+            ...(r.delivered === "unverified"
+              ? { note: "Enter は送りましたが、入力欄にまだ本文が残っています。画面を確認してください。" }
+              : {}),
           });
         }
-        // BUSY / UNKNOWN はキューに積んだ(UNKNOWN は積むだけで流れない = fail-closed)
-        return json(res, 202, {
-          accepted: true, queued: true, route: "tmux", pane, screen: r.state,
-          note: "生成中のため待機列に入れました。入力可能になったら1件ずつ流します。",
+        return json(res, 409, {
+          error: SEND_REFUSAL[r.reason] || SEND_REFUSAL.unknown,
+          route: "tmux", pane, screen: r.state, reason: r.reason,
         });
       }
 
@@ -471,10 +498,14 @@ async function load(){
   for(const s of j.sessions||[]){const li=document.createElement("li");
     const L=s.live||{};
     // 経路と画面状態をそのまま出す(机で開いている=tmux / 開いてない=worker / 特定不能=blocked)
-    const mark=L.route==="tmux"?({READY:"● ",BUSY:"◐ ",CHOICE:"⚠ ",UNKNOWN:"? "}[L.screen]||"? ")
+    // screen=送信できるか / activity=生成が見えたか。**別物**。activity は見えた時だけ意味があり、
+    // 「見えない」は待機中の意味にならない(観測率31%)ので印にも文言にもしない。
+    const mark=L.route==="tmux"?(L.screen==="SENDABLE"?(L.activity==="observed"?"◐ ":"● ")
+                                :L.screen==="CHOICE"?"⚠ ":"? ")
               :L.route==="blocked"?"✖ ":(L.worker==="running"?"● ":"○ ");
     const why={ambiguous:"同cwdに"+L.candidates+"個",unregistered:"ペイン未登録",stale:"ペインを別会話が使用中","cwd-mismatch":"登録ペインの居場所が不一致"}[L.reason]||L.reason;
-    const tail=L.route==="tmux"?" ["+L.screen+(L.queued?" +"+L.queued:"")+"]"
+    const label={SENDABLE:"送信可",CHOICE:"選択待ち(送信しない)",UNKNOWN:"入力欄なし(送信しない)"}[L.screen]||L.screen;
+    const tail=L.route==="tmux"?" ["+label+(L.activity==="observed"?" / 生成中":"")+"]"
               :L.route==="blocked"?" [特定不能: "+why+"]":"";
     li.textContent=mark+s.title+" — "+s.updatedAt+" ("+s.project+")"+tail;
     li.onclick=()=>open(s.id);ul.appendChild(li);}
@@ -498,8 +529,10 @@ async function open(id){
 async function send(){
   const t=document.getElementById("msg").value;if(!SID||!t)return;
   const r=await fetch("/api/sessions/"+SID+"/messages",{method:"POST",headers:{...H(),"content-type":"application/json"},body:JSON.stringify({text:t})});
-  const j=await r.json();document.getElementById("log").textContent+="\\n[you] "+t+(j.error?"  <-- "+j.error:"");
-  document.getElementById("msg").value="";
+  const j=await r.json();const note=j.error||j.note||"";
+  document.getElementById("log").textContent+="\\n[you] "+t+(note?"  <-- "+note:"");
+  // 送れなかった時は本文を残す(打ち直させない)。
+  if(!j.error)document.getElementById("msg").value="";
 }
 async function intr(){if(SID)await fetch("/api/sessions/"+SID+"/interrupt",{method:"POST",headers:H()});}
 </script>`;

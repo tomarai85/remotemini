@@ -5,69 +5,129 @@
 //   別プロセスで claude -p を起こすと同じ会話を2実行が読む(lost-update)。
 //   動いているペインに直接注入すれば会話は1プロセスのままで、その問題が原理的に消える。
 //
-// 実機で確かめたこと(2026-07-31, edith 使い捨てセッション):
-//   - send-keys -l で本文、別コマンドで Enter → 入力欄に入り送信まで到達した
-//   - 上限到達時に選択肢画面が出る。ここに Enter を送ると
-//     "2. Switch to usage credits" を選びかねない = 課金事故。だから CHOICE は絶対に送らない。
+// ★2026-08-01 全面改訂。それまでの状態機械は**存在しない状態を調整していた**。
+// 使い捨てセッションで 0.25 秒刻みに 240 枚の画面を撮って分かったこと:
+//   M1 `esc to interrupt` はこのビルドの画面に存在しない(240/0)。唯一の BUSY 材料が
+//      これだったので、BUSY は一度も発火しておらず、キュー経路は死んでいた。
+//   M3 進行中スピナーは 6.5 秒の生成中に 8/26 サンプルしか見えない(31%)。残りは同じ行を
+//      tmux のヒント文が占拠する。→ **画面から「生成中」を遮断条件にはできない**。
+//   M4 生成中も入力欄の `❯` は出たまま。「プロンプトが見える = 待機中」も成り立たない。
+//   M5 生成中に本文→Enter を送ると生成は中断されず完走し、**TUI 自身がキューして**
+//      (`❯ Press up to edit queued messages`)次のターンとして処理した。
 //
-// Codex レビュー(同日)で確定した3規約をそのまま実装している:
-//   1. 本文と Enter は別送信(生成中の一括送信はバッファされ、完了後に誤送信される)
-//   2. 「入力受付中か」を知る確実な tmux API は無い → 状態不明なら送らない(fail-closed)
-//   3. 割り込みは Escape。C-c は画面状態で消去/中断/終了に化けるので緊急専用
+// そこから決めた3点(全て Codex 二次レビュー 2026-08-01 と整合):
+//   1. 自前キューは撤去。TUI が正しく持っている機能の二重実装で、固有の挙動は
+//      「状態判定を外した時に本文を滞留させる」ことだけ。M3 はそれが7割外れると言っている。
+//      契約は「最善努力・拒否は明示・電話から再送」。
+//   2. 送信可否を「生成中か」で決めない。**composer(入力欄)が実在するか**で決める。
+//      `READY`(= BUSY でない、という消極的定義)を捨て `SENDABLE`(積極的定義)にする。
+//      分からなければ UNKNOWN = 送らない。「生成中でない」は「送ってよい」ではない。
+//   3. 判定は **viewport だけ**を見る(`capture-pane -p`、`-S` 無し)。7/31・8/01 に踏んだ
+//      失敗は2回とも「消えない過去の行を今の状態と読んだ」。範囲を今の画面に限れば
+//      この失敗の型そのものが消える。
+//
+// 7/31 実機で確かめた規約は生きている:
+//   - 本文と Enter は別送信(生成中の一括送信はバッファされ、完了後に誤送信される)
+//   - 割り込みは Escape のみ。C-c は画面状態で消去/中断/終了に化ける
 
-// Claude Code の進行中スピナーが使う記号。中黒(`·`)はここに入れない —
-// 文章中にも普通に出るので、中黒は「`· esc to interrupt` という区切り付きの並び」の時だけ
-// 進行中の証拠として使う(下の classifyPane 参照)。
-const SPINNER = /[✻✽✢✶✳*]/;
+/** 入力欄を囲む罫線。Claude Code は composer を上下の `─` 行で挟んで描く。 */
+const BOX_RULE = /^\s*─{8,}\s*$/;
+/** composer の行。`❯` で始まる(空でも `Press up to edit queued messages` でも同じ)。 */
+const COMPOSER_HEAD = /^\s*❯/;
+/** 選択カーソル。実装差を吸収するため複数の字体を許す(Codex 指摘④)。 */
+const SELECT_CURSOR = /^\s*[❯>›→▶]\s*\d+\.\s+\S/;
+/** 番号付き選択肢の行(カーソルの有無を問わない)。 */
+const OPTION_ROW = /^\s*(?:[❯>›→▶]\s*)?\d+\.\s+\S/;
+/**
+ * 承認・課金・信頼などの強い文言。**単独では CHOICE にしない**(下の menuAt 参照)。
+ * 応答本文にこの語が出ることは普通に起きるため。
+ */
+const CHOICE_PHRASE =
+  /(Enter to confirm|What do you want to do\?|Do you want to (proceed|continue)|weekly limit|Do you trust)/i;
+/**
+ * 進行中スピナー。**表示専用**。M3 の通り 31% しか見えないので、これが無いことは
+ * 待機中の証拠にならない。送信可否には一切使わない。
+ * 進行中 `✳ Fluttering… (3s · thinking)` / 完了 `✻ Cogitated for 10s`(`…` が無い)。
+ */
+const IN_FLIGHT = /[✻✽✢✶✳][^\n]*…/;
 
-/** 画面テキストから「今なら何を送ってよいか」を判定する。純関数。 */
-export function classifyPane(text) {
-  if (typeof text !== "string" || text.trim() === "") return "UNKNOWN";
+/** 末尾の空行を落とす(capture-pane は下に空行を付けてくることがある)。 */
+function trimTail(lines) {
+  let end = lines.length;
+  while (end > 0 && lines[end - 1].trim() === "") end--;
+  return lines.slice(0, end);
+}
 
-  // CHOICE を最優先で見る。ここを取りこぼすと課金や誤承認に直結するため、
-  // 他のどの状態よりも先に判定する(READY の記号が同じ画面に混在しても CHOICE が勝つ)。
-  const choiceSignals = [
-    /Enter to confirm/i,
-    /What do you want to do\?/i,
-    /Do you want to (proceed|continue)/i,
-    /^\s*[❯>]?\s*\d\.\s+\S/m, // 番号付き選択肢
-  ];
-  if (choiceSignals.some((re) => re.test(text))) return "CHOICE";
-
-  // BUSY: 生成中。判定材料は "esc to interrupt" **だけ**にする。
-  //
-  // かつてここに「スピナー記号 + "... for N秒"」の行を BUSY と見なす規則があった。
-  // それは生成中の行ではなく**完了行**に当たる(2026-07-31 edith 実機で判明):
-  //   生成中  "✻ Baking… (12s · esc to interrupt)"   ← 下の規則が捕まえる
-  //   完了後  "✻ Baked for 0s"                        ← 過去形。scrollback に残り続ける
-  // 完了行は消えないので、一度でも喋ったペインが永久に BUSY になっていた。実測: 画面は
-  // 入力待ち、/status は BUSY、送った本文は queued:true のままペインに 0 件しか届かず、
-  // キューは READY でしか流れないので**永久に滞留**する。電話から復旧する手段は無い。
-  // しかも週次上限に当たった画面がまさにこの形 = 渡米中に必ず踏む。
-  // 削除の代償(生成中に "esc to interrupt" を出さない画面があれば送ってしまう)は、
-  // 本文と Enter を別送信しているので人が生成中に打つのと同じ挙動に落ち着き、
-  // 課金事故に繋がる CHOICE は上で先に弾いている。Codex 同意(同日)。
-  // 今後 BUSY の変種を実測したら、過去形を巻き込まない「進行中の形」だけを足すこと。
-  //
-  // ★さらに絞る(2026-07-31 二次レビュー、Codex 指摘)。"esc to interrupt" が**文章として**
-  // 画面に残っている場合も BUSY になってしまう。この案件はまさに Claude Code の割り込みを
-  // 扱っているので、この語が応答本文に出るのは仮定ではなくほぼ確実に起きる。そこで
-  // **1行の中で**「進行中の状態行の形」まで確かめる:
-  //   進行中  "✻ Baking… (12s · ↓ 1.2k tokens · esc to interrupt)" ← 記号 or 中黒が同じ行に居る
-  //   文章    "esc to interrupt を押すと生成を止められます"          ← どちらも無い = BUSY にしない
-  //
-  // 絞った側の代償(生成中を READY と読む)が小さいことが、この方向に倒す根拠:
-  // Claude Code 自身が生成中の入力をキューする = 人が打つのと同じ。対して BUSY 側に誤ると
-  // 我々のキューに滞留し、電話から流す手段が無い。**非対称なので締める方に倒す**。
-  for (const line of text.split("\n")) {
-    if (!/esc to interrupt/i.test(line)) continue;
-    if (SPINNER.test(line) || /·\s*esc to interrupt/i.test(line)) return "BUSY";
+/**
+ * composer の行番号。**下部にあり、上下を罫線で挟まれた `❯` 行**だけを認める。
+ *
+ * 「`❯` がある = 入力できる」ではない。応答本文が Claude Code の画面を引用していれば
+ * 同じ字は出る(この案件の設計文書がまさにそれ)。罫線で挟まれている・画面の下部にある、
+ * という**構造**まで見て初めて実在の入力欄と言える。
+ * @returns {number} 行番号。無ければ -1
+ */
+export function findComposer(text) {
+  const lines = trimTail(String(text || "").split("\n"));
+  const floor = Math.max(0, lines.length - 8); // 下部限定 = 引用された画面を拾わない
+  for (let i = lines.length - 2; i >= floor; i--) {
+    if (!COMPOSER_HEAD.test(lines[i])) continue;
+    if (BOX_RULE.test(lines[i - 1] ?? "") && BOX_RULE.test(lines[i + 1] ?? "")) return i;
   }
+  return -1;
+}
 
-  // READY: 入力プロンプトが見えている。
-  if (/^\s*❯\s/m.test(text) || /shortcuts/i.test(text)) return "READY";
+/**
+ * 選択メニューが出ているか。**2つ以上の番号行が近接**し、そのいずれかに選択カーソルが
+ * 載っていること(または強い文言 + 番号行)を要求する。
+ *
+ * なぜ「番号行1つ」で CHOICE にしないか: 電話から `1. まずテストを直して` と送ると、
+ * その本文が `❯ 1. まずテストを直して` として画面に出る。1つで CHOICE にすると
+ * **自分が送った本文でそのペインが送信不能になる**。実在するメニューは必ず2択以上なので、
+ * 2つ以上を要求しても実物は取り逃さない。逆に応答本文の箇条書きは番号行が複数でも
+ * **カーソルが載らない**ので当たらない。両方の誤検知がこの1条件で消える。
+ *
+ * 強い文言の側に番号行を要求するのは、文言だけで遮断すると「応答本文にその語が出た画面」で
+ * 送信不能になるため。文言は、カーソルの字体が想定と違った時の保険として残す。
+ */
+export function menuAt(text) {
+  const lines = trimTail(String(text || "").split("\n"));
+  const opts = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (OPTION_ROW.test(lines[i])) opts.push({ i, cursor: SELECT_CURSOR.test(lines[i]) });
+  }
+  if (opts.length === 0) return false;
+  if (CHOICE_PHRASE.test(lines.join("\n"))) return true; // 文言 + 番号行
+  for (const o of opts) {
+    const cluster = opts.filter((x) => x.i >= o.i && x.i <= o.i + 6);
+    if (cluster.length >= 2 && cluster.some((x) => x.cursor)) return true;
+  }
+  return false;
+}
 
-  return "UNKNOWN";
+/**
+ * 画面から「今このペインに何をしてよいか」を決める。純関数。
+ *
+ * @returns {{state:"SENDABLE"|"CHOICE"|"UNKNOWN", activity:"observed"|"unknown", composer:number}}
+ *   state    送信可否。**SENDABLE 以外は送らない**(fail-closed)
+ *   activity 生成中を**観測できたか**。observed でないことは待機中を意味しない(M3)
+ *   composer composer の行番号(-1 = 無い)
+ */
+export function classifyScreen(text) {
+  const s = typeof text === "string" ? text : "";
+  const activity = IN_FLIGHT.test(s) ? "observed" : "unknown";
+  if (s.trim() === "") return { state: "UNKNOWN", activity, composer: -1 };
+  // メニューを最優先。ここを取りこぼすと Enter が課金や承認になる。
+  if (menuAt(s)) return { state: "CHOICE", activity, composer: -1 };
+  const composer = findComposer(s);
+  if (composer < 0) return { state: "UNKNOWN", activity, composer: -1 };
+  return { state: "SENDABLE", activity, composer };
+}
+
+/** composer に今載っている文字列(`❯` を除く)。無ければ null。 */
+export function composerText(text) {
+  const i = findComposer(text);
+  if (i < 0) return null;
+  return String(text).split("\n")[i].replace(/^\s*❯\s?/, "");
 }
 
 // 区切りはタブ。cwd に空白が入りうるので空白分割は使えない(実在する: "/Users/tom/My Docs")。
@@ -101,70 +161,82 @@ export function looksLikeClaudePane(command) {
   return /^(claude|node)$/i.test(c);
 }
 
+/** 本文の「これが載ったか」を確かめるための短い印。長文・折り返しに強い先頭 12 文字。 */
+function probeOf(text) {
+  const t = String(text).trim();
+  return t.slice(0, 12);
+}
+function countOf(haystack, needle) {
+  if (!needle) return 0;
+  return String(haystack).split(needle).length - 1;
+}
+
 export class TmuxInjector {
   /**
    * @param {object} opts
    * @param {{run:(args:string[])=>string}} opts.tmux tmux 実行の注入(テスト容易性)
-   * @param {number} [opts.captureLines] 判定に使う末尾行数
    */
-  constructor({ tmux, captureLines = 30 }) {
+  constructor({ tmux }) {
     if (!tmux || typeof tmux.run !== "function") {
       throw new Error("TmuxInjector: tmux runner injection required");
     }
     this.tmux = tmux;
-    this.captureLines = captureLines;
-    this.queues = new Map(); // pane -> string[]
+  }
+
+  /** 今の viewport。**scrollback は読まない**(過去の行を今の状態と読む失敗を構造的に消す)。 */
+  capture(pane) {
+    return this.tmux.run(["capture-pane", "-t", pane, "-p"]);
   }
 
   /** 今の画面状態。送信の可否はここだけを根拠にする。 */
   state(pane) {
-    const text = this.tmux.run(["capture-pane", "-t", pane, "-p", "-S", `-${this.captureLines}`]);
-    return classifyPane(text);
-  }
-
-  pending(pane) {
-    return this.queues.get(pane) || [];
-  }
-
-  _enqueue(pane, text) {
-    const q = this.queues.get(pane) || [];
-    q.push(text);
-    this.queues.set(pane, q);
+    return classifyScreen(this.capture(pane));
   }
 
   /**
-   * 本文を送る。READY の時だけ実際に送信し、それ以外はキューに積む。
-   * CHOICE / UNKNOWN では**何も送らない**(fail-closed)。
+   * 本文を送る。**送る前に測り、送った後に確かめる**3相の手続き。
+   *
+   * Codex 指摘①(分類 → 本文 → Enter の間に modal が割り込むと Enter が承認になる)は実在する。
+   * 対策として「本文と Enter を1回にまとめる」は採らない — まとめても何も観測しないので
+   * 競合が縮むだけで、しかも規約1(生成中の一括送信は完了後に誤送信される)と衝突する。
+   * 代わりに**間に観測を挟む**。これは Codex 指摘③(send-keys の成功はバイトが届いた証明で
+   * あって Claude が受け取った証明ではない)への回答も兼ねる。
+   *
+   * @returns {{sent:boolean, state:string, delivered:("verified"|"unverified"|null), reason:(string|null)}}
    */
   send(pane, text) {
-    const st = this.state(pane);
-    if (st !== "READY") {
-      // CHOICE は人が画面を見て選ぶべき状態。キューに積むと後で誤爆するので積まない。
-      if (st === "CHOICE") return { sent: false, queued: false, state: st };
-      this._enqueue(pane, text);
-      return { sent: false, queued: true, state: st };
+    const before = this.capture(pane);
+    const s0 = classifyScreen(before);
+    if (s0.state !== "SENDABLE") {
+      return { sent: false, state: s0.state, delivered: null, reason: s0.state.toLowerCase() };
     }
-    this._write(pane, text);
-    return { sent: true, queued: false, state: st };
-  }
 
-  _write(pane, text) {
-    // 規約1: 本文はリテラル、Enter は別コマンド。まとめない。
+    const probe = probeOf(text);
+    const seenBefore = countOf(before, probe);
+
     this.tmux.run(["send-keys", "-t", pane, "-l", "--", text]);
-    this.tmux.run(["send-keys", "-t", pane, "Enter"]);
-  }
 
-  /**
-   * キューを1件だけ流す。READY でなければ何もしない。
-   * 一度に1件なのは、連続送信が誤爆の主因だから(規約1・3)。
-   * @returns {number} 実際に送った件数(0 or 1)
-   */
-  drain(pane) {
-    const q = this.queues.get(pane);
-    if (!q || q.length === 0) return 0;
-    if (this.state(pane) !== "READY") return 0;
-    this._write(pane, q.shift());
-    return 1;
+    // ★Enter を送る前に、もう一度画面を見る。
+    const mid = this.capture(pane);
+    const s1 = classifyScreen(mid);
+    if (s1.state === "CHOICE") {
+      // 本文送信中に選択画面が出た。ここで Enter を送ると承認/課金になる。送らない。
+      return { sent: false, state: "CHOICE", delivered: null, reason: "modal-appeared" };
+    }
+    if (countOf(mid, probe) <= seenBefore) {
+      // 本文がどこにも増えていない = ペインに入っていない。Enter を送る理由が無い。
+      return { sent: false, state: s1.state, delivered: null, reason: "composer-mismatch" };
+    }
+
+    this.tmux.run(["send-keys", "-t", pane, "Enter"]);
+
+    // 送信後: composer から本文が消えていれば消費された(即送信 or TUI のキュー入り)。
+    // composer 自体が消えていた場合は**確かめられなかった**。「本文が見えない」を
+    // 「送れた」と読むのはこの層で二度踏んだ誤りなので、verified と言わない。
+    const after = this.capture(pane);
+    const left = composerText(after);
+    const delivered = left !== null && !left.includes(probe) ? "verified" : "unverified";
+    return { sent: true, state: s0.state, delivered, reason: null };
   }
 
   /** 割り込み。規約3: Escape のみ。C-c はここでは送らない。 */

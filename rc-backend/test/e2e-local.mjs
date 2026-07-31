@@ -2,7 +2,7 @@
 // 実 claude・実セッション・実 tmux に一切触れない。実行: node test/e2e-local.mjs
 //
 // 経路は3つ(DESIGN §2.9 / HANDOFF §1-A):
-//   tmux 注入  = 机で開かれている会話。画面状態で送る/積む/送らないが決まる
+//   tmux 注入  = 机で開かれている会話。入力欄が実在する時だけ送る(生成中でも送れる)
 //   ワーカー   = 開かれていない会話(-p --resume)
 //   blocked    = 同じ cwd に claude が複数で特定不能 → どちらにも送らない
 // 偽 tmux は send-keys を**全部ログに残す**ので「1文字も送っていない」を実測で言える。
@@ -23,12 +23,16 @@ const SID_READY  = "44444444-4444-4444-4444-444444444444"; // READY のペイン
 const SID_CHOICE = "55555555-5555-5555-5555-555555555555"; // 選択待ちのペインがある
 const SID_SHELL  = "66666666-6666-6666-6666-666666666666"; // cwd は合うが素の zsh しか居ない
 const SID_AMBIG  = "77777777-7777-7777-7777-777777777777"; // 同 cwd に claude が2つ
-const SID_BUSY   = "88888888-8888-8888-8888-888888888888"; // 生成中
+const SID_GEN    = "88888888-8888-8888-8888-888888888888"; // 生成中(★8/01 の設計では送れる)
+const SID_DEAF   = "99999999-0000-0000-0000-000000000009"; // 本文を送っても画面が動かないペイン
+const SID_RACE   = "99999999-0000-0000-0000-00000000000a"; // 本文の直後に選択画面が割り込むペイン
 const CWD_READY  = "/Users/Shared/dev/ready";
 const CWD_CHOICE = "/Users/Shared/dev/choice";
 const CWD_SHELL  = "/private/tmp";
 const CWD_AMBIG  = "/Users/Shared/dev/ambig";
-const CWD_BUSY   = "/Users/Shared/dev/busy";
+const CWD_GEN    = "/Users/Shared/dev/busy";
+const CWD_DEAF   = "/Users/Shared/dev/deaf";
+const CWD_RACE   = "/Users/Shared/dev/race";
 // 登録簿(session_id -> pane)の検証用。**全部同じ cwd に置く** — 登録が無ければ
 // 特定不能になる状況を作り、登録があれば1つに定まることを同じ場に並べて見せるため。
 const SID_REG_A    = "aaaaaaaa-0000-0000-0000-00000000000a"; // 登録あり -> %20
@@ -66,7 +70,9 @@ fixture(SID_READY, CWD_READY, "注入READY");
 fixture(SID_CHOICE, CWD_CHOICE, "注入CHOICE");
 fixture(SID_SHELL, CWD_SHELL, "シェルのみ");
 fixture(SID_AMBIG, CWD_AMBIG, "特定不能");
-fixture(SID_BUSY, CWD_BUSY, "生成中");
+fixture(SID_GEN, CWD_GEN, "生成中");
+fixture(SID_DEAF, CWD_DEAF, "画面が動かない");
+fixture(SID_RACE, CWD_RACE, "選択画面が割り込む");
 for (const sid of [SID_REG_A, SID_REG_B, SID_REG_C, SID_STALE]) fixture(sid, CWD_REG, `登録${sid.slice(-1)}`);
 fixture(SID_UNREG, CWD_UNREG, "未登録");
 fixture(SID_MISMATCH, CWD_REG, "居場所不一致"); // 会話は CWD_REG。登録先ペインは CWD_OTHER に居る
@@ -81,37 +87,52 @@ const PANES = [
   `%12\tzsh\t${CWD_SHELL}`,
   `%13\t2.1.220\t${CWD_AMBIG}`,
   `%14\t2.1.220\t${CWD_AMBIG}`, // 同じ cwd に2つめ
-  `%15\t2.1.220\t${CWD_BUSY}`,
+  `%15\t2.1.220\t${CWD_GEN}`,
+  `%16\t2.1.220\t${CWD_DEAF}`,  // 送っても画面が動かない(load-bearing: Enter を出さない対照)
+  `%17\t2.1.220\t${CWD_RACE}`,  // 本文の直後に選択画面が出る
   `%20\t2.1.220\t${CWD_REG}`,   // 登録簿検証: 同じ cwd に claude が3つ並ぶ
   `%21\t2.1.220\t${CWD_REG}`,
   `%22\t2.1.220\t${CWD_OTHER}`, // 居場所不一致の検証用
   `%23\t2.1.220\t${CWD_FRESH}`, // 未発言の会話が居るペイン(jsonl は無い)
   `%24\t2.1.220\t${CWD_UNREG}`, // 未登録の会話の cwd に居る唯一の claude
 ].join("\n") + "\n";
+// ★2026-08-01: 画面はもう手で書かない。使い捨てセッションから撮った生の capture-pane 出力
+// (test/fixtures/screens/)をそのまま使う。前の版はここに手書きの画面を置いていて、
+// "✻ Baking… (… esc to interrupt)" という**このビルドに存在しない行**を「実測の形」と
+// 称して置いていた。コードと fixture が同じ誤解でできていたので、両方間違ったまま緑だった。
+const SCREEN_DIR = join(ROOT, "test", "fixtures", "screens");
+const shot = (name) => readFileSync(join(SCREEN_DIR, `${name}.txt`), "utf8");
 const SCREENS = {
-  "%10": '╰─────╯\n❯ Try "how does <filepath> work?"\n  ? for shortcuts',
-  // 実機で撮った上限到達画面(WORKLOG 2026-07-31)。Enter は "2. Switch to usage credits" になりうる
-  "%11": "  ⎿  You've hit your weekly limit\n   What do you want to do?\n   ❯ 1. Stop and wait\n     2. Switch to usage credits\n     3. Upgrade your plan\n   Enter to confirm · Esc to cancel",
-  // ★わざと最悪ケースにしてある: プロンプトが "❯" の zsh(starship/pure 等)。
-  //   画面だけ見ると READY と区別がつかない = 画面判定では止まらない。
-  //   止めているのは「そのペインで動いているのが claude か」の判定だけ、という対照。
-  "%12": "~/dev on  main\n❯ ",
-  "%13": '❯ Try "x"\n  ? for shortcuts',
-  "%14": '❯ Try "x"\n  ? for shortcuts',
-  // ★実物の生成中の行(edith 実測)。以前ここは "✻ Brewed for 12s\n  esc to interrupt" だったが、
-  //   それは実在しない画面だった: "Brewed for 12s" は**完了行(過去形)**で、生成中の行と同時には
-  //   出ない。コードと同じ誤解で作った fixture なので、両方が同時に間違っていても緑になっていた。
-  "%15": "✻ Baking… (12s · ↓ 1.2k tokens · esc to interrupt)",
-  "%20": '❯ Try "x"\n  ? for shortcuts',
-  "%21": '❯ Try "x"\n  ? for shortcuts',
-  "%22": '❯ Try "x"\n  ? for shortcuts',
-  "%23": '❯ Try "how does <filepath> work?"\n  ? for shortcuts',
-  "%24": '❯ Try "x"\n  ? for shortcuts',
+  "%10": shot("idle-boot"),
+  "%11": shot("choice-model-menu"), // 選択メニュー。Enter が既定変更になる実物
+  // ★わざと最悪ケースにしてある: **Claude Code の画面と1バイトも違わない**ものを
+  //   素の zsh ペイン(command=zsh)に置いてある。画面判定では原理的に区別がつかない。
+  //   ここで止めているのは「そのペインで動いているのが claude か」の判定だけ、という対照。
+  //   これが素通りすると、cwd の一致だけでシェルに任意の文字列 + Enter を打ち込むことになる。
+  "%12": shot("idle-boot"),
+  "%13": shot("idle-boot"),
+  "%14": shot("idle-boot"),
+  "%15": shot("generating-spinner-visible"), // 生成中(スピナーが写っている枚)
+  // ★生成中だがスピナーが**写っていない**枚(実測 M3: 生成中の 69% はこれ)。
+  //   ここが SENDABLE でなくなると reason が composer-mismatch でなく unknown になるので、
+  //   下の 10-e2 が「スピナーの有無で送信を止めていないか」の回帰検査も兼ねる。
+  //   加えて偽 tmux はこのペインだけ画面を更新しない = 本文が載らないペインの再現。
+  "%16": shot("generating"),
+  // ★本文を送った**直後に**選択画面が割り込むペイン(偽 tmux が %17 だけそう振る舞う)。
+  //   分類 → 本文 → Enter の間に modal が出ると Enter が承認/課金になる、という競合の再現。
+  "%17": shot("idle-boot"),
+  "%20": shot("idle-boot"),
+  "%21": shot("idle-boot"),
+  "%22": shot("idle-boot"),
+  "%23": shot("idle-boot"),
+  "%24": shot("idle-boot"),
 };
 writeFileSync(join(SB, "tmux-panes.txt"), PANES);
 for (const [pane, text] of Object.entries(SCREENS)) {
   writeFileSync(join(SB, `screen-${pane.replace("%", "")}.txt`), text);
 }
+// %17 が本文受信後に化ける先(偽 tmux が読む)
+writeFileSync(join(SB, "screen-choice.txt"), shot("choice-model-menu"));
 
 // 注入経路(§10)の会話は**登録済み**にしておく。cwd 一致だけでは注入しない設計に
 // なったため(reason=unregistered)、画面判定 CHOICE/BUSY/READY を測るには先に
@@ -119,7 +140,7 @@ for (const [pane, text] of Object.entries(SCREENS)) {
 // 何を送るか」であって、宛先の決め方(§11 で測る)ではない。
 const PANE_DIR_SETUP = join(SB, "keys", "panes");
 mkdirSync(PANE_DIR_SETUP, { recursive: true });
-for (const [sid, pane] of [[SID_READY, "%10"], [SID_CHOICE, "%11"], [SID_BUSY, "%15"]]) {
+for (const [sid, pane] of [[SID_READY, "%10"], [SID_CHOICE, "%11"], [SID_GEN, "%15"], [SID_DEAF, "%16"], [SID_RACE, "%17"]]) {
   writeFileSync(join(PANE_DIR_SETUP, `${sid}.json`), JSON.stringify({ session_id: sid, pane, model: "Opus 5" }) + "\n");
 }
 const SENT_LOG = join(SB, "tmux-sent.log");
@@ -138,6 +159,28 @@ elif args and args[0] == "capture-pane":
 elif args and args[0] == "send-keys":
     with open(os.path.join(SB, "tmux-sent.log"), "a") as f:
         f.write(json.dumps(args, ensure_ascii=False) + "\\n")
+    # ★入力欄を実際に動かす。送信側は「本文が画面に載ったか」を見てから Enter を出すので、
+    #   偽 tmux が画面を変えないと、その確認は素通りではなく **失敗** する。
+    #   -l -- <text> = 入力欄に載る / Enter = 入力欄が空に戻る、という実物の挙動を最小限で真似る。
+    pane = args[args.index("-t") + 1] if "-t" in args else ""
+    p = os.path.join(SB, "screen-" + pane.replace("%", "") + ".txt")
+    # %16 だけは画面が動かない = 送ったのに入力欄に載らないペイン(実機では起きうる)。
+    if os.path.exists(p) and pane != "%16":
+        lines = open(p).read().split("\\n")
+        idx = None
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].lstrip().startswith("\\u276f"):
+                idx = i
+                break
+        if idx is not None:
+            if args[-1] == "Enter":
+                lines[idx] = "\\u276f "
+            elif "-l" in args:
+                lines[idx] = "\\u276f " + args[-1]
+            open(p, "w").write("\\n".join(lines))
+    # %17 は本文を受け取った直後に選択画面へ化ける = 分類と Enter の間の競合の再現。
+    if pane == "%17" and "-l" in args:
+        open(p, "w").write(open(os.path.join(SB, "screen-choice.txt")).read())
 sys.exit(0)
 `);
 chmodSync(fakeTmux, 0o755);
@@ -294,23 +337,27 @@ try {
     body: JSON.stringify({ text }),
   });
 
-  // 10-a. READY のペイン → 実際に注入され、本文と Enter が**別コマンド**で出る
+  // 10-a. 入力欄のあるペイン → 実際に注入され、本文と Enter が**別コマンド**で出る
   const before = sentKeys().length;
   const rReady = await send(SID_READY, "注入されるはず");
   const jReady = await rReady.json();
-  check("READY pane -> 202 route=tmux", rReady.status === 202 && jReady.route === "tmux" && jReady.pane === "%10",
+  check("SENDABLE pane -> 202 route=tmux", rReady.status === 202 && jReady.route === "tmux" && jReady.pane === "%10",
     JSON.stringify(jReady));
+  check("入力欄から本文が消えたので delivered=verified", jReady.delivered === "verified", JSON.stringify(jReady));
   const injected = sentKeys().slice(before);
   check("本文と Enter が別コマンドで届く",
     injected.length === 2 &&
     injected[0][0] === "send-keys" && injected[0].includes("-l") && injected[0].at(-1) === "注入されるはず" &&
     injected[1].at(-1) === "Enter", JSON.stringify(injected));
+  check("★scrollback を読んでいない(capture-pane に -S を付けない)",
+    !sentKeys().some((c) => c[0] === "capture-pane" && c.includes("-S")));
 
   // 10-b. ★陽性対照: 選択待ち画面には 1 文字も送らない(Enter が課金選択になりうる)
   const beforeChoice = sentKeys().length;
   const rChoice = await send(SID_CHOICE, "うっかり送信");
   const jChoice = await rChoice.json();
-  check("★CHOICE 画面 -> 409(陽性対照)", rChoice.status === 409 && jChoice.screen === "CHOICE",
+  check("★CHOICE 画面 -> 409(陽性対照)",
+    rChoice.status === 409 && jChoice.screen === "CHOICE" && jChoice.reason === "choice",
     `status=${rChoice.status} ${JSON.stringify(jChoice)}`);
   check("★CHOICE 画面へは send-keys が0件", sentKeys().length === beforeChoice,
     JSON.stringify(sentKeys().slice(beforeChoice)));
@@ -329,17 +376,49 @@ try {
     JSON.stringify(jAmbig));
   check("★特定不能で send-keys が0件", sentKeys().length === beforeAmbig);
 
-  // 10-e. BUSY → 送らずキューに積む(生成後の誤送信を防ぐ)
-  const beforeBusy = sentKeys().length;
-  const jBusy = await (await send(SID_BUSY, "あとで流す")).json();
-  check("BUSY -> 202 queued", jBusy.queued === true && jBusy.screen === "BUSY", JSON.stringify(jBusy));
-  check("BUSY 中は send-keys が0件", sentKeys().length === beforeBusy);
-  const stBusy = await (await fetch(`${B}/api/sessions/${SID_BUSY}/status`, { headers: H })).json();
-  check("status に待機件数が出る", stBusy.route === "tmux" && stBusy.queued === 1, JSON.stringify(stBusy));
+  // 10-e. ★生成中でも送れる(2026-08-01 の設計反転。旧版はここで待機列に積んでいた)
+  //   実測 M5: 生成中に本文+Enter を送っても生成は中断されず、TUI 自身がキューして
+  //   次のターンとして処理した。自前のキューはその機能の二重実装だったので撤去した。
+  const beforeGen = sentKeys().length;
+  const rGen = await send(SID_GEN, "生成中に割り込む");
+  const jGen = await rGen.json();
+  check("★生成中 -> 202 で実際に送る", rGen.status === 202 && jGen.route === "tmux" && jGen.pane === "%15",
+    JSON.stringify(jGen));
+  check("★生成中でも本文と Enter が出る", sentKeys().slice(beforeGen).length === 2,
+    JSON.stringify(sentKeys().slice(beforeGen)));
+  check("キューは存在しない(queued を返さない)", jGen.queued === undefined, JSON.stringify(jGen));
+  const stGen = await (await fetch(`${B}/api/sessions/${SID_GEN}/status`, { headers: H })).json();
+  check("status は送信可否と進行中を別項目で返す",
+    stGen.route === "tmux" && stGen.screen === "SENDABLE" && stGen.activity === "observed" && stGen.queued === undefined,
+    JSON.stringify(stGen));
+
+  // 10-e2. ★陽性対照: 本文が画面に載らなかったら Enter を出さない。
+  //   send-keys の成功はバイトが届いた証明であって、TUI が受け取った証明ではない。
+  const beforeDeaf = sentKeys().length;
+  const rDeaf = await send(SID_DEAF, "画面に載らない本文");
+  const jDeaf = await rDeaf.json();
+  const deafKeys = sentKeys().slice(beforeDeaf);
+  check("★本文が載らなければ 409 composer-mismatch",
+    rDeaf.status === 409 && jDeaf.reason === "composer-mismatch", `${rDeaf.status} ${JSON.stringify(jDeaf)}`);
+  check("★その時 Enter は一度も出ていない",
+    deafKeys.length === 1 && !deafKeys.some((c) => c.at(-1) === "Enter"), JSON.stringify(deafKeys));
+
+  // 10-e3. ★★陽性対照(この層で一番高い賭け金): 分類した後・Enter を押す前に選択画面が
+  //   割り込んだら、Enter を押さない。押せばそれが承認や課金の選択になる。
+  //   「本文と Enter を1回にまとめる」対策を採らなかったのは、まとめても**何も観測しない**から。
+  //   ここで測っているのは、間に観測を挟むという選択が実際に効いているか。
+  const beforeRace = sentKeys().length;
+  const rRace = await send(SID_RACE, "この直後に上限画面が出る");
+  const jRace = await rRace.json();
+  const raceKeys = sentKeys().slice(beforeRace);
+  check("★本文の直後に選択画面 -> 409 modal-appeared",
+    rRace.status === 409 && jRace.reason === "modal-appeared", `${rRace.status} ${JSON.stringify(jRace)}`);
+  check("★★その時 Enter は一度も出ていない(押せば承認/課金になる)",
+    !raceKeys.some((c) => c.at(-1) === "Enter"), JSON.stringify(raceKeys));
 
   // 10-f. 割り込みは Escape のみ(C-c を出さない)
   const beforeIntr = sentKeys().length;
-  const jIntr = await (await fetch(`${B}/api/sessions/${SID_BUSY}/interrupt`, { method: "POST", headers: H })).json();
+  const jIntr = await (await fetch(`${B}/api/sessions/${SID_GEN}/interrupt`, { method: "POST", headers: H })).json();
   const intrKeys = sentKeys().slice(beforeIntr);
   check("interrupt は Escape 1回だけ", jIntr.route === "tmux" && intrKeys.length === 1 && intrKeys[0].at(-1) === "Escape",
     JSON.stringify(intrKeys));
@@ -348,8 +427,11 @@ try {
   // 10-g. 一覧に経路と画面状態が出る
   const list2 = await (await fetch(`${B}/api/sessions`, { headers: H })).json();
   const byId = Object.fromEntries(list2.sessions.map((s) => [s.id, s.live]));
-  check("一覧: READY は tmux/READY", byId[SID_READY]?.route === "tmux" && byId[SID_READY]?.screen === "READY",
+  check("一覧: 入力欄のあるペインは tmux/SENDABLE",
+    byId[SID_READY]?.route === "tmux" && byId[SID_READY]?.screen === "SENDABLE",
     JSON.stringify(byId[SID_READY]));
+  check("★一覧: 選択待ちは CHOICE のまま(電話に出す前に潰さない)",
+    byId[SID_CHOICE]?.screen === "CHOICE", JSON.stringify(byId[SID_CHOICE]));
   check("一覧: 特定不能は blocked", byId[SID_AMBIG]?.route === "blocked", JSON.stringify(byId[SID_AMBIG]));
   check("一覧: 開いていない会話は worker", byId[SID1]?.route === "worker", JSON.stringify(byId[SID1]));
 
