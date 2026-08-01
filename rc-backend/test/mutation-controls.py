@@ -34,7 +34,7 @@ MUT = [
   'return { head, close };',
   "覆う守り = M3(下部8行限定)+ 実測: 入力欄の無い画面で下部8行に閉じ罫線が現れない。"
   "`/model` 2枚は `─` 罫線が1本も無く(枠は `▔` = U+2594)、許可確認画面の1本は下から14行目。"
-  "実機17枚で判定の差は0枚"),
+  "実機18枚で判定の差は0枚(18枚目を足した 8/01 に測り直し)"),
  ("M3 入力欄の下部限定を外す(画面のどこの ❯ でも拾う)", INJ,
   'const floor = Math.max(0, lines.length - COMPOSER_CLOSE_FLOOR);',
   'const floor = 0;'),
@@ -49,7 +49,7 @@ MUT = [
   'if (cluster.length >= 1) return true;',
   "覆う守り = M24/M27(入力欄の箱より上は数えない)。この除外が入った時点で、自分の本文が"
   "選択肢に化ける経路は構造的に消えた。箱より下に残るのはモデル名と権限モードの2行だけで"
-  "番号行を含まない。緩めても CHOICE が増える側(fail-closed)にしか倒れない。実機17枚で差0枚"),
+  "番号行を含まない。緩めても CHOICE が増える側(fail-closed)にしか倒れない。実機18枚で差0枚(18枚目を足した 8/01 に測り直し)"),
  ("M7 生成中を送信の遮断条件に戻す(旧設計への退行)", INJ,
   'if (menuAt(s)) return { state: "CHOICE", activity, composer: -1 };',
   'if (activity === "observed") return { state: "UNKNOWN", activity, composer: -1 };\n  if (menuAt(s)) return { state: "CHOICE", activity, composer: -1 };'),
@@ -133,7 +133,7 @@ MUT = [
   'if (BOX_RULE.test(lines[head])) return null; // `❯` より先に罫線 = 入力欄ではない箱',
   '// mutated: 途中の罫線を無視して上へ探し続ける',
   "到達には「閉じ罫線と最初の `❯` の間にもう1本罫線がある画面」が要る = 空の箱が二重に描かれた形。"
-  "実機17枚に存在せず(差0枚)、作る手も見つかっていない。M30(罫線は桁0)で本文由来の罫線は除外済み"),
+  "実機18枚に存在せず(差0枚。18枚目を足した 8/01 に測り直し)、作る手も見つかっていない。M30(罫線は桁0)で本文由来の罫線は除外済み"),
 
  # M28/M29 = 2026-08-01 夜、実機で踏んだ「本文は入力欄に入っているのに確認できない」欠陥の守り。
  # どちらも Enter を押さないまま本文が入力欄に残るので、次の送信に前回の本文が混ざる。
@@ -161,6 +161,14 @@ MUT = [
  ("M33 曖昧な時に verified を名乗る(本文 = 定型文の一致を見ない)", INJ,
   'if (!bodyIsPlaceholder && composerIsEmpty(t)) return "cleared"; // 定型文 = 取り込んだ直接証拠',
   'if (composerIsEmpty(t)) return "cleared";'),
+ # M34 = 2026-08-01 夜、実機で踏んだ**唯一の fail-open**。他の変異は全て「送れない/確認できない」
+ # 側に壊れる(害はあるが嘘はつかない)。これだけは **届いていない本文を verified と報告する**。
+ # 旧実装そのもの: 印を画面全体で数えると、入力欄の箱だけ描いて stdin を読まない相手の
+ # tty エコー(箱の下に出る)を「入力欄に載った」と読み、Enter を押し、
+ # その後「入力欄が空 = 取り込まれた」と読む。実測: 相手は `sleep 600`、返り値は verified。
+ ("M34 印を画面全体で数える(入力欄の外に出た本文で Enter を押し、届いていない物を verified と言う)", INJ,
+  'if (inBox !== null && countOf(norm(inBox), probe) > seenBefore) return "echoed";',
+  'if (countOf(norm(t), probe) > seenBefore) return "echoed";'),
 ]
 
 # ★2026-08-01 に実機で踏んだ欠陥: 落ちたかを `"# fail 0" not in stdout` で見ていた。

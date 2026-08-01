@@ -187,22 +187,35 @@ async function main() {
 
     const cases = buildCases().filter((c) => !opt.cases || opt.cases.includes(c.id));
     for (const c of cases) {
-      const ready = await waitSendable(injector, pane, 120000, `${c.id} 前`);
-      if (!ready.ok) {
-        results.push({ id: c.id, why: c.why, chars: c.text.length, result: `前段で時間切れ(${ready.state})` });
-        writeFileSync(join(outDir, `${c.id}-stuck.txt`), ready.text);
-        continue;
+      // ★1ケースの失敗で残りと**表そのもの**を落とさない。例外をそのまま投げると
+      //   finally が片付けた後に表を一行も出さずに終わる = 証拠を出す為の台本が
+      //   証拠を捨てる形(8/1 に `tail -20` で一度やった型)。行として記録して続ける。
+      try {
+        const ready = await waitSendable(injector, pane, 120000, `${c.id} 前`);
+        if (!ready.ok) {
+          results.push({ id: c.id, why: c.why, chars: c.text.length, result: `前段で時間切れ(${ready.state})` });
+          writeFileSync(join(outDir, `${c.id}-stuck.txt`), ready.text);
+          continue;
+        }
+        const r = await injector.send(pane, c.text);
+        await sleep(1200);
+        writeFileSync(join(outDir, `${c.id}-after.txt`), injector.capture(pane));
+        results.push({
+          id: c.id,
+          why: c.why,
+          chars: c.text.length,
+          result: r.sent ? `sent delivered=${r.delivered}` : `未送信 reason=${r.reason}`,
+          waited: r.waited ? `echo=${r.waited.echo}ms clear=${r.waited.clear}ms` : "-",
+        });
+      } catch (e) {
+        // ペインが消えた等で tmux が落ちた時ここに来る(この台本の tmux() は失敗を握り潰さない)。
+        results.push({ id: c.id, why: c.why, chars: c.text.length, result: `★落ちた: ${e.message}` });
+        // 相手が居ないなら以降のケースも同じ死に方をするので、そこで止める。
+        if (!tmuxOk(["has-session", "-t", `=${session}`])) {
+          console.error(`セッションが消えたので残りのケースは回さない: ${session}`);
+          break;
+        }
       }
-      const r = await injector.send(pane, c.text);
-      await sleep(1200);
-      writeFileSync(join(outDir, `${c.id}-after.txt`), injector.capture(pane));
-      results.push({
-        id: c.id,
-        why: c.why,
-        chars: c.text.length,
-        result: r.sent ? `sent delivered=${r.delivered}` : `未送信 reason=${r.reason}`,
-        waited: r.waited ? `echo=${r.waited.echo}ms clear=${r.waited.clear}ms` : "-",
-      });
     }
   } finally {
     if (opt.keep) {

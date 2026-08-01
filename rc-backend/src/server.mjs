@@ -435,9 +435,18 @@ const server = createServer(async (req, res) => {
         if (r.sent) {
           return json(res, 202, {
             accepted: true, route: "tmux", pane, source: found.source,
-            delivered: r.delivered, // verified = 入力欄から消えた / unverified = 残っている
+            // verified = 入力欄から本文が消えた(= TUI が取り込んだ)。
+            // unverified = **確認できなかった**。中身は2通りあり、画面からは区別できない:
+            //   (a) 本文が入力欄に残っている  (b) 入力欄それ自体が見えなくなった
+            // ★文面で (a) だと断定しない(8/01 夜、同じ「観測していない事を断言する」型を
+            //   inject.mjs の echo 相で踏んだ直後にここも直した)。
+            delivered: r.delivered,
             ...(r.delivered === "unverified"
-              ? { note: "Enter は送りましたが、入力欄にまだ本文が残っています。画面を確認してください。" }
+              ? {
+                  note:
+                    "Enter は送りましたが、本文が取り込まれた事を確認できませんでした" +
+                    "(入力欄に残っているか、入力欄自体が見えなくなっています)。画面を確認してください。",
+                }
               : {}),
           });
         }

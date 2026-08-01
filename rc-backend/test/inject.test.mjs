@@ -30,6 +30,30 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /** 実機の画面(生の capture-pane 出力)。手で書き足さない。 */
 const screen = (name) => readFileSync(join(HERE, "fixtures", "screens", `${name}.txt`), "utf8");
 
+/**
+ * 実機の画面の**入力欄の中に**本文を載せた画面を作る。手書きの画面ではなく、
+ * 生 capture の箱を機械的に書き換えたもの(罫線・下部の行はそのまま残る)。
+ *
+ * ★2026-08-01 夜に追加。それまでこの層のテストは「載った画面」を
+ * `base + "\n本文"` = **箱の下に本文をぶら下げた画面**で作っていた。それは実機の
+ * どの画面でもない。そしてコード側の echo 判定が画面全体で印を数えていたので、
+ * **テストもコードも同じ誤りを共有して緑**になっていた(旧 BUSY と同じ型)。
+ * 箱の外に本文が出た画面は、下の「入力欄の外に出た本文」の回帰で別に扱う。
+ */
+function withComposerBody(base, body) {
+  const box = composerBox(base);
+  assert.ok(box, "前提: 元の画面に入力欄の箱がある事");
+  const lines = base.split("\n");
+  const [first, ...rest] = String(body).split("\n");
+  const head = lines[box.head].replace(/(❯\s?).*$/, `$1${first}`);
+  return [
+    ...lines.slice(0, box.head),
+    head,
+    ...rest.map((l) => `  ${l}`),
+    ...lines.slice(box.head + 1),
+  ].join("\n");
+}
+
 /** 送信してよい実物の画面 7 枚(起動直後・生成中・入力途中・キュー中・完了後)。 */
 const SENDABLE_FIXTURES = [
   "idle-boot",
@@ -267,7 +291,7 @@ test("強い文言だけでは CHOICE にしない(応答本文で遮断され�
 
 test("SENDABLE なら本文をリテラル送信し、Enter は別コマンド", async () => {
   const base = screen("idle-boot");
-  const t = fakeTmux([base, base + "\nテスト本文", base]);
+  const t = fakeTmux([base, withComposerBody(base, "テスト本文"), base]);
   const inj = new TmuxInjector({ tmux: t });
   const r = await inj.send("%1", "テスト本文");
   assert.equal(r.sent, true);
@@ -379,7 +403,7 @@ test("★画面の描き直しは同期しない — 遅れて載った本文で
   // 実機では毎回 composer-mismatch で Enter を押さずに終わっていた。
   // 偽 tmux は即時反映なので単体も e2e も緑のまま = テストが届いていなかった。
   const base = screen("idle-boot");
-  const t = fakeTmux([base, base, base, base + "\n遅れて載る本文", base]);
+  const t = fakeTmux([base, base, base, withComposerBody(base, "遅れて載る本文"), base]);
   const r = await new TmuxInjector({ tmux: t, sleep: async () => {} }).send("%1", "遅れて載る本文");
   assert.equal(r.sent, true, "待てば載る本文を取り逃してはいけない");
   assert.equal(r.delivered, "verified");
@@ -399,7 +423,7 @@ test("★待っている間に選択画面が出たら、そこで打ち切っ�
 
 test("Enter 後に入力欄から本文が消えていれば verified", async () => {
   const base = screen("idle-boot");
-  const t = fakeTmux([base, base + "\nこんにちは", base]);
+  const t = fakeTmux([base, withComposerBody(base, "こんにちは"), base]);
   const r = await new TmuxInjector({ tmux: t }).send("%1", "こんにちは");
   assert.equal(r.sent, true);
   assert.equal(r.delivered, "verified");
@@ -416,7 +440,7 @@ test("★Enter 後も入力欄に本文が残っていれば unverified(送れ�
 
 test("★Enter 後に入力欄ごと消えていても verified と言わない(確かめられていない)", async () => {
   const base = screen("idle-boot");
-  const t = fakeTmux([base, base + "\n本文A", "画面が別物になった"]);
+  const t = fakeTmux([base, withComposerBody(base, "本文A"), "画面が別物になった"]);
   const r = await new TmuxInjector({ tmux: t, echoBudgetMs: 60 }).send("%1", "本文A");
   assert.equal(r.sent, true);
   assert.equal(r.delivered, "unverified");
@@ -464,6 +488,32 @@ test("★★印が改行を跨いでも載ったと認める(実機。旧実装�
   assert.equal(r.delivered, "verified");
 });
 
+test("★★折り返しで印が行を跨いでも載ったと認める(実機。正規化が無いと長文の約2割が送れない)", async () => {
+  // 2026-08-02 未明、実 TUI(端末幅120)で撮った現物 = `composer-wrapped-tail-short`。
+  // 打った本文は**改行を1つも含まない**67字だが、画面では 61字 + 6字 に折り返され、
+  // 印(末尾12字)がその境目を跨ぐ。= 印の12字は画面のどこにも**文字列として存在しない**。
+  //
+  // ★なぜ「たまたま」ではないか: 折り返しの最終行は `本文の桁数 mod 行の桁数` で決まる。
+  // 行が約118桁なので、最終行が印(12字)より短くなる本文は長文のおよそ2割を占める。
+  // 正規化を外すと、その2割は「入力欄に本文が在るのに composer-mismatch」= 永久に送れない。
+  //
+  // ★この検査が要る事は、この形の変異(M29)が **8/01 の直しで素通りに変わった**ことで分かった。
+  // 入力欄限定の照合にした結果 composerText() が字下げを剥がすようになり、
+  // それまで M29 を捕まえていた「画面全体に字下げが残る」経路が消えていた。
+  const body =
+    "移動中にiPhoneから長めの指示を送る時の本文です。あああああああああああああああああああああああああああ末尾の目印はここまでです。";
+  const shown = screen("composer-wrapped-tail-short");
+  assert.equal(body.includes("\n"), false, "前提: 打った本文に改行は無い(折り返しは画面側の都合)");
+  assert.equal(composerText(shown).replace(/\n/g, ""), body, "前提: 画面の入力欄がこの本文そのものである事");
+  assert.equal(composerText(shown).split("\n").length, 2, "前提: 画面では2行に折り返されている事");
+  assert.equal(shown.includes(body.slice(-12)), false, "前提: 生の末尾12字は画面に存在しない事");
+
+  const t = fakeTmux([screen("idle-boot"), shown, screen("idle-boot")]);
+  const r = await new TmuxInjector({ tmux: t, echoBudgetMs: 300 }).send("%1", body);
+  assert.equal(r.sent, true, `送れなければならない(reason=${r.reason})`);
+  assert.equal(r.delivered, "verified");
+});
+
 test("★★本文の先頭が画面から消える長さでも送れる(実機。印を先頭から採ると長文が永久に送信不能)", async () => {
   // 実測(端末幅120): 入力欄の中身は最大15行までしか映らず、JP 1500字から先頭が巻き上がって消える。
   const body = "先頭の目印です。" + "あ".repeat(1484) + "末尾の目印です。";
@@ -481,7 +531,7 @@ test("★生成中でも送れる(TUI 自身がキューする = 自前キュー
   // M5 実測: 生成中に本文+Enter を送っても生成は中断されず、TUI が
   // `❯ Press up to edit queued messages` と表示して次のターンとして処理した。
   const gen = screen("generating");
-  const t = fakeTmux([gen, gen + "\nMARKQ 4たす4は?", screen("queued-during-generation")]);
+  const t = fakeTmux([gen, withComposerBody(gen, "MARKQ 4たす4は?"), screen("queued-during-generation")]);
   const r = await new TmuxInjector({ tmux: t }).send("%1", "MARKQ 4たす4は?");
   assert.equal(r.sent, true);
   assert.equal(r.delivered, "verified");
@@ -498,7 +548,7 @@ test("★★短い本文が定型文と衝突しても「届いた」と言え�
     composerText(queued).replace(/\s+/g, "").includes("edit"),
     "前提: 印が定型文に含まれる事",
   );
-  const t = fakeTmux([gen, gen + "\nedit", queued]);
+  const t = fakeTmux([gen, withComposerBody(gen, "edit"), queued]);
   const r = await new TmuxInjector({ tmux: t }).send("%1", "edit");
   assert.equal(r.sent, true);
   assert.equal(r.delivered, "verified", "定型文が出ている = TUI が取り込んだ直接証拠");
@@ -509,10 +559,38 @@ test("★本文が定型文そのものの時は「分からない」と言う(�
   // 判別できない物を「届いた」と言わない。
   const gen = screen("generating");
   const body = "Press up to edit queued messages";
-  const t = fakeTmux([gen, gen + "\n" + body, screen("queued-during-generation")]);
+  const t = fakeTmux([gen, withComposerBody(gen, body), screen("queued-during-generation")]);
   const r = await new TmuxInjector({ tmux: t, echoBudgetMs: 300 }).send("%1", body);
   assert.equal(r.sent, true);
   assert.equal(r.delivered, "unverified");
+});
+
+test("★★入力欄の**外**に本文が出ただけでは Enter を押さない(fail-open の守り)", async () => {
+  // 2026-08-01 夜、実機で踏んだ現物。入力欄の箱だけを描いて stdin を読まない偽物
+  // (`scratchpad/fake-composer.sh` = 罫線と `❯` を出して `sleep 600`)へ送ると、
+  // 打った文字は tty のエコーで箱の**下**に出る。旧実装は印を**画面全体**で数えていたので
+  // これを「入力欄に載った」と読み、Enter を送り、その後の確認で
+  // 「入力欄が空 = 取り込まれた」と読んで **一度も届いていないのに verified** を返した。
+  // (実測: `echo=3ms clear=3ms` / `delivered: "verified"` / 相手は `sleep 600`)
+  const gen = screen("generating");
+  const body = "OUTSIDE-MARK-77";
+  const outside = gen + "\n" + body; // 箱の下にぶら下がった本文 = 偽物の tty エコーそのもの
+  assert.ok(
+    composerBox(outside) && !composerText(outside).includes(body),
+    "前提: 箱はあるが本文は箱の**中**に無い(この前提が崩れたらこの回帰は無意味)",
+  );
+  assert.ok(outside.includes(body), "前提: 画面全体で数えれば印は増える(旧実装が通った道)");
+
+  const t = fakeTmux([gen, outside]);
+  const r = await new TmuxInjector({ tmux: t, echoBudgetMs: 50 }).send("%1", body);
+  assert.equal(r.sent, false);
+  assert.equal(r.reason, "composer-mismatch");
+  assert.equal(r.delivered, null, "届いていない物を verified と言わない");
+  assert.deepEqual(
+    sends(t).map((c) => c[c.length - 1]),
+    [body],
+    "本文のリテラル送信だけ。**Enter を送っていない**",
+  );
 });
 
 test("キュー API は存在しない(復活したら設計が退行している)", () => {
@@ -634,7 +712,7 @@ test("claude 判定は許可制(未知のコマンド名は通さない)", () =>
 test("★★現物の不変量を固定する(変異の「未到達」注記が根拠にしている実測を、実行可能な検査にする)", () => {
   const dir = join(HERE, "fixtures", "screens");
   const files = readdirSync(dir).filter((f) => f.endsWith(".txt")).sort();
-  assert.ok(files.length >= 17, `現物が17枚以上ある事(実際: ${files.length})`);
+  assert.ok(files.length >= 18, `現物が18枚以上ある事(実際: ${files.length})`);
 
   const indented = [];
   for (const f of files) {

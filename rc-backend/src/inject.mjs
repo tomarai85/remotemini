@@ -384,7 +384,16 @@ export class TmuxInjector {
     }
 
     const probe = probeOf(text);
-    const seenBefore = countOf(norm(before), probe);
+    // ★印は**入力欄の中**だけで数える(2026-08-01 夜に実測で作り替え)。
+    //   旧実装は画面全体で数えていた。これは「本文が画面のどこかに出た」を
+    //   「入力欄に載った」と読む形で、規約の文言(「本文が入力欄に載っていなければ
+    //   composer-mismatch」)と**コードが一致していなかった**。
+    //   実測: 入力欄の箱だけを描いて stdin を読まない偽物に送ると、打った文字は
+    //   tty のエコーで箱の**下**に出る。画面全体では印が増えるので「載った」になり、
+    //   Enter を押した後の確認は「入力欄が空 = 消費された」と読んで
+    //   **一度も届いていないのに `delivered: "verified"`** を返した。
+    //   入力欄の外に出た本文で Enter を押す理由は無いので、ここは箱の中で数える。
+    const seenBefore = countOf(norm(composerText(before) ?? ""), probe);
 
     this.tmux.run(["send-keys", "-t", pane, "-l", "--", text]);
 
@@ -392,7 +401,8 @@ export class TmuxInjector {
     // 割り込んでいたら、そこで打ち切る(Enter を押せば承認や課金になる)。
     const echo = await this.pollScreen(pane, (t) => {
       if (menuAt(t)) return "modal";
-      if (countOf(norm(t), probe) > seenBefore) return "echoed";
+      const inBox = composerText(t);
+      if (inBox !== null && countOf(norm(inBox), probe) > seenBefore) return "echoed";
       return null;
     });
     if (echo.tag === "modal") {
