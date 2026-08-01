@@ -79,22 +79,22 @@ fixture(SID_MISMATCH, CWD_REG, "居場所不一致"); // 会話は CWD_REG。登
 
 // ---- 偽 tmux ----------------------------------------------------------------
 // 実物の観測に合わせてある(2026-07-31 edith):
-//   list-panes -F "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}"
+//   list-panes -F "#{pane_id}\t#{pane_current_command}\t#{pane_tty}\t#{pane_current_path}"
 //   → 対話 claude の command は "2.1.220"(バージョン文字列)、素のシェルは "zsh"
 const PANES = [
-  `%10\t2.1.220\t${CWD_READY}`,
-  `%11\t2.1.220\t${CWD_CHOICE}`,
-  `%12\tzsh\t${CWD_SHELL}`,
-  `%13\t2.1.220\t${CWD_AMBIG}`,
-  `%14\t2.1.220\t${CWD_AMBIG}`, // 同じ cwd に2つめ
-  `%15\t2.1.220\t${CWD_GEN}`,
-  `%16\t2.1.220\t${CWD_DEAF}`,  // 送っても画面が動かない(load-bearing: Enter を出さない対照)
-  `%17\t2.1.220\t${CWD_RACE}`,  // 本文の直後に選択画面が出る
-  `%20\t2.1.220\t${CWD_REG}`,   // 登録簿検証: 同じ cwd に claude が3つ並ぶ
-  `%21\t2.1.220\t${CWD_REG}`,
-  `%22\t2.1.220\t${CWD_OTHER}`, // 居場所不一致の検証用
-  `%23\t2.1.220\t${CWD_FRESH}`, // 未発言の会話が居るペイン(jsonl は無い)
-  `%24\t2.1.220\t${CWD_UNREG}`, // 未登録の会話の cwd に居る唯一の claude
+  `%10\t2.1.220\t/dev/ttys010\t${CWD_READY}`,
+  `%11\t2.1.220\t/dev/ttys011\t${CWD_CHOICE}`,
+  `%12\tzsh\t/dev/ttys012\t${CWD_SHELL}`,
+  `%13\t2.1.220\t/dev/ttys013\t${CWD_AMBIG}`,
+  `%14\t2.1.220\t/dev/ttys014\t${CWD_AMBIG}`, // 同じ cwd に2つめ
+  `%15\t2.1.220\t/dev/ttys015\t${CWD_GEN}`,
+  `%16\t2.1.220\t/dev/ttys016\t${CWD_DEAF}`,  // 送っても画面が動かない(load-bearing: Enter を出さない対照)
+  `%17\t2.1.220\t/dev/ttys017\t${CWD_RACE}`,  // 本文の直後に選択画面が出る
+  `%20\t2.1.220\t/dev/ttys020\t${CWD_REG}`,   // 登録簿検証: 同じ cwd に claude が3つ並ぶ
+  `%21\t2.1.220\t/dev/ttys021\t${CWD_REG}`,
+  `%22\t2.1.220\t/dev/ttys022\t${CWD_OTHER}`, // 居場所不一致の検証用
+  `%23\t2.1.220\t/dev/ttys023\t${CWD_FRESH}`, // 未発言の会話が居るペイン(jsonl は無い)
+  `%24\t2.1.220\t/dev/ttys024\t${CWD_UNREG}`, // 未登録の会話の cwd に居る唯一の claude
 ].join("\n") + "\n";
 // ★2026-08-01: 画面はもう手で書かない。使い捨てセッションから撮った生の capture-pane 出力
 // (test/fixtures/screens/)をそのまま使う。前の版はここに手書きの画面を置いていて、
@@ -140,8 +140,29 @@ writeFileSync(join(SB, "screen-choice.txt"), shot("choice-model-menu"));
 // 何を送るか」であって、宛先の決め方(§11 で測る)ではない。
 const PANE_DIR_SETUP = join(SB, "keys", "panes");
 mkdirSync(PANE_DIR_SETUP, { recursive: true });
+
+// ★登録簿は mtime が心拍。実物の書き手(statusline)は 2 秒ごとに書き直すので、読み側は
+//   一定時間更新の無い登録を死んだものとして扱う(registry.mjs HEARTBEAT_TTL_MS)。
+//   ここで mtime を固定値で置くと、**テストの経過時間そのものが登録を殺す**。
+//   なので実物と同じく心拍を打ち、「どちらが新しいか」だけを相対オフセットで保つ。
+//   offset[秒] が大きいほど古い登録。
+const REG_BEAT = new Map(); // path -> offsetSec
+function beatOnce() {
+  const now = Date.now() / 1000;
+  for (const [p, off] of REG_BEAT) {
+    try { utimesSync(p, now - off, now - off); } catch { /* 消された登録は打たない */ }
+  }
+}
+setInterval(beatOnce, 1000).unref();
+/** 登録を置く。offsetSec を渡すと「その分だけ古い」登録として心拍を打ち続ける。 */
+function putRegistry(sid, pane, offsetSec = 0) {
+  const p = join(PANE_DIR_SETUP, `${sid}.json`);
+  writeFileSync(p, JSON.stringify({ session_id: sid, pane, model: "Opus 5" }) + "\n");
+  REG_BEAT.set(p, offsetSec);
+  beatOnce();
+}
 for (const [sid, pane] of [[SID_READY, "%10"], [SID_CHOICE, "%11"], [SID_GEN, "%15"], [SID_DEAF, "%16"], [SID_RACE, "%17"]]) {
-  writeFileSync(join(PANE_DIR_SETUP, `${sid}.json`), JSON.stringify({ session_id: sid, pane, model: "Opus 5" }) + "\n");
+  putRegistry(sid, pane);
 }
 const SENT_LOG = join(SB, "tmux-sent.log");
 writeFileSync(SENT_LOG, "");
@@ -440,11 +461,9 @@ try {
   // 書き手は ~/.claude/statusline.sh。ここではその出力と同じ JSON を置いて読み側を通す。
   const PANE_DIR = join(SB, "keys", "panes");
   mkdirSync(PANE_DIR, { recursive: true });
-  const register = (sid, pane, mtimeSec) => {
-    const p = join(PANE_DIR, `${sid}.json`);
-    writeFileSync(p, JSON.stringify({ session_id: sid, pane, model: "Opus 5" }) + "\n");
-    if (mtimeSec) utimesSync(p, mtimeSec, mtimeSec); // 新旧関係を明示的に作る
-  };
+  // rank が大きいほど新しい登録(1000 < 2000 < 3000)。実時間では「今から N 秒前」に写す。
+  // 絶対時刻を置かない理由は putRegistry のコメント参照 — 固定 mtime は TTL で死ぬ。
+  const register = (sid, pane, rank) => putRegistry(sid, pane, rank ? 5 - rank / 1000 : 0);
 
   // 11-a. 登録が無い状態: 同じ cwd に claude が3つ → 特定不能(= 登録簿が要る理由の実演)
   const beforeNoReg = sentKeys().length;

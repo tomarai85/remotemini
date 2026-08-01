@@ -15,6 +15,7 @@ import shutil, subprocess, sys, os, tempfile
 
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INJ = "src/inject.mjs"
+REG = "src/registry.mjs"
 
 MUT = [
  ("M1 メニュー判定を外す(CHOICE を返さない)", INJ,
@@ -52,6 +53,28 @@ MUT = [
  ("M11 画面の反映を待たない(1枚撮って諦める = 実機で毎回不達)", INJ,
   'if (Date.now() - t0 >= this.echoBudgetMs) return { tag: null, text, waited: Date.now() - t0 };',
   'return { tag: null, text, waited: Date.now() - t0 };'),
+ # M12-M16 = 2026-08-01 に実測から見つけた「登録が古い」経路の守り。
+ # 観測: ~/.rc-backend/panes/ の 10 件が全部 %0 を名乗っていた(tmux サーバは未起動)。
+ # ペイン id はサーバ世代ごとに振り直されるので、生死を見ない限り古い登録が
+ # 今そこに居る**別の会話**を指す。
+ ("M12 登録の生死を見ない(死んだ登録もそのまま信じる)", REG,
+  'const live = entries.filter((e) => entryAlive(e, ctx));',
+  'const live = entries;'),
+ ("M13 心拍の TTL を実質無限にする(長い方が危険側)", REG,
+  'export const HEARTBEAT_TTL_MS = 15_000;',
+  'export const HEARTBEAT_TTL_MS = 86_400_000;'),
+ ("M14 tmux サーバ世代の突き合わせを外す(%0 が全部同じ物になる)", REG,
+  'if (!ctx.server || e.server !== ctx.server) return false;',
+  '// mutated: 世代を見ない'),
+ ("M15 前面判定を外す(Ctrl-Z で止めた claude を生きていると見なす)", REG,
+  'if (!proc || !proc.foreground) return false;',
+  'if (!proc) return false;'),
+ ("M16 同着の登録を通す(両方が同じペインへ注入できる)", REG,
+  '(e) => e.pane === entry.pane && e.sessionId !== sessionId && e.mtimeMs >= entry.mtimeMs,',
+  '(e) => e.pane === entry.pane && e.sessionId !== sessionId && e.mtimeMs > entry.mtimeMs,'),
+ ("M17 tty をペイン一覧から落とす(同一性の検証材料を失う)", INJ,
+  'const PANE_FORMAT = "#{pane_id}\\t#{pane_current_command}\\t#{pane_tty}\\t#{pane_current_path}";',
+  'const PANE_FORMAT = "#{pane_id}\\t#{pane_current_command}\\t#{pane_current_path}";'),
 ]
 
 rows = []

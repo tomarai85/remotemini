@@ -12,6 +12,8 @@ import {
   readRegistry,
   resolveSessionPane,
   registryOnlySessions,
+  entryAlive,
+  HEARTBEAT_TTL_MS,
 } from "../src/registry.mjs";
 import { looksLikeClaudePane, TmuxInjector } from "../src/inject.mjs";
 
@@ -41,16 +43,46 @@ const injectorFor = (paneList) =>
   new TmuxInjector({ tmux: { run: (a) => (a[0] === "list-panes" ? paneList : "") } });
 const byCwd = (cwd, panes) => injectorFor("").resolvePane(cwd, panes);
 
-const resolve = (sessionId, cwd, entries, panes) =>
-  resolveSessionPane({ sessionId, cwd, entries, panes, isClaude: looksLikeClaudePane, resolveByCwd: byCwd });
+// 下のテストの登録は mtimeMs が 1〜1000(小さい絶対値で新旧関係だけを表す)。
+// 実時刻で判定させると全部「大昔の登録」になって死ぬので、now を揃えて渡す。
+// 心拍そのものの検査は「登録の生死」節で now を明示して別に行う。
+const NOW = 1000;
+const resolve = (sessionId, cwd, entries, panes, extra = {}) =>
+  resolveSessionPane({
+    sessionId, cwd, entries, panes,
+    isClaude: looksLikeClaudePane, resolveByCwd: byCwd,
+    now: NOW, ttlMs: 5000, ...extra,
+  });
 
-const claudePane = (pane, path = CWD) => ({ pane, command: "2.1.220", path });
+const claudePane = (pane, path = CWD, tty = `/dev/ttys0${pane.slice(1)}`) =>
+  ({ pane, command: "2.1.220", tty, path });
 
 // ---- 1件のパース ----
 
 test("statusline が書く実物の形をそのまま読める", () => {
+  const e = parseEntry(
+    JSON.stringify({ session_id: S1, pane: "%12", model: "Opus 5", tmux: "/tmp/s,42,0", pid: 777 }),
+    1000,
+  );
+  assert.deepEqual(e, {
+    sessionId: S1, pane: "%12", model: "Opus 5",
+    server: "/tmp/s,42", // $TMUX の3つ目(クライアント番号)は世代と無関係なので落とす
+    pid: 777,
+    mtimeMs: 1000,
+  });
+});
+
+test("同一性を書かない古い書き手の登録も読める(server/pid は空)", () => {
   const e = parseEntry(rec(S1, "%12"), 1000);
-  assert.deepEqual(e, { sessionId: S1, pane: "%12", model: "Opus 5", mtimeMs: 1000 });
+  assert.equal(e.server, "");
+  assert.equal(e.pid, 0);
+});
+
+test("★pid / tmux が壊れていても登録全体は捨てない(心拍判定に落ちるだけ)", () => {
+  const e = parseEntry(JSON.stringify({ session_id: S1, pane: "%12", tmux: "ごみ", pid: "777" }), 1);
+  assert.equal(e.pane, "%12");
+  assert.equal(e.server, "", "パターンに合わない $TMUX は無かった事にする");
+  assert.equal(e.pid, 0, "文字列の pid は採らない");
 });
 
 test("書き込み途中の壊れた JSON は捨てる(次の周期で読み直せばよい)", () => {
@@ -226,8 +258,11 @@ test("tmux にペインが1つも無ければ none", () => {
 // ここで守りたいのは逆方向の事故: **操作できないものを一覧に出さない**こと。
 // 出したのに送れない行は、Tom から見れば壊れている。だから採否は resolveSessionPane と同じ判定に委ねる。
 
-const only = (listing, entries, panes) =>
-  registryOnlySessions({ listing, entries, panes, isClaude: looksLikeClaudePane });
+const only = (listing, entries, panes, extra = {}) =>
+  registryOnlySessions({
+    listing, entries, panes, isClaude: looksLikeClaudePane,
+    now: NOW, ttlMs: 5000, ...extra,
+  });
 
 test("jsonl がまだ無い登録は一覧に足される。cwd はペインの現在地を採る", () => {
   const got = only([], [{ sessionId: S1, pane: "%12", mtimeMs: 1000 }], [claudePane("%12")]);
@@ -274,4 +309,139 @@ test("未発言が複数なら新しい順", () => {
 
 test("登録簿が空なら何も足さない", () => {
   assert.deepEqual(only([], [], [claudePane("%12")]), []);
+});
+
+// ---- 登録の生死(2026-08-01 追加。ここが無いと実際に他人の会話へ本文が入る) ----
+//
+// 実測した事実:
+//   1. tmux のペイン id は**サーバ世代ごとに %0 から振り直される**。~/.rc-backend/panes/ の
+//      10 件が全部 %0 を名乗っていた(tmux サーバはその時1つも走っていない)。
+//   2. 書き手は登録を消さない。会話が終わっても登録ファイルは残り続ける。
+//   3. statusline は放置中でも 2 秒ごとに書き直す(90秒で45回 / median 2001ms)。
+//   4. 前面判定は pgid == tpgid。Ctrl-Z で止めた claude は tty を握ったままなので、
+//      tty 一致だけでは「今そのペインで前面に居る別のプロセス」に送ってしまう。
+// 1+2 が揃うと「死んだ登録が、今そこに居る別の会話のペインを指す」状態になる。
+
+const SERVER = "/private/tmp/tmux-501/default,900";
+const withId = (sid, pane, pid, mtimeMs = NOW, server = SERVER) =>
+  ({ sessionId: sid, pane, model: "", server, pid, mtimeMs });
+/** pid -> プロセスの実体。既定は「そのペインの tty で前面に居る」= 生きている状態。 */
+const procs = (map) => (pid) => map[pid] || null;
+const fg = (tty) => ({ tty, foreground: true });
+
+test("★同一性が揃っていれば心拍が古くても生きている(停止中の機械・スリープ明け)", () => {
+  const e = withId(S1, "%0", 777, 0); // mtime は大昔
+  const ctx = {
+    now: NOW, ttlMs: HEARTBEAT_TTL_MS, server: SERVER,
+    procOf: procs({ 777: fg("ttys012") }),
+    paneBy: new Map([["%0", claudePane("%0", CWD, "/dev/ttys012")]]),
+  };
+  assert.equal(entryAlive(e, ctx), true, "本人であることが検証できていれば時刻は問わない");
+});
+
+test("★★tmux サーバの世代が違えば同じ %0 でも別物(実測: 登録10件が全部 %0)", () => {
+  const e = withId(S1, "%0", 777, NOW, "/private/tmp/tmux-501/default,111"); // 前の世代
+  const ctx = {
+    now: NOW, ttlMs: HEARTBEAT_TTL_MS, server: SERVER, // 今のサーバは 900
+    procOf: procs({ 777: fg("ttys012") }),
+    paneBy: new Map([["%0", claudePane("%0", CWD, "/dev/ttys012")]]),
+  };
+  assert.equal(entryAlive(e, ctx), false);
+});
+
+test("★★suspend された claude は tty を握ったままだが前面ではない -> 生きているとみなさない", () => {
+  // 実測: 前面 pgid=tpgid=54850 -> Ctrl-Z 後は tpgid だけシェルの 54787 に変わる。
+  // tty 一致だけで通すと、そのペインで今前面に居る別プロセスに send-keys が入る。
+  const e = withId(S1, "%0", 777);
+  const ctx = {
+    now: NOW, ttlMs: HEARTBEAT_TTL_MS, server: SERVER,
+    procOf: procs({ 777: { tty: "ttys012", foreground: false } }),
+    paneBy: new Map([["%0", claudePane("%0", CWD, "/dev/ttys012")]]),
+  };
+  assert.equal(entryAlive(e, ctx), false);
+});
+
+test("★プロセスが消えている / tty がペインと違う -> 生きているとみなさない", () => {
+  const base = {
+    now: NOW, ttlMs: HEARTBEAT_TTL_MS, server: SERVER,
+    paneBy: new Map([["%0", claudePane("%0", CWD, "/dev/ttys012")]]),
+  };
+  assert.equal(entryAlive(withId(S1, "%0", 777), { ...base, procOf: () => null }), false, "pid が居ない");
+  assert.equal(
+    entryAlive(withId(S1, "%0", 777), { ...base, procOf: procs({ 777: fg("ttys099") }) }),
+    false, "別の tty に居る = 別のペイン",
+  );
+});
+
+test("★tmux サーバが分からない時は同一性を検証できない -> 生きているとみなさない", () => {
+  const e = withId(S1, "%0", 777);
+  const ctx = {
+    now: NOW, ttlMs: HEARTBEAT_TTL_MS, server: "", // tmux が居ない / display-message が空
+    procOf: procs({ 777: fg("ttys012") }),
+    paneBy: new Map([["%0", claudePane("%0", CWD, "/dev/ttys012")]]),
+  };
+  assert.equal(entryAlive(e, ctx), false);
+});
+
+test("同一性の無い古い登録は心拍で判定する(TTL 内は生存、超えたら死亡)", () => {
+  const old = { sessionId: S1, pane: "%0", model: "", server: "", pid: 0, mtimeMs: NOW - 2000 };
+  const ctx = { now: NOW, ttlMs: HEARTBEAT_TTL_MS, server: SERVER, procOf: () => null, paneBy: new Map() };
+  assert.equal(entryAlive(old, ctx), true, "実測 2 秒周期 = 1 回分の空振りは生存扱い");
+  assert.equal(entryAlive({ ...old, mtimeMs: NOW - HEARTBEAT_TTL_MS - 1 }, ctx), false);
+  // 未来の mtime(時計の巻き戻し・NFS のずれ)も信用しない
+  assert.equal(entryAlive({ ...old, mtimeMs: NOW + 5000 }, ctx), false);
+});
+
+test("★★死んだ登録は他のペインを占有しない(占有し続けると生きた会話がワーカーに落ちる)", () => {
+  // 実測した経路: 終わった会話の登録が %0 を掴んだまま -> 今 %0 に居る別の会話は
+  // cwd 経路の候補から %0 を外され -> 候補ゼロ = none -> ワーカー(-p --resume)が起動 ->
+  // 開いている TUI と同じ会話を2プロセスが触る(lost-update)。
+  const dead = { sessionId: S2, pane: "%12", model: "", server: "", pid: 0, mtimeMs: NOW - 60_000 };
+  const alive = resolve(S1, CWD, [dead], [claudePane("%12")], { ttlMs: HEARTBEAT_TTL_MS });
+  assert.equal(alive.reason, "unregistered", "死んだ登録は候補から外す根拠にならない");
+  assert.equal(alive.candidates, 1);
+  // 対照: 同じ登録が生きていれば %12 は S2 のものなので候補から外れて none になる
+  const withLive = resolve(S1, CWD, [{ ...dead, mtimeMs: NOW }], [claudePane("%12")], { ttlMs: HEARTBEAT_TTL_MS });
+  assert.equal(withLive.reason, "none");
+});
+
+test("★★死んだ登録は自分の会話の同定にも使わない(別の会話へ注入する経路の根治)", () => {
+  // 最悪の形: 死んだ登録が %12 を指していて、そのペインには今**別の会話**が居る。
+  // 生死を見ないと reason=ok を返し、電話の本文と Enter がその会話に入る。
+  const dead = { sessionId: S1, pane: "%12", model: "", server: "", pid: 0, mtimeMs: NOW - 60_000 };
+  const r = resolve(S1, CWD, [dead], [claudePane("%12")], { ttlMs: HEARTBEAT_TTL_MS });
+  assert.notEqual(r.reason, "ok", "★これが ok になるのが 2026-08-01 に見つけた事故経路");
+  assert.equal(r.reason, "unregistered");
+  assert.equal(r.source, "registry", "一度は名乗ったが現実と合っていない、と区別できる");
+});
+
+test("★死んだ登録しか無く、近くに claude も居ない会話はワーカー経路に落ちる(机で閉じた会話)", () => {
+  // 生死判定を入れたせいで「閉じた会話に電話から送る」という正常系まで塞がないこと。
+  const dead = { sessionId: S1, pane: "%12", model: "", server: "", pid: 0, mtimeMs: NOW - 60_000 };
+  const r = resolve(S1, CWD, [dead], [], { ttlMs: HEARTBEAT_TTL_MS });
+  assert.equal(r.reason, "none");
+});
+
+test("★★同着の登録は両方止める(どちらか片方を通すと二重注入になる)", () => {
+  // 心拍は 2 秒ごとなので、同じペインを名乗る2件の mtime が一致することは起こりうる。
+  // 「厳密に新しい方だけ止める」にすると同着で**両方が ok** になり、どちらの会話にも
+  // 本文が入る。可用性(送れない)を差し出して閉じる。
+  const entries = [
+    { sessionId: S1, pane: "%12", model: "", server: "", pid: 0, mtimeMs: 500 },
+    { sessionId: S2, pane: "%12", model: "", server: "", pid: 0, mtimeMs: 500 },
+  ];
+  assert.equal(resolve(S1, CWD, entries, [claudePane("%12")]).reason, "stale");
+  assert.equal(resolve(S2, CWD, entries, [claudePane("%12")]).reason, "stale");
+  // 同着のペインは「誰の物か決められない」ので、他の会話の候補からも外さない
+  const other = resolve("1b5c9362-aaaa-bbbb-cccc-000000000003", CWD, entries, [claudePane("%12")]);
+  assert.equal(other.reason, "unregistered", "占有者を確定できないペインを勝手に除外しない");
+});
+
+test("★死んだ登録は未発言一覧にも出さない(叩いても送れない行を並べない)", () => {
+  const dead = { sessionId: S1, pane: "%12", model: "", server: "", pid: 0, mtimeMs: NOW - 60_000 };
+  assert.deepEqual(only([], [dead], [claudePane("%12")], { ttlMs: HEARTBEAT_TTL_MS }), []);
+  // 対照: 心拍が生きていれば出る
+  assert.equal(
+    only([], [{ ...dead, mtimeMs: NOW }], [claudePane("%12")], { ttlMs: HEARTBEAT_TTL_MS }).length, 1,
+  );
 });

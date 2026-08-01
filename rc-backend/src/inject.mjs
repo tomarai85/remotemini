@@ -132,16 +132,18 @@ export function composerText(text) {
 
 // 区切りはタブ。cwd に空白が入りうるので空白分割は使えない(実在する: "/Users/tom/My Docs")。
 // 対象は #{pane_id}(= "%12" 形式)。session:window.pane と違いウィンドウ番号の振り直しで動かない。
-const PANE_FORMAT = "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}";
+// tty は path より**前**に置く。path は空白もタブも入りうるので末尾で rest.join("\t") に
+// 吸わせる必要があり、その後ろに項目を足すと path に食われる。
+const PANE_FORMAT = "#{pane_id}\t#{pane_current_command}\t#{pane_tty}\t#{pane_current_path}";
 
 /** list-panes の出力を行ごとに構造化する。純関数。 */
 export function parsePaneList(out) {
   const panes = [];
   for (const line of String(out || "").split("\n")) {
     if (!line.trim()) continue;
-    const [pane, command, ...rest] = line.split("\t");
+    const [pane, command, tty, ...rest] = line.split("\t");
     if (!pane || rest.length === 0) continue;
-    panes.push({ pane, command: command || "", path: rest.join("\t") });
+    panes.push({ pane, command: command || "", tty: tty || "", path: rest.join("\t") });
   }
   return panes;
 }

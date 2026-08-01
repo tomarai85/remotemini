@@ -42,7 +42,7 @@ const SENDABLE_FIXTURES = [
 // 実行されたコマンドを記録するだけの偽 tmux。
 // paneText に配列を渡すと capture-pane の**呼び出し順**に消費する(最後の1枚は使い回す)。
 // send() は撮る→本文→撮る→Enter→撮る の3相なので、相の間で画面が変わる状況を再現できる。
-function fakeTmux(paneText = "", paneList = "%1\t2.1.220\t/Users/Shared/dev/roundtrip\n") {
+function fakeTmux(paneText = "", paneList = "%1\t2.1.220\t/dev/ttys001\t/Users/Shared/dev/roundtrip\n") {
   const calls = [];
   const frames = Array.isArray(paneText) ? [...paneText] : [paneText];
   let n = 0;
@@ -337,19 +337,71 @@ test("cwd からペインを引ける(実物の cmd は claude でなくバー�
 });
 
 test("パスに空白があっても壊れない(空白分割していない)", () => {
-  const panes = parsePaneList("%3\t2.1.220\t/Users/tom/My Docs/proj\n");
-  assert.deepEqual(panes, [{ pane: "%3", command: "2.1.220", path: "/Users/tom/My Docs/proj" }]);
+  const panes = parsePaneList("%3\t2.1.220\t/dev/ttys003\t/Users/tom/My Docs/proj\n");
+  assert.deepEqual(panes, [
+    { pane: "%3", command: "2.1.220", tty: "/dev/ttys003", path: "/Users/tom/My Docs/proj" },
+  ]);
+});
+
+// ★path はタブを含みうる(macOS のファイル名はタブを許す)。tty を path より後ろに置くと
+//   ここが path に食われて tty が壊れる。列の並びが load-bearing だという対照。
+test("パスにタブが入っていても tty が壊れない(tty は path より前の列)", () => {
+  const panes = parsePaneList("%4\t2.1.220\t/dev/ttys004\t/tmp/a\tb\n");
+  assert.deepEqual(panes, [
+    { pane: "%4", command: "2.1.220", tty: "/dev/ttys004", path: "/tmp/a\tb" },
+  ]);
+});
+
+/** 実機の観測に出てくる cwd(下の findPaneByCwd の一次資料と同じ)。 */
+const CWD_RT = "/Users/Shared/dev/roundtrip";
+
+// ★list-panes の -F 文字列を**実際に解釈する**偽 tmux。固定文字列を返す偽 tmux では、
+//   要求する書式と読み側(parsePaneList)の対応が壊れても気づけない。書式から項目を1つ
+//   落とすと列がずれ、全ペインが読み捨てられて「tmux に誰も居ない」= 開いている TUI に
+//   対してワーカーを起こす(lost-update)方向に倒れるので、ここは対で検査する。
+function formatAwareTmux(rows) {
+  return {
+    run: (args) => {
+      if (args[0] !== "list-panes") return "";
+      const fmt = args[args.indexOf("-F") + 1];
+      return rows.map((r) => fmt.replace(/#\{(\w+)\}/g, (_, k) => r[k] ?? "")).join("\n") + "\n";
+    },
+  };
+}
+
+test("★要求した書式と読み側の対応が保たれている(列を1つ落とすと全ペインが消える)", () => {
+  const inj = new TmuxInjector({
+    tmux: formatAwareTmux([
+      { pane_id: "%1", pane_current_command: "2.1.220", pane_tty: "/dev/ttys001", pane_current_path: CWD_RT },
+      { pane_id: "%2", pane_current_command: "zsh", pane_tty: "/dev/ttys002", pane_current_path: "/private/tmp" },
+    ]),
+  });
+  assert.deepEqual(inj.listPanes(), [
+    { pane: "%1", command: "2.1.220", tty: "/dev/ttys001", path: CWD_RT },
+    { pane: "%2", command: "zsh", tty: "/dev/ttys002", path: "/private/tmp" },
+  ]);
+});
+
+test("★同一性の検証に要る tty がペイン一覧に必ず載る", () => {
+  const inj = new TmuxInjector({
+    tmux: formatAwareTmux([
+      { pane_id: "%1", pane_current_command: "2.1.220", pane_tty: "/dev/ttys001", pane_current_path: CWD_RT },
+    ]),
+  });
+  // 登録簿(registry.mjs entryAlive)は「その pid の tty == そのペインの tty」を見る。
+  // ここが空だと同一性を検証できず、全ての登録が死んだ扱いになる。
+  assert.equal(inj.listPanes()[0].tty, "/dev/ttys001");
 });
 
 test("★cwd は一致するが claude でないペインには送らない(素の zsh に打ち込む事故)", () => {
-  const inj = new TmuxInjector({ tmux: fakeTmux("", "%9\tzsh\t/private/tmp\n") });
+  const inj = new TmuxInjector({ tmux: fakeTmux("", "%9\tzsh\t/dev/ttys009\t/private/tmp\n") });
   const r = inj.resolvePane("/private/tmp");
   assert.equal(r.pane, null);
   assert.equal(r.reason, "not-claude");
 });
 
 test("★同じ cwd に claude が2つある時は決めない(別の会話へ届く事故)", () => {
-  const list = "%1\t2.1.220\t/Users/Shared/dev/roundtrip\n%2\t2.1.220\t/Users/Shared/dev/roundtrip\n";
+  const list = "%1\t2.1.220\t/dev/ttys001\t/Users/Shared/dev/roundtrip\n%2\t2.1.220\t/dev/ttys002\t/Users/Shared/dev/roundtrip\n";
   const inj = new TmuxInjector({ tmux: fakeTmux("", list) });
   const r = inj.resolvePane("/Users/Shared/dev/roundtrip");
   assert.equal(r.pane, null);
