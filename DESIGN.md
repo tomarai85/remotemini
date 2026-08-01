@@ -226,7 +226,7 @@ Codex 指摘①(分類 → 本文 → Enter の間に modal が割り込むと E
 | `src/inject.mjs` | 全面改訂・完了 | 単体 56(全体 135。MBP Node 22 / edith Node 25 の両方で実測) |
 | `src/server.mjs` 送信経路 | 完了。キュー撤去、409 の理由を4種に分けて電話へ返す | E2E 78/78 |
 | 検査の実質 | 変異33種 → 検出30 / 未到達3(注記つき)/ 理由の無い素通り 0 | `test/mutation-controls.py`、`.harness/feedback/check-2026-08-01-2-mutation.md` |
-| **実機の tmux への送信** | **一度通した**(8/01 夜、edith の使い捨てセッションで本物の Claude Code へ)。そこで**偽 tmux では原理的に出ない欠陥を6件**発見して潰した。A/B/C/D の一巡はまだ | §8 の実機節 / `WORKLOG.md` 8/01 夕〜夜 |
+| **実機の tmux への送信** | **通した**(8/01 夜、edith と Jervis の使い捨てセッションで本物の Claude Code へ)。**偽 tmux では原理的に出ない欠陥を7件**発見して潰した(うち1件は唯一の fail-open)。**A/B/C/D の一巡も 23:1x に台本で 4/4**、さらに**選択画面の打ち切りも実機で 7/7 駆動**(`tools/live-choice-check.mjs`)。→ 注入層に実機で未駆動の経路はもう無い | §8 の実機節 / `WORKLOG.md` 8/01 夕〜8/02 |
 | iPhone 画面 | 未着手(素の HTML のみ) | — |
 | edith への常設(launchd) | **未着手**。今は使い捨てコピーで検査するだけ | — |
 
