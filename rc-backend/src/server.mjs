@@ -385,7 +385,7 @@ const server = createServer(async (req, res) => {
         // 注入経路。入力欄(composer)が実在する時だけ送る。CHOICE(承認/上限の選択肢)には
         // 何も送らない — Enter が課金や承認になる。生成中でも composer はあるので送れる
         // (Claude Code 自身が次ターンとして扱う = 自前のキューは持たない)。
-        const r = injector.send(pane, text);
+        const r = await injector.send(pane, text);
         if (r.sent) {
           return json(res, 202, {
             accepted: true, route: "tmux", pane, source: found.source,

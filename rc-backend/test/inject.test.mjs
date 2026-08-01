@@ -186,11 +186,11 @@ test("強い文言だけでは CHOICE にしない(応答本文で遮断され�
 
 // ---- 送信の規約 ----
 
-test("SENDABLE なら本文をリテラル送信し、Enter は別コマンド", () => {
+test("SENDABLE なら本文をリテラル送信し、Enter は別コマンド", async () => {
   const base = screen("idle-boot");
   const t = fakeTmux([base, base + "\nテスト本文", base]);
   const inj = new TmuxInjector({ tmux: t });
-  const r = inj.send("%1", "テスト本文");
+  const r = await inj.send("%1", "テスト本文");
   assert.equal(r.sent, true);
   const s = sends(t);
   assert.equal(s.length, 2, "本文と Enter は必ず2回に分ける");
@@ -206,30 +206,30 @@ test("viewport だけを撮る(-S を付けない = 過去の行を今の状態�
   assert.ok(!cap.includes("-S"), "scrollback を読んではいけない");
 });
 
-test("★CHOICE 画面には絶対に送らない(本文も Enter も)", () => {
+test("★CHOICE 画面には絶対に送らない(本文も Enter も)", async () => {
   const t = fakeTmux(screen("choice-model-menu"));
   const inj = new TmuxInjector({ tmux: t });
-  const r = inj.send("%1", "うっかり");
+  const r = await inj.send("%1", "うっかり");
   assert.equal(r.sent, false);
   assert.equal(r.state, "CHOICE");
   assert.equal(r.reason, "choice");
   assert.equal(sends(t).length, 0, "1文字も送ってはいけない");
 });
 
-test("UNKNOWN にも送らない(入力欄が確認できなければ fail-closed)", () => {
+test("UNKNOWN にも送らない(入力欄が確認できなければ fail-closed)", async () => {
   const t = fakeTmux("???");
   const inj = new TmuxInjector({ tmux: t });
-  const r = inj.send("%1", "x");
+  const r = await inj.send("%1", "x");
   assert.equal(r.sent, false);
   assert.equal(r.reason, "unknown");
   assert.equal(sends(t).length, 0);
 });
 
-test("★本文の後に選択画面が出たら Enter を送らない(Enter が承認/課金になる)", () => {
+test("★本文の後に選択画面が出たら Enter を送らない(Enter が承認/課金になる)", async () => {
   // 相1 = 送ってよい画面 / 相2(本文送信後) = 上限画面が割り込んだ
   const t = fakeTmux([screen("idle-boot"), screen("choice-model-menu")]);
   const inj = new TmuxInjector({ tmux: t });
-  const r = inj.send("%1", "本文");
+  const r = await inj.send("%1", "本文");
   assert.equal(r.sent, false);
   assert.equal(r.reason, "modal-appeared");
   const s = sends(t);
@@ -237,48 +237,73 @@ test("★本文の後に選択画面が出たら Enter を送らない(Enter が
   assert.ok(!s.some((c) => c.includes("Enter")));
 });
 
-test("★本文が画面に載っていなければ Enter を送らない", () => {
+test("★本文が画面に載っていなければ Enter を送らない", async () => {
   // send-keys の成功 = バイトが届いた証明であって、TUI が受け取った証明ではない。
+  // 待っても載らない事を確かめる必要があるので上限を短くして回す(規約は同じ)。
   const base = screen("idle-boot");
   const t = fakeTmux([base, base, base]); // 本文送信後も画面が変わらない
-  const inj = new TmuxInjector({ tmux: t });
-  const r = inj.send("%1", "届かない本文");
+  const inj = new TmuxInjector({ tmux: t, echoBudgetMs: 60 });
+  const r = await inj.send("%1", "届かない本文");
   assert.equal(r.sent, false);
   assert.equal(r.reason, "composer-mismatch");
   assert.equal(sends(t).length, 1, "Enter は押さない");
 });
 
-test("Enter 後に入力欄から本文が消えていれば verified", () => {
+test("★画面の描き直しは同期しない — 遅れて載った本文でも送れる(実機由来の回帰)", async () => {
+  // 2026-08-01 実機: `send-keys -l` の直後に撮ると本文はまだ映っていない
+  // (12回測って min 8ms / median 9ms / max 77ms)。初版は1枚しか撮らず、
+  // 実機では毎回 composer-mismatch で Enter を押さずに終わっていた。
+  // 偽 tmux は即時反映なので単体も e2e も緑のまま = テストが届いていなかった。
+  const base = screen("idle-boot");
+  const t = fakeTmux([base, base, base, base + "\n遅れて載る本文", base]);
+  const r = await new TmuxInjector({ tmux: t, sleep: async () => {} }).send("%1", "遅れて載る本文");
+  assert.equal(r.sent, true, "待てば載る本文を取り逃してはいけない");
+  assert.equal(r.delivered, "verified");
+  assert.equal(sends(t).length, 2);
+  assert.ok(t.captures() >= 4, "1枚しか撮らない実装ではこの状況を通せない");
+});
+
+test("★待っている間に選択画面が出たら、そこで打ち切って Enter を押さない", async () => {
+  // 描き直し待ちのループの中でも menu の見張りを外さない。
+  const base = screen("idle-boot");
+  const t = fakeTmux([base, base, screen("choice-model-menu")]);
+  const r = await new TmuxInjector({ tmux: t, sleep: async () => {} }).send("%1", "本文B");
+  assert.equal(r.sent, false);
+  assert.equal(r.reason, "modal-appeared");
+  assert.ok(!sends(t).some((c) => c.includes("Enter")));
+});
+
+test("Enter 後に入力欄から本文が消えていれば verified", async () => {
   const base = screen("idle-boot");
   const t = fakeTmux([base, base + "\nこんにちは", base]);
-  const r = new TmuxInjector({ tmux: t }).send("%1", "こんにちは");
+  const r = await new TmuxInjector({ tmux: t }).send("%1", "こんにちは");
   assert.equal(r.sent, true);
   assert.equal(r.delivered, "verified");
 });
 
-test("★Enter 後も入力欄に本文が残っていれば unverified(送れたと言わない)", () => {
+test("★Enter 後も入力欄に本文が残っていれば unverified(送れたと言わない)", async () => {
   const rule = "─".repeat(40);
   const held = `過去の応答\n${rule}\n❯ 残ったままの本文\n${rule}`;
   const t = fakeTmux([screen("idle-boot"), held, held]);
-  const r = new TmuxInjector({ tmux: t }).send("%1", "残ったままの本文");
+  const r = await new TmuxInjector({ tmux: t, echoBudgetMs: 60 }).send("%1", "残ったままの本文");
   assert.equal(r.sent, true);
   assert.equal(r.delivered, "unverified");
 });
 
-test("★Enter 後に入力欄ごと消えていても verified と言わない(確かめられていない)", () => {
+test("★Enter 後に入力欄ごと消えていても verified と言わない(確かめられていない)", async () => {
   const base = screen("idle-boot");
   const t = fakeTmux([base, base + "\n本文A", "画面が別物になった"]);
-  const r = new TmuxInjector({ tmux: t }).send("%1", "本文A");
+  const r = await new TmuxInjector({ tmux: t, echoBudgetMs: 60 }).send("%1", "本文A");
   assert.equal(r.sent, true);
   assert.equal(r.delivered, "unverified");
 });
 
-test("★生成中でも送れる(TUI 自身がキューする = 自前キューは持たない)", () => {
+test("★生成中でも送れる(TUI 自身がキューする = 自前キューは持たない)", async () => {
   // M5 実測: 生成中に本文+Enter を送っても生成は中断されず、TUI が
   // `❯ Press up to edit queued messages` と表示して次のターンとして処理した。
   const gen = screen("generating");
   const t = fakeTmux([gen, gen + "\nMARKQ 4たす4は?", screen("queued-during-generation")]);
-  const r = new TmuxInjector({ tmux: t }).send("%1", "MARKQ 4たす4は?");
+  const r = await new TmuxInjector({ tmux: t }).send("%1", "MARKQ 4たす4は?");
   assert.equal(r.sent, true);
   assert.equal(r.delivered, "verified");
   assert.equal(sends(t).length, 2);

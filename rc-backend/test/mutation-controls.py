@@ -27,10 +27,10 @@ MUT = [
   'const floor = Math.max(0, lines.length - 8);',
   'const floor = 0;'),
  ("M4 本文送信後の再観測を外す(modal の割り込みを見ない)", INJ,
-  'if (s1.state === "CHOICE") {',
-  'if (false) {'),
+  'if (menuAt(t)) return "modal";',
+  '// mutated: 待っている間の menu 見張りを外す'),
  ("M5 本文が載ったかの確認を外す(送れた事にして Enter を押す)", INJ,
-  'if (countOf(mid, probe) <= seenBefore) {',
+  'if (echo.tag !== "echoed") {',
   'if (false) {'),
  ("M6 メニューを番号行1つで成立させる(自己ロックが復活する)", INJ,
   'if (cluster.length >= 2 && cluster.some((x) => x.cursor)) return true;',
@@ -42,11 +42,16 @@ MUT = [
   'return this.tmux.run(["capture-pane", "-t", pane, "-p"]);',
   'return this.tmux.run(["capture-pane", "-t", pane, "-p", "-S", "-200"]);'),
  ("M9 Enter 後に入力欄が消えていたら verified と言う", INJ,
-  'const delivered = left !== null && !left.includes(probe) ? "verified" : "unverified";',
-  'const delivered = (left || "").includes(probe) ? "unverified" : "verified";'),
+  'return left !== null && !left.includes(probe) ? "cleared" : null;',
+  'return left === null || !left.includes(probe) ? "cleared" : null;'),
  ("M10 claude 判定の許可制を外す(どのコマンドにも送る)", INJ,
   'if (/^\\d+\\.\\d+\\.\\d+/.test(c)) return true; // 実測の形',
   'return true;'),
+ # M11 = 2026-08-01 に実機で実際に踏んだ欠陥そのもの。画面の描き直しを待たず1枚だけ撮る実装に戻す。
+ # 偽 tmux は即時反映なのでこれを検出できる検査は「遅れて載る画面」を持つ物だけ。
+ ("M11 画面の反映を待たない(1枚撮って諦める = 実機で毎回不達)", INJ,
+  'if (Date.now() - t0 >= this.echoBudgetMs) return { tag: null, text, waited: Date.now() - t0 };',
+  'return { tag: null, text, waited: Date.now() - t0 };'),
 ]
 
 rows = []

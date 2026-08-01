@@ -171,16 +171,52 @@ function countOf(haystack, needle) {
   return String(haystack).split(needle).length - 1;
 }
 
+/**
+ * 画面の描き直しを待つ上限。**実測から決めた値**(2026-08-01、本物の tmux + 2.1.220)。
+ *
+ * `send-keys -l` の直後に撮ると本文はまだ画面に無い。12 回測って
+ * min 8ms / median 9ms / max 77ms(idle)。生成中は描画が遅れうるので余裕を厚く取り、
+ * 実測最大の約 20 倍を上限にする。**待ち切れなかった時は送らない**(= 安全側)ので、
+ * この値は「誤って Enter を押す確率」ではなく「諦めるまでの時間」しか決めない。
+ *
+ * 初回の点検は待つ前に行うので、偽 tmux(即時反映)では 1ms も待たない。
+ */
+const ECHO_BUDGET_MS = 1500;
+const ECHO_POLL_MS = 25;
+
 export class TmuxInjector {
   /**
    * @param {object} opts
    * @param {{run:(args:string[])=>string}} opts.tmux tmux 実行の注入(テスト容易性)
+   * @param {number} [opts.echoBudgetMs] 画面反映を待つ上限
+   * @param {(ms:number)=>Promise<void>} [opts.sleep] 待ちの注入
    */
-  constructor({ tmux }) {
+  constructor({ tmux, echoBudgetMs = ECHO_BUDGET_MS, sleep } = {}) {
     if (!tmux || typeof tmux.run !== "function") {
       throw new Error("TmuxInjector: tmux runner injection required");
     }
     this.tmux = tmux;
+    this.echoBudgetMs = echoBudgetMs;
+    this.sleep = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  }
+
+  /**
+   * 何かが確定するまで画面を撮り直す。**最初の1枚は待たずに撮る**ので、
+   * 即時反映の環境(テストの偽 tmux)では待ち時間ゼロで抜ける。
+   *
+   * @param {string} pane
+   * @param {(text:string)=>(string|null)} decide 確定したら理由の札を返す。未確定は null
+   * @returns {Promise<{tag:(string|null), text:string, waited:number}>} tag=null は時間切れ
+   */
+  async pollScreen(pane, decide) {
+    const t0 = Date.now();
+    for (;;) {
+      const text = this.capture(pane);
+      const tag = decide(text);
+      if (tag) return { tag, text, waited: Date.now() - t0 };
+      if (Date.now() - t0 >= this.echoBudgetMs) return { tag: null, text, waited: Date.now() - t0 };
+      await this.sleep(ECHO_POLL_MS);
+    }
   }
 
   /** 今の viewport。**scrollback は読まない**(過去の行を今の状態と読む失敗を構造的に消す)。 */
@@ -202,9 +238,14 @@ export class TmuxInjector {
    * 代わりに**間に観測を挟む**。これは Codex 指摘③(send-keys の成功はバイトが届いた証明で
    * あって Claude が受け取った証明ではない)への回答も兼ねる。
    *
-   * @returns {{sent:boolean, state:string, delivered:("verified"|"unverified"|null), reason:(string|null)}}
+   * ★2026-08-01 実機で判明: **画面の描き直しは同期しない**。`send-keys -l` の直後に撮ると
+   * 本文はまだ映っておらず、初版はここで毎回 `composer-mismatch` を返して Enter を押さずに
+   * 終わっていた(偽 tmux は即時反映なので緑のままだった = テストが届いていなかった型)。
+   * → 観測を「1枚だけ撮る」から「確定するまで撮り直す」に変える。上限は実測由来(§ECHO_BUDGET_MS)。
+   *
+   * @returns {Promise<{sent:boolean, state:string, delivered:("verified"|"unverified"|null), reason:(string|null), waited?:object}>}
    */
-  send(pane, text) {
+  async send(pane, text) {
     const before = this.capture(pane);
     const s0 = classifyScreen(before);
     if (s0.state !== "SENDABLE") {
@@ -216,27 +257,38 @@ export class TmuxInjector {
 
     this.tmux.run(["send-keys", "-t", pane, "-l", "--", text]);
 
-    // ★Enter を送る前に、もう一度画面を見る。
-    const mid = this.capture(pane);
-    const s1 = classifyScreen(mid);
-    if (s1.state === "CHOICE") {
-      // 本文送信中に選択画面が出た。ここで Enter を送ると承認/課金になる。送らない。
+    // ★Enter を送る前に、本文が実際に載ったのを見届ける。載る前に選択画面が
+    // 割り込んでいたら、そこで打ち切る(Enter を押せば承認や課金になる)。
+    const echo = await this.pollScreen(pane, (t) => {
+      if (menuAt(t)) return "modal";
+      if (countOf(t, probe) > seenBefore) return "echoed";
+      return null;
+    });
+    if (echo.tag === "modal") {
       return { sent: false, state: "CHOICE", delivered: null, reason: "modal-appeared" };
     }
-    if (countOf(mid, probe) <= seenBefore) {
-      // 本文がどこにも増えていない = ペインに入っていない。Enter を送る理由が無い。
+    if (echo.tag !== "echoed") {
+      // 上限まで待っても本文が増えない = ペインに入っていない。Enter を送る理由が無い。
+      const s1 = classifyScreen(echo.text);
       return { sent: false, state: s1.state, delivered: null, reason: "composer-mismatch" };
     }
 
     this.tmux.run(["send-keys", "-t", pane, "Enter"]);
 
     // 送信後: composer から本文が消えていれば消費された(即送信 or TUI のキュー入り)。
-    // composer 自体が消えていた場合は**確かめられなかった**。「本文が見えない」を
-    // 「送れた」と読むのはこの層で二度踏んだ誤りなので、verified と言わない。
-    const after = this.capture(pane);
-    const left = composerText(after);
-    const delivered = left !== null && !left.includes(probe) ? "verified" : "unverified";
-    return { sent: true, state: s0.state, delivered, reason: null };
+    // ここも描き直し待ちが要る。composer 自体が消えていた場合は**確かめられなかった**ので、
+    // 「本文が見えない」を「送れた」と読まない(この層で二度踏んだ誤り)。
+    const gone = await this.pollScreen(pane, (t) => {
+      const left = composerText(t);
+      return left !== null && !left.includes(probe) ? "cleared" : null;
+    });
+    return {
+      sent: true,
+      state: s0.state,
+      delivered: gone.tag === "cleared" ? "verified" : "unverified",
+      reason: null,
+      waited: { echo: echo.waited, clear: gone.waited },
+    };
   }
 
   /** 割り込み。規約3: Escape のみ。C-c はここでは送らない。 */
