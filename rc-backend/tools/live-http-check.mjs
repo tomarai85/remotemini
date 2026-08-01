@@ -7,9 +7,11 @@
  *   (一覧 → 履歴 → 送信 → ストリーム → 割り込み)は電話が実際に叩く経路そのものなのに未駆動。
  *
  * ★この台本は「合格を出す」より「**何が起きるかを測る**」道具として書いてある。
- *   特に `/stream` は、tmux 経路のセッションに対して**何も流れない可能性が高い**
- *   (`pushToSubscribers` の呼び出しが worker 経路の1箇所だけ = server.mjs:461)。
- *   そこを「仕様です」と断定せず、**実測して数字で残す**。
+ *   当初ここには「`/stream` は tmux 経路に**何も流れない可能性が高い**」と書いてあった
+ *   (`pushToSubscribers` の呼び出しが worker 経路の1箇所だけ、という読みから)。
+ *   **実測でこの予想は外れた**(2026-08-02 edith): tail 配信を入れた後は message が 0ms で
+ *   1件届く。予想を残したままにすると次の読み手が「流れないのが仕様」と受け取るので消す。
+ *   数字は下の SSE の内訳を見る事。
  *
  * 約束(崩さない事):
  *   - 使い捨てセッション名 `rc-e2e-<数字6桁以上>` しか作らない。Tom の実セッションに触る道が無い。
@@ -18,16 +20,28 @@
  *   - 片付けはサーバ・tmux とも `finally` で必ず走らせ、**不在を確認**してから終わる。
  *   - 写しと証拠は repo の外($TMPDIR)。起動バナーにアカウントのメールが載る。
  *
- * 使い方: node tools/live-http-check.mjs [--cwd DIR] [--bin "claude"] [--probe "本文"] [--no-send]
- * 終了コード: 0 = 全項目 OK / 1 = どれかが NG / 2 = 準備段で中断
+ * 使い方: node tools/live-http-check.mjs [--cwd DIR] [--bin rc-claude] [--probe "本文"] [--no-send]
+ *   ★`--bin` の既定は `rc-claude`。素の `claude` は statusLine を持たない = 登録簿に名乗らないので、
+ *     この台本の 2 番目の検査が構造的に通らない。指定した場合は準備段で名指しで止める。
+ * 終了コード: 0 = 全項目 OK / 1 = どれかが NG / 2 = 準備段で中断(2026-08-02 まで未実装だった)
+ *            **3 = 運ぶ層は通ったが、相手が答えていない**(利用上限)
+ *   2 に入る物(= **何も測れていない**回。1 と混ぜない): 実行ファイルが無い / 登録の仕組みが無い /
+ *   建てる場所が未信頼 / 起動画面が信頼確認で止まる / 起動画面が上限の告知。
+ *   1 は「建って、測って、どれかが赤かった」時だけ。2 と 1 の差は「直す物が在るか」。
+ *
+ * ★2026-08-02、この台本自身に踏まれて 3 を足した。edith で 16 OK / 0 NG / exit 0 が出た回の
+ *   `03-history.json` の assistant 本文が `You've hit your weekly limit · resets 12am` だった。
+ *   検査対象は運ぶ層なので緑自体は嘘ではない。だが「16 OK」は「一巡した」と読まれる。
+ *   同じ機械を同じ時刻に測った `live-inject-check.mjs` は exit 3 を出していたので、
+ *   **二つの計器が同じ機械について逆の事を言う**状態になっていた。読まれ方まで計器の責任。
  */
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TmuxInjector, classifyScreen } from "../src/inject.mjs";
+import { TmuxInjector, classifyScreen, limitNoticeIn } from "../src/inject.mjs";
 
 const HOME = homedir();
 const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -51,7 +65,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function parseArgs(argv) {
   const out = {
     cwd: HOME,
-    bin: "claude",
+    // ★既定は `rc-claude`(素の `claude` ではない)。2026-08-02 に実測して直した。
+    //   素の `claude` で起動した会話は **statusLine を持たない** = 登録簿に何も書かない。
+    //   この台本の 2 番目の検査は「登録簿に名乗る」なので、既定のままでは
+    //   **どう転んでも通らない設定**だった(実際 30 秒待って NG になった)。
+    //   通らない既定を持つ検査は、赤が出た時に「本当に壊れた」のか
+    //   「元から通らない設定だった」のか区別できない = 計器として死んでいる。
+    bin: "rc-claude",
     port: 8790 + (process.pid % 200), // 既定 8787 とぶつけない。127.0.0.1 のみ。
     probe: "1+1 は? 数字だけ答えて。",
     send: true,
@@ -105,6 +125,27 @@ function api(port, key, method, path, body) {
 }
 
 /** SSE を開いて、届いた物に時刻を付けて溜める。閉じるのは呼び手。 */
+/**
+ * 送信後、**電話が返答に到達できるか**。到達路は2本あり、どちらも設計通り。
+ *
+ *   message … tail が既に繋がっていて、返答の行がそのまま流れてきた
+ *   reread  … 返答が tail の接続より先に着いた回。`server.mjs` の tail は初回に
+ *             **末尾へ位置合わせして過去分を流さない**ので、代わりに
+ *             `gap{rereadHistory:true}` を投げ、電話に `/history` を読み直させる
+ *
+ * 判定をここに切り出してあるのは、**陰性対照を当てられる形にする**ため
+ * (`test/reply-route.test.mjs`)。「どちらか通ればよい」に緩めた検査が、
+ * 本当の壊れ方(= 何も流れず電話が永久に無音)でまだ赤くなるかは、
+ * 読んで納得するのではなく撃って確かめる。
+ *
+ * @returns "message" | "reread" | "none"
+ */
+export function replyRoute({ assistantMessages = 0, rereadGaps = 0, replyInHistoryAfterGap = false } = {}) {
+  if (assistantMessages > 0) return "message";
+  if (rereadGaps > 0 && replyInHistoryAfterGap) return "reread";
+  return "none";
+}
+
 function openStream(port, key, sessionId) {
   const events = [];
   const t0 = Date.now();
@@ -151,6 +192,12 @@ const readPanes = () => {
 };
 
 let failed = false;
+// ★冒頭の「2 = 準備段で中断」は、2026-08-02 まで**どこにも実装が無かった**(0/1 しか出ない)。
+//   準備段の中断(登録の仕組みが無い等)と、検査そのものの赤は、読み手の次の手が違う。
+let prepAbort = false;
+// ★配達は成立したのに相手が答えていない(利用上限)。壊れている(1)とは別の出口 = 3。
+//   live-inject-check.mjs が先に踏んだ穴と同じ約束に揃える。
+let limitedReply = false;
 const results = [];
 const check = (name, ok, detail) => {
   console.log(`${ok ? "OK " : "NG "} ${name}(${detail})`);
@@ -168,20 +215,99 @@ async function main() {
   const session = `rc-e2e-${stamp}`;
   if (!/^rc-e2e-[0-9]{6,}$/.test(session)) {
     console.error(`使い捨てのセッション名ではない: ${session}`);
-    return (failed = true);
+    return (prepAbort = true);
   }
   if (tmuxOk(["has-session", "-t", `=${session}`])) {
     console.error(`同名のセッションが既に在る: ${session}。触らずに止める。`);
-    return (failed = true);
+    return (prepAbort = true);
   }
   const outDir = join(tmpdir(), `rc-http-${stamp}`);
   if (outDir.includes("/mobile-work/")) {
     console.error(`証拠の置き場が repo の中: ${outDir}`);
-    return (failed = true);
+    return (prepAbort = true);
   }
   mkdirSync(outDir, { recursive: true });
 
+  // --- 登録の仕組みが在るかを、TUI を建てる**前に**確かめる -------------------
+  // ★「30 秒待っても登録が出ない」は、人が次に取る手の違う二つの状態を1文に潰していた:
+  //     (a) 登録する仕組みがそもそも起動していない(statusLine を持たない `claude` で建てた)
+  //     (b) 仕組みは在るのに書けていない(登録スクリプトの不具合・権限・パス)
+  //   (a) を**ここで名指しで**落とす。そうすると step 2 の時間切れは (b) だけを意味する。
+  //   2026-08-02: 既定が素の `claude` だったので、この台本は (a) を (b) の顔で報告していた。
+  const binPath = opt.bin.includes("/")
+    ? (existsSync(opt.bin) ? opt.bin : "")
+    : (() => {
+        try {
+          return execFileSync("/usr/bin/env", ["sh", "-c", `command -v ${JSON.stringify(opt.bin)}`],
+            { encoding: "utf8" }).trim();
+        } catch {
+          return "";
+        }
+      })();
+  if (!binPath) {
+    console.error(`起動に使う実行ファイルが見つからない: ${opt.bin}`);
+    console.error(`  次の手: rc-claude は ~/.claude/tools/rc-claude(edith へは .claude-sync 経由)。`);
+    console.error(`          PATH に無ければ --bin に絶対パスを渡す。`);
+    return (prepAbort = true);
+  }
+  // 登録簿に書けるのは「statusLine を持つ会話」だけ。経路は2つ。
+  const viaWrapper = /(^|\/)rc-claude$/.test(binPath);
+  const viaSettings = (() => {
+    try {
+      return !!JSON.parse(readFileSync(join(HOME, ".claude", "settings.json"), "utf8")).statusLine;
+    } catch {
+      return false;
+    }
+  })();
+  if (!viaWrapper && !viaSettings) {
+    console.error(`登録の仕組みが無い状態で建てようとしている(この設定では step 2 は必ず落ちる)`);
+    console.error(`  使う実行ファイル : ${binPath}`);
+    console.error(`  statusLine の経路: ラッパ=無 / ~/.claude/settings.json=無`);
+    console.error(`  次の手: --bin rc-claude で建てる(会話ごとに statusLine を足すラッパ)。`);
+    console.error(`          機械全体に効かせるなら settings.json に statusLine を1つ足す(Tom の手作業)。`);
+    return (prepAbort = true);
+  }
+
+  // --- 建てる場所が**信頼済みか**を、TUI を建てる前に確かめる -------------------
+  // ★2026-08-02 に踏んだ: 既定の cwd(= HOME)が未信頼だったので、Claude Code は入力欄でなく
+  //   「Is this a project you created or one you trust?」の選択画面で止まった。台本は
+  //   90 秒待った末に「上限や信頼確認の可能性」と**当て推量を並べて** exit 1(= 壊れている)を出した。
+  //   人が取る次の手は三つとも別物なのに、1つの顔にまとめていた:
+  //     信頼が要る(1回答える) / 上限(待つ) / 本当に壊れている(直す)。
+  //   信頼は `~/.claude.json` の projects[dir].hasTrustDialogAccepted に載っているので、
+  //   90 秒待たずにここで読める。**この台本は選択画面に答えない**(自動化に安全確認を
+  //   押させない)。代わりに、信頼済みの dir へ自分で寄せるか、名指しで落ちる。
+  const trustedDirs = (() => {
+    try {
+      const j = JSON.parse(readFileSync(join(HOME, ".claude.json"), "utf8"));
+      return Object.entries(j.projects || {})
+        .filter(([, v]) => v && v.hasTrustDialogAccepted === true)
+        .map(([k]) => k);
+    } catch {
+      return null; // 読めない = 分からない。**未信頼と決めつけない**
+    }
+  })();
+  let cwdNote = "確かめられなかった(~/.claude.json が読めない)";
+  if (trustedDirs) {
+    if (trustedDirs.includes(opt.cwd)) {
+      cwdNote = "信頼済み";
+    } else if (trustedDirs.length > 0) {
+      // 既定のまま走らせて必ず止まる台本は計器として死んでいる。信頼済みの所へ寄せて**言う**。
+      const picked = trustedDirs.find((d) => d.startsWith("/private/tmp") || d.startsWith("/tmp")) || trustedDirs[0];
+      cwdNote = `${opt.cwd} は未信頼 → ${picked} に寄せた(--cwd で指定すれば上書きできる)`;
+      opt.cwd = picked;
+    } else {
+      console.error(`建てる場所が未信頼で、信頼済みの dir が1つも無い: ${opt.cwd}`);
+      console.error(`  この状態で建てると Claude Code は入力欄でなく信頼確認の選択画面で止まる。`);
+      console.error(`  次の手: その機械で一度手で \`claude\` を起動し、画面を読んだ上で`);
+      console.error(`          「1. Yes, I trust this folder」を選ぶ(この台本は選択画面に答えない)。`);
+      return (prepAbort = true);
+    }
+  }
+
   console.log(`tmux      : ${tmux(["-V"]).trim()}`);
+  console.log(`建てる場所: ${opt.cwd}(${cwdNote})`);
+  console.log(`登録経路  : ${viaWrapper ? "rc-claude ラッパ" : "settings.json の statusLine"}`);
   console.log(`セッション: ${session}(使い捨て)`);
   console.log(`サーバ    : 127.0.0.1:${opt.port}(この台本は外向き bind を持たない)`);
   console.log(`証拠      : ${outDir}\n`);
@@ -203,9 +329,30 @@ async function main() {
       const t = injector.capture(pane);
       return classifyScreen(t).state === "SENDABLE" ? t : null;
     }, 90_000);
-    writeFileSync(join(outDir, "00-boot.txt"), boot.v || injector.capture(pane));
+    const bootScreen = boot.v || injector.capture(pane);
+    writeFileSync(join(outDir, "00-boot.txt"), bootScreen);
     if (!boot.ok) {
-      console.error("起動 90 秒で入力欄が出ない。上限や信頼確認の可能性。Enter は押さない。");
+      // ★旧版はここで「上限や信頼確認の可能性」と**当て推量を二つ並べて** exit 1 を出していた。
+      //   人の次の手は三つとも別物(答える / 待つ / 直す)。画面は撮ってあるのだから、推量でなく
+      //   **読んで名指しする**。準備段で止まった物を「壊れている(1)」の顔で出さない。
+      const tail8 = () => bootScreen.trimEnd().split("\n").slice(-8);
+      if (limitNoticeIn(bootScreen)) {
+        console.error("入力欄まで行かない: 画面に出ているのは**利用上限の告知**。直す物は無い。");
+        for (const l of tail8()) console.error(`    ${l}`);
+        console.error("  次の手: 上限が解けてから同じ台本を回す(この回は何も測れていない)。");
+        return (prepAbort = true);
+      }
+      if (/Is this a project you created or one you trust\?/.test(bootScreen)) {
+        console.error(`入力欄まで行かない: **信頼確認の選択画面**で止まっている(cwd=${opt.cwd})。`);
+        console.error("  この台本は選択画面に答えない(自動化に安全確認を押させない)。");
+        console.error("  次の手: その機械で一度手で `claude` を起動し、画面を読んだ上で");
+        console.error("          「1. Yes, I trust this folder」を選ぶ。以後この台本は素通りする。");
+        return (prepAbort = true);
+      }
+      console.error(`起動 90 秒で入力欄が出ない(state=${classifyScreen(bootScreen).state})。Enter は押さない。`);
+      console.error("  画面の末尾:");
+      for (const l of tail8()) console.error(`    ${l}`);
+      console.error(`  画面全体: ${join(outDir, "00-boot.txt")}`);
       return (failed = true);
     }
     console.log(`起動 ok(${boot.waited}ms)`);
@@ -303,27 +450,91 @@ async function main() {
         writeFileSync(join(outDir, "03-history.json"), JSON.stringify(replied.v, null, 2));
       }
 
-      // ★ここが本題: tmux 経路で SSE に中身が流れるか。
-      // 初回(8/02)は **0 件** = 電話側は送信後ずっと無音だった。tail 配信を入れた後は
-      // message が流れる。数えるだけでは退行に気付けないので、種類ごとに検査する。
-      // tail の poll は 700ms 間隔なので、history に出た直後にはまだ流れていない事がある。
-      // 「今この瞬間に無い」を「来ない」と読み替えない — 予算を決めて待ってから判定する。
-      const gotMsg = await waitFor(
-        async () => stream.events.some((e) => e.raw.includes("event: message")) || null,
-        8000,
-        300,
-      );
+      // ★2026-08-02、この台本自身に踏まれて足した。edith で 16 OK / 0 NG / exit 0 が出た回の
+      //   `03-history.json` を開いたら、assistant の本文が
+      //     "You've hit your weekly limit · resets 12am (Asia/Tokyo)"
+      //   だった。つまり上の「返答が history に出る」も「SSE の message で届く」も、
+      //   **観測としては正しい**(実際に1件届いた)。嘘なのは、それを
+      //   「一巡した = 会話が進んだ」と読ませてしまう所。届いたのは上限の告知であって答えではない。
+      //   `live-inject-check.mjs` は同じ穴を先に踏んで exit 3 を持っている。こちらだけ
+      //   緑を出し続けると、**二つの計器が同じ機械について逆の事を言う**(実際そうなった)。
+      //   運ぶ層の検査(配達・SSE・割り込み)は緑のまま — 上限は「送れない」ではないので。
+      //   足すのは「相手が答えたか」という別の列と、答えていない時に緑を出さない事。
+      const replyText = replied.ok
+        ? (replied.v.filter((m) => m.role === "assistant").pop()?.text || "")
+        : "";
+      //   ★NG(exit 1)には**しない**。「壊れている」と「相手が答えられない」は読み手の次の手が
+      //   違う(前者は直す / 後者は待つ)。NG に混ぜると、上限のたびに壊れた顔をする計器になる。
+      if (replied.ok) {
+        limitedReply = limitNoticeIn(replyText);
+        if (limitedReply) {
+          note("★相手が答えたか", `答えていない — 返ってきたのは上限の告知: ${replyText.slice(0, 58)}`);
+        } else {
+          check("★返答が上限の告知ではない(相手が実際に答えた)", true, "告知ではない本文が返った");
+        }
+      }
+
+      // ★ここが本題: 送った後、**電話は返答を知る事ができるか**。
+      // 8/02 の初回は SSE に何も流れず、電話は送信後ずっと無音だった。潰したかったのはその穴。
+      //
+      // ただし「message で届く」を要求する形は**検査の側が間違っていた**。同じ機械・同じコードで
+      // 数分違いの2回が `message 1 件 @0ms`(緑)と `message 0 件 @8s`(赤)に割れた。
+      // 競争でも退行でもなく設計 — `src/server.mjs:404-419`:
+      //   tail は初回に**末尾へ位置合わせして過去分を流さない**(`過去分は流さない`)。
+      //   代わりに `gap{rereadHistory:true, why:"tail-attached"}` を投げ、電話に読み直させる。
+      // つまり返答が tail の接続より先に着いた回の届け先は message ではなく「gap → 読み直し」。
+      // どちらも設計通りの経路なのに、片方だけを緑にする検査は**正しい動作を無作為に赤くする**。
+      //
+      // 緩める方向なので、緩め過ぎの線を先に引く。検査するのは経路名ではなく到達可能性:
+      //   A. message 経路 … role=assistant を含む message が実際に流れた
+      //                     (user のこだまだけでは電話は返答を知らないので数に入れない)
+      //   B. 読み直し経路 … `rereadHistory:true` の gap が流れ、**その gap を受けた電話がやる事を
+      //                     ここで実際にやって**(= `/history` を今もう一度読んで)返答が在る
+      //                     ★`replied` の使い回しにしない。あれは gap より前に取った観測で、
+      //                       「読み直せば在る」を支えない(この session の頻出欠陥そのもの)。
+      //   A も B も無い = 電話は永久に無音 = NG。8/02 の本物の壊れ方はここで赤くなる。
+      //
+      // 待ち: tail の poll は 700ms 間隔なので、history に出た直後はまだ流れていない事がある。
+      // 「今この瞬間に無い」を「来ない」と読み替えない — message 経路に予算を使い切らせてから判定する。
+      const dataOf = (e) => {
+        const m = /^data: (.*)$/m.exec(e.raw);
+        try {
+          return JSON.parse(m[1]);
+        } catch {
+          return null;
+        }
+      };
+      const assistantMsgs = () =>
+        stream.events.filter(
+          (e) => !e.ping && e.raw.includes("event: message") && (dataOf(e)?.entries || []).some((x) => x.role === "assistant"),
+        );
+      const gotMsg = await waitFor(async () => (assistantMsgs().length > 0 ? assistantMsgs() : null), 8000, 300);
       const real = stream.events.filter((e) => !e.ping);
       const kind = (name) => real.filter((e) => e.raw.includes(`event: ${name}`));
-      note("SSE の message を待った時間", gotMsg.ok ? `${gotMsg.waited}ms で到着` : "8秒待って到着せず");
+      note(
+        "SSE の assistant 本文を待った時間",
+        gotMsg.ok ? `${gotMsg.waited}ms で到着` : "8秒待って到着せず(= 読み直し経路の側を見る)",
+      );
       note(
         "SSE の内訳",
         `${Date.now() - t0}ms で 実 ${real.length} 件(message ${kind("message").length} / screen ${kind("screen").length} / gap ${kind("gap").length})`,
       );
+      const rereadGaps = kind("gap").filter((e) => dataOf(e)?.rereadHistory === true);
+      let replyInHistoryAfterGap = false;
+      if (rereadGaps.length > 0) {
+        const h = await api(opt.port, key, "GET", `/api/sessions/${sessionId}/history?limit=30`);
+        replyInHistoryAfterGap = (h.json?.history || []).some((m) => m.role === "assistant");
+      }
+      const route = replyRoute({
+        assistantMessages: assistantMsgs().length,
+        rereadGaps: rereadGaps.length,
+        replyInHistoryAfterGap,
+      });
       check(
-        "★返答が SSE の message で届く",
-        kind("message").length > 0,
-        `message ${kind("message").length} 件`,
+        "★送信後、電話が返答に到達できる(message か、gap 後の読み直しか)",
+        route !== "none",
+        `経路=${route} / assistant 入り message ${assistantMsgs().length} 件 / 読み直し指示の gap ${rereadGaps.length} 件` +
+          `(読み直した結果 ${rereadGaps.length > 0 ? (replyInHistoryAfterGap ? "返答が在った" : "★返答が無かった") : "—"})`,
       );
       // gap は2種類あり、意味が正反対なので混ぜない。
       //   epoch-mismatch = 初回購読を壊れた再開と読み違えた欠陥(8/02 に潰した)。出たら NG。
@@ -380,9 +591,39 @@ async function main() {
     if (!gone) failed = true;
     console.log(`結果: ${results.filter((r) => r.ok === true).length} OK / ${results.filter((r) => r.ok === false).length} NG / 実測メモ ${results.filter((r) => r.ok === null).length} 件`);
     if (sessionId) console.log(`使い捨て会話の session_id: ${sessionId}(jsonl は ~/.claude/projects/ に残る)`);
+    if (limitedReply) {
+      // ★緑の数の隣に小さく書いても読まれない。**結論の位置に**置く(inject 側と同じ扱い)。
+      console.log(
+        `\n★この結果を「一巡した」と読んではいけない: 返ってきた assistant の本文は**利用上限の告知**。` +
+          `\n  緑が意味するのは運ぶ層 — 送信が 202 で通り、画面が本文を取り込み、history に反映され、` +
+          `\n  SSE に流れ、interrupt が効いた所まで。**会話が進んだ事は確かめていない**。` +
+          `\n  上限が解けてから同じ台本をもう一度回す事(それまで exit 0 は出ない)。`,
+      );
+    }
   }
 }
 
 // 終了コードは main の外で決める(try の中の return は finally を通って main を抜けるので、
 // main の中に置いた process.exit には届かない = 8/01 に live-choice-check.mjs で踏んだ穴)。
-main().then(() => process.exit(failed ? 1 : 0));
+// 壊れている(1)を上限(3)より先に見せる。直せる物が先。
+// この台本は import もされる(`test/reply-route.test.mjs` が `replyRoute` に陰性対照を当てる)。
+// import した側で1周走り出さない様に、**直接叩かれた時だけ** main を回す。
+//   - argv[1] は symlink のままで渡る事があるので realpath で揃える。揃えないと symlink 経由の
+//     起動で main が黙って走らない = 計器としては最悪の壊れ方(緑も赤も出ずに exit 0)。
+//   - 判定不能側の倒し方は**走らせない**。ここが走ると `npm test` の最中に本物の Claude Code を
+//     起動してしまう。「黙って何もしない」より「試験の最中に実機を触る」方が高くつく。
+const invokedDirectly = (() => {
+  const arg = process.argv[1];
+  if (!arg) return false; // 直接起動なら必ず在る。無い = 誰かに import された文脈
+  const norm = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  return norm(arg) === norm(fileURLToPath(import.meta.url));
+})();
+if (invokedDirectly) {
+  main().then(() => process.exit(prepAbort ? 2 : failed ? 1 : limitedReply ? 3 : 0));
+}

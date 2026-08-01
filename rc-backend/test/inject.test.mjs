@@ -825,6 +825,21 @@ test("★上限の告知は日付つきの形でも出る(fixture が持って�
     false, "hit your と limit が 24 字以上離れたら取らない");
   // 実物の陰性対照を**広げた後にもう一度**通す(上の test と重複するが、ここが本題)。
   assert.equal(limitNoticeIn(screen("promo-banner-boot")), false, "広げても告知帯で誤爆しない");
+
+  // ★この陰性対照が**何のおかげで通っているか**を固定する(2026-08-02、edith の実画面を見て気付いた)。
+  //   fixture の告知帯は端末幅の都合で `If you hit` / `your limit` の間で**折り返している**。
+  //   つまり上の assert は「行をまたぐ骨格は取らない」規則だけでも通ってしまう =
+  //   広い端末で折り返しが消えた瞬間に何が起きるかを、この表は一度も測っていなかった。
+  //   実際の壁は折り返しではなく **`You've` という主語**の方。それを名指しで固定する。
+  //   ここが true に変われば「起動直後の全セッションが上限扱い」= 電話から全部が
+  //   「答えは返りません」に見える、という一番痛い誤爆になる。
+  const promoUnwrapped =
+    "You can use up to 50% of your weekly usage limit on Fable 5. " +
+    "If you hit your limit, you can continue on Fable 5 with usage credits.";
+  assert.match(promoUnwrapped, /hit your limit/,
+    "この対照が成立する前提(骨格の語がそのまま1行に載っている事)を先に確かめる");
+  assert.equal(limitNoticeIn(promoUnwrapped), false,
+    "折り返しが無くても誤爆しない = 効いているのは改行ではなく You've の側");
 });
 
 test("★キュー中の定型文は「空の入力欄」(本文と読むと、短い本文で届いたのに未確認になる)", () => {
