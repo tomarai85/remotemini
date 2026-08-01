@@ -14,7 +14,7 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync } from "node:child_process";
 import { extractSessionMeta, buildListing, extractHistory, entriesFromRecord } from "./sessions.mjs";
-import { JsonlTail } from "./tail.mjs";
+import { JsonlTail, resumeDecision } from "./tail.mjs";
 import { EventRing } from "./ring.mjs";
 import { WorkerManager } from "./worker.mjs";
 import { TmuxInjector, looksLikeClaudePane } from "./inject.mjs";
@@ -640,16 +640,11 @@ const server = createServer(async (req, res) => {
         // 追いつき: `epoch.seq` の epoch が今の配信と同じ時だけ差分で繋ぐ。
         // 違う epoch(サーバ再起動・購読が絶えて作り直された)や、数字でない物、
         // ワーカー経路用の素の数字が来た時は、繋がった事にせず読み直させる。
-        // 「何も持っていない」= 初回。`""` と `"0"` の両方がそれ(電話が since=0 を付けて
-        // 来るのは普通で、これを壊れた再開として gap 扱いすると**毎回**読み直しを命じる事に
-        // なり、やがてクライアントは gap を無視するようになる = 本当の取りこぼしが埋もれる)。
-        const fresh = rawLast === "" || rawLast === "0";
-        const [ep, sq] = rawLast.split(".");
-        const resumable = !fresh && ep === String(f.epoch) && /^\d+$/.test(sq || "");
-        if (!fresh && !resumable) {
-          sendEvent(res, { event: "gap", data: { rereadHistory: true, why: "epoch-mismatch" } });
-        } else if (resumable) {
-          const missed = f.ring.since(Number(sq));
+        const d = resumeDecision(rawLast, f.epoch);
+        if (d.kind === "gap") {
+          sendEvent(res, { event: "gap", data: { rereadHistory: true, why: d.why } });
+        } else if (d.kind === "resume") {
+          const missed = f.ring.since(d.seq);
           if (missed.gap) sendEvent(res, { event: "gap", data: { rereadHistory: true, why: "ring-overflow" } });
           for (const e of missed) sendEvent(res, { id: `${f.epoch}.${e.seq}`, event: "message", data: e.data });
         }

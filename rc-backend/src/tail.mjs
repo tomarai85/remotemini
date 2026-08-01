@@ -38,6 +38,28 @@ export function sliceCompleteLines(buf) {
   return { chunk: buf.subarray(0, nl + 1), consumed: nl + 1 };
 }
 
+/**
+ * SSE の再接続でどう繋ぐか。**純関数**にしてあるのは、ここが嘘の連続性を作る唯一の場所で、
+ * サーバに埋めると検査(変異)が掴めないから。
+ *
+ * id の形は `epoch.seq`。epoch は配信の世代で、購読が絶えて seq が 1 に戻った時に
+ * 「Last-Event-ID: 57 → since(57) は空 → 追いついた」という嘘が成立しないようにする為の前置き。
+ *
+ * @param {string} rawLast Last-Event-ID か ?since=
+ * @param {number} epoch   今の配信の世代
+ * @returns {{kind:"fresh"}|{kind:"resume",seq:number}|{kind:"gap",why:string}}
+ */
+export function resumeDecision(rawLast, epoch) {
+  const s = String(rawLast ?? "");
+  // 何も持っていない = 初回。電話が `since=0` を付けて来るのは普通の事で、これを
+  // 壊れた再開として gap にすると**毎回**読み直しを命じることになり、やがて
+  // クライアントは gap を無視するようになる = 本当の取りこぼしが埋もれる(8/02 実測)。
+  if (s === "" || s === "0") return { kind: "fresh" };
+  const [ep, sq] = s.split(".");
+  if (ep !== String(epoch) || !/^\d+$/.test(sq || "")) return { kind: "gap", why: "epoch-mismatch" };
+  return { kind: "resume", seq: Number(sq) };
+}
+
 const defaultIo = {
   open: (p) => openSync(p, "r"),
   fstat: (fd) => fstatSync(fd),

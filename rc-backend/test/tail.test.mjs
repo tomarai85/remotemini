@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JsonlTail, sliceCompleteLines } from "../src/tail.mjs";
+import { JsonlTail, resumeDecision, sliceCompleteLines } from "../src/tail.mjs";
 
 const L = (o) => `${JSON.stringify(o)}\n`;
 const user = (t) => L({ type: "user", message: { content: t } });
@@ -170,4 +170,31 @@ test("一度に読む量には上限があり、残りは次の poll で続き�
     ["あ".repeat(50), "い".repeat(50), "う".repeat(50)],
   );
   rmSync(d, { recursive: true });
+});
+
+// --- SSE 再接続の判定(嘘の連続性を作らない為の唯一の分岐)-------------------
+test("何も持っていない購読は初回。since=0 も初回として扱う", () => {
+  assert.deepEqual(resumeDecision("", 3), { kind: "fresh" });
+  assert.deepEqual(resumeDecision("0", 3), { kind: "fresh" });
+  assert.deepEqual(resumeDecision(undefined, 3), { kind: "fresh" });
+});
+
+test("同じ世代の id は差分で繋ぐ", () => {
+  assert.deepEqual(resumeDecision("3.7", 3), { kind: "resume", seq: 7 });
+});
+
+test("違う世代の id では繋がない(seq が振り直された後の嘘の追いつきを塞ぐ)", () => {
+  assert.equal(resumeDecision("2.7", 3).kind, "gap");
+  assert.equal(resumeDecision("2.7", 3).why, "epoch-mismatch");
+});
+
+test("ワーカー経路の素の数字を tmux 経路の追いつきに使わない", () => {
+  // Number("7") は素直に 7 になるので、世代を見ないと**別の配信の seq で繋がって**しまう
+  assert.equal(resumeDecision("7", 3).kind, "gap");
+});
+
+test("形が壊れた id は繋がない", () => {
+  assert.equal(resumeDecision("3.", 3).kind, "gap");
+  assert.equal(resumeDecision("3.x", 3).kind, "gap");
+  assert.equal(resumeDecision("...", 3).kind, "gap");
 });

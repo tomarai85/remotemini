@@ -24,6 +24,7 @@ SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INJ = "src/inject.mjs"
 REG = "src/registry.mjs"
 PRC = "src/procs.mjs"
+TAI = "src/tail.mjs"
 
 MUT = [
  ("M1 メニュー判定を外す(CHOICE を返さない)", INJ,
@@ -169,6 +170,30 @@ MUT = [
  ("M34 印を画面全体で数える(入力欄の外に出た本文で Enter を押し、届いていない物を verified と言う)", INJ,
   'if (inBox !== null && countOf(norm(inBox), probe) > seenBefore) return "echoed";',
   'if (countOf(norm(t), probe) > seenBefore) return "echoed";'),
+ # --- ここから tail.mjs(2026-08-02 追加。SSE の tmux 経路配信)-----------------
+ # この層が守っているのは1つだけ:「ファイルが追記だと信じない」。信じた瞬間、
+ # 世代交代した jsonl の途中を前の続きとして読み、**電話に別の会話を混ぜて出す**。
+ ("M35 改行を待たずに読んだ分を全部消費する(書き込み途中の行を JSON.parse に渡す)", TAI,
+  'const nl = buf.lastIndexOf(0x0a);',
+  'const nl = buf.length - 1;'),
+ ("M36 inode の突き合わせを外す(rename での差し替えを前の続きとして読む)", TAI,
+  'const swapped = gen !== this.generation;',
+  'const swapped = false;'),
+ ("M37 印(offset 直前のハッシュ)の照合を外す(同じ長さの書き直しが素通りする)", TAI,
+  'const drifted = !shrunk && !swapped && this.#readCheckpoint(fd, this.offset) !== this.checkpoint;',
+  'const drifted = false;'),
+ ("M38 切り詰めの検出を外す", TAI,
+  'const shrunk = st.size < this.offset;',
+  'const shrunk = false;'),
+ ("M39 初回の位置合わせを先頭にする(購読した瞬間に過去の全会話が流れ出す)", TAI,
+  'this.offset = st.size;',
+  'this.offset = 0;'),
+ ("M40 since=0 を壊れた再開として扱う(初回購読で毎回 gap = 本当の取りこぼしが埋もれる)", TAI,
+  'if (s === "" || s === "0") return { kind: "fresh" };',
+  'if (s === "") return { kind: "fresh" };'),
+ ("M41 配信の世代を見ずに seq だけで繋ぐ(seq が振り直された後に嘘の追いつきが成立する)", TAI,
+  'if (ep !== String(epoch) || !/^\\d+$/.test(sq || "")) return { kind: "gap", why: "epoch-mismatch" };',
+  'if (!/^\\d+$/.test(sq || "")) return { kind: "gap", why: "epoch-mismatch" };'),
 ]
 
 # ★2026-08-01 に実機で踏んだ欠陥: 落ちたかを `"# fail 0" not in stdout` で見ていた。
