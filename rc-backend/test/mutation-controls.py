@@ -304,6 +304,22 @@ MUT = [
  ("M69 app.html が view.mjs から名前を取り込むのをやめる(電話だけが白紙になる)", APP,
   'relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,',
   'relTime, routeLabel, sendResult, subtitleOf, whoOf,'),
+
+ # M70-M73 = 2026-08-02。edith で実際に踏んだ「一覧が空」の欠陥の周り。
+ # 机(MBP)では `cli` が 1本目に来るので**4つとも素通りする**。守っているのは
+ # e2e 12-b に足した edith 分布の再現(新しい方が全部 `sdk-cli`)の側。
+ ("M70 `limit` を「開く file の上限」に戻す(edith で一覧が空に戻る)", SRV,
+  'if (limit > 0 && entries.length + unreadable.length >= limit) break;',
+  'if (limit > 0 && examined >= limit) break;'),
+ ("M71 走査側の絞り込みを外す(出さない会話が枠を食って本命が押し出される)", SRV,
+  '    if (!isPhoneVisible(meta)) continue;\n',
+  ''),
+ ("M72 「電話に出す会話」の定義を広げる(adapter の非対話ログが一覧に混ざる)", SES,
+  'export const isPhoneVisible = (meta) => meta?.entrypoint === "cli";',
+  'export const isPhoneVisible = (meta) => meta?.entrypoint != null;'),
+ ("M73 何本開いたかを外に出さない(「埋まって止めた」と「全部見た」が区別できない)", SRV,
+  'cached: scan.cached, examined: scan.examined }',
+  'cached: scan.cached }'),
 ]
 
 # ★2026-08-01 に実機で踏んだ欠陥: 落ちたかを `"# fail 0" not in stdout` で見ていた。
@@ -355,6 +371,20 @@ if "--dry" in sys.argv:
     print(f"的の照合: {len(MUT)}件 / 当たらない {bad}件")
     sys.exit(1 if bad else 0)
 
+# --- `--only <語>`: 名前にその語を含む変異だけ回す ---------------------------
+#
+# 動機(2026-08-02): 守りを1つ足した直後に確かめたいのは**その1つ**なのに、全件は 30 分強かかる。
+# 待てないと「あとで回す」になり、実際には回さない。
+# ★対照2枚は絞っても必ず通す。件数を絞る事と「この台本が赤を見分けられる」証明を省く事は別。
+# ★出力の頭に「全部ではない」と印字する。絞った回の緑を全件の緑と読み違えると、
+#   この台本が防ごうとしている「測っていないのに緑」に自分で戻る。
+ONLY = None
+if "--only" in sys.argv:
+    _i = sys.argv.index("--only")
+    if _i + 1 >= len(sys.argv):
+        die("--only の後に語が無い")
+    ONLY = sys.argv[_i + 1]
+
 def suites(dst):
     u = subprocess.run(["npm", "test", "--silent"], cwd=dst, capture_output=True, text=True)
     e = subprocess.run(["node", "test/e2e-local.mjs"], cwd=dst, capture_output=True, text=True)
@@ -389,8 +419,14 @@ if not (cu and ce):
 shutil.rmtree(d, ignore_errors=True)
 print("対照 OK: 無変異=緑 / 故意に壊した木=赤。以降の判定は意味を持つ\n")
 
+MUT_RUN = [m for m in MUT if ONLY is None or ONLY in m[0]]
+if ONLY is not None:
+    if not MUT_RUN:
+        die(f"--only {ONLY} に当たる変異が無い(名前を確かめる)")
+    print(f"★--only {ONLY}: {len(MUT_RUN)}/{len(MUT)} 件だけ回す = **全件の緑ではない**\n")
+
 rows = []
-for m in MUT:
+for m in MUT_RUN:
     name, f, old, new = m[0], m[1], m[2], m[3]
     why = m[4] if len(m) > 4 else None  # 有れば「測った上で到達しないと分かっている」注記
     d, dst = copy_tree()

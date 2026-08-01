@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.edith.rc-backend  (DRAFT — 未 bootstrap。投入は production 扱い)
+  ============================================================================
+  電話(iPhone)から edith 上の Claude Code セッションを見る / 打ち込む為の面。
+  設計 = ~/Infra/mobile-work/DESIGN.md(§2.10 宛先 / §2.13 画面 / §6 経路と常設)。
+
+  形:
+    node は 127.0.0.1:8787 だけに bind する(RC_BIND の既定)。
+    tailnet に晒す面は tailscaled 側で、起動ラッパが `tailscale serve --https=443` を
+    冪等に入れ直す。→ https://desk.tailnet.example/ で開く。
+
+  ★依存(launchd に "After=" は無い。KeepAlive で自己修復する形にしてある):
+    - tailscaled(Tailscale.app)が上がっている事。落ちていれば serve が入らないが、
+      node は上がる(ssh 越しの loopback では触れる = 黙って死なない)。
+    - tmux サーバが在る事は **前提にしない**。無ければ「見る」だけが動き、
+      「打ち込む」は 409 で断る(DESIGN §6「tmux サーバは launchd より先に居ない」)。
+      これは欠陥ではなく構造。電話には日本語で理由が出る。
+
+  ★触らない物(同期の外。deploy-to-edith.sh の --delete が届かない):
+    /Users/edith/.rc-backend/api.key       鍵。作り直すと電話に貼った鍵が失効する
+    /Users/edith/.rc-backend/panes/*.json  登録簿
+    /Users/edith/Library/Logs/rc-backend/  ログ(★同期ツリーの中に置くと --delete で消える)
+
+  INSTALL(私が実行する。Tom ゲートではない = 可逆なローカル/常設操作):
+    # 0. 先に緑を取る。ここが赤なら入れない
+    bash ~/Infra/mobile-work/rc-backend/tools/deploy-to-edith.sh
+    # 1. ログ置き場を先に作る。launchd はログ file を作れないと job ごと起動に失敗する
+    ssh edith 'mkdir -p /Users/edith/Library/Logs/rc-backend'
+    ssh edith 'chmod 700 /Users/edith/rc-backend/tools/rc-backend-launch.sh'
+    # 2. plist を置く
+    scp .../com.edith.rc-backend.plist edith:/Users/edith/Library/LaunchAgents/
+    # 3. ★load ではなく bootstrap(2026-07-17 の教訓 = load は stale 定義を掴む)
+    ssh edith 'launchctl bootstrap gui/501 /Users/edith/Library/LaunchAgents/com.edith.rc-backend.plist'
+    # 4. 観測(「入れた」ではなく「動いている」を見る)
+    ssh edith 'launchctl list | grep rc-backend'
+    ssh edith 'curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8787/api/sessions'   # 401 が正
+    ssh edith 'tail -20 /Users/edith/Library/Logs/rc-backend/rc-backend.log'
+
+  TEARDOWN:
+    ssh edith 'launchctl bootout gui/501/com.edith.rc-backend'
+    ssh edith '/Applications/Tailscale.app/Contents/MacOS/Tailscale serve reset'
+
+  変更する時: plist を書き換えたら **bootout してから bootstrap**。
+  `launchctl load` の重ね掛けは古い定義のまま動き続ける。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.edith.rc-backend</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/edith/rc-backend/tools/rc-backend-launch.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/edith/rc-backend</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Homebrew 先頭 = node と tmux が引ける。tmux は注入経路が実際に呼ぶ
+         (server.mjs の RC_TMUX_BIN 既定は /opt/homebrew/bin/tmux で絶対パスだが、
+         tmux 自身が起動するコマンドの為にも PATH は要る)。 -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/edith</string>
+    <!-- 既定と同じ値をあえて書く。既定に依存すると、既定が変わった時に黙って動きが変わる。 -->
+    <key>RC_BIND</key>
+    <string>127.0.0.1</string>
+    <key>RC_PORT</key>
+    <string>8787</string>
+  </dict>
+
+  <!-- ★tmux socket は /private/tmp/tmux-501/default(uid で決まる)。
+       LaunchAgent は uid 501 で走るので同じ socket に届く。実測 2026-08-02。
+       `TMPDIR` は関係ない(tmux は TMUX_TMPDIR か /tmp しか見ない)。 -->
+
+  <!-- ★この2値は edith の**既存の直し**をそのまま踏襲している。2026-07-07 に
+       `com.edith.decision-shadow` 他へ後から追加された形で(`.bak.sessiontype-20260707`
+       との差分がこの key の追加そのもの)、現行 23 job が同じ [Aqua, Background] を持つ。
+       = 発明ではなく、この機械で一度事故って直された形。実測 2026-08-02。
+     ★前提として確かめた事(Tom が渡米中に edith を無人で再起動しても面が戻るか):
+       FileVault = Off / `autoLoginUser` = edith → 再起動で GUI セッションが自動で立つ =
+       `gui/501` ドメインが存在する = この LaunchAgent は人が触らなくても読み込まれる。
+       (FileVault が On だったらここは成立しない。将来 On にしたら**この行を疑う**) -->
+  <key>LimitLoadToSessionType</key>
+  <array>
+    <string>Aqua</string>
+    <string>Background</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- 冷起動で tailscaled がまだなら serve が入らない。KeepAlive の再試行を間引く。 -->
+  <key>ThrottleInterval</key>
+  <integer>15</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/edith/Library/Logs/rc-backend/rc-backend.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/edith/Library/Logs/rc-backend/rc-backend.error.log</string>
+
+  <!-- ★`Background` から変えた(2026-08-02 02:5x)。**edith の既存 23 job は Background で、
+       それを真似ていない**ので理由を書く。既存が間違っているのではなく、仕事が違う:
+       あちらは ingest / shadow / weekly = 利用者が頼んでいない裏方。この job は
+       Tom の電話が張った SSE を**生で流す**のが唯一の仕事 = `Background`(「利用者が直接
+       頼んだ仕事ではない」区分、I/O と CPU を絞る帯)の定義と正面から食い違う。
+       ★言える事と言えない事を分ける: 言えるのは**区分の定義がこの job と合わない**事だけ。
+       「Interactive にすると速くなる」は**測っていないので言わない**(待ち時間の大半は
+       Claude の応答待ちで、launchd の帯とは無関係な可能性が高い)。
+       ★★2026-08-02 の Codex レビューで**もう一度直した**。私は `Background` → `Interactive` に
+       振ったが、それは**行き過ぎ**。欲しかったのは「絞られない」であって「優先される」ではない。
+       既定の `Standard` が正確にそれ(絞りも優遇も無い)。`Interactive` は信頼性も
+       起動条件も改善せず、不要に高優先の仕事として扱わせるだけ。
+       → `Standard` を**明示的に書く**(省略時の既定と同じ値。既定に依存すると、
+         既定が変わった時に黙って動きが変わる = この plist の他の key と同じ方針)。 -->
+  <key>ProcessType</key>
+  <string>Standard</string>
+
+  <!-- SIGTERM から SIGKILL までの猶予。既定は 20 秒。server.mjs 側で「SSE が張られたままでも
+       3 秒で自分から降りる」様にしてあるので(§2.13 M68)、ここを短くしても取りこぼさない。
+       短くする理由 = 入れ替え(kickstart -k)のたびに 20 秒待たない。 -->
+  <key>ExitTimeOut</key>
+  <integer>10</integer>
+</dict>
+</plist>

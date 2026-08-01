@@ -688,8 +688,38 @@ try {
 
   // 12-b. 走査の絞り込み(?limit= / ?scope=)— ここまで検査ゼロだった
   {
+    // ★2026-08-02 に契約を変えた。旧: `limit` = **開く file の上限**(= 走査の費用の栓)。
+    //   新: `limit` = **返す会話の件数**。理由は実機の分布で、机の上では絶対に出ない:
+    //     edith  jsonl 642本のうち adapter の `sdk-cli` が 636本、`cli` は 6本。
+    //            mtime 順で最初の `cli` は **113本目** → 旧契約では `limit=100` でも一覧は 0本。
+    //     MBP    1,644本中 `cli` 318本、最初の `cli` は 1本目 → **MBP では永久に露見しない**。
+    //   費用の栓を外した訳ではない: 最悪(1件も該当が無い)= 全 file の meta を読む =
+    //   実測 edith 30ms / MBP 1,059ms。`scan.examined` に何本開いたかを毎回出す。
     const l1 = await (await fetch(`${B}/api/sessions?limit=1`, { headers: H })).json();
-    check("?limit= が走査の上限として効く", l1.scan.limit === 1 && l1.scan.read <= 1, JSON.stringify(l1.scan));
+    const scanned1 = l1.sessions.filter((s) => !s.fromRegistryOnly);
+    check("?limit= は**会話の件数**として効く(file の件数ではない)",
+      l1.scan.limit === 1 && scanned1.length === 1, JSON.stringify(l1.scan) + " / " + scanned1.length);
+    check("★埋まったら読むのをやめる(全部は開かない)",
+      l1.scan.examined > 0 && l1.scan.examined < l1.scan.files, JSON.stringify(l1.scan));
+
+    // ★edith と同じ形の再現 = 該当しない会話(sdk-cli)が新しい方に大量に居る状態。
+    //   旧実装はここで `limit` 件ぶん sdk-cli を開いて全部捨て、**0本**を返した。
+    //   ★id の頭は `0adabe70`(= adapter)。**既存 fixture と被らない語**である事が要る:
+    //   最初 `9999…` にしたら 12番の登録簿だけの会話(`99999999-0000-…`)に当たり、
+    //   陽性対照が「混ざっている」と赤を出した。対照が実装ではなく自分の名前選びを
+    //   捕まえた形で、赤の出所を読まずに実装を直していたら間違った修正をしていた。
+    for (let i = 0; i < 5; i++) {
+      writeFileSync(join(PROJ, `0adabe70-0000-0000-0000-00000000000${i}.jsonl`),
+        JSON.stringify({ entrypoint: "sdk-cli", cwd: "/adapter", type: "user", message: { content: `adapter ${i}` } }));
+    }
+    const lNoise = await (await fetch(`${B}/api/sessions?limit=1`, { headers: H })).json();
+    const scannedN = lNoise.sessions.filter((s) => !s.fromRegistryOnly);
+    check("★新しい方が全部 sdk-cli でも cli の会話が返る(edith の分布の再現)",
+      scannedN.length === 1, JSON.stringify(lNoise.scan) + " / " + JSON.stringify(scannedN.map((s) => s.id)));
+    check("★その為に雑音を読み飛ばした事が計器に出る",
+      lNoise.scan.examined >= 6, JSON.stringify(lNoise.scan));
+    check("★陽性対照: sdk-cli は一覧に出ない(混ぜない)",
+      !lNoise.sessions.some((s) => String(s.id).startsWith("0adabe70")), JSON.stringify(lNoise.sessions.map((s) => s.id)));
 
     const lr = await (await fetch(`${B}/api/sessions?scope=registered`, { headers: H })).json();
     const rids = lr.sessions.map((s) => s.id);

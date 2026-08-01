@@ -13,7 +13,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync } from "node:child_process";
-import { buildListing, readHistoryFromPath, entriesFromRecord } from "./sessions.mjs";
+import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord } from "./sessions.mjs";
 import { JsonlTail, resumeDecision } from "./tail.mjs";
 import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
@@ -98,13 +98,28 @@ function scanSessions({ only = null, limit = 0 } = {}) {
     }
   }
   found.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs);
-  const picked = limit > 0 ? found.slice(0, limit) : found; // ★読む前にページ対象を選ぶ
 
+  // ★2026-08-02、edith の実機で踏んだ defect を直した形。
+  //   旧: `found.slice(0, limit)` = **絞る前の file 数**で切ってから読み、その後で
+  //       `entrypoint !== "cli"` を落としていた。edith は jsonl 642本中 636本が adapter の
+  //       `sdk-cli` で、mtime 順で最初の `cli` は **113本目**。→ `limit=100` でも一覧は **0本**。
+  //       MBP は最初の `cli` が1本目なので、**MBP でだけ試している限り永久に出ない**。
+  //   新: mtime 順に見て、**出す物が `limit` 件たまったら止める**。= `limit` は「会話の件数」。
+  //
+  // ★上限を発明しない。全部読み切る最悪ケースの実測値を持っているから決められる:
+  //     edith 642本 20MB → 全 meta 読みで **30 ms**(1本 0.05 ms)
+  //     MBP  1,644本 3.0GB(最大の会話 280MB)→ **1,059 ms**(1本 0.64 ms)
+  //   tail 読みは1本あたり最大 TAIL_MAX=1MB で頭打ちなので、file 数に比例するだけ。
+  //   1秒を「一覧の最悪値」として飲む。飲めなくなったら `examined` が先に上がって見える。
   const entries = [];
   const unreadable = [];
   let read = 0;
   let cached = 0;
-  for (const { p, slug, sessionId, st } of picked) {
+  let examined = 0;
+  for (const { p, slug, sessionId, st } of found) {
+    // 出す物が揃ったら**そこで読むのをやめる**。揃う前に file を使い切ったら全部見た事になる。
+    if (limit > 0 && entries.length + unreadable.length >= limit) break;
+    examined += 1;
     const key = MetaCache.keyOf(st);
     let meta = metaCache.get(key);
     if (meta === null) {
@@ -131,9 +146,12 @@ function scanSessions({ only = null, limit = 0 } = {}) {
     } else {
       cached += 1;
     }
+    // ★出す物だけを数える。ここで混ぜると `limit` がまた「file の件数」に戻る
+    //   (判定の正本は sessions.mjs の `isPhoneVisible`。同じ式を書かない)。
+    if (!isPhoneVisible(meta)) continue;
     entries.push({ sessionId, projectSlug: slug, mtimeMs: st.mtimeMs, meta });
   }
-  return { entries, unreadable, files: found.length, read, cached };
+  return { entries, unreadable, files: found.length, read, cached, examined };
 }
 
 function findSessionFile(sessionId) {
@@ -550,7 +568,12 @@ const server = createServer(async (req, res) => {
       // 遅くなった時に「気のせい」で片付く(この置き換え自体、測って初めて見つかった)。
       return json(res, 200, {
         sessions: listing,
-        scan: { scope: requestedScope, limit, files: scan.files, read: scan.read, cached: scan.cached },
+        // `examined` = 実際に開いて中身を見た file 数。`files` は候補の総数。
+        // ★これが要る理由: `limit` が「会話の件数」になったので、**一覧が短い理由が2つ**ある —
+        //   (a) ページが埋まって止めた(`examined < files`) (b) 全部見た上でこれだけ
+        //   (`examined === files` = これ以上は無い)。区別できないと「以前を読む」が
+        //   押しても何も起きないボタンになる(変異 M65 と同じ形)。
+        scan: { scope: requestedScope, limit, files: scan.files, read: scan.read, cached: scan.cached, examined: scan.examined },
       });
     }
 

@@ -81,9 +81,27 @@ export function resolveTitle(meta, sessionId) {
  * live 状態(worker / tui)はここでは決めない — それはプロセス側の真実であって
  * ファイルから推測しない(DESIGN.md D3、Codex 補正)。呼び出し側が重ねる。
  */
+/**
+ * 電話の一覧に出す会話の定義 = **TUI(`entrypoint: "cli"`)だけ**。
+ *
+ * ★判定をここ1箇所に置く理由(2026-08-02、実機で踏んでから移した):
+ *   同じ判定が「読む対象を選ぶ側」と「行を組む側」の両方に要る。2箇所に書くと、
+ *   `limit` が**絞る前の file 数**に掛かる形に戻り、edith で一覧が空になる(下記)。
+ *
+ * ★なぜ `sdk-cli` を出さないか: あれは adapter が回す非対話の実行で、tmux の pane を
+ *   持たない = 見ても打ち込めない。Tom の要求は「返答待ちであれ作業中であれ**干渉できる**」
+ *   なので、干渉できない物を一覧に混ぜると本命が埋もれる。
+ *
+ * ★実測(2026-08-02):
+ *   - edith: jsonl 642本のうち **`sdk-cli` 636 / `cli` 6**。mtime 順で最初の `cli` は **113本目**。
+ *   - MBP  : 1,644本のうち `cli` 318。最初の `cli` は 1本目。
+ *   = MBP だけで見ていると絶対に出ない差。**本番機で測って初めて出た**。
+ */
+export const isPhoneVisible = (meta) => meta?.entrypoint === "cli";
+
 export function buildListing(entries) {
   return entries
-    .filter((e) => e.meta.entrypoint === "cli")
+    .filter((e) => isPhoneVisible(e.meta))
     .sort((a, b) => b.mtimeMs - a.mtimeMs)
     .map((e) => ({
       id: e.sessionId,
