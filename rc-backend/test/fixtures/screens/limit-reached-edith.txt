@@ -1,0 +1,40 @@
+
+╭─── Claude Code v2.1.220 ─────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                        │
+│               Welcome back client-a!               │ Run /init to create a CLAUDE.md file with instructions for Cla… │
+│                                                    │ ─────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                                      │
+│                      ▝▜█████▛▘                     │ Bug fixes and reliability improvements                          │
+│                        ▘▘ ▝▝                       │ Added Claude Opus 5 (`claude-opus-5`), now the default Opus mo… │
+│ Sonnet 5 · Claude Max · redacted@example.invalid's │ Added `sandbox.network.strictAllowlist` setting to deny non-al… │
+│ Organization                                       │ /release-notes for more                                         │
+│            /Users/Shared/dev/roundtrip             │                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ⚠ 1 MCP server needs authentication · run /mcp
+
+ ▎ [✻] [✻] [✻] · Share Claude Code and earn $10 in usage credits · /passes
+
+❯ これは折り返しの確認用の長い一文です。画面の桁数を超えて折り返された時に、入力欄の判定と本文の照合が壊れないかを見て
+  います。返答は不要なので、A とだけ返してください。以上です。よろしくお願いします。
+  ⎿  You've hit your weekly limit · resets 12am (Asia/Tokyo)
+     /usage-credits to finish what you’re working on.
+
+✻ Crunched for 0s
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                       ● high · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents

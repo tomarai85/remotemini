@@ -34,7 +34,7 @@ APP = "src/app.html"
 
 MUT = [
  ("M1 メニュー判定を外す(CHOICE を返さない)", INJ,
-  'if (menuAt(s)) return { state: "CHOICE", activity, composer: -1 };',
+  'if (menuAt(s)) return { state: "CHOICE", activity, composer: -1, limited };',
   '// mutated: menuAt 無効'),
  ("M2 入力欄の開き罫線の条件を外す(裸の ❯ を入力欄と認める)", INJ,
   'return BOX_RULE.test(lines[head - 1] ?? "") ? { head, close } : null;',
@@ -58,8 +58,8 @@ MUT = [
   "選択肢に化ける経路は構造的に消えた。箱より下に残るのはモデル名と権限モードの2行だけで"
   "番号行を含まない。緩めても CHOICE が増える側(fail-closed)にしか倒れない。実機18枚で差0枚(18枚目を足した 8/01 に測り直し)"),
  ("M7 生成中を送信の遮断条件に戻す(旧設計への退行)", INJ,
-  'if (menuAt(s)) return { state: "CHOICE", activity, composer: -1 };',
-  'if (activity === "observed") return { state: "UNKNOWN", activity, composer: -1 };\n  if (menuAt(s)) return { state: "CHOICE", activity, composer: -1 };'),
+  'if (menuAt(s)) return { state: "CHOICE", activity, composer: -1, limited };',
+  'if (activity === "observed") return { state: "UNKNOWN", activity, composer: -1 };\n  if (menuAt(s)) return { state: "CHOICE", activity, composer: -1, limited };'),
  ("M8 scrollback を読む(-S を付ける)", INJ,
   'return this.tmux.run(["capture-pane", "-t", pane, "-p"]);',
   'return this.tmux.run(["capture-pane", "-t", pane, "-p", "-S", "-200"]);'),
@@ -320,6 +320,40 @@ MUT = [
  ("M73 何本開いたかを外に出さない(「埋まって止めた」と「全部見た」が区別できない)", SRV,
   'cached: scan.cached, examined: scan.examined }',
   'cached: scan.cached }'),
+
+ # M74-M76 = 2026-08-02。「配達できた」を「相手が答えた」と読ませない為の層。
+ # 出所は自分の道具に踏まれた事: edith で 4/4 delivered=verified / exit 0 が出たのに、
+ # 4件とも `You've hit your weekly limit` で一度も答えが返っていなかった。
+ ("M74 上限の検出を殺す(答えられない機械が「静か」に見える)", INJ,
+  "const USAGE_LIMIT = /You'?ve hit your (weekly|usage) limit|usage limit reached/i;",
+  "const USAGE_LIMIT = /この文字列は画面に出ない/;"),
+ ("M75 上限を常に真にする(陰性対照が無ければ M74 と区別が付かない)", INJ,
+  'export function limitNoticeIn(text) {\n  return USAGE_LIMIT.test(String(text || ""));',
+  'export function limitNoticeIn(text) {\n  return true || USAGE_LIMIT.test(String(text || ""));'),
+ ("M76 電話の表示から上限を落とす(検出はできているのに人に届かない)", VIE,
+  '''    if (v.limited) {
+      return work === "動いている"
+        ? { kind: "tmux", text: "机で開いている・動いている(★画面に利用上限の告知が残っている)", screen: v.screen || "" }
+        : { kind: "tmux", text: "机で開いている・★利用上限(答えは返りません)", screen: v.screen || "" };
+    }
+''',
+  ''),
+ # ★M77 は「上限を出す」方向でなく「**出しすぎる**」方向の退行を撃つ(2026-08-02 追加)。
+ # 8/02 朝までの実装がこれそのもので、`limited` が `動いている` を無条件に押し退けていた。
+ # 症状は静かで、検査も緑のままだった — `limited:true` と `activity:"observed"` を
+ # **同時に**与える検査が1本も無かったから。組み合わせを測らない検査は、
+ # 個々の枝を全部緑にしたまま、その交差点を丸ごと見落とす。
+ ("M77 上限を動きより優先させる(生成中の画面に「答えは返りません」と出す)", VIE,
+  '      return work === "動いている"',
+  '      return false'),
+ # ★M78 は**継ぎ目**を撃つ(2026-08-02 追加)。分類器(M74/M75)と電話の表示(M76/M77)は
+ # それぞれ撃っていたのに、その間の `server.mjs` が `limited` を JSON に載せる所は
+ # 誰も撃っていなかった。両端が緑でも、間で落ちれば人には届かない。
+ # ★この変異が「素通り」で返ってきたら、それは**継ぎ目に検査が無い**という答えで、
+ #   その時は e2e に `live.limited` の assert を足す。台本に答えを出させる為に置く。
+ ("M78 サーバの応答から limited を落とす(分類器は見えているのに電話へ渡らない)", SRV,
+  '    return { screen: s.state, activity: s.activity, limited: s.limited };',
+  '    return { screen: s.state, activity: s.activity };'),
 ]
 
 # ★2026-08-01 に実機で踏んだ欠陥: 落ちたかを `"# fail 0" not in stdout` で見ていた。
@@ -333,6 +367,38 @@ E2E_FAIL = re.compile(r"fail=(\d+)")
 def die(msg):
     sys.exit(f"★台本を止める: {msg}\n(緑を報告しない。測れていない事を隠すのが一番害が大きい)")
 
+# ★「変異のせいで落ちた」と「検査が環境の都合で死んだ」を分ける印(2026-08-02 追加)。
+#
+# 動機は推測ではなく実測: `test/e2e-local.mjs` は以前 `8790 + random(0..99)` で port を
+# 選んでいて、その範囲に**過去の走行が落とした孤児**(pid 45236 が 11時間33分 8861 を
+# 掴んでいた)が居ると bind に失敗する。すると e2e は `server did not start` で throw し、
+# 要約行が出ないまま exit≠0 になる → 下の `if m is None: return True` が**無言で「検出」**と
+# 数える = **守れていない変異を守れたと報告する**。1/100 × 76 = 約53%で1件混ざる計算だった。
+#
+# port は 0(カーネル任せ)に変えて原因は塞いだが、**塞いだ事に依存しない**様にここでも見る。
+# 原因側の直しだけだと、次に別の理由(fd 枯渇・実行系の入れ替え)で同じ嘘が復活した時に
+# また無言になる。ここは**結果の側**の関門。
+#
+# ★合図に選ぶ語は慎重に。素朴に `EADDRINUSE` を見ると**この検査自身が正しく出す物**に当たる:
+#   e2e の 13-b は二重起動を**故意に**起こして「読める一行が出るか」を測るし、M67 は
+#   その一行を消す変異なので、落ちた時の詳細に `EADDRINUSE` が載る。それで止めたら
+#   「変異を検出した」を「環境が死んだ」と誤って読む = 今度は逆向きの嘘になる。
+#   `server did not start` も同じく両義的(変異でサーバが壊れても出る)。
+#   よって e2e 側に**環境死の時にだけ**書く専用の合図を出させ、ここはそれだけを見る。
+#
+# ★2026-08-02、その専用の合図で**逆向きの嘘**を踏んだ。素朴に `RC-ENV-DEATH` を
+#   stdout+stderr の全文から探していたが、e2e 側は合図を throw の文字列に埋めていた。
+#   Node は未捕捉例外の報告に **throw 文の原文** を stderr へ写すので、環境死でない
+#   落ち方(対照2 の canary = 正しい赤)でも原文経由で合図が現れ、78件の走行が
+#   最初の対照で即死した。**検出器が自分の原文に一致していた**。
+#   直しは両側:
+#     e2e 側 = 合図を stdout の行頭に console.log で出す(原文に埋めない)。
+#     ここ  = **stdout だけ**を、**行頭固定**で見る。原文の写しは stderr かつ字下げ付きなので
+#             どちらの条件でも当たらない = 片方が崩れても二重で守る。
+#   対照は `test/env-death-controls.sh`。**本物の bind 失敗**と**本物の canary クラッシュ**で
+#   駆動する。手書きの文字列で試すと、私が想像した出力しか試せない(それで外した)。
+ENV_DEATH = re.compile(r"^RC-ENV-DEATH", re.M)
+
 def read_suite(p, label, rx):
     """落ちたか。**終了コードが正**。要約行は読めた時だけ突き合わせる。
 
@@ -341,6 +407,11 @@ def read_suite(p, label, rx):
       exit == 0 で要約が無い = **緑を名乗っているのに中身が読めない**。これが 8/1 に
       edith を盲にした形そのもの(Node 25 の `ℹ fail 0` を Node 22 の書式で見ていた)なので止める。
     """
+    if ENV_DEATH.search(p.stdout):
+        die(f"{label}: 検査が**環境の都合で**死んだ(port 衝突など)。\n"
+            f"これを「変異を検出した」と数えると、守れていない物を守れたと報告する事になる。\n"
+            f"--- stdout 末尾 ---\n" + "\n".join(p.stdout.splitlines()[-8:]) +
+            f"\n--- stderr 末尾 ---\n" + "\n".join(p.stderr.splitlines()[-8:]))
     m = rx.search(p.stdout)
     rc_failed = p.returncode != 0
     if m is None:
@@ -353,6 +424,20 @@ def read_suite(p, label, rx):
     if (n > 0) != rc_failed:
         die(f"{label}: 要約 fail={n} と exit={p.returncode} が食い違う")
     return n > 0
+
+# --- `--env-death <file>`: 環境死の判定**だけ**を外から駆動する口 ---------------
+#
+# 対照(test/env-death-controls.sh)がここを叩く。判定を対照側に書き写すと、
+# 書き写した方だけが正しくても本体は間違ったまま緑になる。8/02 に踏んだのは
+# まさにその形(手書きの文字列で対照を通し、本物の出力で外した)。
+# 渡すのは **e2e の stdout そのもの**。read_suite が見る物と同じ物を見る。
+if "--env-death" in sys.argv:
+    _i = sys.argv.index("--env-death")
+    if _i + 1 >= len(sys.argv):
+        die("--env-death の後に file が無い")
+    _t = open(sys.argv[_i + 1], encoding="utf-8", errors="replace").read()
+    print("ENV-DEATH" if ENV_DEATH.search(_t) else "ok")
+    sys.exit(0)
 
 # --- `--dry`: 変異の**的**が今のコードに当たるかだけを数秒で見る ---------------
 #

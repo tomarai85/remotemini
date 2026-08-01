@@ -233,7 +233,19 @@ const fakeAcct = join(SB, "fake-fleet-account");
 writeFileSync(fakeAcct, "#!/bin/sh\necho account=testacct\n");
 chmodSync(fakeAcct, 0o755);
 
-const PORT = 8790 + Math.floor(Math.random() * 100);
+// ★port は**カーネルに決めさせる**(2026-08-02 に変更)。旧: `8790 + random(0..99)`。
+//
+// 旧の形が作れた嘘: この 8790-8889 の範囲に**過去の走行が落とした孤児**が居座り得る。
+// 実測 — pid 45236 が `T/mut-xsaw2j1a/rc/src/server.mjs` のまま **11時間33分** 8861 を
+// 掴んでいた(PPID=1 = 走行が外から止められて孫だけ残った形。親の e2e には
+// `finally { sv.kill }` が在るので、親ごと殺された時だけ起きる)。
+// 衝突すると bind に失敗 → "listening" が出ない → ここが `server did not start` で throw
+// → 要約行 `fail=N` が出ない → **変異台本は exit≠0 だけ見て「検出」と数える**。
+// つまり**守れていない変異を守れたと報告する**。1/100 × 76件 = 約53%で1件混ざる計算だった。
+// ★向きは片側: 衝突が作れるのは偽の「検出」だけで、偽の「素通り」は作れない。
+//
+// 0 を渡せばカーネルが空いている port を割り当てるので、この型は原理的に消える。
+// 実際に割り当たった番号は起動ログの1行から読む(下の待ち)。
 const sv = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
   env: {
     ...process.env,
@@ -241,16 +253,21 @@ const sv = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
     RC_CLAUDE_WORK: fakeWork,
     RC_FLEET_ACCOUNT: fakeAcct,
     RC_KEY_DIR: join(SB, "keys"),
-    RC_PORT: String(PORT),
+    // ★`RC_E2E_FORCE_PORT` は**対照専用の栓**。本番経路では絶対に立てない。
+    //   これが在るのは、環境死の関門(下)を**本物の bind 失敗**で駆動できる様にする為。
+    //   手で書いた文字列で関門を試すと、私が想像した出力しか試せない
+    //   — 実際 8/02 にそれで通してしまい、本物の Node のクラッシュ報告で外した。
+    RC_PORT: process.env.RC_E2E_FORCE_PORT || "0",
     RC_TMUX_BIN: fakeTmux,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
+let PORT = 0;
 let svlog = "";
 sv.stdout.on("data", (c) => (svlog += c));
 sv.stderr.on("data", (c) => (svlog += c));
 
-const B = `http://127.0.0.1:${PORT}`;
+let B = "";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 固定待ちは使わない。偽ワーカーは別プロセスなので、遅い時は何 ms でも足りない
 // (実測 2026-07-31: sleep(800) は10回に1回落ちた)。条件が満たされるまで待つ。
@@ -274,10 +291,34 @@ function check(name, cond, detail = "") {
 }
 
 try {
-  // サーバ起動待ち
+  // サーバ起動待ち。**実際に bind した port をここで確定させる**(RC_PORT=0 で頼んだ為)。
+  // 起動ログは `listening on http://127.0.0.1:<番号>` の形。この番号が正。
   let up = false;
-  for (let i = 0; i < 50 && !up; i++) { await sleep(100); up = svlog.includes("listening"); }
-  if (!up) throw new Error(`server did not start:\n${svlog}`);
+  for (let i = 0; i < 50 && !up; i++) {
+    await sleep(100);
+    const m = /listening on http:\/\/[^:\s]+:(\d+)/.exec(svlog);
+    if (m) { PORT = Number(m[1]); up = true; }
+  }
+  // ★上がらなかった時、**理由が環境側か変異側か**を1語で名乗る(2026-08-02)。
+  //   `RC-ENV-DEATH` は変異台本がこれだけを見て走行ごと止める合図。
+  //   ここに出すのは「頼んだ port が塞がっていた」等、**測れていない**事が確定する場合だけ。
+  //   `RC_PORT=0` にした今、主サーバの EADDRINUSE は原理的にほぼ起きない。
+  //   起きたら、それは私の想定が壊れた合図なので、黙って赤にせず走行を止める方が正しい。
+  //
+  // ★合図は **stdout に、行頭の一語として** 出す。throw の文字列に埋めてはいけない。
+  //   理由(2026-08-02 に現物で踏んだ): Node は未捕捉例外の報告に **その throw 文の原文** を
+  //   stderr へ写す。合図を原文に書くと、環境死**でない**落ち方(変異でサーバが壊れた等)でも
+  //   原文経由で合図が stderr に現れ、変異台本は「環境が死んだ」と読んで**走行ごと止まる**。
+  //   実際 78件の走行が対照2(故意に壊した木 = 正しい赤)で即死した。
+  //   = 検出器が**自分の原文に一致していた**。判定そのものは正しかったので、
+  //     出力の置き場所だけの問題に見えるが、害は「一切測れない」で最大級。
+  if (!up || !Number.isInteger(PORT) || PORT <= 0) {
+    if (/EADDRINUSE|EACCES/.test(svlog)) {
+      console.log("RC-ENV-DEATH bind に失敗した = 環境の都合で測れていない");
+    }
+    throw new Error(`server did not start:\n${svlog}`);
+  }
+  B = `http://127.0.0.1:${PORT}`;
   const KEY = readFileSync(join(SB, "keys", "api.key"), "utf8").trim();
   const H = { authorization: `Bearer ${KEY}` };
 

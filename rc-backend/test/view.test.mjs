@@ -131,6 +131,41 @@ test("routeLabel: tmux は机で開いている + 動き", () => {
   assert.match(routeLabel({ route: "tmux", work: "quiet" }).text, /静か/);
 });
 
+test("★routeLabel: 利用上限は「静か」と区別して出す(待ち続けさせない)", () => {
+  // 出所 = edith 実機 2026-08-02。4回送って4回とも上限だったが、画面は
+  // 入力欄が空なだけで「静か」と全く同じに見えた。電話の側はこれを見分けられない。
+  assert.match(routeLabel({ route: "tmux", work: "quiet", limited: true }).text, /利用上限/);
+  assert.doesNotMatch(routeLabel({ route: "tmux", work: "quiet", limited: true }).text, /静か/);
+  // 陰性対照 — 常に上限と言う実装でも上の2行は緑になる。
+  assert.doesNotMatch(routeLabel({ route: "tmux", work: "quiet", limited: false }).text, /利用上限/);
+  assert.doesNotMatch(routeLabel({ route: "tmux", work: "observed" }).text, /利用上限/);
+});
+
+test("★routeLabel: 上限の告知が残っていても**動いているなら**「返りません」と言わない", () => {
+  // 見つけ方(2026-08-02): 上の検査は `work:"observed"` と `limited:true` を**同時に**
+  // 与えていなかったので、この組み合わせが誰にも測られていなかった。
+  // 実物2枚(`limit-reached-edith.txt` の告知行 + `generating-spinner-visible.txt`)を
+  // 1枚に混ぜると分類器は `{activity:"observed", limited:true}` を返す = 実在し得る組。
+  //
+  // なぜ害か: 上限の告知は**過去形**、回転子は**現在形**。現に答えが流れている最中に
+  // 「答えは返りません」と出すと、外出先の Tom は待つのをやめる。
+  // 上限の検出を足した目的(待たせない)の**逆**を、同じ機能がやる事になる。
+  const live = routeLabel({ route: "tmux", activity: "observed", limited: true }).text;
+  assert.match(live, /動いている/);
+  assert.doesNotMatch(live, /答えは返りません/);
+  // ★ただし上限の事実を**消さない**。見出しを入れ替えるだけで、情報は両方残す。
+  assert.match(live, /利用上限/);
+
+  // 陰性対照1 — 「動いている時は限界を全部黙る」実装との差。
+  //   その実装だと上の3行のうち最後が落ちる。
+  // 陰性対照2 — 静かな時は今まで通り強い文言のまま(弱めていない事の確認)。
+  const quiet = routeLabel({ route: "tmux", activity: "unknown", limited: true }).text;
+  assert.match(quiet, /答えは返りません/);
+  // 陰性対照3 — `work` 経由でも同じに倒れる(activity だけ直して work を忘れる形を塞ぐ)。
+  const viaWork = routeLabel({ route: "tmux", work: "observed", limited: true }).text;
+  assert.doesNotMatch(viaWork, /答えは返りません/);
+});
+
 test("★routeLabel: blocked はサーバの文を優先し、無ければ言い換える。理由コードは生で出さない", () => {
   const server = "この会話はペイン登録をしていないため、宛先を確定できません(…)。";
   assert.equal(routeLabel({ route: "blocked", reason: "unregistered", message: server }).text, server);

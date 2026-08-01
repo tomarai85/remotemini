@@ -19,6 +19,16 @@
  * 使い方:
  *   node tools/live-inject-check.mjs [--cwd <trusted dir>] [--bin claude] [--keep]
  *   終了コード: 0 = 全ケース delivered=verified / 1 = どれかが未確認・失敗 / 2 = 準備段で中断
+ *              **3 = 配達は成立したが、相手が答えられていない**(利用上限)
+ *
+ * ★2026-08-02 追加(自分の道具に踏まれて): edith で回したら `4/4 delivered=verified` /
+ * exit 0 が出た。画面の写しを開くと4件とも
+ *   `⎿  You've hit your weekly limit · resets 12am (Asia/Tokyo)`
+ * で、**一度も答えが返っていなかった**。この台本の検査対象は配達なので、緑それ自体は
+ * 嘘ではない。だが「edith で 4/4 緑」は「注入の鎖が通った」と読まれる。読まれ方まで
+ * 含めて計器の責任なので、答えられない機械では**緑を出さない**(exit 3)。
+ * 配達の判定は変えない — 上限は「送れない」ではなく「答えが返らない」なので、
+ * delivered の列はそのまま真実を出し続ける。
  *
  * 前提: 与える `--cwd` は **claude が既に信頼済みの dir**。未信頼だと起動直後に
  *   「Do you trust the files…」の選択画面が出る。この台本はそこで Enter を押さないので、
@@ -28,7 +38,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TmuxInjector, classifyScreen } from "../src/inject.mjs";
+import { TmuxInjector, classifyScreen, limitNoticeIn } from "../src/inject.mjs";
 
 const TMUX_BIN =
   process.env.RC_TMUX_BIN ||
@@ -199,13 +209,16 @@ async function main() {
         }
         const r = await injector.send(pane, c.text);
         await sleep(1200);
-        writeFileSync(join(outDir, `${c.id}-after.txt`), injector.capture(pane));
+        const after = injector.capture(pane);
+        writeFileSync(join(outDir, `${c.id}-after.txt`), after);
         results.push({
           id: c.id,
           why: c.why,
           chars: c.text.length,
           result: r.sent ? `sent delivered=${r.delivered}` : `未送信 reason=${r.reason}`,
           waited: r.waited ? `echo=${r.waited.echo}ms clear=${r.waited.clear}ms` : "-",
+          // ★送った後の画面に上限の告知が出ているか。配達の判定には混ぜない(別の列)。
+          limited: limitNoticeIn(after),
         });
       } catch (e) {
         // ペインが消えた等で tmux が落ちた時ここに来る(この台本の tmux() は失敗を握り潰さない)。
@@ -227,15 +240,28 @@ async function main() {
     }
   }
 
-  console.log("\n| ケース | 何を見ている | 字数 | 結果 | 待ち |");
-  console.log("|---|---|---|---|---|");
+  console.log("\n| ケース | 何を見ている | 字数 | 結果 | 待ち | 相手 |");
+  console.log("|---|---|---|---|---|---|");
   for (const r of results) {
-    console.log(`| ${r.id} | ${r.why} | ${r.chars} | ${r.result} | ${r.waited || "-"} |`);
+    const peer = r.limited ? "★上限" : r.limited === false ? "応答可" : "-";
+    console.log(`| ${r.id} | ${r.why} | ${r.chars} | ${r.result} | ${r.waited || "-"} | ${peer} |`);
   }
   const bad = results.filter((r) => r.result !== "sent delivered=verified");
+  const limited = results.filter((r) => r.limited);
   console.log(`\n合計: ${results.length - bad.length}/${results.length} が delivered=verified`);
   console.log(`画面の写し(repo の外): ${outDir}`);
+  if (limited.length) {
+    // 緑の隣に小さく書いても読まれない。**結論の位置に**置く。
+    console.log(
+      `\n★この結果を「注入の鎖が通った」と読んではいけない: ${limited.length}/${results.length} 件が` +
+        `利用上限の画面。**配達は成立したが、相手は一度も答えていない**。` +
+        `\n  確かめたのは「本文が入力欄に載って消費された」ところまで。会話が進んだ事は確かめていない。` +
+        `\n  上限が解けてから同じ台本をもう一度回す事(それまで exit 0 は出ない)。`,
+    );
+  }
+  // 配達の失敗(1)を上限(3)より優先する。壊れている方を先に見せる。
   if (bad.length) process.exitCode = 1;
+  else if (limited.length) process.exitCode = 3;
 }
 
 main().catch((e) => {

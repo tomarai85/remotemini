@@ -85,21 +85,33 @@ fi
 #   `serve` は宣言的なので、**同じ設定を二度入れても no-op**。判定を捨てて毎回入れる。
 #   唯一守るのは「他人の 443 設定を黙って上書きしない」事 = 設定が在って、かつ
 #   自分の宛先を含まないなら**触らずに大声で言う**(fail-closed)。
-# ★測った事(2026-08-02 edith): 今は `serve status --json` が `{}` = 設定ゼロ。
-#   設定が入った後の JSON の形は**まだ見ていない**ので、下の判定は compact JSON への
-#   部分一致に留めてある。初回適用後に実物の形を見て締め直す事(次セッションの宿題)。
+# ★宿題を済ませた(2026-08-02 05:xx)。設定を入れた後の実物を edith で見た:
+#     {"TCP":{"443":{"HTTPS":true}},"Web":{"desk.tailnet.example:443":
+#      {"Handlers":{"/":{"Proxy":"http://127.0.0.1:8787"}}}}}
+#   旧判定 `grep "127.0.0.1:${PORT}"` には**実害のある穴**が在った: `/` が他人の宛先で
+#   `/x` だけが自分に向いている設定でも「自分の物」と言う → ここが「もう入っている」と
+#   判断して触らず、**電話は他人の宛先に着く**。新判定は経路ごと見る。
+# ★判定を `tools/serve-decision.sh` に**切り出した**。ラッパに埋めると駆動できず、
+#   間違えた時の症状が「ローカルは全部緑、電話からだけ永久に到達できない」= 一番
+#   気付けない形になる。7ケース(うち負の対照4)+ 旧判定との対比を
+#   `tools/serve-decision-check.sh` が回す。
 if [ "$TS_READY" = yes ]; then
-    cur=$("$TS" serve status --json 2>/dev/null | tr -d ' \n')
-    if [ -z "$cur" ] || [ "$cur" = "{}" ]; then
-        log "serve: 設定が無いので入れる --https=443 -> http://127.0.0.1:${PORT}"
-        "$TS" serve --bg --https=443 "http://127.0.0.1:${PORT}" 2>&1 | sed 's/^/  serve: /'
-    elif printf '%s' "$cur" | grep -q "127.0.0.1:${PORT}"; then
-        log "serve: 既に自分の宛先が入っている(入れ直しても no-op なので触らない)"
-    else
-        log "★serve: 443 に**自分以外の設定**が在る。上書きしない。電話からは到達できない"
-        log "  現状: ${cur}"
-        log "  直すなら: ${TS} serve status を見てから手で決める"
-    fi
+    dec=$("$TS" serve status --json 2>/dev/null | /bin/bash "${APP}/tools/serve-decision.sh" "${PORT}")
+    case "$dec" in
+        apply)
+            log "serve: 設定が無いので入れる --https=443 -> http://127.0.0.1:${PORT}"
+            "$TS" serve --bg --https=443 "http://127.0.0.1:${PORT}" 2>&1 | sed 's/^/  serve: /'
+            ;;
+        ok)
+            log "serve: 443 の / が既に自分に向いている(入れ直しても no-op なので触らない)"
+            ;;
+        *)
+            # 空("")もここに落ちる = 判定できなかった時は触らない(fail-closed)。
+            log "★serve: 443 に**自分以外の設定**が在る(判定: ${dec:-取得不可})。上書きしない = 電話からは到達できない"
+            log "  現状: $("$TS" serve status --json 2>/dev/null | tr -d ' \n')"
+            log "  直すなら: ${TS} serve status を見てから手で決める"
+            ;;
+    esac
 fi
 
 # --- 本体 -------------------------------------------------------------------

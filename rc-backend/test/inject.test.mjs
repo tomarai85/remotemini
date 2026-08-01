@@ -24,6 +24,7 @@ import {
   composerIsEmpty,
   parsePaneList,
   looksLikeClaudePane,
+  limitNoticeIn,
 } from "../src/inject.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -54,7 +55,7 @@ function withComposerBody(base, body) {
   ].join("\n");
 }
 
-/** 送信してよい実物の画面 7 枚(起動直後・生成中・入力途中・キュー中・完了後)。 */
+/** 送信してよい実物の画面 8 枚(起動直後・生成中・入力途中・キュー中・完了後・告知帯つき)。 */
 const SENDABLE_FIXTURES = [
   "idle-boot",
   "generating",
@@ -63,6 +64,11 @@ const SENDABLE_FIXTURES = [
   "composer-holds-text",
   "queued-during-generation",
   "idle-after-two-turns",
+  // ★8枚目(2026-08-02 edith 実機)。起動直後に Fable 5 の告知帯が出ている画面で、
+  //   本文に `usage limit` / `weekly usage limit` という語が**告知として**載っている。
+  //   上限の検出(`limitNoticeIn`)がこの語で誤爆すると、**上限でもないのに
+  //   「答えは返りません」と電話に出す**事になる。その陰性対照を実物で持つ為の1枚。
+  "promo-banner-boot",
 ];
 
 // 実行されたコマンドを記録するだけの偽 tmux。
@@ -712,9 +718,10 @@ test("claude 判定は許可制(未知のコマンド名は通さない)", () =>
 test("★★現物の不変量を固定する(変異の「未到達」注記が根拠にしている実測を、実行可能な検査にする)", () => {
   const dir = join(HERE, "fixtures", "screens");
   const files = readdirSync(dir).filter((f) => f.endsWith(".txt")).sort();
-  assert.ok(files.length >= 18, `現物が18枚以上ある事(実際: ${files.length})`);
+  assert.ok(files.length >= 20, `現物が20枚以上ある事(実際: ${files.length})`);
 
   const indented = [];
+  const gaps = new Set(); // 閉じ罫線の下に何行あるか。**機械ごとに違う**(下の assert 参照)
   for (const f of files) {
     const raw = readFileSync(join(dir, f), "utf8");
     const lines = raw.split("\n");
@@ -723,8 +730,14 @@ test("★★現物の不変量を固定する(変異の「未到達」注記が�
 
     const box = composerBox(raw);
     if (box) {
-      // 下部8行という窓の根拠。閉じ罫線の下に在るのはモデル名と権限モードだけ。
-      assert.equal(lines.length - 1 - box.close, 2, `${f}: 閉じ罫線の下は2行`);
+      // 下部8行という窓の根拠。閉じ罫線の下に在るのは権限モードなどの表示行だけ。
+      // ★2026-08-02 訂正: 旧版はここを `=== 2` と書いていた。edith の実機を1枚入れたら
+      //   赤になった — あちらは `⏸ manual mode on` の1行だけで、2行なのは MBP 側の設定。
+      //   「手元の全fixtureがそうだった」を「常にそうだ」と書いていた形。窓 8 の根拠として
+      //   要るのは**上限**であって固定値ではないので、上限で書き直す。
+      const gap = lines.length - 1 - box.close;
+      gaps.add(gap);
+      assert.ok(gap >= 1 && gap <= 3, `${f}: 閉じ罫線の下は1〜3行(実際: ${gap})`);
       assert.equal(
         lines.filter((l) => /^─{8,}\s*$/.test(l)).length,
         2,
@@ -740,6 +753,46 @@ test("★★現物の不変量を固定する(変異の「未到達」注記が�
     }
   }
   assert.deepEqual(indented, ["composer-rule-in-body.txt"], "字下げされた罫線は本文の中のそれだけ");
+  // 観測された値そのものを固定する。新しい機械が別の形を出したらここが赤くなり、
+  // 窓 8 が今も余裕を持っているかを人が見直す事になる(黙って通り過ぎない)。
+  assert.deepEqual([...gaps].sort(), [1, 2], `閉じ罫線の下の行数は 1(edith)と 2(MBP)だけ`);
+});
+
+test("★★上限の告知は state と独立に出る(= 送れるのに答えが返らない、が有りうる)", () => {
+  // 現物 = edith 実機 2026-08-02。`live-inject-check` が 4/4 delivered=verified / exit 0 を
+  // 出したのに、4件とも答えが返っていなかった時の画面。メールだけ伏せてある。
+  const hit = screen("limit-reached-edith");
+  assert.equal(limitNoticeIn(hit), true, "現物で検出できる事");
+
+  const c = classifyScreen(hit);
+  assert.equal(c.limited, true);
+  // ★ここが要点。上限は「送れない」ではない。入力欄は実在し、打ち込みは成立する。
+  assert.equal(c.state, "SENDABLE", "上限を遮断条件にしていない事(解けた瞬間に送れる)");
+
+  // 陰性対照 — これが無いと「常に true を返す関数」でも上の assert は緑になる。
+  assert.equal(limitNoticeIn(screen("idle-boot")), false);
+  assert.equal(limitNoticeIn(screen("choice-model-menu")), false);
+  assert.equal(classifyScreen(screen("idle-boot")).limited, false);
+  assert.equal(limitNoticeIn(""), false);
+
+  // 文言はビルド更新で変わりうる = 当たらなくなったら黙って false を返す。
+  // せめて綴りの揺れ(`You've` / `Youve`)と usage 版は拾う。
+  assert.equal(limitNoticeIn("Youve hit your usage limit"), true);
+  assert.equal(limitNoticeIn("weekly limit の話をしているだけの本文"), false, "語だけでは当てない");
+
+  // ★★実物での陰性対照(2026-08-02 edith)。上の1行は私が手で書いた文字列なので、
+  //   「実際に画面に出る紛らわしい文」を測ってはいない。現物はこれ:
+  //   起動直後に Fable 5 の告知帯が出ていて、本文に
+  //     "You can use up to 50% of your weekly usage limit on Fable 5."
+  //   と**上限の語がそのまま**載っている。ここで誤爆すると、上限でも何でもない
+  //   起動直後の画面に「答えは返りません」と出す = 電話の側が送るのをやめる。
+  //   `USAGE_LIMIT` が要求するのは "hit your ... limit" の形なので当たらない。
+  //   ★これが true に変わったら、告知の文面が変わったのではなく**判定が緩んだ**合図。
+  const promo = screen("promo-banner-boot");
+  assert.match(promo, /weekly usage limit/, "この現物が対照になる前提(語を含む事)を先に確かめる");
+  assert.equal(limitNoticeIn(promo), false, "告知帯の 'weekly usage limit' で誤爆しない");
+  assert.equal(classifyScreen(promo).limited, false);
+  assert.equal(classifyScreen(promo).state, "SENDABLE", "告知帯が出ていても送れる");
 });
 
 test("★キュー中の定型文は「空の入力欄」(本文と読むと、短い本文で届いたのに未確認になる)", () => {

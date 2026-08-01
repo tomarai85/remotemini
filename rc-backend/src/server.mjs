@@ -217,9 +217,12 @@ function psRunner(args) {
 function screenOf(pane) {
   try {
     const s = injector.state(pane);
-    return { screen: s.state, activity: s.activity };
+    // limited は state と独立に出す(送れるのに答えが返らない、が実在する)。
+    // 電話から見た時「返事が来ない」と「上限に当たっている」は取る行動が全く違うので、
+    // 理由の見える化そのものが機能。2026-08-02 edith 実測が出所。
+    return { screen: s.state, activity: s.activity, limited: s.limited };
   } catch {
-    return { screen: "UNKNOWN", activity: "unknown" }; // ペイン消滅など。fail-closed
+    return { screen: "UNKNOWN", activity: "unknown", limited: false }; // ペイン消滅など。fail-closed
   }
 }
 
@@ -904,10 +907,21 @@ server.on("error", (e) => {
     : e && e.code === "EACCES"
       ? `ポート ${PORT} を開く権限がありません`
       : `listen に失敗しました: ${e && e.message}`;
-  console.error(`[rc-backend] 起動できません — ${why}`);
+  // ★人が読む散文と**機械が読む code** を同じ行に両方残す(2026-08-02 に外して学んだ)。
+  //   最初この行は code を散文に翻訳して捨てていた。その結果 e2e 側の環境死判定
+  //   (`/EADDRINUSE|EACCES/` を探す)が**原理的に当たらない**状態になり、本物の
+  //   port 衝突を起こしても関門は「環境死ではない」と答えた = 当たらない探し物は
+  //   「無い」と報告される、をまた踏んだ。散文だけにすると、翻訳した瞬間に
+  //   下流の機械読みが全部黙って外れる。
+  console.error(`[rc-backend] 起動できません — ${why} (${(e && e.code) || "code不明"})`);
   process.exit(1);
 });
 
 server.listen(PORT, BIND, () => {
-  console.log(`[rc-backend] listening on http://${BIND}:${PORT} (key: ${KEY_FILE})`);
+  // ★出すのは**実際に bind した番号**であって設定値ではない(2026-08-02)。
+  // 差が出るのは `RC_PORT=0`(= カーネルに空きを選ばせる)の時で、検査がこの行から
+  // 番号を読む。設定値をそのまま出していると `:0` と書かれた無意味なログになり、
+  // 常設のログとしても「どこで待っているか」を答えられない行になる。
+  const actual = server.address()?.port ?? PORT;
+  console.log(`[rc-backend] listening on http://${BIND}:${actual} (key: ${KEY_FILE})`);
 });

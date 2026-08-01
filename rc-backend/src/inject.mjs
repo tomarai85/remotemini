@@ -63,6 +63,49 @@ const CHOICE_PHRASE =
  * 進行中 `✳ Fluttering… (3s · thinking)` / 完了 `✻ Cogitated for 10s`(`…` が無い)。
  */
 const IN_FLIGHT = /[✻✽✢✶✳][^\n]*…/;
+/**
+ * 「この機械は今、答えられない」の告知。**送信可否には使わない**(下の理由)。
+ *
+ * ★2026-08-02、edith 実機で踏んで足した。`tools/live-inject-check.mjs` を回したら
+ * 4/4 `delivered=verified` / exit 0 の緑が出た。ところが画面の写しを開くと4件とも
+ *   `⎿  You've hit your weekly limit · resets 12am (Asia/Tokyo)`
+ * で、**一度も答えが返っていなかった**。配達の検査としては嘘ではない(本文は入力欄に
+ * 載り、消費された)。しかし「edith で 4/4 緑」を読んだ人は「注入の鎖が通った」と読む。
+ * 狭い観測を、それが支えていない結論に貼る型 — この案件で最も繰り返している誤りなので、
+ * **緑がその読み方をされ得ない形**にする方を選んだ。
+ *
+ * 送信可否に使わない理由: この告知が出ている画面は composer が実在し空で、
+ * 打ち込み自体は正常に成立する(実測)。上限は「送れない」ではなく「答えが返らない」。
+ * ここを遮断条件にすると、上限が解けた瞬間に送れる物まで送れなくなる。
+ * 電話側にとって必要なのは遮断ではなく**理由が見える事**(「返事が来ない」と
+ * 「上限に当たっている」は、外出先で取る行動が全く違う)。
+ *
+ * ★この検出が壊れる条件: 文言は Claude Code 側の英文なので、ビルド更新で変わりうる。
+ * 変わった時この関数は黙って false を返す = **当たらないプローブは「無い」と報告する**。
+ * 現物は `test/fixtures/screens/limit-reached-edith.txt`(edith 実機、メールのみ伏せ字)。
+ *
+ * ★**承知の上で残している誤検知が1つある**(2026-08-02 に検討して残す方を選んだ)。
+ * この関数は画面のどこに在っても当てるので、**電話から送った本文そのもの**に
+ * `You've hit your weekly limit` と書くと、その履歴表示で true になる。
+ * 締める(告知の描画位置 `⎿` に限る等)事はできるが、その方向の外し方は
+ * **本物の上限を見落とす**側 = 外出先の Tom が永久に返らない答えを待つ。
+ * 誤検知の側の被害は「上限でないのに上限と出る」= Tom が確かめれば分かる。
+ * **非対称なので緩い側に倒す**。
+ * ★被害はこの日さらに小さくなった: 生成中の画面では見出しが「動いている」に戻り、
+ *   上限は但し書きに落ちる(`view.mjs` の `routeLabel`)ので、誤検知が
+ *   「答えは返りません」と断言する事は無くなった。
+ * ★実物の陰性対照: `fixtures/screens/promo-banner-boot.txt`(Fable 5 の告知帯に
+ *   `weekly usage limit` の語がそのまま載っている実機の画面)で false を返す事を検査済み。
+ */
+const USAGE_LIMIT = /You'?ve hit your (weekly|usage) limit|usage limit reached/i;
+
+/**
+ * 上限の告知が画面に出ているか。
+ * @returns {boolean}
+ */
+export function limitNoticeIn(text) {
+  return USAGE_LIMIT.test(String(text || ""));
+}
 
 /** 末尾の空行を落とす(capture-pane は下に空行を付けてくることがある)。 */
 function trimTail(lines) {
@@ -183,20 +226,22 @@ export function menuAt(text) {
 /**
  * 画面から「今このペインに何をしてよいか」を決める。純関数。
  *
- * @returns {{state:"SENDABLE"|"CHOICE"|"UNKNOWN", activity:"observed"|"unknown", composer:number}}
+ * @returns {{state:"SENDABLE"|"CHOICE"|"UNKNOWN", activity:"observed"|"unknown", composer:number, limited:boolean}}
  *   state    送信可否。**SENDABLE 以外は送らない**(fail-closed)
  *   activity 生成中を**観測できたか**。observed でないことは待機中を意味しない(M3)
  *   composer composer の行番号(-1 = 無い)
+ *   limited  上限の告知が見えているか。**state とは独立**(送れるが答えは返らない、が有りうる)
  */
 export function classifyScreen(text) {
   const s = typeof text === "string" ? text : "";
   const activity = IN_FLIGHT.test(s) ? "observed" : "unknown";
-  if (s.trim() === "") return { state: "UNKNOWN", activity, composer: -1 };
+  const limited = limitNoticeIn(s);
+  if (s.trim() === "") return { state: "UNKNOWN", activity, composer: -1, limited };
   // メニューを最優先。ここを取りこぼすと Enter が課金や承認になる。
-  if (menuAt(s)) return { state: "CHOICE", activity, composer: -1 };
+  if (menuAt(s)) return { state: "CHOICE", activity, composer: -1, limited };
   const composer = findComposer(s);
-  if (composer < 0) return { state: "UNKNOWN", activity, composer: -1 };
-  return { state: "SENDABLE", activity, composer };
+  if (composer < 0) return { state: "UNKNOWN", activity, composer: -1, limited };
+  return { state: "SENDABLE", activity, composer, limited };
 }
 
 /**
