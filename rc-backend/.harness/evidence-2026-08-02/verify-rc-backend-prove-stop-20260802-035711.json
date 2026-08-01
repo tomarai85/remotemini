@@ -1,0 +1,12 @@
+{
+  "service": "com.edith.rc-backend",
+  "host": "Edith",
+  "mode": "prove-stop",
+  "plist_present": true,
+  "deployed_head": "no-git(rsync で .git を送っていない = 正常)",
+  "node": "v25.9.0",
+  "snapshots": [{"phase":"before","at":"2026-08-02T03:57:12+09:00","launchd_job_present":true,"launchd_pid":"63070","port8787_listener_pid":"63070","server_mjs_pids":"","http_code":"401","tailscale_serve_to_8787":true}],
+  "aborted": true,
+  "verdict": "★止めずに中止。動いている状態でプロセスプローブが0件 = 不在を証明できない道具",
+  "note": "pgrep のパターンが当たっていない。当たらないプローブは停止後も0件を返し、それを『残留無し』と読んでしまう。"
+}

@@ -1,0 +1,19 @@
+{
+  "service": "com.edith.rc-backend",
+  "host": "edith@10.0.0.0",
+  "verified_at": "2026-08-02T03:57:27+0900",
+  "stopped": "false",
+  "checks": {
+    "launchd_unloaded": "false",
+    "plist_state": "active",
+    "process_absent": "true",
+    "queue_empty": "no_queue_file",
+    "last_outbound_time": "no_log",
+    "last_outbound_stable": "true",
+    "stable_days_threshold": "1",
+    "vercel_deletion_excluded": "true (= deletion is not counted as stop, Layer 1 required)",
+    "verification_artifact": ".harness/evidence-2026-08-02/verify-stop-com.edith.rc-backend-20260802-035727.json"
+  },
+  "rule_reference": "~/.claude/rules/true-stop-definition.md",
+  "notes": "STOPPED=true requires ALL 6 conditions (= true-stop-definition.md). ssh_unreachable = state unknown, NOT stopped. needs_review = manual stat check recommended."
+}
