@@ -1,0 +1,40 @@
+
+╭─── Claude Code v2.1.220 ─────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                        │
+│                  Welcome back Tom!                 │ Run /init to create a CLAUDE.md file with instructions for Cla… │
+│                                                    │ ─────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                                      │
+│                      ▝▜█████▛▘                     │ Bug fixes and reliability improvements                          │
+│                        ▘▘ ▝▝                       │ Added Claude Opus 5 (`claude-opus-5`), now the default Opus mo… │
+│      Fable 5 with high effort · Claude Max ·       │ Added `sandbox.network.strictAllowlist` setting to deny non-al… │
+│      rc-fixture-usr@example.com's Organization     │ /release-notes for more                                         │
+│                    /private/tmp                    │                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ⚠ 1 MCP server needs authentication · run /mcp
+
+❯ 1. 返事は「B」の一文字だけでいい
+  2. 他には何もしないで
+  3. 以上
+
+⏺ B
+
+✻ Baked for 4s
+
+
+
+
+
+
+
+
+
+
+
+
+                   tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Fable 5
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent

@@ -1,0 +1,40 @@
+
+╭─── Claude Code v2.1.220 ─────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                        │
+│                  Welcome back Tom!                 │ Run /init to create a CLAUDE.md file with instructions for Cla… │
+│                                                    │ ─────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                                      │
+│                      ▝▜█████▛▘                     │ Bug fixes and reliability improvements                          │
+│                        ▘▘ ▝▝                       │ Added Claude Opus 5 (`claude-opus-5`), now the default Opus mo… │
+│      Fable 5 with high effort · Claude Max ·       │ Added `sandbox.network.strictAllowlist` setting to deny non-al… │
+│      rc-fixture-usr@example.com's Organization     │ /release-notes for more                                         │
+│                    /private/tmp                    │                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ⚠ 1 MCP server needs authentication · run /mcp
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                      tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 移動中にiPhoneから長めの指示を送る時の本文です。ああああああああああああああああああああああああああああああああああ
+  ああああああああああああああああああああああああああああああああああああああああああああああああああああああああああ
+  ああああああああああああああああああああああああああああ
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Fable 5
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

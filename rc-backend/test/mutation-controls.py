@@ -11,7 +11,14 @@
 # 変異検査 — 守りを1つずつ壊して、テストが**落ちること**を確かめる。
 # 通る検査が並んでいることは、その検査が守りを掴んでいる証明にならない。
 # 落ちない変異 = そこは誰も見ていない、という報告。
-import shutil, subprocess, sys, os, tempfile
+#
+# 注記つきの生き残り(= 5要素目に理由を書いた変異)について:
+#   守りの中には「今の実機の画面では到達しない」物がある。到達しない = 検査で赤にできない。
+#   そこを黙って素通りさせると exit 1 が常態化して**この道具ごと無視される**ので、
+#   「測った上で到達しないと分かっている物」だけ理由つきで分離し、exit の判定から外す。
+#   理由には必ず (a) それを覆っているより強い守り (b) 到達しないと分かった実測 を書く。
+#   逆に注記つきが**検出された**場合も報告する(= 到達する様になった。注記を外す合図)。
+import shutil, subprocess, sys, os, tempfile, re, atexit
 
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INJ = "src/inject.mjs"
@@ -22,11 +29,14 @@ MUT = [
  ("M1 メニュー判定を外す(CHOICE を返さない)", INJ,
   'if (menuAt(s)) return { state: "CHOICE", activity, composer: -1 };',
   '// mutated: menuAt 無効'),
- ("M2 入力欄の罫線条件を外す(裸の ❯ を入力欄と認める)", INJ,
-  'if (BOX_RULE.test(lines[i - 1] ?? "") && BOX_RULE.test(lines[i + 1] ?? "")) return i;',
-  'return i;'),
+ ("M2 入力欄の開き罫線の条件を外す(裸の ❯ を入力欄と認める)", INJ,
+  'return BOX_RULE.test(lines[head - 1] ?? "") ? { head, close } : null;',
+  'return { head, close };',
+  "覆う守り = M3(下部8行限定)+ 実測: 入力欄の無い画面で下部8行に閉じ罫線が現れない。"
+  "`/model` 2枚は `─` 罫線が1本も無く(枠は `▔` = U+2594)、許可確認画面の1本は下から14行目。"
+  "実機17枚で判定の差は0枚"),
  ("M3 入力欄の下部限定を外す(画面のどこの ❯ でも拾う)", INJ,
-  'const floor = Math.max(0, lines.length - 8);',
+  'const floor = Math.max(0, lines.length - COMPOSER_CLOSE_FLOOR);',
   'const floor = 0;'),
  ("M4 本文送信後の再観測を外す(modal の割り込みを見ない)", INJ,
   'if (menuAt(t)) return "modal";',
@@ -36,7 +46,10 @@ MUT = [
   'if (false) {'),
  ("M6 メニューを番号行1つで成立させる(自己ロックが復活する)", INJ,
   'if (cluster.length >= 2 && cluster.some((x) => x.cursor)) return true;',
-  'if (cluster.length >= 1) return true;'),
+  'if (cluster.length >= 1) return true;',
+  "覆う守り = M24/M27(入力欄の箱より上は数えない)。この除外が入った時点で、自分の本文が"
+  "選択肢に化ける経路は構造的に消えた。箱より下に残るのはモデル名と権限モードの2行だけで"
+  "番号行を含まない。緩めても CHOICE が増える側(fail-closed)にしか倒れない。実機17枚で差0枚"),
  ("M7 生成中を送信の遮断条件に戻す(旧設計への退行)", INJ,
   'if (menuAt(s)) return { state: "CHOICE", activity, composer: -1 };',
   'if (activity === "observed") return { state: "UNKNOWN", activity, composer: -1 };\n  if (menuAt(s)) return { state: "CHOICE", activity, composer: -1 };'),
@@ -44,8 +57,8 @@ MUT = [
   'return this.tmux.run(["capture-pane", "-t", pane, "-p"]);',
   'return this.tmux.run(["capture-pane", "-t", pane, "-p", "-S", "-200"]);'),
  ("M9 Enter 後に入力欄が消えていたら verified と言う", INJ,
-  'return left !== null && !left.includes(probe) ? "cleared" : null;',
-  'return left === null || !left.includes(probe) ? "cleared" : null;'),
+  'return left !== null && !norm(left).includes(probe) ? "cleared" : null;',
+  'return left === null || !norm(left).includes(probe) ? "cleared" : null;'),
  ("M10 claude 判定の許可制を外す(どのコマンドにも送る)", INJ,
   'if (/^\\d+\\.\\d+\\.\\d+/.test(c)) return true; // 実測の形',
   'return true;'),
@@ -97,31 +110,161 @@ MUT = [
  ("M23 ps 側の前面判定を外す(停止中の claude が居る tty を「claude が前面」と数える)", PRC,
   'foreground: pgid === tpgid,',
   'foreground: true,'),
+
+ # M24 = 2026-08-01 の3つ目。composer の頭文字 `❯` は SELECT_CURSOR が認める字体なので、
+ # 電話から `1. …` と送ると入力欄が「カーソルの載った選択肢」に見える。上に箇条書きが
+ # 残っていれば番号行が2つ以上になり CHOICE = 本文を入れた後に中断 → 本文が残る →
+ # 次も CHOICE で**ペインが固まる**。M6 は「番号行1つで成立」だけを見ていて、
+ # 「2つ目を応答本文が供給する」この経路を掴んでいなかった。
+ ("M24 入力欄より上の番号行を選択肢として数える(Tom 自身の本文でペインが固まる)", INJ,
+  'if (box && i <= box.close) continue; // 入力欄より上 = 履歴。自分が送った本文をメニューと読まない',
+  '// mutated: 履歴の除外を外す'),
+ # M27 = 2026-08-01 に私が最初に書いた**不十分な直し**そのもの。入力欄の「中身」だけを除いても、
+ # 送信済みメッセージの履歴表示は箱の外に残るので、一度送ったペインが二度と使えなくなる。
+ ("M27 除外を入力欄の中身だけに狭める(履歴表示で一度送ると二度と送れない)", INJ,
+  'if (box && i <= box.close) continue; // 入力欄より上 = 履歴。自分が送った本文をメニューと読まない',
+  'if (box && i >= box.head && i < box.close) continue;'),
+ # M25/M26 = 2026-08-01 夕、実機で踏んだ「入力欄の中身は何行にもなる」欠陥の守り。
+ # 折り返し / 改行を認めないと、長い指示ほど送れないという最悪の壊れ方をする。
+ ("M25 入力欄の続き行を認めない(折り返した本文で送信不能になる旧実装への退行)", INJ,
+  'if (!COMPOSER_HEAD.test(lines[head])) continue; // 折り返し・改行の続き行',
+  'if (!COMPOSER_HEAD.test(lines[head])) return null;'),
+ ("M26 途中の罫線で打ち切らない(引用された画面の ❯ を入力欄として拾う)", INJ,
+  'if (BOX_RULE.test(lines[head])) return null; // `❯` より先に罫線 = 入力欄ではない箱',
+  '// mutated: 途中の罫線を無視して上へ探し続ける',
+  "到達には「閉じ罫線と最初の `❯` の間にもう1本罫線がある画面」が要る = 空の箱が二重に描かれた形。"
+  "実機17枚に存在せず(差0枚)、作る手も見つかっていない。M30(罫線は桁0)で本文由来の罫線は除外済み"),
+
+ # M28/M29 = 2026-08-01 夜、実機で踏んだ「本文は入力欄に入っているのに確認できない」欠陥の守り。
+ # どちらも Enter を押さないまま本文が入力欄に残るので、次の送信に前回の本文が混ざる。
+ ("M28 印を本文の先頭から採る(長文で先頭が画面から消え、永久に送信不能)", INJ,
+  'return norm(text).slice(-12);',
+  'return norm(text).slice(0, 12);'),
+ ("M29 照合の正規化を外す(折り返し・字下げ・改行で本文と画面が一致しなくなる)", INJ,
+  "return String(s ?? \"\").replace(/\\s+/g, \"\");",
+  'return String(s ?? "");'),
+ # M30 = 2026-08-01 夜、5つ目。本文が罫線文字を含むと(表・区切り線を貼った時)
+ # 字下げされた罫線を箱の一部と読んでしまい、入力欄を見失って本文が残る = ペイン固着。
+ ("M30 罫線の字下げを許す(本文の中の罫線を箱と読み、ペインが固着する)", INJ,
+  'const BOX_RULE = /^─{8,}\\s*$/;',
+  'const BOX_RULE = /^\\s*─{8,}\\s*$/;'),
+ # M31/M32 = 2026-08-01 夜、6つ目。他の5件と壊れ方が違う: ペインは固着せず本文は届く。
+ # 届いたのに `delivered: "unverified"` が返る = 電話側に「送れたか分からない」と出る。
+ ("M31 キュー中の定型文を本文として読む(短い本文で、届いたのに未確認になる)", INJ,
+  'return t === "" || t === COMPOSER_PLACEHOLDER;',
+  'return t === "";'),
+ ("M32 送信後の判定で定型文を見ない(守りを書いたが使っていない状態)", INJ,
+  'if (!bodyIsPlaceholder && composerIsEmpty(t)) return "cleared"; // 定型文 = 取り込んだ直接証拠',
+  '// mutated: 定型文の分岐を通さない'),
+ # M33 = 欠陥8の直しを敵対的に読み返して出た曖昧さ。本文それ自体が定型文だと、
+ # 画面からは「取り込まれた」と「残っている」が区別できない。verified 側へ倒すと嘘になる。
+ ("M33 曖昧な時に verified を名乗る(本文 = 定型文の一致を見ない)", INJ,
+  'if (!bodyIsPlaceholder && composerIsEmpty(t)) return "cleared"; // 定型文 = 取り込んだ直接証拠',
+  'if (composerIsEmpty(t)) return "cleared";'),
 ]
 
-rows = []
-for name, f, old, new in MUT:
-    d = tempfile.mkdtemp(prefix="mut-")
-    dst = os.path.join(d, "rc")
-    shutil.copytree(SRC, dst, ignore=shutil.ignore_patterns("node_modules", ".git"))
-    p = os.path.join(dst, f)
-    s = open(p).read()
-    if old not in s:
-        rows.append((name, "変異を適用できない(対象の行が無い)", "?", "?")); continue
-    open(p, "w").write(s.replace(old, new, 1))
+# ★2026-08-01 に実機で踏んだ欠陥: 落ちたかを `"# fail 0" not in stdout` で見ていた。
+# node の test reporter は **22 が `# fail 0` / 25 が `ℹ fail 0`** と書式が違うので、
+# Node 25 の機械(edith)ではこの文字列が原理的に現れず、**全変異が「検出」になっていた**。
+# 走って、exit 0 を返して、何も測っていない = この台本が防ごうとしている失敗そのもの。
+# → 正は**終了コード**にし、要約行は両書式で読んで突き合わせる。読めない時は止める。
+UNIT_FAIL = re.compile(r"^[#ℹ]\s*fail\s+(\d+)\s*$", re.M)
+E2E_FAIL = re.compile(r"fail=(\d+)")
+
+def die(msg):
+    sys.exit(f"★台本を止める: {msg}\n(緑を報告しない。測れていない事を隠すのが一番害が大きい)")
+
+def read_suite(p, label, rx):
+    """落ちたか。**終了コードが正**。要約行は読めた時だけ突き合わせる。
+
+    要約行が無い時の扱いを非対称にしてある:
+      exit != 0 で要約が無い = 検査が途中で死んだ(= 赤)。変異で import が壊れれば普通に起きる。
+      exit == 0 で要約が無い = **緑を名乗っているのに中身が読めない**。これが 8/1 に
+      edith を盲にした形そのもの(Node 25 の `ℹ fail 0` を Node 22 の書式で見ていた)なので止める。
+    """
+    m = rx.search(p.stdout)
+    rc_failed = p.returncode != 0
+    if m is None:
+        if rc_failed:
+            return True  # 落ちた事は終了コードで確定している
+        die(f"{label}: exit=0 なのに要約行が読めない(書式が想定外 = 緑を確認できていない)\n"
+            f"--- stdout 末尾 ---\n" + "\n".join(p.stdout.splitlines()[-8:]) +
+            f"\n--- stderr 末尾 ---\n" + "\n".join(p.stderr.splitlines()[-8:]))
+    n = int(m.group(1))
+    if (n > 0) != rc_failed:
+        die(f"{label}: 要約 fail={n} と exit={p.returncode} が食い違う")
+    return n > 0
+
+def suites(dst):
     u = subprocess.run(["npm", "test", "--silent"], cwd=dst, capture_output=True, text=True)
     e = subprocess.run(["node", "test/e2e-local.mjs"], cwd=dst, capture_output=True, text=True)
-    ufail = "# fail 0" not in u.stdout
-    efail = "fail=0" not in e.stdout
-    rows.append((name, "検出" if (ufail or efail) else "★素通り",
-                 "unit落ちる" if ufail else "unit通る", "e2e落ちる" if efail else "e2e通る"))
+    return read_suite(u, "単体", UNIT_FAIL), read_suite(e, "e2e", E2E_FAIL)
+
+# 作業コピーは中断路(die / 対象行が無くて continue)でも必ず消す。
+# 木まるごとのコピーなので、放置すると /var/folders に何本も残る(実際に残っていた)。
+LIVE = []
+atexit.register(lambda: [shutil.rmtree(d, ignore_errors=True) for d in LIVE])
+
+def copy_tree():
+    d = tempfile.mkdtemp(prefix="mut-")
+    LIVE.append(d)
+    dst = os.path.join(d, "rc")
+    shutil.copytree(SRC, dst, ignore=shutil.ignore_patterns("node_modules", ".git"))
+    return d, dst
+
+# --- 対照2枚: 測る前に「この台本は赤を見分けられる」ことを証明する ---
+# これが無いと、書式が変わった機械で全部緑(あるいは全部検出)を報告し続ける。
+d, dst = copy_tree()
+if any(suites(dst)):
+    die("対照1(無変異): 手を加えていない木で検査が落ちた。まず作業ツリーを緑にする事")
+shutil.rmtree(d, ignore_errors=True)
+d, dst = copy_tree()
+p = os.path.join(dst, INJ)
+orig = open(p, encoding="utf-8").read()
+open(p, "w", encoding="utf-8").write('throw new Error("canary");\n' + orig)
+cu, ce = suites(dst)
+if not (cu and ce):
+    die(f"対照2(故意に壊した木): 赤にならなかった(単体={cu} e2e={ce})。"
+        "落ちるはずの木で落ちない = この台本は何も測れていない")
+shutil.rmtree(d, ignore_errors=True)
+print("対照 OK: 無変異=緑 / 故意に壊した木=赤。以降の判定は意味を持つ\n")
+
+rows = []
+for m in MUT:
+    name, f, old, new = m[0], m[1], m[2], m[3]
+    why = m[4] if len(m) > 4 else None  # 有れば「測った上で到達しないと分かっている」注記
+    d, dst = copy_tree()
+    p = os.path.join(dst, f)
+    src_text = open(p).read()
+    if old not in src_text:
+        rows.append((name, "対象行が無い", "?", "?", why)); continue
+    open(p, "w").write(src_text.replace(old, new, 1))
+    ufail, efail = suites(dst)
+    if ufail or efail:
+        verdict = "★注記を外せる" if why else "検出"
+    else:
+        verdict = "未到達(注記)" if why else "★素通り"
+    rows.append((name, verdict, "unit落ちる" if ufail else "unit通る",
+                 "e2e落ちる" if efail else "e2e通る", why))
     shutil.rmtree(d, ignore_errors=True)
 
 w = max(len(r[0]) for r in rows)
-print(f"{'変異'.ljust(w)} | 結果   | unit       | e2e")
+print(f"{'変異'.ljust(w)} | 結果         | unit       | e2e")
 for r in rows:
-    print(f"{r[0].ljust(w)} | {r[1]:6} | {r[2]:10} | {r[3]}")
-print()
-missed = [r[0] for r in rows if r[1] != "検出"]
-print("素通りした変異:", missed if missed else "なし")
+    print(f"{r[0].ljust(w)} | {r[1]:12} | {r[2]:10} | {r[3]}")
+
+noted = [r for r in rows if r[1] == "未到達(注記)"]
+if noted:
+    print("\n--- 未到達(実測の上で承知。理由つき)---")
+    for r in noted:
+        print(f"* {r[0]}\n    {r[4]}")
+
+reachable = [r[0] for r in rows if r[1] == "★注記を外せる"]
+if reachable:
+    print("\n★注記つきなのに検出された(= 到達する様になった。理由を読み直して注記を外す):")
+    for n in reachable:
+        print(f"  - {n}")
+
+missed = [r[0] for r in rows if r[1] in ("★素通り", "対象行が無い")]
+print("\n素通りした変異:", missed if missed else "なし")
 sys.exit(1 if missed else 0)

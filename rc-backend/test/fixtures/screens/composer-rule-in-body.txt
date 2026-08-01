@@ -1,0 +1,40 @@
+
+╭─── Claude Code v2.1.220 ─────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                        │
+│                  Welcome back Tom!                 │ Run /init to create a CLAUDE.md file with instructions for Cla… │
+│                                                    │ ─────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                                      │
+│                      ▝▜█████▛▘                     │ Bug fixes and reliability improvements                          │
+│                        ▘▘ ▝▝                       │ Added Claude Opus 5 (`claude-opus-5`), now the default Opus mo… │
+│   Opus 5 (1M context) with high… · Claude Max ·    │ Added `sandbox.network.strictAllowlist` setting to deny non-al… │
+│   rc-fixture-usr@example.com's Organization        │ /release-notes for more                                         │
+│                    /private/tmp                    │                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ⚠ 1 MCP server needs authentication · run /mcp
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                              ctrl+g to edit in VS Code
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ この表を直して
+  ────────────────────────────────────────
+  以上
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5 (1M context)
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

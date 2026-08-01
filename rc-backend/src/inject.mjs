@@ -30,8 +30,21 @@
 //   - 本文と Enter は別送信(生成中の一括送信はバッファされ、完了後に誤送信される)
 //   - 割り込みは Escape のみ。C-c は画面状態で消去/中断/終了に化ける
 
-/** 入力欄を囲む罫線。Claude Code は composer を上下の `─` 行で挟んで描く。 */
-const BOX_RULE = /^\s*─{8,}\s*$/;
+/**
+ * 入力欄を囲む罫線。Claude Code は composer を上下の `─` 行で挟んで描く。
+ *
+ * ★**桁0から始まる事**を要求する(字下げを許さない)。理由は本文そのものが罫線文字を
+ * 含む場合で、実測(2026-08-01)では `この表を直して⏎────────⏎以上` を打つと画面は
+ *   `❯ この表を直して` / `  ────────` / `  以上`
+ * となり、字下げを許した旧版は本文の中の罫線を箱の一部と読んで `composerBox = null`
+ * → `composer-mismatch` → **本文が残ってペインが固着**した(欠陥3/5と同じ壊れ方)。
+ * 本物の罫線は端末幅いっぱいで必ず桁0から始まり、入力欄の中の行は `❯ ` か2桁字下げで
+ * 始まるので、この1文字分の差が両者を完全に分ける。
+ * 実測の裏取り(実機 fixture 17枚): 桁0から始まる罫線 29本に対し、**字下げされた罫線は1本だけ**
+ * — それがこの `composer-rule-in-body` の本文の中の罫線、つまり除外すべき当の物だった。
+ * 不変量として `test/inject.test.mjs` に固定してある(fixture が増えても崩れたら赤になる)。
+ */
+const BOX_RULE = /^─{8,}\s*$/;
 /** composer の行。`❯` で始まる(空でも `Press up to edit queued messages` でも同じ)。 */
 const COMPOSER_HEAD = /^\s*❯/;
 /** 選択カーソル。実装差を吸収するため複数の字体を許す(Codex 指摘④)。 */
@@ -58,22 +71,47 @@ function trimTail(lines) {
   return lines.slice(0, end);
 }
 
+/** 閉じ罫線がここより下にある事を要求する(下にあってよいのはモデル名・権限モードの数行だけ)。 */
+const COMPOSER_CLOSE_FLOOR = 8;
+
 /**
- * composer の行番号。**下部にあり、上下を罫線で挟まれた `❯` 行**だけを認める。
+ * composer を**箱として**取る。`{head, close}` = `❯` の行と閉じ罫線の行。
  *
  * 「`❯` がある = 入力できる」ではない。応答本文が Claude Code の画面を引用していれば
- * 同じ字は出る(この案件の設計文書がまさにそれ)。罫線で挟まれている・画面の下部にある、
+ * 同じ字は出る(この案件の設計文書がまさにそれ)。罫線で囲まれている・画面の下部にある、
  * という**構造**まで見て初めて実在の入力欄と言える。
- * @returns {number} 行番号。無ければ -1
+ *
+ * ★2026-08-01 改訂(実機で欠陥を踏んで): 旧実装は `❯` 行の**すぐ下**も罫線であることを
+ * 要求していた。本文が折り返す、あるいは改行を含むと、下の行は続き行なので罫線ではない。
+ * 実測(端末幅120)では **日本語60字で既に破綻**し、`UNKNOWN` = 送信拒否になっていた。
+ * 長い指示ほど送れないという、電話から使う道具として最悪の壊れ方。
+ * → 下端付近の**閉じ罫線**から上に向かって走査し、続き行は読み飛ばし、最初に見つけた `❯` が
+ *   **開き罫線に接している**ことを要求する。途中に罫線があればそこで打ち切る(別の箱)。
+ *
+ * @returns {{head:number, close:number}|null}
+ */
+export function composerBox(text) {
+  const lines = trimTail(String(text || "").split("\n"));
+  const floor = Math.max(0, lines.length - COMPOSER_CLOSE_FLOOR); // 下部限定 = 引用された画面を拾わない
+  for (let close = lines.length - 1; close >= floor; close--) {
+    if (!BOX_RULE.test(lines[close])) continue;
+    for (let head = close - 1; head > 0; head--) {
+      if (BOX_RULE.test(lines[head])) return null; // `❯` より先に罫線 = 入力欄ではない箱
+      if (!COMPOSER_HEAD.test(lines[head])) continue; // 折り返し・改行の続き行
+      return BOX_RULE.test(lines[head - 1] ?? "") ? { head, close } : null;
+    }
+    return null; // 一番下の罫線だけを閉じ罫線とみなす(上の箱を漁らない)
+  }
+  return null;
+}
+
+/**
+ * composer の行番号(箱の先頭行)。無ければ -1。
+ * @returns {number}
  */
 export function findComposer(text) {
-  const lines = trimTail(String(text || "").split("\n"));
-  const floor = Math.max(0, lines.length - 8); // 下部限定 = 引用された画面を拾わない
-  for (let i = lines.length - 2; i >= floor; i--) {
-    if (!COMPOSER_HEAD.test(lines[i])) continue;
-    if (BOX_RULE.test(lines[i - 1] ?? "") && BOX_RULE.test(lines[i + 1] ?? "")) return i;
-  }
-  return -1;
+  const box = composerBox(text);
+  return box ? box.head : -1;
 }
 
 /**
@@ -88,11 +126,49 @@ export function findComposer(text) {
  *
  * 強い文言の側に番号行を要求するのは、文言だけで遮断すると「応答本文にその語が出た画面」で
  * 送信不能になるため。文言は、カーソルの字体が想定と違った時の保険として残す。
+ *
+ * ★2026-08-01 追加(実機で現物を撮って確定): **composer の箱の中身は選択肢として数えない**。
+ * `SELECT_CURSOR` は `❯` をカーソルとして認めるが、composer の頭文字も `❯` なので、
+ * 電話から番号付きの複数行
+ *     ❯ 1. まずテストを直して
+ *       2. 次にドキュメントを更新して
+ *       3. 最後にコミットして
+ * を送ると、**入力欄の中身がそのまま「カーソルの載ったメニュー」に見える**。
+ * 現物 `fixtures/screens/composer-numbered-multiline.txt` を旧コードに通すと
+ * `{"state":"CHOICE"}` が出る = 実在した欠陥。
+ * 実害は「無視できる誤検知」では済まない: 本文を入力欄に入れた**後**に発火するので
+ * `modal-appeared` で中断し、本文が入力欄に残る → 次の送信は最初から CHOICE →
+ * **そのペインが送信不能のまま固まる**。
+ * 実機の選択画面2枚(`/model` と許可確認)はどちらも composer が無い(メニュー中は
+ * 入力欄が描かれない)ので、除外しても実物の検出は1件も落ちない。
+ *
+ * 行1つでなく**箱の範囲**を除くのが要点。折り返し・改行で中身は何行にもなる。
+ *
+ * ★★2026-08-01 夕、実機で送信経路そのものを回して分かった、より重い形:
+ * Claude Code は**送信済みメッセージを `❯` 付きで履歴に残す**。番号付き複数行を送ると
+ *     ❯ 1. 返事は「B」の一文字だけでいい
+ *       2. 他には何もしないで
+ *       3. 以上
+ *     ⏺ B
+ * が入力欄の**外**(履歴側)に残り続ける。箱の中身を除くだけでは効かない。
+ * 実測: A(折り返す長文)B(番号付き複数行)は送信成功したのに、次の C が送信前から
+ * CHOICE で拒否された。つまり **一度番号付きの指示を送ると、その履歴が画面から流れるまで
+ * そのペインは二度と送れない**。現物 = `fixtures/screens/transcript-echo-numbered.txt`。
+ *
+ * 履歴表示と本物のメニューは**行の形が完全に同じ**(`❯ 1. Yes` / `  2. No`)。
+ * 字面で割ることはできない。割れる材料は1つだけ — **メニュー中は入力欄が描かれない**。
+ * 実機のメニュー2枚(`/model`・許可確認)はどちらも composer が無い。よって
+ * **入力欄の箱より上にある番号行は履歴とみなし、メニューとして数えない**。
+ *
+ * ★この規則が壊れる条件(観測したら即座に見直す): 入力欄が描かれたまま選択メニューが出る
+ * 画面が1枚でも見つかった時。その1枚で「Enter を押さない」という最重要の守りが破れる。
  */
 export function menuAt(text) {
   const lines = trimTail(String(text || "").split("\n"));
+  const box = composerBox(text); // null = 入力欄なし
   const opts = [];
   for (let i = 0; i < lines.length; i++) {
+    if (box && i <= box.close) continue; // 入力欄より上 = 履歴。自分が送った本文をメニューと読まない
     if (OPTION_ROW.test(lines[i])) opts.push({ i, cursor: SELECT_CURSOR.test(lines[i]) });
   }
   if (opts.length === 0) return false;
@@ -123,11 +199,43 @@ export function classifyScreen(text) {
   return { state: "SENDABLE", activity, composer };
 }
 
-/** composer に今載っている文字列(`❯` を除く)。無ければ null。 */
+/**
+ * composer に今載っている文字列(`❯` と続き行の字下げを除く)。無ければ null。
+ *
+ * ★折り返しと改行は画面上で区別できない。返るのは**表示の構造**であって打った文字列そのもの
+ * ではない。用途は「本文がまだそこに在るか」の確認に限る(送信後の消費確認)。
+ * 続き行の字下げ(2桁)を落とすので、本文自身の行頭空白も一緒に落ちる。
+ */
 export function composerText(text) {
-  const i = findComposer(text);
-  if (i < 0) return null;
-  return String(text).split("\n")[i].replace(/^\s*❯\s?/, "");
+  const box = composerBox(text);
+  if (!box) return null;
+  const lines = String(text).split("\n");
+  const head = lines[box.head].replace(/^\s*❯\s?/, "");
+  const rest = lines.slice(box.head + 1, box.close).map((l) => l.replace(/^ {1,2}/, ""));
+  return [head, ...rest].join("\n");
+}
+
+/**
+ * TUI が本文を取り込んだ後の**空の入力欄**の表示。現物 = `fixtures/queued-during-generation.txt`
+ * で、`composerText()` はこれを本文として返す(空文字列ではない)。
+ */
+const COMPOSER_PLACEHOLDER = "Press up to edit queued messages";
+
+/**
+ * 入力欄が空か(= 本文がもう入力欄に無いか)。
+ *
+ * ★なぜ「空文字列か」だけでは足りないか(2026-08-01 実測): 生成中に送ると TUI は本文をキューへ
+ * 取り込み、入力欄には上記の定型文を出す。これを本文と読むと、短い本文の印がこの定型文の
+ * 部分文字列になった時(`up` / `edit` / `messages` 等)、本文が消えているのに
+ * 「まだ入力欄に在る」と判定して `delivered: "unverified"` を返す。
+ * 実害はペイン固着ではなく**届いたのに届いた証明が出ない**こと。だが定型文が出ている状態は
+ * むしろ「TUI が受け取った」の直接証拠なので、これを空と読むのは緩めではなく厳密化。
+ */
+export function composerIsEmpty(text) {
+  const body = composerText(text);
+  if (body === null) return false;
+  const t = body.trim();
+  return t === "" || t === COMPOSER_PLACEHOLDER;
 }
 
 // 区切りはタブ。cwd に空白が入りうるので空白分割は使えない(実在する: "/Users/tom/My Docs")。
@@ -163,10 +271,31 @@ export function looksLikeClaudePane(command) {
   return /^(claude|node)$/i.test(c);
 }
 
-/** 本文の「これが載ったか」を確かめるための短い印。長文・折り返しに強い先頭 12 文字。 */
+/**
+ * 照合用に空白・改行を落とした形。画面は折り返しと字下げを勝手に入れるので、
+ * 打った本文と画面の文字列は**そのままでは一致しない**(下の2つの実測がどちらもこれ)。
+ */
+function norm(s) {
+  return String(s ?? "").replace(/\s+/g, "");
+}
+
+/**
+ * 本文の「これが載ったか」を確かめるための短い印。**末尾** 12 文字(空白を除く)。
+ *
+ * ★2026-08-01、実機で2つ踏んで今の形になった。どちらも「本文は入力欄に入っているのに
+ * 確認できず、Enter を押さないまま本文が残る」= 次の送信に混ざる、という壊れ方をする。
+ *
+ * 1. **改行を跨ぐ印**: 本文の先頭12字を印にすると、改行入りの本文で印が改行を跨ぐ。
+ *    画面側は続き行が2桁字下げされる(`やあ⏎  返事は…`)ので永久に一致しない。
+ *    実測: 本文「やあ⏎返事は「C」の一文字だけでいい。」で `composer-mismatch`。
+ * 2. **長文で先頭が消える**: 入力欄は内部で巻き上がる。実測(端末幅120)で中身は最大15行、
+ *    **JP 1500字から本文の先頭が画面から消える**。先頭を印にする限り長文は送信不能。
+ *
+ * → 印は**末尾**から採る。巻き上がっても末尾は常に見えている。さらに「末尾が届いた」は
+ *   「途中も届いた」を含意するので、送信の途中欠けにも強い。照合は norm() で行う。
+ */
 function probeOf(text) {
-  const t = String(text).trim();
-  return t.slice(0, 12);
+  return norm(text).slice(-12);
 }
 function countOf(haystack, needle) {
   if (!needle) return 0;
@@ -255,7 +384,7 @@ export class TmuxInjector {
     }
 
     const probe = probeOf(text);
-    const seenBefore = countOf(before, probe);
+    const seenBefore = countOf(norm(before), probe);
 
     this.tmux.run(["send-keys", "-t", pane, "-l", "--", text]);
 
@@ -263,7 +392,7 @@ export class TmuxInjector {
     // 割り込んでいたら、そこで打ち切る(Enter を押せば承認や課金になる)。
     const echo = await this.pollScreen(pane, (t) => {
       if (menuAt(t)) return "modal";
-      if (countOf(t, probe) > seenBefore) return "echoed";
+      if (countOf(norm(t), probe) > seenBefore) return "echoed";
       return null;
     });
     if (echo.tag === "modal") {
@@ -280,9 +409,14 @@ export class TmuxInjector {
     // 送信後: composer から本文が消えていれば消費された(即送信 or TUI のキュー入り)。
     // ここも描き直し待ちが要る。composer 自体が消えていた場合は**確かめられなかった**ので、
     // 「本文が見えない」を「送れた」と読まない(この層で二度踏んだ誤り)。
+    // 本文それ自体が定型文と同一の時だけは、定型文が見えても**何も判別できない**
+    // (取り込まれて定型文が出たのか、本文がそのまま残っているのか区別が付かない)。
+    // 曖昧さを verified 側へ倒さない = この層の非対称(分からなければ言わない)そのもの。
+    const bodyIsPlaceholder = norm(text) === norm(COMPOSER_PLACEHOLDER);
     const gone = await this.pollScreen(pane, (t) => {
+      if (!bodyIsPlaceholder && composerIsEmpty(t)) return "cleared"; // 定型文 = 取り込んだ直接証拠
       const left = composerText(t);
-      return left !== null && !left.includes(probe) ? "cleared" : null;
+      return left !== null && !norm(left).includes(probe) ? "cleared" : null;
     });
     return {
       sent: true,

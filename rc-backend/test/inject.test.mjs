@@ -11,7 +11,7 @@
 //   WORKLOG 2026-08-01(M1..M5)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -20,6 +20,8 @@ import {
   findComposer,
   menuAt,
   composerText,
+  composerBox,
+  composerIsEmpty,
   parsePaneList,
   looksLikeClaudePane,
 } from "../src/inject.mjs";
@@ -99,6 +101,19 @@ test("★選択メニューは CHOICE(実機の /model 画面)", () => {
   assert.equal(s.composer, -1, "メニュー中は入力欄を持たない");
 });
 
+// ★賭け金が最大の画面。`/model` と違いこちらは **Enter が実行の承認**になる。
+// 2026-08-01 に使い捨てセッションで本物を出して撮った(`--permission-mode default` +
+// `--settings` の `permissions.ask` で `sw_vers` だけを確認対象にした)。
+// 画面には `Do you want to proceed?` / `❯ 1. Yes` / `2. No` が実際に出ている。
+test("★★許可確認の画面は CHOICE(実機。Enter = 実行の承認になる画面)", () => {
+  const raw = screen("choice-permission-bash");
+  assert.match(raw, /Do you want to proceed\?/, "前提: 撮った画面が許可確認である事");
+  assert.match(raw, /❯ 1\. Yes/, "前提: 選択カーソルが 1 番に載っている事");
+  const s = classifyScreen(raw);
+  assert.equal(s.state, "CHOICE");
+  assert.equal(s.composer, -1, "入力欄として扱わない = 本文を打ち込ませない");
+});
+
 test("完了行(過去形)は生成中と見なさない", () => {
   // 実機の完了行は `✻ Cogitated for 10s` — `…` が無く、scrollback に残り続ける。
   assert.equal(classifyScreen("✻ Cogitated for 10s").activity, "unknown");
@@ -166,6 +181,70 @@ test("★応答本文の番号付きリストは CHOICE にしない(カーソ�
   assert.equal(classifyScreen(pane).state, "SENDABLE");
 });
 
+// ---- 入力欄の中身は何行にもなる(2026-08-01、実機で2件とも踏んだ) ----
+
+test("★★折り返した本文でも入力欄と認める(実機。認めないと長い指示が一切送れない)", () => {
+  // 端末幅120・日本語147字。旧実装は `❯` 行のすぐ下も罫線であることを要求していたので
+  // 折り返した瞬間に -1 → UNKNOWN → 送信拒否。長い指示ほど送れないという壊れ方だった。
+  const raw = screen("composer-wrapped-long");
+  const lines = raw.split("\n");
+  const head = lines.findIndex((l) => /^\s*❯\s*\S/.test(l));
+  assert.ok(head > 0, "前提: 本文の載った入力欄が画面にある事");
+  assert.ok(!/^\s*─{8,}\s*$/.test(lines[head + 1] ?? ""), "前提: `❯` の次の行が続き行(罫線でない)事");
+  const s = classifyScreen(raw);
+  assert.equal(s.state, "SENDABLE");
+  assert.equal(s.composer, head);
+  assert.ok(composerText(raw).startsWith("移動中にiPhoneから"), "折り返した本文を1つに繋げて返す");
+});
+
+test("★★番号付きの複数行を送っても CHOICE にしない(実機。旧コードはここで CHOICE を返した)", () => {
+  // ❯ 1. …/ 2. …/ 3. … と入力欄に並ぶと、入力欄の中身がそのままメニューに見える。
+  // 発火するのは本文を入れた**後**なので modal-appeared で中断し、本文が残り、
+  // 次の送信は最初から CHOICE = そのペインが永久に送信不能になる。
+  const raw = screen("composer-numbered-multiline");
+  assert.match(raw, /❯\s1\. まずテストを直して/, "前提: 入力欄の先頭に番号行がある事");
+  assert.match(raw, /^\s{2}2\. 次に/m, "前提: 入力欄の2行目も番号行である事");
+  assert.equal(menuAt(raw), false, "入力欄の中身をメニューと読んではいけない");
+  assert.equal(classifyScreen(raw).state, "SENDABLE");
+});
+
+test("★★その画面で Enter まで到達する(中断されない)", async () => {
+  const withBody = screen("composer-numbered-multiline");
+  const empty = withBody.replace(/(❯\s)1\. まずテストを直して\n\s*2\..*\n\s*3\..*\n/, "$1\n");
+  assert.equal(classifyScreen(empty).state, "SENDABLE", "前提: 相1は空の入力欄である事");
+  assert.ok(!/2\. 次にドキュメント/.test(empty), "前提: 相1に本文が無い事");
+  const t = fakeTmux([empty, withBody, empty]);
+  const r = await new TmuxInjector({ tmux: t }).send("%1", "1. まずテストを直して\n2. 次にドキュメントを更新して\n3. 最後にコミットして");
+  assert.equal(r.sent, true, `中断されてはいけない(reason=${r.reason})`);
+  assert.ok(sends(t).some((c) => c.includes("Enter")), "Enter まで到達する");
+});
+
+test("★★送信済みメッセージの履歴表示でペインが固まらない(実機。一度送ると二度と送れなくなった)", () => {
+  // Claude Code は送った本文を `❯` 付きで履歴に残す。番号付き複数行を送ると、その履歴が
+  // 入力欄の**外**に居座り、本物のメニューと行の形が完全に一致する。実測では B を送信成功した
+  // 直後、次の送信が送信前から CHOICE で拒否された = そのペインは以後使えない。
+  const raw = screen("transcript-echo-numbered");
+  assert.match(raw, /❯\s1\. 返事は/, "前提: 送信済み本文が `❯` 付きで履歴に残っている事");
+  assert.match(raw, /^\s{2}2\. 他には/m, "前提: 履歴側に2行目の番号行がある事");
+  assert.ok(findComposer(raw) > 0, "前提: 入力欄は空で実在する事(メニュー中ではない)");
+  assert.equal(menuAt(raw), false, "履歴をメニューと読んではいけない");
+  assert.equal(classifyScreen(raw).state, "SENDABLE");
+});
+
+test("★入力欄が無い時は今まで通り全部の番号行をメニューとして数える(除外を広げすぎていない)", () => {
+  const pane = ["❯ 1. Stop and wait", "  2. Switch to usage credits"].join("\n");
+  assert.equal(menuAt(pane), true, "入力欄が無い画面のメニューは検出し続ける事");
+  assert.equal(classifyScreen(pane).state, "CHOICE");
+});
+
+test("★実機のメニュー2枚はどちらも入力欄を持たない(上の除外規則が成り立つ前提そのもの)", () => {
+  // この前提が崩れた画面を1枚でも見つけたら、menuAt の除外規則は即座に見直す必要がある。
+  for (const name of ["choice-model-menu", "choice-permission-bash"]) {
+    assert.equal(findComposer(screen(name)), -1, `${name}: メニュー中に入力欄が描かれている`);
+    assert.equal(classifyScreen(screen(name)).state, "CHOICE", `${name}: CHOICE を取り逃した`);
+  }
+});
+
 test("カーソルの字体が違ってもメニューを取り逃さない", () => {
   for (const cur of ["❯", ">", "›", "→", "▶"]) {
     const pane = `${cur} 1. Stop and wait\n  2. Switch to usage credits`;
@@ -208,6 +287,51 @@ test("viewport だけを撮る(-S を付けない = 過去の行を今の状態�
 
 test("★CHOICE 画面には絶対に送らない(本文も Enter も)", async () => {
   const t = fakeTmux(screen("choice-model-menu"));
+  const inj = new TmuxInjector({ tmux: t });
+  const r = await inj.send("%1", "うっかり");
+  assert.equal(r.sent, false);
+  assert.equal(r.state, "CHOICE");
+  assert.equal(r.reason, "choice");
+  assert.equal(sends(t).length, 0, "1文字も送ってはいけない");
+});
+
+// ★★誤検知の側。実機で撮った画面(2026-08-01):
+//   応答が `1. あ / 2. い / 3. う`、入力欄に `❯ 1. まずテストを直して` が載っている。
+// composer の頭文字 `❯` は SELECT_CURSOR が認める字体なので、除外しないと
+// 「カーソルの載った選択肢 + 番号行」= CHOICE になる。実害は自己ロック:
+// 本文を入れた後に発火 → `modal-appeared` で中断 → 本文が入力欄に残る →
+// 次の送信は最初から CHOICE → **そのペインが二度と送れない**。
+// ★入力欄の `❯` の直後は **U+00A0(NBSP)** で、素の空白ではない(2026-08-01 実測)。
+// 本体側の正規表現は `\s`(JS の `\s` は NBSP を含む)なので通っているが、
+// `"❯ "` のような素の文字列一致は**静かに外れる**。ここでも `\s` で書く。
+const BODY_ROW = /❯\s1\. まずテストを直して/;
+
+test("★★電話から `1. …` と送っても CHOICE にしない(実機。誤検知するとペインが固まる)", () => {
+  const raw = screen("composer-numbered-body");
+  assert.match(raw, /^\s*2\. い/m, "前提: 応答の箇条書きが画面に残っている事");
+  assert.match(raw, BODY_ROW, "前提: 入力欄に番号始まりの本文が載っている事");
+  const s = classifyScreen(raw);
+  assert.equal(s.state, "SENDABLE", "自分の本文で送信不能になってはいけない");
+  assert.ok(s.composer > 0, "入力欄として認識される事");
+});
+
+test("★★その画面で送信を続行できる(本文を入れた後に中断されない)", async () => {
+  const withBody = screen("composer-numbered-body");
+  // 相1 = 本文を入れる前(入力欄は空)、相2 = 本文が載った実機の画面、相3 = 送信後
+  const empty = withBody.replace(/(❯\s)1\. まずテストを直して/, "$1");
+  assert.ok(!BODY_ROW.test(empty), "前提: 相1は本文を持たない事");
+  const t = fakeTmux([empty, withBody, empty]);
+  const inj = new TmuxInjector({ tmux: t });
+  const r = await inj.send("%1", "1. まずテストを直して");
+  assert.equal(r.sent, true, `中断されてはいけない(reason=${r.reason})`);
+  assert.ok(sends(t).some((c) => c.includes("Enter")), "Enter まで到達する");
+});
+
+// ↑は `/model` 画面(Enter = 表示の切替)。こちらは **Enter がコマンド実行の承認**になる画面。
+// 2026-08-01 に実機で同じ事を通してある(使い捨てセッションに本物の許可確認を出し、
+// 実物の注入層で送信を試みて `reason:"choice"` + tmux へのキー0個を観測)。
+test("★★許可確認の画面にも送らない(実機の画面。Enter = 実行の承認)", async () => {
+  const t = fakeTmux(screen("choice-permission-bash"));
   const inj = new TmuxInjector({ tmux: t });
   const r = await inj.send("%1", "うっかり");
   assert.equal(r.sent, false);
@@ -298,6 +422,61 @@ test("★Enter 後に入力欄ごと消えていても verified と言わない(
   assert.equal(r.delivered, "unverified");
 });
 
+test("★★履歴に送信済みの `❯` が残った状態でメニューを開いても CHOICE(除外規則の前提そのもの)", () => {
+  // 「入力欄より上は数えない」という除外は、**メニュー中は入力欄が描かれない**事に全面依存する。
+  // 依存先が崩れる型を1つ実機で作った = 番号付き本文を送った直後に `/model` を開いた画面。
+  // 履歴に `❯ 1. …` が在り、かつメニューも番号行 = 最も紛らわしい組み合わせ。
+  const raw = screen("echo-then-model-menu");
+  assert.match(raw, /^❯\s*1\./m, "前提: 送信済み本文が `❯ 1.` の形で履歴に残っている事");
+  assert.equal(findComposer(raw), -1, "メニュー中は入力欄が描かれない(除外規則の前提)");
+  assert.equal(menuAt(raw), true);
+  assert.equal(classifyScreen(raw).state, "CHOICE");
+  // 実測の副産物: メニューの枠は `▔` で、composer の `─` 罫線とは別の文字。
+  assert.equal(/^─{8,}\s*$/m.test(raw), false, "メニュー画面に composer の罫線は無い");
+});
+
+test("★★本文そのものが罫線を含んでも入力欄を見失わない(実機。見失うとペインが固着する)", () => {
+  // `この表を直して⏎────────⏎以上` を打つと画面は `❯ …` / `  ────────` / `  以上`。
+  // 罫線の字下げを許していた版は本文の中の罫線を箱の一部と読み、UNKNOWN → 本文が残った。
+  const raw = screen("composer-rule-in-body");
+  const lines = raw.split("\n");
+  const inner = lines.findIndex((l) => /^\s+─{8,}\s*$/.test(l));
+  assert.ok(inner > 0, "前提: 字下げされた罫線(= 本文の中の罫線)が画面にある事");
+  assert.ok(/^─{8,}/.test(lines[inner + 2] ?? ""), "前提: 本物の閉じ罫線は桁0から始まる事");
+  const s = classifyScreen(raw);
+  assert.equal(s.state, "SENDABLE");
+  assert.equal(composerText(raw), "この表を直して\n" + "─".repeat(40) + "\n以上", "本文をそのまま復元する");
+});
+
+// ★2026-08-01 夜、実機で踏んだ2件。どちらも「本文は入力欄に入っているのに確認できず、
+// Enter を押さないまま本文が残る」= 次の送信に前回の本文が混ざる、という壊れ方をした。
+// 印(本文が載ったかを確かめる短い文字列)の採り方だけが違いを生む。
+
+test("★★印が改行を跨いでも載ったと認める(実機。旧実装は本文が入力欄に在るのに composer-mismatch)", async () => {
+  // 画面は続き行を2桁字下げするので、打った `…でいい⏎よろしく` は画面上 `…でいい⏎  よろしく`。
+  // 生の文字列のままでは永久に一致しない。
+  const body = "返事は「E」の一文字だけでいい\nよろしく";
+  const shown = screen("composer-multiline-tail-break");
+  assert.equal(shown.includes(body.slice(-12)), false, "前提: 生の末尾12字は画面に存在しない事");
+  const t = fakeTmux([screen("idle-boot"), shown, screen("idle-boot")]);
+  const r = await new TmuxInjector({ tmux: t, echoBudgetMs: 300 }).send("%1", body);
+  assert.equal(r.sent, true);
+  assert.equal(r.delivered, "verified");
+});
+
+test("★★本文の先頭が画面から消える長さでも送れる(実機。印を先頭から採ると長文が永久に送信不能)", async () => {
+  // 実測(端末幅120): 入力欄の中身は最大15行までしか映らず、JP 1500字から先頭が巻き上がって消える。
+  const body = "先頭の目印です。" + "あ".repeat(1484) + "末尾の目印です。";
+  const shown = screen("composer-scrolled-1500");
+  assert.equal(body.length, 1500);
+  assert.equal(shown.includes("先頭の目印です。"), false, "前提: 本文の先頭が画面から消えている事");
+  assert.ok(shown.includes("末尾の目印です。"), "前提: 本文の末尾は見えている事");
+  const t = fakeTmux([screen("idle-boot"), shown, screen("idle-boot")]);
+  const r = await new TmuxInjector({ tmux: t, echoBudgetMs: 300 }).send("%1", body);
+  assert.equal(r.sent, true);
+  assert.equal(r.delivered, "verified");
+});
+
 test("★生成中でも送れる(TUI 自身がキューする = 自前キューは持たない)", async () => {
   // M5 実測: 生成中に本文+Enter を送っても生成は中断されず、TUI が
   // `❯ Press up to edit queued messages` と表示して次のターンとして処理した。
@@ -307,6 +486,33 @@ test("★生成中でも送れる(TUI 自身がキューする = 自前キュー
   assert.equal(r.sent, true);
   assert.equal(r.delivered, "verified");
   assert.equal(sends(t).length, 2);
+});
+
+test("★★短い本文が定型文と衝突しても「届いた」と言える(届いたのに未確認になる欠陥の守り)", async () => {
+  // 生成中に一語だけ返す(選択肢に「edit」と出た時の返答など)。印は `edit` の4文字で、
+  // これは TUI の定型文 `Press up to edit queued messages` の部分文字列。定型文を本文として
+  // 読む限り「まだ入力欄に残っている」と判定され、実際は届いているのに unverified になる。
+  const gen = screen("generating");
+  const queued = screen("queued-during-generation");
+  assert.ok(
+    composerText(queued).replace(/\s+/g, "").includes("edit"),
+    "前提: 印が定型文に含まれる事",
+  );
+  const t = fakeTmux([gen, gen + "\nedit", queued]);
+  const r = await new TmuxInjector({ tmux: t }).send("%1", "edit");
+  assert.equal(r.sent, true);
+  assert.equal(r.delivered, "verified", "定型文が出ている = TUI が取り込んだ直接証拠");
+});
+
+test("★本文が定型文そのものの時は「分からない」と言う(曖昧さを verified へ倒さない)", async () => {
+  // 取り込まれて定型文が出たのか、本文がそのまま残っているのか、画面からは区別が付かない。
+  // 判別できない物を「届いた」と言わない。
+  const gen = screen("generating");
+  const body = "Press up to edit queued messages";
+  const t = fakeTmux([gen, gen + "\n" + body, screen("queued-during-generation")]);
+  const r = await new TmuxInjector({ tmux: t, echoBudgetMs: 300 }).send("%1", body);
+  assert.equal(r.sent, true);
+  assert.equal(r.delivered, "unverified");
 });
 
 test("キュー API は存在しない(復活したら設計が退行している)", () => {
@@ -423,4 +629,48 @@ test("claude 判定は許可制(未知のコマンド名は通さない)", () =>
   assert.equal(looksLikeClaudePane("ssh"), false);
   assert.equal(looksLikeClaudePane(""), false);
   assert.equal(looksLikeClaudePane(undefined), false);
+});
+
+test("★★現物の不変量を固定する(変異の「未到達」注記が根拠にしている実測を、実行可能な検査にする)", () => {
+  const dir = join(HERE, "fixtures", "screens");
+  const files = readdirSync(dir).filter((f) => f.endsWith(".txt")).sort();
+  assert.ok(files.length >= 17, `現物が17枚以上ある事(実際: ${files.length})`);
+
+  const indented = [];
+  for (const f of files) {
+    const raw = readFileSync(join(dir, f), "utf8");
+    const lines = raw.split("\n");
+    while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+    if (lines.some((l) => /^\s+─{8,}\s*$/.test(l))) indented.push(f);
+
+    const box = composerBox(raw);
+    if (box) {
+      // 下部8行という窓の根拠。閉じ罫線の下に在るのはモデル名と権限モードだけ。
+      assert.equal(lines.length - 1 - box.close, 2, `${f}: 閉じ罫線の下は2行`);
+      assert.equal(
+        lines.filter((l) => /^─{8,}\s*$/.test(l)).length,
+        2,
+        `${f}: 桁0の罫線は開きと閉じの2本`,
+      );
+    } else {
+      // 入力欄が無い = 選択画面。下部8行に閉じ罫線が現れない事が、変異 M2(開き罫線を
+      // 要求しない)が到達しない理由そのもの。許可確認画面は罫線を1本持つが下から14行目。
+      assert.ok(
+        !lines.slice(-8).some((l) => /^─{8,}\s*$/.test(l)),
+        `${f}: 入力欄の無い画面の下部8行に桁0の罫線があってはならない`,
+      );
+    }
+  }
+  assert.deepEqual(indented, ["composer-rule-in-body.txt"], "字下げされた罫線は本文の中のそれだけ");
+});
+
+test("★キュー中の定型文は「空の入力欄」(本文と読むと、短い本文で届いたのに未確認になる)", () => {
+  assert.equal(composerText(screen("queued-during-generation")), "Press up to edit queued messages");
+  assert.equal(composerIsEmpty(screen("queued-during-generation")), true);
+  assert.equal(composerIsEmpty(screen("idle-boot")), true);
+  assert.equal(composerIsEmpty(screen("composer-holds-text")), false, "本文が在る画面は空ではない");
+  assert.equal(composerIsEmpty(screen("choice-model-menu")), false, "入力欄が無い = 空とは言えない");
+  // 印がこの定型文の部分文字列になりうる事の現物確認(`up` / `edit` / `messages` 等)。
+  const flat = "Press up to edit queued messages".replace(/\s+/g, "");
+  assert.ok(flat.includes("edit"), "前提: 短い本文の印がこの定型文に含まれうる");
 });

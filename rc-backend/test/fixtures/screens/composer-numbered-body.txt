@@ -1,0 +1,50 @@
+
+╭─── Claude Code v2.1.220 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                                                                               │
+│                  Welcome back Tom!                 │ Run /init to create a CLAUDE.md file with instructions for Claude                                                      │
+│                                                    │ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                                                                                             │
+│                      ▝▜█████▛▘                     │ Bug fixes and reliability improvements                                                                                 │
+│                        ▘▘ ▝▝                       │ Added Claude Opus 5 (`claude-opus-5`), now the default Opus model — 1M context, fast mode at $10/$50 per Mtok          │
+│      Fable 5 with high effort · Claude Max ·       │ Added `sandbox.network.strictAllowlist` setting to deny non-allowlisted hosts for sandboxed commands without prompting │
+│      rc-fixture-usr@example.com's Organization     │ /release-notes for more                                                                                                │
+│                    /private/tmp                    │                                                                                                                        │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ⚠ 1 MCP server needs authentication · run /mcp
+
+❯ 1から3の番号付きで「あ」「い」「う」とだけ答えて。説明は不要。
+
+⏺ 1. あ
+  2. い
+  3. う
+
+✻ Baked for 4s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                   tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 1. まずテストを直して
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Fable 5
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
