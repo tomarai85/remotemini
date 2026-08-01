@@ -19,6 +19,7 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { normTty } from "./procs.mjs";
 
 /**
  * 心拍が途絶えた登録を死んだとみなすまでの猶予。**同一性の書かれていない古い形式にだけ**使う。
@@ -112,9 +113,6 @@ export function readRegistry(dir, fs = { readdirSync, readFileSync, statSync }) 
  * @param {(cmd:string)=>boolean} a.isClaude
  * @param {(cwd:string, panes:Array)=>object} a.resolveByCwd 登録が無い時のフォールバック
  */
-/** ps の tty("ttys000")と tmux の #{pane_tty}("/dev/ttys000")を突き合わせる形に揃える。 */
-const normTty = (s) => String(s || "").replace(/^\/dev\//, "");
-
 /**
  * その登録は**今も現実を指しているか**。ここが登録簿の要。
  *
@@ -126,9 +124,9 @@ const normTty = (s) => String(s || "").replace(/^\/dev\//, "");
  *   - この2つが揃うと「死んだ登録が、今そこに居る別の会話のペインを指す」状態になる。
  *     古い登録を信じて注入すれば、無関係な会話に本文と Enter が入る。
  *
- * 判定は2通りある。**同一性が書いてあれば検証し、無ければ心拍で推測する**。
+ * 判定は2通りある。**同一性が書いてあり、かつ ps が読めた時だけ検証**。それ以外は心拍。
  *
- * 1) 同一性あり(2026-08-01 以降の書き手): 推測せず検証する。3点が揃って初めて
+ * 1) 同一性あり(2026-08-01 以降の書き手): 推測せず検証する。4点が揃って初めて
  *    「そのペインへ送った物はこの会話に届く」と言える:
  *      - tmux サーバが同世代(socket + server pid) -> ペイン id が同じ意味を持つ
  *      - その pid の tty がそのペインの tty      -> 場所が一致する
@@ -136,23 +134,38 @@ const normTty = (s) => String(s || "").replace(/^\/dev\//, "");
  *        プロセス。実測: 前面 pgid=tpgid=54850、Ctrl-Z 後は tpgid だけシェルの 54787 に
  *        変わり stat も T になる。suspend された claude は tty を握ったままなので、
  *        tty 一致だけでは「前面に居る別の claude」に送ってしまう。
+ *      - その pid が**登録より前に生まれている**(startMs <= mtimeMs) -> pid の使い回し除け。
+ *        pid は再利用されるので、pid 一致は「登録した時と同じ実体」を意味しない
+ *        (Codex 2026-08-01 の指摘)。誕生時刻を足すと pid + 誕生時刻で実体が一意になる。
+ *        ps の誕生時刻は秒で切り捨てられる = 実際より過去に寄る = 安全側に効く。
  *    心拍は問わない。停止していようが本人は本人で、送り先としては正しい。
  *
- * 2) 同一性なし(古い書き手 / まだ更新していない機械): mtime = 心拍しか手掛かりが無い。
+ * 2) 同一性なし(古い書き手)、**または ps が読めなかった**: mtime = 心拍しか手掛かりが無い。
  *    実測どおり2秒ごとに更新されるので、TTL を超えた沈黙は死んだ登録とみなす。
  *    未来の時刻(時計の巻き戻し)も信用しない。
+ *    ★ps が読めない時に「検証できないから死んでいる」と倒すのは**危険側**(Codex 2026-08-01
+ *    "Unknown must mean do not spawn"): 全登録が死ぬと、開いたままの TUI を持つ会話が
+ *    none に落ちてワーカーを起こす = lost-update。分からない時は心拍という別の証拠に退く。
+ *
+ * @returns {"identity"|"heartbeat"|null} どの根拠で生きていると判定したか(null = 死)
  */
-export function entryAlive(e, ctx) {
-  if (e.server && e.pid) {
-    if (!ctx.server || e.server !== ctx.server) return false;
+export function aliveKind(e, ctx) {
+  if (e.server && e.pid && ctx.procAvailable) {
+    if (!ctx.server || e.server !== ctx.server) return null;
     const pane = ctx.paneBy.get(e.pane);
-    if (!pane || !pane.tty) return false;
+    if (!pane || !pane.tty) return null;
     const proc = ctx.procOf(e.pid);
-    if (!proc || !proc.foreground) return false;
-    return normTty(proc.tty) === normTty(pane.tty) && normTty(pane.tty) !== "";
+    if (!proc || !proc.foreground) return null;
+    if (!(proc.startMs > 0 && proc.startMs <= e.mtimeMs)) return null;
+    const ok = normTty(proc.tty) === normTty(pane.tty) && normTty(pane.tty) !== "";
+    return ok ? "identity" : null;
   }
   const age = ctx.now - e.mtimeMs;
-  return age >= 0 && age <= ctx.ttlMs;
+  return age >= 0 && age <= ctx.ttlMs ? "heartbeat" : null;
+}
+
+export function entryAlive(e, ctx) {
+  return aliveKind(e, ctx) !== null;
 }
 
 /**
@@ -183,11 +196,18 @@ function ownedPanes(live) {
  * 誤判定の代償は「送れない」だけで、逆側は同じ会話への二重実行。
  *
  * 誰も名乗っていないペインだけを見る(名乗り済み = 別の会話だと分かっている)。
+ *
+ * 「そのペインは claude か」は**広い方**で判定する(ctx.claudeTtys = ps の実測)。名前
+ * (#{pane_current_command})だけに頼ると、ラッパ経由で起動した claude が "bash" に見えて
+ * 取り逃す = ワーカーを起こす方向に外れる(2026-08-01 MBP で実測)。ここでの偽陽性は
+ * 「送れない」で済むので、広く採るのが正しい向き。
  */
-function livePaneNearby({ cwd, owned, panes, isClaude, exclude }) {
+function livePaneNearby({ cwd, owned, panes, isClaude, exclude, claudeTtys }) {
   if (!cwd) return false; // 突き合わせる相手が無い(jsonl 未生成など)。ここでは判断しない
+  const claudeish = (p) =>
+    (claudeTtys ? claudeTtys.has(normTty(p.tty)) : false) || isClaude(p.command);
   return panes.some(
-    (p) => p.pane !== exclude && !owned.has(p.pane) && p.path === cwd && isClaude(p.command),
+    (p) => p.pane !== exclude && !owned.has(p.pane) && p.path === cwd && claudeish(p),
   );
 }
 
@@ -197,9 +217,14 @@ export function resolveSessionPane({
   now = Date.now(),
   ttlMs = HEARTBEAT_TTL_MS,
   server = "",            // 今の tmux サーバ "socket,pid"。不明なら同一性の検証はできない
-  procOf = () => null,    // pid -> { tty, foreground } | null
+  procOf = () => null,    // pid -> { tty, foreground, startMs } | null
+  procAvailable = false,  // ps を読めたか。false = 「死んでいる」ではなく「分からない」
+  claudeTtys = null,      // claude が前面に居る tty の集合(ps 実測)。null = 分からない
 }) {
-  const ctx = { now, ttlMs, server, procOf, paneBy: new Map(panes.map((p) => [p.pane, p])) };
+  const ctx = {
+    now, ttlMs, server, procOf, procAvailable, claudeTtys,
+    paneBy: new Map(panes.map((p) => [p.pane, p])),
+  };
   // 死んだ登録は「占有」も「同定」もしない。ここを通さないと、終わった会話の登録が
   // 今そこに居る別の会話のペインを指し続ける(2026-08-01 実測: 10件が全部 %0 を名乗っていた)。
   const live = entries.filter((e) => entryAlive(e, ctx));
@@ -240,15 +265,22 @@ export function resolveSessionPane({
     // ワーカー(`-p --resume`)を起こすと、同じ会話を2プロセスが触る = lost-update。
     // 実際にこの案件は「登録が無い機械でも動くように」ラッパ方式を採っているので、
     // 登録あり→登録なしで開き直す順序は例外ではなく通常運転。
-    if (livePaneNearby({ cwd, owned, panes, isClaude, exclude: entry.pane })) {
+    if (livePaneNearby({ cwd, owned, panes, isClaude, exclude: entry.pane, claudeTtys })) {
       return { pane: null, reason: "unregistered", candidates: 1, source: "registry" };
     }
     return { pane: null, reason: "none", candidates: 0, source: "registry" };
   }
-  if (!isClaude(info.command)) {
+  // ★名前による claude 判定は**同一性を検証できなかった登録にだけ**掛ける。
+  //   #{pane_current_command} は tty の前面プロセスグループ**リーダ**の名前で、claude を
+  //   ラッパ(exec しない bash スクリプト)越しに起動している機械では "bash" になる
+  //   (2026-08-01 MBP 実測。edith は直接起動なので "2.1.220")。同じ艦隊の2台で違う値が
+  //   出る物を、生きている本人を拒否する根拠には使えない。
+  //   同一性を検証できた登録は、その pid が前面・同じ tty・登録より前に生まれていることまで
+  //   確認済みなので、名前は情報を足さない。心拍だけで生かした登録には従来どおり掛ける。
+  if (aliveKind(entry, ctx) !== "identity" && !isClaude(info.command)) {
     // ペインは在るが claude ではない(終了してシェルに戻った)。注入したら任意コマンド実行。
     // 上と同じ理由で、その会話が別ペインで生きている可能性を潰してからでないと落とせない。
-    if (livePaneNearby({ cwd, owned, panes, isClaude, exclude: entry.pane })) {
+    if (livePaneNearby({ cwd, owned, panes, isClaude, exclude: entry.pane, claudeTtys })) {
       return { pane: null, reason: "unregistered", candidates: 1, source: "registry" };
     }
     return { pane: null, reason: "not-claude", candidates: 1, source: "registry" };
@@ -290,6 +322,7 @@ export function resolveSessionPane({
 export function registryOnlySessions({
   listing, entries, panes, isClaude,
   now = Date.now(), ttlMs = HEARTBEAT_TTL_MS, server = "", procOf = () => null,
+  procAvailable = false, claudeTtys = null,
 }) {
   const known = new Set(listing.map((s) => s.id));
   const out = [];
@@ -304,7 +337,7 @@ export function registryOnlySessions({
       resolveByCwd: () => ({ pane: null, reason: "none", candidates: 0 }),
       // 生死の判定材料をそのまま渡す。渡し忘れると死んだ登録が「未発言の会話」として
       // 一覧に並び、電話から送れてしまう(= 別の会話への注入)。
-      now, ttlMs, server, procOf,
+      now, ttlMs, server, procOf, procAvailable, claudeTtys,
     });
     if (r.reason !== "ok") continue; // stale / not-claude / 消えたペインは出さない
     const info = panes.find((p) => p.pane === e.pane);

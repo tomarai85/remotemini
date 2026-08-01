@@ -323,64 +323,77 @@ test("登録簿が空なら何も足さない", () => {
 // 1+2 が揃うと「死んだ登録が、今そこに居る別の会話のペインを指す」状態になる。
 
 const SERVER = "/private/tmp/tmux-501/default,900";
-const withId = (sid, pane, pid, mtimeMs = NOW, server = SERVER) =>
+// 同一性の節だけは**実時刻スケール**を使う。上の NOW=1000 では now - ttl が負になり、
+// 「心拍が切れた過去」を表現できない(mtime を 0 にしても now との差は 1 秒しかない)。
+const T = 1_754_000_000_000; // 基準時刻
+const BORN = T - 3_600_000; // claude が生まれたのは1時間前 = どの登録より前
+const STALE = T - 600_000; // 10分前 = TTL(15秒)をとうに超えた心拍
+
+const withId = (sid, pane, pid, mtimeMs = T, server = SERVER) =>
   ({ sessionId: sid, pane, model: "", server, pid, mtimeMs });
 /** pid -> プロセスの実体。既定は「そのペインの tty で前面に居る」= 生きている状態。 */
 const procs = (map) => (pid) => map[pid] || null;
-const fg = (tty) => ({ tty, foreground: true });
+const fg = (tty, startMs = BORN) => ({ tty, foreground: true, startMs });
+/** 同一性を検証できる状況(ps が読めた)。over で1点だけ壊して検査する。 */
+const idCtx = (over = {}) => ({
+  now: T, ttlMs: HEARTBEAT_TTL_MS, server: SERVER,
+  procAvailable: true, // ps を読めた
+  procOf: procs({ 777: fg("ttys012") }),
+  paneBy: new Map([["%0", claudePane("%0", CWD, "/dev/ttys012")]]),
+  ...over,
+});
 
 test("★同一性が揃っていれば心拍が古くても生きている(停止中の機械・スリープ明け)", () => {
-  const e = withId(S1, "%0", 777, 0); // mtime は大昔
-  const ctx = {
-    now: NOW, ttlMs: HEARTBEAT_TTL_MS, server: SERVER,
-    procOf: procs({ 777: fg("ttys012") }),
-    paneBy: new Map([["%0", claudePane("%0", CWD, "/dev/ttys012")]]),
-  };
-  assert.equal(entryAlive(e, ctx), true, "本人であることが検証できていれば時刻は問わない");
+  const e = withId(S1, "%0", 777, STALE); // 心拍は10分前 = TTL 超過
+  assert.equal(entryAlive(e, idCtx()), true, "本人であることが検証できていれば時刻は問わない");
+  // 対照: 同一性の材料が無ければ同じ mtime は死んでいる = この true は心拍由来ではない
+  assert.equal(entryAlive({ ...e, server: "", pid: 0 }, idCtx()), false);
 });
 
 test("★★tmux サーバの世代が違えば同じ %0 でも別物(実測: 登録10件が全部 %0)", () => {
-  const e = withId(S1, "%0", 777, NOW, "/private/tmp/tmux-501/default,111"); // 前の世代
-  const ctx = {
-    now: NOW, ttlMs: HEARTBEAT_TTL_MS, server: SERVER, // 今のサーバは 900
-    procOf: procs({ 777: fg("ttys012") }),
-    paneBy: new Map([["%0", claudePane("%0", CWD, "/dev/ttys012")]]),
-  };
-  assert.equal(entryAlive(e, ctx), false);
+  const e = withId(S1, "%0", 777, T, "/private/tmp/tmux-501/default,111"); // 前の世代
+  assert.equal(entryAlive(e, idCtx()), false, "今のサーバは 900");
 });
 
 test("★★suspend された claude は tty を握ったままだが前面ではない -> 生きているとみなさない", () => {
   // 実測: 前面 pgid=tpgid=54850 -> Ctrl-Z 後は tpgid だけシェルの 54787 に変わる。
   // tty 一致だけで通すと、そのペインで今前面に居る別プロセスに send-keys が入る。
-  const e = withId(S1, "%0", 777);
-  const ctx = {
-    now: NOW, ttlMs: HEARTBEAT_TTL_MS, server: SERVER,
-    procOf: procs({ 777: { tty: "ttys012", foreground: false } }),
-    paneBy: new Map([["%0", claudePane("%0", CWD, "/dev/ttys012")]]),
-  };
-  assert.equal(entryAlive(e, ctx), false);
+  const ctx = idCtx({ procOf: procs({ 777: { tty: "ttys012", foreground: false, startMs: BORN } }) });
+  assert.equal(entryAlive(withId(S1, "%0", 777), ctx), false);
 });
 
 test("★プロセスが消えている / tty がペインと違う -> 生きているとみなさない", () => {
-  const base = {
-    now: NOW, ttlMs: HEARTBEAT_TTL_MS, server: SERVER,
-    paneBy: new Map([["%0", claudePane("%0", CWD, "/dev/ttys012")]]),
-  };
-  assert.equal(entryAlive(withId(S1, "%0", 777), { ...base, procOf: () => null }), false, "pid が居ない");
+  const e = withId(S1, "%0", 777);
+  assert.equal(entryAlive(e, idCtx({ procOf: () => null })), false, "pid が居ない");
   assert.equal(
-    entryAlive(withId(S1, "%0", 777), { ...base, procOf: procs({ 777: fg("ttys099") }) }),
+    entryAlive(e, idCtx({ procOf: procs({ 777: fg("ttys099") }) })),
     false, "別の tty に居る = 別のペイン",
   );
 });
 
+test("★★登録より後に生まれた pid は別人(pid の使い回し)", () => {
+  // pid は使い回される。登録した claude が死に、同じ番号を別のプロセスが取り、
+  // たまたま同じペインの前面に居る —— この時 pid 一致だけでは本人と区別が付かない。
+  // 誕生時刻が登録より後なら、その登録を書いた実体ではない。
+  const e = withId(S1, "%0", 777, STALE);
+  assert.equal(entryAlive(e, idCtx({ procOf: procs({ 777: fg("ttys012", STALE + 1000) }) })), false);
+  assert.equal(entryAlive(e, idCtx({ procOf: procs({ 777: fg("ttys012", STALE) }) })), true, "同時刻は本人側");
+  // 誕生時刻が読めなかった(0)も検証失敗として扱う
+  assert.equal(entryAlive(e, idCtx({ procOf: procs({ 777: fg("ttys012", 0) }) })), false);
+});
+
 test("★tmux サーバが分からない時は同一性を検証できない -> 生きているとみなさない", () => {
-  const e = withId(S1, "%0", 777);
-  const ctx = {
-    now: NOW, ttlMs: HEARTBEAT_TTL_MS, server: "", // tmux が居ない / display-message が空
-    procOf: procs({ 777: fg("ttys012") }),
-    paneBy: new Map([["%0", claudePane("%0", CWD, "/dev/ttys012")]]),
-  };
-  assert.equal(entryAlive(e, ctx), false);
+  // tmux が居ない / display-message が空。ペイン id の意味が確定しないので送らない。
+  assert.equal(entryAlive(withId(S1, "%0", 777), idCtx({ server: "" })), false);
+});
+
+test("★★ps を読めない時は「死んでいる」ではなく「分からない」-> 心拍に退く", () => {
+  // Codex 2026-08-01: "Unknown must mean do not spawn"。ps が読めないことを死と読むと、
+  // 開いたままの TUI を持つ会話が全部 none に落ちてワーカーが起きる = lost-update。
+  const fresh = withId(S1, "%0", 777, T - 2000); // 心拍は2秒前 = 生きている
+  assert.equal(entryAlive(fresh, idCtx({ procAvailable: false })), true, "心拍が新しいので生存");
+  const silent = withId(S1, "%0", 777, STALE);
+  assert.equal(entryAlive(silent, idCtx({ procAvailable: false })), false, "心拍も切れていれば死亡");
 });
 
 test("同一性の無い古い登録は心拍で判定する(TTL 内は生存、超えたら死亡)", () => {
@@ -444,4 +457,55 @@ test("★死んだ登録は未発言一覧にも出さない(叩いても送れ�
   assert.equal(
     only([], [{ ...dead, mtimeMs: NOW }], [claudePane("%12")], { ttlMs: HEARTBEAT_TTL_MS }).length, 1,
   );
+});
+
+// ---- 名前は同一性ではない(2026-08-01 実測) ----
+//
+// `#{pane_current_command}` は tty の**前面プロセスグループのリーダ**の名前。
+//   edith: claude を直接起動 -> "2.1.220"(バージョン文字列)
+//   MBP  : `claude` が retry ラッパ(bash script、exec せず子として起動)への alias -> "bash"
+// 同じ艦隊の2台で違う値が出る = 名前で「claude か」を決めると機械ごとに壊れる。
+// 外れ方の代償は片側だけではない:
+//   偽陰性(登録側)  -> 生きている本人を not-claude で拒否 = 送れない
+//   偽陰性(近傍側)  -> 開いたままの TUI を見落としてワーカーを起こす = lost-update
+// 後者が危険側なので、近傍の判定は ps の実測(claudeTtys)を足して**広く**採る。
+
+/** ラッパ経由で起動した claude のペイン。tmux にはリーダの名前 "bash" しか見えない。 */
+const wrappedPane = (pane, path = CWD, tty = `/dev/ttys0${pane.slice(1)}`) =>
+  ({ pane, command: "bash", tty, path });
+/** 同一性を検証できる状況を resolve に渡す形にした物。 */
+const idExtra = (over = {}) => ({
+  now: T, ttlMs: HEARTBEAT_TTL_MS, server: SERVER, procAvailable: true,
+  procOf: procs({ 777: fg("ttys012") }), ...over,
+});
+
+test("★★ラッパ越しの claude(pane_current_command='bash')でも同一性が取れていれば送れる", () => {
+  // これを塞ぐと MBP では全会話が not-claude になり、機能そのものが死ぬ。
+  const e = withId(S1, "%0", 777);
+  const r = resolve(S1, CWD, [e], [wrappedPane("%0", CWD, "/dev/ttys012")], idExtra());
+  assert.equal(r.reason, "ok", "★名前ではなく pid/tty/前面/誕生時刻で本人だと確認済み");
+  assert.equal(r.pane, "%0");
+});
+
+test("同一性を検証できない登録には従来どおり名前の関門を掛ける", () => {
+  // 心拍だけで生かした登録は「そこに claude が居る」ことを確かめていない。名前が claude で
+  // なければ、シェルに戻ったペインへ任意コマンドを打ち込む経路になる。
+  const e = withId(S1, "%0", 777, T - 2000);
+  const r = resolve(S1, CWD, [e], [wrappedPane("%0", CWD, "/dev/ttys012")],
+    idExtra({ procAvailable: false })); // ps が読めない -> 心拍で生存、同一性は未検証
+  assert.equal(r.reason, "not-claude");
+});
+
+test("★★近くの claude は名前でなく ps の実測で探す(見落とすとワーカーが起きて二重実行)", () => {
+  // 登録のペイン %0 が消えている。同じ cwd に居る %9 はラッパ経由なので名前は "bash"。
+  // 名前だけで見ると「近くに claude は居ない」-> none -> ワーカー起動 -> 開いている TUI と
+  // 同じ会話を2プロセスが触る。ps で「その tty の前面に claude が居る」と分かれば止まる。
+  // 登録は心拍だけで生きている形(ペインが消えているので同一性は検証しようがない)。
+  const e = { sessionId: S1, pane: "%0", model: "", server: "", pid: 0, mtimeMs: T - 2000 };
+  const panes = [wrappedPane("%9", CWD, "/dev/ttys099")];
+  const seen = resolve(S1, CWD, [e], panes, idExtra({ claudeTtys: new Set(["ttys099"]) }));
+  assert.equal(seen.reason, "unregistered", "★ワーカーを起こさない");
+  // 対照: ps が claude を見つけていなければ、そのペインは無関係とみなしてワーカー経路
+  const blind = resolve(S1, CWD, [e], panes, idExtra({ claudeTtys: new Set() }));
+  assert.equal(blind.reason, "none");
 });

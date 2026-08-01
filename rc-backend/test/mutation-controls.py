@@ -16,6 +16,7 @@ import shutil, subprocess, sys, os, tempfile
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INJ = "src/inject.mjs"
 REG = "src/registry.mjs"
+PRC = "src/procs.mjs"
 
 MUT = [
  ("M1 メニュー判定を外す(CHOICE を返さない)", INJ,
@@ -64,17 +65,38 @@ MUT = [
   'export const HEARTBEAT_TTL_MS = 15_000;',
   'export const HEARTBEAT_TTL_MS = 86_400_000;'),
  ("M14 tmux サーバ世代の突き合わせを外す(%0 が全部同じ物になる)", REG,
-  'if (!ctx.server || e.server !== ctx.server) return false;',
+  'if (!ctx.server || e.server !== ctx.server) return null;',
   '// mutated: 世代を見ない'),
  ("M15 前面判定を外す(Ctrl-Z で止めた claude を生きていると見なす)", REG,
-  'if (!proc || !proc.foreground) return false;',
-  'if (!proc) return false;'),
+  'if (!proc || !proc.foreground) return null;',
+  'if (!proc) return null;'),
  ("M16 同着の登録を通す(両方が同じペインへ注入できる)", REG,
   '(e) => e.pane === entry.pane && e.sessionId !== sessionId && e.mtimeMs >= entry.mtimeMs,',
   '(e) => e.pane === entry.pane && e.sessionId !== sessionId && e.mtimeMs > entry.mtimeMs,'),
  ("M17 tty をペイン一覧から落とす(同一性の検証材料を失う)", INJ,
   'const PANE_FORMAT = "#{pane_id}\\t#{pane_current_command}\\t#{pane_tty}\\t#{pane_current_path}";',
   'const PANE_FORMAT = "#{pane_id}\\t#{pane_current_command}\\t#{pane_current_path}";'),
+ # M18-M23 = 2026-08-01 の2つ目の実測から。名前(#{pane_current_command})は機械ごとに
+ # 違う値になる(edith="2.1.220" / MBP="bash")ので、判定を名前から ps の実測へ移した。
+ # その移し替えで新しく守りになった点を1つずつ壊す。
+ ("M18 pid の誕生時刻を見ない(pid 使い回しで別プロセスを本人と認める)", REG,
+  'if (!(proc.startMs > 0 && proc.startMs <= e.mtimeMs)) return null;',
+  '// mutated: 誕生時刻を見ない'),
+ ("M19 ps を読めない時に同一性を「検証失敗=死」と倒す(全登録が死にワーカーが起きる)", REG,
+  'if (e.server && e.pid && ctx.procAvailable) {',
+  'if (e.server && e.pid) {'),
+ ("M20 同一性を検証済みの登録にも名前の関門を掛ける(ラッパ経由の機械で機能が死ぬ)", REG,
+  'if (aliveKind(entry, ctx) !== "identity" && !isClaude(info.command)) {',
+  'if (!isClaude(info.command)) {'),
+ ("M21 近くの claude を名前だけで探す(ラッパ経由の TUI を見落としてワーカーが起きる)", REG,
+  '(claudeTtys ? claudeTtys.has(normTty(p.tty)) : false) || isClaude(p.command);',
+  'isClaude(p.command);'),
+ ("M22 ps の出力が空でも「読めた」と言う(解釈できない = 全プロセス死亡になる)", PRC,
+  'if (byPid.size === 0) return { available: false, procOf: () => null, claudeTtys: null };',
+  '// mutated: 空でも読めたことにする'),
+ ("M23 ps 側の前面判定を外す(停止中の claude が居る tty を「claude が前面」と数える)", PRC,
+  'foreground: pgid === tpgid,',
+  'foreground: true,'),
 ]
 
 rows = []

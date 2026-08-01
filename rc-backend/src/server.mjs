@@ -17,6 +17,7 @@ import { extractSessionMeta, buildListing, extractHistory } from "./sessions.mjs
 import { WorkerManager } from "./worker.mjs";
 import { TmuxInjector, looksLikeClaudePane } from "./inject.mjs";
 import { PaneRegistry, resolveSessionPane, registryOnlySessions } from "./registry.mjs";
+import { psSnapshot } from "./procs.mjs";
 
 const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
@@ -133,32 +134,9 @@ function tmuxServerId() {
   return /^.+,\d+$/.test(out) ? out : "";
 }
 
-/**
- * pid -> { tty, foreground }。ps を**1回だけ**叩いて必要な pid をまとめて引く。
- *
- * foreground = pgid == tpgid。tty を握っているだけでは足りない: Ctrl-Z で止めた claude は
- * tty を握ったままなので(2026-08-01 実測)、tty 一致だけを見ると「今そのペインで前面に
- * 居る別のプロセス」に send-keys を送ってしまう。
- */
-function procLookup(pids) {
-  const want = [...new Set(pids)].filter((n) => Number.isInteger(n) && n > 0);
-  if (want.length === 0) return () => null;
-  let out = "";
-  try {
-    out = execFileSync("ps", ["-o", "pid=,tty=,pgid=,tpgid=", "-p", want.join(",")], {
-      encoding: "utf8",
-    });
-  } catch {
-    return () => null; // 全部died等。引けない = 検証できない -> 登録を信じない側に倒れる
-  }
-  const map = new Map();
-  for (const line of out.split("\n")) {
-    const f = line.trim().split(/\s+/);
-    if (f.length < 4) continue;
-    const [pid, tty, pgid, tpgid] = f;
-    map.set(Number(pid), { tty, foreground: pgid === tpgid });
-  }
-  return (pid) => map.get(pid) || null;
+/** ps を1回だけ叩く。中身の意味づけは src/procs.mjs(純関数)側。 */
+function psRunner(args) {
+  return execFileSync("ps", args, { encoding: "utf8" });
 }
 
 /**
@@ -224,13 +202,25 @@ function livePaneFor(sessionId, sessionCwd, panes, entries, ctx) {
  * 登録の生死を判定するのに要る現実側の情報。**1リクエストにつき1回**作る。
  *
  * 一覧描画は会話ごとに resolveSessionPane を呼ぶので、ここを毎回作ると tmux と ps を
- * 会話の数だけ起動することになる。同一性を書いている登録が1件も無ければ tmux も ps も
- * 叩かない(古い書き手しか居ない機械で余計なプロセスを起こさない)。
+ * 会話の数だけ起動することになる。登録が1件も無ければ何も叩かない。
+ * tmux の世代照会は同一性を書いた登録が在る時だけ(古い書き手しか居ない機械で余計な
+ * プロセスを起こさない)。ps は「近くに生きた claude が居るか」の判定にも要るので、
+ * 登録が在るなら常に取る。
  */
 function registryCtx(entries) {
-  const pids = entries.filter((e) => e.server && e.pid).map((e) => e.pid);
-  if (pids.length === 0) return { now: Date.now(), server: "", procOf: () => null };
-  return { now: Date.now(), server: tmuxServerId(), procOf: procLookup(pids) };
+  const now = Date.now();
+  if (entries.length === 0) {
+    return { now, server: "", procOf: () => null, procAvailable: false, claudeTtys: null };
+  }
+  const snap = psSnapshot(psRunner);
+  const hasIdentity = entries.some((e) => e.server && e.pid);
+  return {
+    now,
+    server: hasIdentity ? tmuxServerId() : "",
+    procOf: snap.procOf,
+    procAvailable: snap.available,
+    claudeTtys: snap.claudeTtys,
+  };
 }
 
 /** 決められなかった理由のうち、ワーカー経路にも落としてはいけないもの。 */
