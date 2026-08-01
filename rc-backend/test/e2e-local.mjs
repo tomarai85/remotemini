@@ -7,10 +7,11 @@
 //   blocked    = 同じ cwd に claude が複数で特定不能 → どちらにも送らない
 // 偽 tmux は send-keys を**全部ログに残す**ので「1文字も送っていない」を実測で言える。
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, chmodSync, existsSync, utimesSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, chmodSync, existsSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createSseParser, decodeEvent } from "../src/frames.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SB = mkdtempSync(join(tmpdir(), "rc-e2e-"));
@@ -284,6 +285,43 @@ try {
   check("401 without key", (await fetch(`${B}/api/sessions`)).status === 401);
   check("401 with wrong key", (await fetch(`${B}/api/sessions`, { headers: { authorization: "Bearer nope" } })).status === 401);
 
+  // 1-b. 器の配信(電話の画面 + それが読み込む module)。★総当たりの静的配信を作っていない事も測る。
+  {
+    const page = await fetch(`${B}/`);
+    const html = await page.text();
+    check("/ は電話の画面を返す", page.status === 200 && html.includes('id="s-list"'), html.slice(0, 120));
+    check("/ は認証を要求しない(鍵を貼る画面そのものなので)", page.status === 200);
+
+    const dbg = await fetch(`${B}/debug`);
+    check("/debug に検証ページが残っている", dbg.status === 200 && (await dbg.text()).includes("rc-backend 検証ページ"));
+
+    for (const [p, needle] of [["/frames.mjs", "createSseParser"], ["/view.mjs", "mergeHistory"]]) {
+      const r = await fetch(`${B}${p}`);
+      const t = await r.text();
+      check(`${p} が module として配られる`,
+        r.status === 200 && (r.headers.get("content-type") || "").includes("javascript") && t.includes(needle),
+        `${r.status} ${r.headers.get("content-type")}`);
+    }
+
+    const man = await fetch(`${B}/manifest.webmanifest`);
+    const manText = await man.text();
+    let manOk = false;
+    try { manOk = JSON.parse(manText).start_url === "/"; } catch { /* 下の check が落ちる */ }
+    check("manifest が JSON として読める", man.status === 200 && manOk, manText.slice(0, 80));
+
+    const icon = await fetch(`${B}/icon.png`);
+    const bytes = new Uint8Array(await icon.arrayBuffer());
+    check("icon.png が PNG の形で返る",
+      icon.status === 200 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47,
+      `${icon.status} ${Array.from(bytes.slice(0, 4))}`);
+
+    for (const bad of ["/src/server.mjs", "/package.json", "/../package.json",
+                       "/frames.mjs/../server.mjs", "/keys/api.key", "/app.html"]) {
+      const r = await fetch(`${B}${bad}`);
+      check(`★表に無いパスは配らない: ${bad}`, r.status === 404, String(r.status));
+    }
+  }
+
   // 2. 一覧
   const list = await (await fetch(`${B}/api/sessions`, { headers: H })).json();
   const ids = list.sessions.map((s) => s.id);
@@ -330,6 +368,23 @@ try {
   const sseText = sseChunks.join("");
   check("SSE carries assistant echo", sseText.includes("echo:テスト送信"), sseText.slice(0, 200));
   check("SSE carries result", sseText.includes('"type":"result"'));
+
+  // 6-b. ★出荷する parser で解けるか。上の3本は生の文字列を includes で見ているだけなので
+  //      「バイトが来た」しか言えない。電話が実際に通るのは frames.mjs の経路なので**同じ物**で測る。
+  {
+    const p = createSseParser();
+    const frames = [];
+    for (const c of sseChunks) frames.push(...p.push(c));
+    const decoded = frames.map(decodeEvent);
+    check("★出荷する parser で SSE の枠組みが解ける(電話が通る経路そのもの)",
+      decoded.length > 0 && decoded.every((d) => d.ok),
+      JSON.stringify(decoded.filter((d) => !d.ok).slice(0, 2)));
+    check("ワーカー経路の id は素の整数(tmux の epoch.seq と形が違う = 電話は解釈しない)",
+      decoded.every((d) => d.id === "" || /^\d+$/.test(d.id)),
+      decoded.map((d) => d.id).join(","));
+    check("echo が枠組みを解いた後の本文としても取れる",
+      JSON.stringify(decoded.map((d) => d.body)).includes("echo:テスト送信"));
+  }
 
   // 7. status → ready
   const st = await waitFor(async () => {
@@ -624,11 +679,97 @@ try {
     .find((s) => s.id === SID_UNREG);
   check("一覧でも blocked/unregistered として見える", lsUnreg?.live?.reason === "unregistered",
     JSON.stringify(lsUnreg?.live));
+  check("一覧の blocked 行が**文面**を持つ(電話が理由コードを生で出さずに済む)",
+    typeof lsUnreg?.live?.message === "string" && lsUnreg.live.message.length > 10,
+    JSON.stringify(lsUnreg?.live));
+  check("★一覧の文面と、送信を断った時の文面が同一(出所が1つ)",
+    jUnreg.error === lsUnreg?.live?.message,
+    `${JSON.stringify(jUnreg.error)} vs ${JSON.stringify(lsUnreg?.live?.message)}`);
+
+  // 12-b. 走査の絞り込み(?limit= / ?scope=)— ここまで検査ゼロだった
+  {
+    const l1 = await (await fetch(`${B}/api/sessions?limit=1`, { headers: H })).json();
+    check("?limit= が走査の上限として効く", l1.scan.limit === 1 && l1.scan.read <= 1, JSON.stringify(l1.scan));
+
+    const lr = await (await fetch(`${B}/api/sessions?scope=registered`, { headers: H })).json();
+    const rids = lr.sessions.map((s) => s.id);
+    check("?scope=registered は登録簿に居る会話だけを返す",
+      lr.scan.scope === "registered" && !rids.includes(SID1), rids.join(","));
+
+    const lall = await (await fetch(`${B}/api/sessions?scope=なんでも`, { headers: H })).json();
+    check("知らない scope は既定(all)に落ちる",
+      lall.scan.scope === "all" && lall.sessions.map((s) => s.id).includes(SID1), JSON.stringify(lall.scan));
+
+    // ★§2.12 で測った正直さが HTTP まで出ている事。中で正直でも外に出さなければ同じ。
+    const row = lall.sessions.find((s) => s.id === SID1);
+    check("一覧の行が metadataIncomplete を名乗る",
+      typeof row.metadataIncomplete === "boolean", JSON.stringify(row).slice(0, 200));
+  }
+
+  // ---- 13-b. ★二重起動は「読める一行」を残して落ちる ----------------------
+  //
+  // 常設(launchd)にすると、これを読むのは移動中の Tom で手元に機械は無い。
+  // 素の node は `uncaughtException` 経由で `fatal: Error: listen EADDRINUSE ...`
+  // という一行しか出さない。何が起きたのか・何を確かめればいいのかが要る。
+  // 実測の動機: MBP に残っていた残骸 702個のうち 11個が「fixture は全部あるのに
+  // api.key が無い」= サーバが起動に失敗した回だった(2026-08-02)。
+  {
+    const dup = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
+      env: { ...process.env, RC_PROJECTS_DIR: join(SB, "projects"), RC_CLAUDE_WORK: fakeWork,
+             RC_FLEET_ACCOUNT: fakeAcct, RC_KEY_DIR: join(SB, "keys"), RC_PORT: String(PORT),
+             RC_TMUX_BIN: fakeTmux },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let dupLog = "";
+    dup.stdout.on("data", (c) => (dupLog += c));
+    dup.stderr.on("data", (c) => (dupLog += c));
+    const code = await Promise.race([
+      new Promise((r) => dup.once("exit", (c) => r(c))),
+      sleep(6000).then(() => { dup.kill("SIGKILL"); return "timeout"; }),
+    ]);
+    check("★二重起動は落ちる(半端に上がらない)", code === 1, `exit=${code} ${dupLog.slice(0, 300)}`);
+    check("★その理由が日本語の一行で出る(ポートが埋まっている事+確かめ先)",
+      /起動できません/.test(dupLog) && /二重/.test(dupLog), JSON.stringify(dupLog.slice(0, 300)));
+    check("★陽性対照: 二重起動は listening を名乗らない", !dupLog.includes("listening"), dupLog.slice(0, 200));
+    // 先に上がっている方は生きたまま = 後から来た方に道を譲らせない。
+    check("★先に上がっている方は無傷", (await fetch(`${B}/api/sessions`, { headers: H })).ok);
+  }
 
   sseCtl.abort();
   await ssePromise;
+
+  // ---- 14. ★SIGTERM で速やかに降りる(電話が SSE を1本張ったまま) ----------
+  //
+  // `server.close()` は**既存接続を切らない**。電話が `/stream` を開いているだけで
+  // callback が来ず、launchd は既定 20 秒待って SIGKILL する = 常設(Phase P)にすると
+  // 再起動のたびに毎回 20 秒払う。ここは「繋ぎっぱなしの電話」を実際に作ってから測る。
+  // ★このブロックはサーバを**殺して**終わるので、必ず一番最後に置く。
+  const liveCtl = new AbortController();
+  const liveRes = await fetch(`${B}/api/sessions/${SID1}/stream`, { headers: H, signal: liveCtl.signal });
+  check("停止測定用の SSE が開いている(この接続が close を塞ぐ)", liveRes.ok, `status=${liveRes.status}`);
+  const t0 = Date.now();
+  const exited = new Promise((r) => sv.once("exit", () => r(Date.now() - t0)));
+  sv.kill("SIGTERM");
+  const took = await Promise.race([exited, sleep(9000).then(() => -1)]);
+  check("★SSE を張ったままでも SIGTERM で降りる(launchd の 20 秒 SIGKILL を毎回払わない)",
+    took >= 0 && took < 6000, `took=${took}ms`);
+  liveCtl.abort();
 } finally {
   sv.kill("SIGTERM");
 }
 console.log(`\nE2E: pass=${pass} fail=${fail}`);
+
+// 後片付け。★2026-08-02: ここが無かったせいで `rc-e2e-*` が MBP に 664個・edith に
+// 364個(65MB)積み上がっていた。**失敗した時だけ残す** — 落ちた時に中を見られなく
+// なる方が損なので。消す前に自分が作った物である署名を照合する = 外れた物を消さない関門。
+// ★署名に選ぶのは**この検査自身が必ず書く物**(fake-tmux / projects)。`keys/api.key` は
+//   サーバが起動に成功した時だけ書く物なので、署名にすると起動に失敗した残骸が
+//   「他人の物」に見える(2026-08-02 実測: 702個中11個がそれで弾かれた)。
+if (fail === 0) {
+  const mine = SB.includes("rc-e2e-") && existsSync(join(SB, "fake-tmux")) && existsSync(join(SB, "projects"));
+  if (mine) rmSync(SB, { recursive: true, force: true });
+  else console.log(`(片付けを見送り: 署名が一致しない ${SB})`);
+} else {
+  console.log(`調べる材料は残してある: ${SB}`);
+}
 process.exit(fail === 0 ? 0 : 1);

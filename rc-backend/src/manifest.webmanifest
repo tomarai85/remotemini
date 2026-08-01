@@ -1,0 +1,13 @@
+{
+  "name": "rc — Claude Code を電話から",
+  "short_name": "rc",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0d10",
+  "theme_color": "#0b0d10",
+  "icons": [
+    { "src": "/icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }
+  ]
+}

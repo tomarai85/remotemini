@@ -13,8 +13,9 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync } from "node:child_process";
-import { extractSessionMeta, buildListing, extractHistory, entriesFromRecord } from "./sessions.mjs";
+import { buildListing, readHistoryFromPath, entriesFromRecord } from "./sessions.mjs";
 import { JsonlTail, resumeDecision } from "./tail.mjs";
+import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
 import { WorkerManager } from "./worker.mjs";
 import { TmuxInjector, looksLikeClaudePane } from "./inject.mjs";
@@ -52,13 +53,30 @@ function authorized(req) {
 }
 
 // ---- セッション走査(fs 層) ----------------------------------------------
-function scanSessions() {
-  const entries = [];
+// 読んだメタは dev/ino/size/mtime を鍵に覚える。追記されれば鍵が変わるので、
+// 「変わっていないファイルは二度読まない」が自動的に成り立つ(嘘のキャッシュにならない)。
+const metaCache = new MetaCache({ max: 4000 });
+
+/**
+ * 一覧の材料を集める。**全部読まない**(実測 2026-08-02: 全部読むと 1,644本 /
+ * 3,064 MB / 10.8 秒 / rss 1,489 MB。有界読みで 0.75 秒 / rss 107 MB = 14.4倍)。
+ *
+ * 絞る順序は「読む前に決める」で固定する(Codex 相談 2026-08-02):
+ *   ① 名前で絞る(only)→ ② mtime で並べて上限を切る(limit)→ ③ 残った物だけ開く
+ * 逆順にすると「全部読んでから捨てる」になり、絞った意味が消える。
+ *
+ * @param {object} [o]
+ * @param {Set<string>|null} [o.only] この sessionId だけ見る(null = 全部)
+ * @param {number} [o.limit] mtime の新しい順に何本まで開くか(0 = 無制限)
+ * @returns {{entries:Array, unreadable:Array, files:number, read:number, cached:number}}
+ */
+function scanSessions({ only = null, limit = 0 } = {}) {
+  const found = [];
   let slugs = [];
   try {
     slugs = readdirSync(PROJECTS_DIR);
   } catch {
-    return entries; // projects dir 無し = 空一覧(落とさない)
+    return { entries: [], unreadable: [], files: 0, read: 0, cached: 0 }; // projects dir 無し = 空一覧
   }
   for (const slug of slugs) {
     const dir = join(PROJECTS_DIR, slug);
@@ -69,22 +87,53 @@ function scanSessions() {
       continue;
     }
     for (const f of files) {
-      const p = join(dir, f);
+      const sessionId = basename(f, ".jsonl");
+      if (only && !only.has(sessionId)) continue; // ★開く前に落とす
       try {
-        const st = statSync(p);
-        const text = readFileSync(p, "utf8");
-        entries.push({
-          sessionId: basename(f, ".jsonl"),
-          projectSlug: slug,
-          mtimeMs: st.mtimeMs,
-          meta: extractSessionMeta(text),
-        });
+        const p = join(dir, f);
+        found.push({ p, slug, sessionId, st: statSync(p) });
       } catch {
-        continue; // 消えた/読めないファイルで一覧全体を落とさない
+        continue; // 消えたファイルで一覧全体を落とさない
       }
     }
   }
-  return entries;
+  found.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs);
+  const picked = limit > 0 ? found.slice(0, limit) : found; // ★読む前にページ対象を選ぶ
+
+  const entries = [];
+  const unreadable = [];
+  let read = 0;
+  let cached = 0;
+  for (const { p, slug, sessionId, st } of picked) {
+    const key = MetaCache.keyOf(st);
+    let meta = metaCache.get(key);
+    if (meta === null) {
+      try {
+        meta = readMetaFromPath(p);
+        read += 1;
+        metaCache.set(key, meta);
+      } catch (e) {
+        if (e.code === "ENOENT") continue; // 走査中に消えた = 普通の入れ替わり、黙って良い
+        // ★読めない会話を黙って消さない。消えると「一番長い会話だけが居なくなる」型に戻る。
+        unreadable.push({
+          id: sessionId,
+          project: slug,
+          cwd: null,
+          title: "(読めない)",
+          lastPrompt: "",
+          turns: null,
+          updatedAt: new Date(st.mtimeMs).toISOString(),
+          readable: false,
+          errorCode: e.code === "EACCES" ? "TRANSCRIPT_UNREADABLE" : String(e.code || "TRANSCRIPT_UNREADABLE"),
+        });
+        continue;
+      }
+    } else {
+      cached += 1;
+    }
+    entries.push({ sessionId, projectSlug: slug, mtimeMs: st.mtimeMs, meta });
+  }
+  return { entries, unreadable, files: found.length, read, cached };
 }
 
 function findSessionFile(sessionId) {
@@ -243,7 +292,10 @@ function blockedMessage(r) {
   return `登録されたペインの現在地(${r.panePath || "不明"})が、この会話のフォルダと一致しません。宛先を確定できないため送信しません。`;
 }
 function blockedBody(r) {
-  return { route: "blocked", reason: r.reason, candidates: r.candidates, source: r.source };
+  // ★文面の出所を1つに保つ。電話側に同じ日本語を書くと、直した時に片方だけ古くなる。
+  // 一覧の行にも 409 の本文にも、ここで作った同じ1文が載る(e2e が同一性を検査する)。
+  return { route: "blocked", reason: r.reason, candidates: r.candidates, source: r.source,
+           message: blockedMessage(r) };
 }
 
 // ---- ワーカー ---------------------------------------------------------------
@@ -445,13 +497,16 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || "local"}`);
     const path = url.pathname;
 
-    if (path === "/" && req.method === "GET") {
-      // 最小テストページ(認証キーは手で貼る。ページ自体は秘密を含まない)
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      res.end(TEST_PAGE);
+    if (req.method === "GET" && STATIC.has(path)) {
+      // 認証の**外**に置くのは、鍵を貼る画面そのものだから(中身に秘密を含まない)。
+      const [body, type] = STATIC.get(path);
+      res.writeHead(200, { "content-type": type, "cache-control": "no-cache" });
+      res.end(body);
       return;
     }
 
+    // ★表に無いパスはここで落ちる = 総当たりの静的ファイルサーバを作らない。
+    //   パスから file 名を組み立てる実装にすると `/../keys/api.key` の入口ができる。
     if (!path.startsWith("/api/")) return json(res, 404, { error: "not found" });
     if (!authorized(req)) return json(res, 401, { error: "unauthorized" });
 
@@ -461,7 +516,17 @@ const server = createServer(async (req, res) => {
       const panes = injector.listPanes();
       const entries = registry.read();
       const ctx = registryCtx(entries); // 登録の生死判定も1回だけ(tmux/ps を会話数ぶん起こさない)
-      const scanned = buildListing(scanSessions());
+      // ① scope を確定してから ② 読む対象を決める(読んでから捨てない)。
+      // ★既定は `all`。当初 `registered` を既定にしかけたが、REQUIREMENTS 4-3 を読み直すと
+      //   D5 の Tom 裁定は**どの機体を対象にするか**(edith / 持ち出し / Mac 直接)であって
+      //   「登録した会話だけ出せ」ではない。むしろ設計は逆向きで、jsonl がまだ無い会話も
+      //   登録簿から拾って**足している**(下の registryOnlySessions)。既定で絞ると
+      //   その裁定と正面から衝突するので、絞りは電話側が明示した時だけ効かせる。
+      const requestedScope = url.searchParams.get("scope") === "registered" ? "registered" : "all";
+      const limit = Math.max(0, Math.trunc(Number(url.searchParams.get("limit")) || 0));
+      const registered = new Set(entries.map((e) => e.sessionId));
+      const scan = scanSessions({ only: requestedScope === "registered" ? registered : null, limit });
+      const scanned = [...buildListing(scan.entries), ...scan.unreadable];
       // jsonl がまだ無い会話(開いただけ・未発言)も、登録簿に居てペインが生きていれば出す。
       // 見えないと電話から最初の一言を送れない = Tom 裁定「いつでも干渉できる」に反する。
       // 並びは updatedAt の新しい順で混ぜる。未発言の会話の updatedAt は登録簿の mtime
@@ -481,7 +546,12 @@ const server = createServer(async (req, res) => {
             : { route: "worker", ...manager.status(s.id) };
         return { ...s, live };
       });
-      return json(res, 200, { sessions: listing });
+      // 何本見て何本開いたかを毎回名乗る。★「速い」を主張する側が計器を持たないと、
+      // 遅くなった時に「気のせい」で片付く(この置き換え自体、測って初めて見つかった)。
+      return json(res, 200, {
+        sessions: listing,
+        scan: { scope: requestedScope, limit, files: scan.files, read: scan.read, cached: scan.cached },
+      });
     }
 
     if (path === "/api/account" && req.method === "GET") {
@@ -513,14 +583,30 @@ const server = createServer(async (req, res) => {
     const registeredOnly = !file && regEntries.some((e) => e.sessionId === sessionId);
     if (!file && !registeredOnly) return json(res, 404, { error: "unknown session" });
     // cwd は jsonl 由来。無い場合は空 = 突き合わせを省く(resolveSessionPane の仕様)。
-    const sessionCwd = () => (file ? extractSessionMeta(readFileSync(file, "utf8")).cwd : "");
+    // ★ここは送信・割り込みの度に通る。全部読むと 280 MB のファイルで毎回それを払う一方、
+    //   cwd 経路は仕様上 "ok" を返せない(registry.mjs: 同定は名乗りだけ)ので、
+    //   払う対価に対して得られる物が無い。末尾から有界に採る。
+    const sessionCwd = () => {
+      if (!file) return "";
+      try {
+        return readMetaFromPath(file).cwd || "";
+      } catch {
+        return "";
+      }
+    };
     const resolvePane = () => livePaneFor(sessionId, sessionCwd(), undefined, regEntries);
 
     if (action === "history" && req.method === "GET") {
       const limit = Math.min(Number(url.searchParams.get("limit") || 50), 500);
       if (!file) return json(res, 200, { history: [] }); // まだ何も言っていない会話
-      const text = readFileSync(file, "utf8");
-      return json(res, 200, { history: extractHistory(text, limit) });
+      try {
+        const h = readHistoryFromPath(file, limit);
+        // truncated = これより前がある。電話側が「以前を読む」を出せる様に名乗る。
+        return json(res, 200, { history: h.history, truncated: h.truncated });
+      } catch (e) {
+        if (e.code === "ENOENT") return json(res, 200, { history: [], truncated: false });
+        return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", code: String(e.code || e.message) });
+      }
     }
 
     if (action === "status" && req.method === "GET") {
@@ -619,8 +705,11 @@ const server = createServer(async (req, res) => {
     if (action === "stream" && req.method === "GET") {
       res.writeHead(200, {
         "content-type": "text/event-stream",
-        "cache-control": "no-cache",
+        "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
+        // 中継(tailscale serve / nginx 等)が挟まった時に溜め込まれない為。
+        // ※ Safari 自身のバッファリング(DESIGN §8-4)には効かない。効くのは中継側だけ。混同しない。
+        "x-accel-buffering": "no",
       });
       const rawLast = String(req.headers["last-event-id"] || url.searchParams.get("since") || "");
       const ping = setInterval(() => {
@@ -700,6 +789,11 @@ process.on("uncaughtException", (e) => {
 process.on("SIGTERM", () => {
   manager.shutdown();
   server.close(() => process.exit(0));
+  // ★`server.close()` は既存接続を切らない。電話が SSE を1本張っているだけで
+  //   callback は来ないので、常設(launchd)にすると再起動のたびに SIGKILL 待ちの
+  //   20 秒を毎回払う。自分で降りる。`unref` にするのは、他に仕事が無ければ
+  //   この timer が終了を遅らせない為(= 接続が無い時は今まで通り即座に終わる)。
+  setTimeout(() => process.exit(0), 3000).unref();
 });
 
 const TEST_PAGE = `<!doctype html><meta charset="utf-8">
@@ -761,6 +855,35 @@ async function send(){
 }
 async function intr(){if(SID)await fetch("/api/sessions/"+SID+"/interrupt",{method:"POST",headers:H()});}
 </script>`;
+
+/** 配る静的ファイルはこの表が全て。起動時に1回読んで持つ(中身は起動後変わらない)。 */
+function asset(name) {
+  return readFileSync(new URL(`./${name}`, import.meta.url));
+}
+const STATIC = new Map([
+  ["/",                     [asset("app.html"),             "text/html; charset=utf-8"]],
+  ["/debug",                [TEST_PAGE,                     "text/html; charset=utf-8"]],
+  ["/frames.mjs",           [asset("frames.mjs"),           "text/javascript; charset=utf-8"]],
+  ["/view.mjs",             [asset("view.mjs"),             "text/javascript; charset=utf-8"]],
+  ["/manifest.webmanifest", [asset("manifest.webmanifest"), "application/manifest+json"]],
+  ["/icon.png",             [asset("icon.png"),             "image/png"]],
+]);
+
+// ★起動に失敗した時に**読める行**を残す(2026-08-02)。
+// これが無いと listen の失敗は `uncaughtException` に落ち、`fatal: Error: listen
+// EADDRINUSE ...` という一行になる。常設(launchd)にすると読むのは移動中の Tom で、
+// その場に手元の機械は無い。既に上がっている物が居るのか、権限で塞がれているのかを
+// **ログの一行で**決着させる。exit(1) は保つ = 半端に上がるより落ちている方が安全
+// (電話には「繋がらない」として出る。中途半端に応答する物が居るより判りやすい)。
+server.on("error", (e) => {
+  const why = e && e.code === "EADDRINUSE"
+    ? `ポート ${PORT} は既に使われています。rc-backend が二重に上がっていないか確認してください`
+    : e && e.code === "EACCES"
+      ? `ポート ${PORT} を開く権限がありません`
+      : `listen に失敗しました: ${e && e.message}`;
+  console.error(`[rc-backend] 起動できません — ${why}`);
+  process.exit(1);
+});
 
 server.listen(PORT, BIND, () => {
   console.log(`[rc-backend] listening on http://${BIND}:${PORT} (key: ${KEY_FILE})`);

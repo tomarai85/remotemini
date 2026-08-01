@@ -349,6 +349,8 @@ export function registryOnlySessions({
       title: "(未発言)",
       lastPrompt: "",
       turns: 0,
+      // jsonl が存在しない = 読み残したのではなく、本当に何も無い。false が正しい。
+      metadataIncomplete: false,
       updatedAt: new Date(e.mtimeMs).toISOString(),
       fromRegistryOnly: true,
     });

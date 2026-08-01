@@ -25,6 +25,12 @@ INJ = "src/inject.mjs"
 REG = "src/registry.mjs"
 PRC = "src/procs.mjs"
 TAI = "src/tail.mjs"
+LIS = "src/listing.mjs"
+SES = "src/sessions.mjs"
+FRM = "src/frames.mjs"
+VIE = "src/view.mjs"
+SRV = "src/server.mjs"
+APP = "src/app.html"
 
 MUT = [
  ("M1 メニュー判定を外す(CHOICE を返さない)", INJ,
@@ -194,6 +200,110 @@ MUT = [
  ("M41 配信の世代を見ずに seq だけで繋ぐ(seq が振り直された後に嘘の追いつきが成立する)", TAI,
   'if (ep !== String(epoch) || !/^\\d+$/.test(sq || "")) return { kind: "gap", why: "epoch-mismatch" };',
   'if (!/^\\d+$/.test(sq || "")) return { kind: "gap", why: "epoch-mismatch" };'),
+ # M42-M51 = 2026-08-02 の有界読み(一覧メタ + 履歴)。全部読みを末尾からの部分読みに替えた層。
+ # この層が引き受けている難しさは「一部しか読まずに、全部読んだのと同じ答えを出す」事なので、
+ # 壊すべき守りは**繋ぎ目**(持ち越し・短い read・改行での切り出し)と**嘘をつかない印**
+ # (metadataIncomplete / truncated)の2種類。実データ 1,644本との突き合わせは別建て(DESIGN §2.11)。
+ ("M42 チャンク間の持ち越しを捨てる(境界を跨いだレコードが消える)", LIS,
+  'const buf = carry.length > 0 && raw.length === step ? Buffer.concat([raw, carry]) : raw;',
+  'const buf = raw;'),
+ ("M43 短く返った read を読み直さない(繋いだ buffer に穴が開く)", LIS,
+  'while (got < len) {',
+  'if (got < len) {'),
+ ("M44 読み切っていなくても「無い」と断言する(metadataIncomplete を常に false)", LIS,
+  'metadataIncomplete: !r.reachedStart && (m.entrypoint === null || m.lastPrompt === null),',
+  'metadataIncomplete: false,'),
+ ("M45 読む上限を外す(280MB の会話で一覧が止まる)", LIS,
+  'while (scanned < maxBytes) {',
+  'while (true) {'),
+ ("M46 改行で切らずに断片を完全な行として扱う(多バイト文字が割れる)", LIS,
+  '''  if (!atFileStart) {
+    const nl = buf.indexOf(0x0a);
+    if (nl < 0) return { lines: [], carry: buf }; // 完全な行が1つも無い = 全部が断片
+    start = nl + 1;
+  }''',
+  '  // mutated: 断片をそのまま行として読む'),
+ ("M47 メタを先頭優先で採る(cwd が現在地でなく起動地に戻る)", LIS,
+  'for (let i = lines.length - 1; i >= 0; i--) {',
+  'for (let i = 0; i < lines.length; i++) {'),
+ ("M48 一覧キャッシュの鍵から mtime を落とす(書き足された会話が古いまま出る)", LIS,
+  'return `${st.dev}-${st.ino}-${st.size}-${Math.round(st.mtimeMs)}`;',
+  'return `${st.dev}-${st.ino}-${st.size}`;'),
+ ("M49 履歴を止める条件を行数にする(項目を生まない行が挟まると件数が足りない)", SES,
+  'done: (lines) => entriesFromLines(lines).length >= limit,',
+  'done: (lines) => lines.length >= limit,'),
+ ("M50 履歴を先頭側から切る(直近でなく一番古い会話が返る)", SES,
+  'history: all.slice(-limit),',
+  'history: all.slice(0, limit),'),
+ ("M51 履歴の truncated を常に false(「これより前がある」を隠す)", SES,
+  'truncated: !r.reachedStart || all.length > limit,',
+  'truncated: false,'),
+ # M52-M59 = 2026-08-02 の電話側(frames/view)+ 契約を外へ出す2箇所。
+ # この層が引き受けている難しさは (a) 回線が**どこで切れても**同じ答えを出す事、
+ # (b) サーバが測った結果を**丸めずに**人の言葉にする事。壊すべき守りはその2種類。
+ # ★ view/frames は app.html から切り出した層。判断を HTML の中に書くと、単体でも
+ #   変異でも触れなくなる(緑が意味を失う)ので、判断は必ずこちら側に置く。
+ ("M52 履歴とライブの重なりを剥がさない(購読を先に開いた分がそのまま二重に出る)", VIE,
+  'if (same) return [...h, ...l.slice(k)];',
+  'if (same) return [...h, ...l];'),
+ ("M53 未確認の送信を「送った」に丸める(取り込まれた確認が無いのに成功と言う)", VIE,
+  'if (b.delivered === "unverified") {',
+  'if (false) {'),
+ # ★M54 は 2026-08-02 に的を差し替えた。旧版は `retry: false -> true` を壊していたが、
+ #   `retry` は読み手が0人のまま残っていた死に field なので、その日のうちに削除した。
+ #   同じ「断られた送信」の危険を、生きている field(`keepText`)で測り直す。
+ ("M54 断られた送信で入力欄を空にする(打った本文が消え、打ち直す先を間違える)", VIE,
+  'return { kind: "refused", text: b.error || "送信を断られました。", keepText: true };',
+  'return { kind: "refused", text: b.error || "送信を断られました。", keepText: false };'),
+ ("M55 末尾の孤立 CR をその場で確定させる(チャンクを跨いだ CRLF が2行に割れる)", FRM,
+  'if (m[0] === "\\r" && m.index === buf.length - 1) break; // 次の push を待つ',
+  ''),
+ ("M56 待ち時間の上限を外す(地下鉄で切れ続けると再接続が発散する)", FRM,
+  'return Math.min(15_000, 1000 * 2 ** (attempt - 1));',
+  'return 1000 * 2 ** (attempt - 1);'),
+ ("M57 data の無いフレームも配信する(空の発言が画面に出る)", FRM,
+  'if (!hadData) return null;',
+  ''),
+ ("M58 blocked の本文から文面を落とす(電話が理由コードを生で出す)", SRV,
+  '           message: blockedMessage(r) };',
+  '         };'),
+ ("M59 一覧から metadataIncomplete を落とす(読み残しを「発言なし」と表示する)", SES,
+  'metadataIncomplete: !!e.meta.metadataIncomplete,',
+  ''),
+ # M60-M68 = 2026-08-02 深夜。(a) 未確認の送信で本文を捨てない、(b) app.html の中に
+ # 残っていた5つの判断を view.mjs へ出した分、(c) 常設(launchd)に載せる為の起動/停止。
+ # ★(c) の2本は**電話からは見えない**性質(起動できない・降りるのに20秒)なので、
+ #   e2e 側にしか的が無い。単体が通ったままなのは想定通り。
+ ("M60 未確認の送信で入力欄を空にする(届いたか分からない本文を黙って捨てる)", VIE,
+  '        keepText: true,\n      };',
+  '        keepText: false,\n      };'),
+ ("M61 二重注入の注意を落とす(送り直しが二重に入る事を人に伝えない)", VIE,
+  '本文は残してあります。送り直すと二重に入ることがあります。',
+  '本文は残してあります。'),
+ ("M62 「止める対象が無い」を失敗に丸める(静かな会話への Escape が赤く出る)", VIE,
+  ': { kind: "warn", text: "止める対象がありませんでした。" };',
+  ': { kind: "error", text: "止める対象がありませんでした。" };'),
+ ("M63 一度つながっただけで待ち時間を戻す(受けた直後に切る相手に毎秒つなぎ直す)", VIE,
+  'const healthy = Boolean(openedAt) && nowMs - openedAt > HEALTHY_MS;',
+  'const healthy = Boolean(openedAt);'),
+ ("M64 継ぎ目(tail-attached)にも警告を出す(本当の取りこぼしが同じ文面に埋もれる)", VIE,
+  'if (!why || why === "tail-attached") return null;',
+  'if (!why) return null;'),
+ ("M65 「以前を読む」で件数が増えない(押しても何も起きないボタンになる)", VIE,
+  'return Math.min(500, (current || 50) + 100);',
+  'return Math.min(500, current || 50);'),
+ ("M66 走査の欠けた値を 0 で埋める(「読めなかった」を「0本だった」と表示する)", VIE,
+  '${scan.files ?? "?"}本のうち ${scan.read ?? "?"}本',
+  '${scan.files ?? 0}本のうち ${scan.read ?? 0}本'),
+ ("M67 起動失敗の理由を出さない(移動中に読むログが EADDRINUSE の一行になる)", SRV,
+  'server.on("error", (e) => {',
+  'server.on("error", (e) => { process.exit(1); } ); (() => {'),
+ ("M68 SIGTERM の自主降機を外す(SSE が1本あるだけで launchd の 20 秒を毎回払う)", SRV,
+  '  setTimeout(() => process.exit(0), 3000).unref();',
+  ''),
+ ("M69 app.html が view.mjs から名前を取り込むのをやめる(電話だけが白紙になる)", APP,
+  'relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,',
+  'relTime, routeLabel, sendResult, subtitleOf, whoOf,'),
 ]
 
 # ★2026-08-01 に実機で踏んだ欠陥: 落ちたかを `"# fail 0" not in stdout` で見ていた。
@@ -227,6 +337,23 @@ def read_suite(p, label, rx):
     if (n > 0) != rc_failed:
         die(f"{label}: 要約 fail={n} と exit={p.returncode} が食い違う")
     return n > 0
+
+# --- `--dry`: 変異の**的**が今のコードに当たるかだけを数秒で見る ---------------
+#
+# 動機(2026-08-02): M54 が狙っていた `retry: false` は、その日のうちに死に field として
+# 削除されていた。台本は 30 分走った末に「対象行が無い」と言う。**当たらない的は、
+# 走らせる前に分かる**。コードを直した直後にここだけ回せば、台本の腐りが即座に出る。
+# ★これは変異検査そのものではない(守りが効くかは何も測らない)。的の生死だけ。
+if "--dry" in sys.argv:
+    bad = 0
+    for m in MUT:
+        name, f, old = m[0], m[1], m[2]
+        n = open(os.path.join(SRC, f)).read().count(old)
+        if n != 1:
+            bad += 1
+            print(f"NG({n}件) {name}\n      <- {f}")
+    print(f"的の照合: {len(MUT)}件 / 当たらない {bad}件")
+    sys.exit(1 if bad else 0)
 
 def suites(dst):
     u = subprocess.run(["npm", "test", "--silent"], cwd=dst, capture_output=True, text=True)
@@ -270,6 +397,9 @@ for m in MUT:
     p = os.path.join(dst, f)
     src_text = open(p).read()
     if old not in src_text:
+        # 走行中に返す(下の atexit が最後に拾うので**漏れてはいない**が、
+        # 木まるごとのコピーなので走っている間の /var/folders を無駄に太らせない)。
+        shutil.rmtree(d, ignore_errors=True)
         rows.append((name, "対象行が無い", "?", "?", why)); continue
     open(p, "w").write(src_text.replace(old, new, 1))
     ufail, efail = suites(dst)

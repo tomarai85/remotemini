@@ -9,6 +9,12 @@
 //
 // この module は fs を受け取らない純関数(パース)と、fs を注入できる薄い走査層に分ける。
 // テストは fixture 文字列だけで回る。
+//
+// 例外は履歴の有界読み(readHistoryFromPath)。末尾から必要な分だけ読む部分は
+// listing.mjs の readLinesBackward に任せる — 持ち越し・短い read・多バイト境界の
+// 扱いを2箇所に書かない為(2026-08-02)。
+import { closeSync, openSync } from "node:fs";
+import { nodeIo, readLinesBackward } from "./listing.mjs";
 
 /**
  * jsonl の1ファイル分のテキストから一覧用メタデータを抜く。
@@ -86,6 +92,9 @@ export function buildListing(entries) {
       title: resolveTitle(e.meta, e.sessionId),
       lastPrompt: e.meta.lastPrompt,
       turns: e.meta.turns,
+      // ★層の中で測った正直さを HTTP の外まで出す。中で正直でも落とせば同じ事(§2.13 訂正 #5)。
+      // これが無いと電話は「読み残し」と「本当に発言が無い」を区別できず、後者に丸めて嘘を書く。
+      metadataIncomplete: !!e.meta.metadataIncomplete,
       updatedAt: new Date(e.mtimeMs).toISOString(),
     }));
 }
@@ -96,9 +105,13 @@ export function buildListing(entries) {
  * tail 側から limit 件。
  */
 export function extractHistory(jsonlText, limit = 50) {
+  if (typeof jsonlText !== "string") return [];
+  return entriesFromLines(jsonlText.split("\n")).slice(-limit);
+}
+
+/** 行の配列(古い順)を表示用の項目列にする。壊れた行は飛ばす。 */
+export function entriesFromLines(lines) {
   const out = [];
-  if (typeof jsonlText !== "string") return out;
-  const lines = jsonlText.split("\n");
   for (const line of lines) {
     if (!line) continue;
     let obj;
@@ -109,7 +122,42 @@ export function extractHistory(jsonlText, limit = 50) {
     }
     out.push(...entriesFromRecord(obj));
   }
-  return out.slice(-limit);
+  return out;
+}
+
+/**
+ * 直近 `limit` 件の履歴を、**末尾から必要な分だけ読んで**組む。
+ *
+ * なぜ全部読まないか(実測 2026-08-02): 一番長い会話は 280 MB。電話が会話を開くたびに
+ * それを丸ごと1本の JS 文字列にしていた。文字列の上限 536,870,888 を超えれば
+ * `ERR_STRING_TOO_LONG` で**その会話だけ履歴が空になる**(一覧で見つけたのと同じ型の穴)。
+ *
+ * @param {string} path
+ * @param {number} limit 返す項目数
+ * @param {object} [opts] io / chunk / maxBytes(test 用)
+ * @returns {{history:Array, truncated:boolean, scanned:number}}
+ *   `truncated` = これより前の履歴がまだ在る(読み切っていない)。UI はここで「以前がある」と言える。
+ */
+export function readHistoryFromPath(path, limit = 50, opts = {}) {
+  const fd = openSync(path, "r");
+  try {
+    const r = readLinesBackward(opts.io ?? nodeIo, fd, {
+      chunk: opts.chunk,
+      maxBytes: opts.maxBytes,
+      // 「行が limit 本」ではなく「**項目が limit 件**」で止める。
+      // 1レコードが 0 件(meta 行)にも複数件(本文 + tool 呼び)にもなるので、
+      // 行数で数えると足りない/読み過ぎのどちらにもなる。
+      done: (lines) => entriesFromLines(lines).length >= limit,
+    });
+    const all = entriesFromLines(r.lines);
+    return {
+      history: all.slice(-limit),
+      truncated: !r.reachedStart || all.length > limit,
+      scanned: r.scanned,
+    };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
