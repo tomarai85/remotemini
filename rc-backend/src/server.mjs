@@ -13,7 +13,9 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync } from "node:child_process";
-import { extractSessionMeta, buildListing, extractHistory } from "./sessions.mjs";
+import { extractSessionMeta, buildListing, extractHistory, entriesFromRecord } from "./sessions.mjs";
+import { JsonlTail } from "./tail.mjs";
+import { EventRing } from "./ring.mjs";
 import { WorkerManager } from "./worker.mjs";
 import { TmuxInjector, looksLikeClaudePane } from "./inject.mjs";
 import { PaneRegistry, resolveSessionPane, registryOnlySessions } from "./registry.mjs";
@@ -276,6 +278,143 @@ function pushToSubscribers(sessionId, seq, data) {
   }
 }
 
+function sendEvent(res, { id, event, data }) {
+  let frame = "";
+  if (id !== undefined) frame += `id: ${id}\n`;
+  if (event) frame += `event: ${event}\n`;
+  frame += `data: ${JSON.stringify(data)}\n\n`;
+  try {
+    res.write(frame);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ---- tmux 経路のライブ配信 ---------------------------------------------------
+// worker 経路(-p --resume)は自分が動かすので出来事を知っているが、tmux 経路の会話は
+// **本物の TUI が勝手に進む**ので、こちらから見に行かないと何も分からない。
+// 実測(2026-08-02 `tools/live-http-check.mjs` 初回): tmux 経路の /stream は実イベント 0 件。
+// 見に行く先は2つ、性質が違うので分けて扱う(Codex 2026-08-02 の裁定):
+//   message = jsonl の追記。**再生可能**な永続イベント。取りこぼしたら困るので seq を振る。
+//   screen  = 画面の状態。**最新値だけ意味がある**一時状態。履歴の再生はしない = id を振らない。
+const FEED_TICK_MS = 700;
+const FEED_SCREEN_EVERY = 2; // 2 tick(=1.4秒)ごとに画面を撮る。tmux を無駄に叩かない。
+const FEED_WORK_WINDOW = 4; // 直近4回の観測(≒5.6秒)を1つの窓として見る
+const feeds = new Map(); // sessionId -> feed
+let feedEpochSeq = 0;
+
+function getFeed(sessionId) {
+  let f = feeds.get(sessionId);
+  if (!f) {
+    // epoch は「この配信の世代」。購読が絶えて作り直された時に seq が 1 に戻るため、
+    // epoch を付けないと再接続の Last-Event-ID が偶然一致して**取りこぼしを黙って埋める**。
+    f = {
+      epoch: ++feedEpochSeq,
+      ring: new EventRing(256),
+      tail: null,
+      timer: null,
+      tick: 0,
+      lastScreen: null,
+      work: [], // 直近の「生成中を観測したか」。1枚ごとの真偽をそのまま流さない為の窓
+      subs: new Set(),
+    };
+    feeds.set(sessionId, f);
+  }
+  return f;
+}
+
+function feedBroadcast(f, frame) {
+  for (const res of f.subs) if (!sendEvent(res, frame)) f.subs.delete(res);
+}
+
+/** 1 tick 分の観測。例外は握って配信を止めない(見に行けない事自体は screen で伝わる)。 */
+function feedTick(sessionId, f, resolvePaneFn) {
+  // jsonl は**最初の発言まで存在しない**(edith 実測 2026-07-31)。購読を始めた時点で
+  // 無かったからと諦めると、いちばん見たい「開いたばかりの会話」だけが無音になる
+  // (2026-08-02 実測: 実機で message が1件も流れなかった原因はこれ)。
+  if (!f.tail) {
+    const file = findSessionFile(sessionId);
+    if (file) {
+      f.tail = new JsonlTail({ path: file });
+      const first = f.tail.poll(); // 末尾に位置合わせ。過去分は流さない
+      // ★ここで嘘をつかない: 電話は購読より前に /history を撮っている。その撮影から
+      // この位置合わせまでの間に書かれた行は、差分にも履歴にも出ない = 黙って消える。
+      // 継ぎ目が見えないのだから「繋がった」と言わず、一度だけ読み直させる。
+      if (first.ok && f.tail.offset > 0) {
+        feedBroadcast(f, { event: "gap", data: { rereadHistory: true, why: "tail-attached" } });
+      }
+    }
+  }
+  if (f.tail) {
+    const r = f.tail.poll();
+    if (r.reset) {
+      // 差分では繋がらない(世代交代・切り詰め・印の不一致)。嘘の連続性を作らず読み直させる。
+      feedBroadcast(f, { event: "gap", data: { rereadHistory: true, why: r.error || "reset" } });
+    }
+    for (const rec of r.records) {
+      const entries = entriesFromRecord(rec.obj);
+      if (entries.length === 0) continue;
+      const seq = f.ring.push({ entries });
+      feedBroadcast(f, { id: `${f.epoch}.${seq}`, event: "message", data: { entries } });
+    }
+  }
+  if (++f.tick % FEED_SCREEN_EVERY === 0) {
+    const r = resolvePaneFn();
+    const body = r.pane ? screenBody(f, r.pane) : { route: "gone", reason: r.reason || "pane-gone" };
+    const key = JSON.stringify(body);
+    if (key !== f.lastScreen) {
+      f.lastScreen = key;
+      feedBroadcast(f, { event: "screen", data: body }); // id は振らない = 再生対象ではない
+    }
+  }
+}
+
+/**
+ * 電話に出す画面状態。1枚ごとの `activity` を**そのまま流さない**。
+ * 実測(2026-08-02): 生成中の印は1枚ごとに出たり消えたりするので、そのまま送ると
+ * 1.4秒ごとに observed/unknown が交互に飛ぶ。細い回線でこれは通信も電池も無駄で、
+ * しかも人が見て意味が取れない。直近の窓で1回でも観測できたかに畳む。
+ * ★`quiet` は「待機中」ではない — 生成中を**観測できなかった**だけ(inject.mjs M3 と同じ規律)。
+ */
+function screenBody(f, pane) {
+  const s = screenOf(pane);
+  f.work.push(s.activity === "observed");
+  if (f.work.length > FEED_WORK_WINDOW) f.work.shift();
+  return {
+    route: "tmux",
+    pane,
+    screen: s.screen,
+    work: f.work.some(Boolean) ? "observed" : "quiet",
+    windowMs: FEED_WORK_WINDOW * FEED_SCREEN_EVERY * FEED_TICK_MS,
+  };
+}
+
+function startFeed(sessionId, file, resolvePaneFn) {
+  const f = getFeed(sessionId);
+  if (!f.timer) {
+    f.timer = setInterval(() => {
+      try {
+        feedTick(sessionId, f, resolvePaneFn);
+      } catch {
+        /* 1 tick の失敗で配信を止めない */
+      }
+    }, FEED_TICK_MS);
+    f.timer.unref();
+  }
+  return f;
+}
+
+function stopFeedIfIdle(sessionId) {
+  const f = feeds.get(sessionId);
+  if (!f || f.subs.size > 0) return;
+  clearInterval(f.timer);
+  f.timer = null;
+  f.lastScreen = null;
+  // ring / epoch / tail の位置は**残す**。捨てて作り直すと seq が 1 に戻り、
+  // 再接続してきた電話に「追いついた」と嘘をつく経路ができる。
+}
+
 // ---- HTTP -------------------------------------------------------------------
 function json(res, code, obj) {
   const body = JSON.stringify(obj);
@@ -483,9 +622,52 @@ const server = createServer(async (req, res) => {
         "cache-control": "no-cache",
         connection: "keep-alive",
       });
-      const last = Number(req.headers["last-event-id"] || url.searchParams.get("since") || 0);
+      const rawLast = String(req.headers["last-event-id"] || url.searchParams.get("since") || "");
+      const ping = setInterval(() => {
+        try {
+          res.write(`: ping\n\n`);
+        } catch {
+          /* close handler が拾う */
+        }
+      }, 25_000);
+
+      // 経路は購読の時点で決める。机で開かれている会話(tmux)は画面と jsonl を見に行く。
+      // 開かれていなければ従来通りワーカーの出来事を流す。
+      const found = resolvePane();
+      if (found.pane) {
+        const f = startFeed(sessionId, file, resolvePane);
+        f.subs.add(res);
+        // 追いつき: `epoch.seq` の epoch が今の配信と同じ時だけ差分で繋ぐ。
+        // 違う epoch(サーバ再起動・購読が絶えて作り直された)や、数字でない物、
+        // ワーカー経路用の素の数字が来た時は、繋がった事にせず読み直させる。
+        // 「何も持っていない」= 初回。`""` と `"0"` の両方がそれ(電話が since=0 を付けて
+        // 来るのは普通で、これを壊れた再開として gap 扱いすると**毎回**読み直しを命じる事に
+        // なり、やがてクライアントは gap を無視するようになる = 本当の取りこぼしが埋もれる)。
+        const fresh = rawLast === "" || rawLast === "0";
+        const [ep, sq] = rawLast.split(".");
+        const resumable = !fresh && ep === String(f.epoch) && /^\d+$/.test(sq || "");
+        if (!fresh && !resumable) {
+          sendEvent(res, { event: "gap", data: { rereadHistory: true, why: "epoch-mismatch" } });
+        } else if (resumable) {
+          const missed = f.ring.since(Number(sq));
+          if (missed.gap) sendEvent(res, { event: "gap", data: { rereadHistory: true, why: "ring-overflow" } });
+          for (const e of missed) sendEvent(res, { id: `${f.epoch}.${e.seq}`, event: "message", data: e.data });
+        }
+        // 今の画面は経路によらず必ず1件。履歴は /history が正なのでここでは流さない。
+        sendEvent(res, { event: "screen", data: screenBody(f, found.pane) });
+        req.on("close", () => {
+          clearInterval(ping);
+          f.subs.delete(res);
+          stopFeedIfIdle(sessionId);
+        });
+        return;
+      }
+
+      // ワーカー経路。id は素の整数。tmux 用の `epoch.seq` が来たら追いつけないので
+      // 素直に gap を出す(Number("3.7") は NaN になり、黙って空を返す = 嘘の追いつき)。
+      const last = /^\d+$/.test(rawLast) ? Number(rawLast) : 0;
       const missed = manager.eventsSince(sessionId, last);
-      if (missed.gap) {
+      if (missed.gap || (rawLast !== "" && !/^\d+$/.test(rawLast))) {
         res.write(`event: gap\ndata: {"rereadHistory":true}\n\n`);
       }
       for (const e of missed) {
@@ -497,13 +679,6 @@ const server = createServer(async (req, res) => {
         subscribers.set(sessionId, subs);
       }
       subs.add(res);
-      const ping = setInterval(() => {
-        try {
-          res.write(`: ping\n\n`);
-        } catch {
-          /* close handler が拾う */
-        }
-      }, 25_000);
       req.on("close", () => {
         clearInterval(ping);
         subs.delete(res);

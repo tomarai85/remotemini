@@ -107,17 +107,29 @@ export function extractHistory(jsonlText, limit = 50) {
     } catch {
       continue;
     }
-    if (obj.type === "user" && obj.message) {
-      const text = flattenContent(obj.message.content);
-      if (text) out.push({ role: "user", text });
-    } else if (obj.type === "assistant" && obj.message) {
-      const text = flattenContent(obj.message.content);
-      const tools = toolNames(obj.message.content);
-      if (text) out.push({ role: "assistant", text });
-      for (const t of tools) out.push({ role: "tool", text: t });
-    }
+    out.push(...entriesFromRecord(obj));
   }
   return out.slice(-limit);
+}
+
+/**
+ * jsonl の1レコードを表示用の項目列に直す。
+ * 履歴(まとめ読み)とライブ配信(追記 tail)で**同じ関数**を通す — 2箇所に書くと、
+ * 電話の画面で「後から読み直したら中身が違う」が起きる。
+ */
+export function entriesFromRecord(obj) {
+  const out = [];
+  if (!obj || typeof obj !== "object") return out;
+  if (obj.type === "user" && obj.message) {
+    const text = flattenContent(obj.message.content);
+    if (text) out.push({ role: "user", text });
+  } else if (obj.type === "assistant" && obj.message) {
+    const text = flattenContent(obj.message.content);
+    const tools = toolNames(obj.message.content);
+    if (text) out.push({ role: "assistant", text });
+    for (const t of tools) out.push({ role: "tool", text: t });
+  }
+  return out;
 }
 
 function flattenContent(content) {
