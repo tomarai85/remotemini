@@ -43,6 +43,12 @@ const SID_STALE    = "aaaaaaaa-0000-0000-0000-00000000000d"; // %20 を古く名
 const SID_MISMATCH = "aaaaaaaa-0000-0000-0000-00000000000e"; // 登録先ペインの居場所が違う
 const CWD_REG   = "/Users/Shared/dev/reg";
 const CWD_OTHER = "/Users/Shared/dev/other";
+// ★上限の告知が出ている会話(2026-08-02 追加)。分類器(inject)と電話の表示(view)は
+// それぞれ単体で撃たれていたのに、**その間の `server.mjs` が JSON に載せる継ぎ目**を
+// 読む検査が1本も無かった(実測: `grep -rn limited test/` の全ヒットが `classifyScreen` と
+// `routeLabel` の直呼びで、HTTP 応答を読む物はゼロ)。両端が緑でも間で落ちれば人に届かない。
+const SID_LIMIT = "aaaaaaaa-0000-0000-0000-000000000012";
+const CWD_LIMIT = "/Users/Shared/dev/limited";
 // 未登録のまま、その cwd に claude が**1つだけ**居る会話。cwd 一致を同定として使うと
 // ここが注入されてしまう(= 他人の会話に本文が入る事故)。設計上ここは必ず拒否する。
 const SID_UNREG = "aaaaaaaa-0000-0000-0000-000000000011";
@@ -76,6 +82,7 @@ fixture(SID_DEAF, CWD_DEAF, "画面が動かない");
 fixture(SID_RACE, CWD_RACE, "選択画面が割り込む");
 for (const sid of [SID_REG_A, SID_REG_B, SID_REG_C, SID_STALE]) fixture(sid, CWD_REG, `登録${sid.slice(-1)}`);
 fixture(SID_UNREG, CWD_UNREG, "未登録");
+fixture(SID_LIMIT, CWD_LIMIT, "上限に当たっている");
 fixture(SID_MISMATCH, CWD_REG, "居場所不一致"); // 会話は CWD_REG。登録先ペインは CWD_OTHER に居る
 
 // ---- 偽 tmux ----------------------------------------------------------------
@@ -91,6 +98,7 @@ const PANES = [
   `%15\t2.1.220\t/dev/ttys015\t${CWD_GEN}`,
   `%16\t2.1.220\t/dev/ttys016\t${CWD_DEAF}`,  // 送っても画面が動かない(load-bearing: Enter を出さない対照)
   `%17\t2.1.220\t/dev/ttys017\t${CWD_RACE}`,  // 本文の直後に選択画面が出る
+  `%18\t2.1.220\t/dev/ttys018\t${CWD_LIMIT}`, // 上限の告知が出ている(送れるが答えは返らない)
   `%20\t2.1.220\t/dev/ttys020\t${CWD_REG}`,   // 登録簿検証: 同じ cwd に claude が3つ並ぶ
   `%21\t2.1.220\t/dev/ttys021\t${CWD_REG}`,
   `%22\t2.1.220\t/dev/ttys022\t${CWD_OTHER}`, // 居場所不一致の検証用
@@ -122,6 +130,9 @@ const SCREENS = {
   // ★本文を送った**直後に**選択画面が割り込むペイン(偽 tmux が %17 だけそう振る舞う)。
   //   分類 → 本文 → Enter の間に modal が出ると Enter が承認/課金になる、という競合の再現。
   "%17": shot("idle-boot"),
+  // ★上限の告知が出ている実機の画面(edith 2026-08-02、メールのみ伏せ字)。
+  //   入力欄は実在し空なので分類は SENDABLE のまま = 「送れるのに答えが返らない」の再現。
+  "%18": shot("limit-reached-edith"),
   "%20": shot("idle-boot"),
   "%21": shot("idle-boot"),
   "%22": shot("idle-boot"),
@@ -162,7 +173,7 @@ function putRegistry(sid, pane, offsetSec = 0) {
   REG_BEAT.set(p, offsetSec);
   beatOnce();
 }
-for (const [sid, pane] of [[SID_READY, "%10"], [SID_CHOICE, "%11"], [SID_GEN, "%15"], [SID_DEAF, "%16"], [SID_RACE, "%17"]]) {
+for (const [sid, pane] of [[SID_READY, "%10"], [SID_CHOICE, "%11"], [SID_GEN, "%15"], [SID_DEAF, "%16"], [SID_RACE, "%17"], [SID_LIMIT, "%18"]]) {
   putRegistry(sid, pane);
 }
 const SENT_LOG = join(SB, "tmux-sent.log");
@@ -508,6 +519,27 @@ try {
   check("status は送信可否と進行中を別項目で返す",
     stGen.route === "tmux" && stGen.screen === "SENDABLE" && stGen.activity === "observed" && stGen.queued === undefined,
     JSON.stringify(stGen));
+
+  // 10-e1b. ★★継ぎ目: 分類器が見えている上限が、**HTTP の応答まで届いているか**。
+  //   ここが無かった間、上限は inject(分類)と view(表示)の単体でしか測られておらず、
+  //   その二つを繋ぐ `server.mjs` の `screenOf` -> `json(res,...)` は素通りだった
+  //   (`grep -rn limited test/` の全ヒットが純関数の直呼び / e2e の `live.` は1件で
+  //    未登録セッションの `message` だけ)。両端が緑でも間で落ちれば電話には届かない。
+  //   ★陰性対照を同じ塊に置く。片方だけだと「常に true を返す」実装でも緑になる。
+  const stLim = await (await fetch(`${B}/api/sessions/${SID_LIMIT}/status`, { headers: H })).json();
+  check("★上限が status の応答に載る(継ぎ目 = server.mjs の screenOf)",
+    stLim.route === "tmux" && stLim.limited === true, JSON.stringify(stLim));
+  check("★その時も送信可否は SENDABLE(上限を遮断条件にしていない)",
+    stLim.screen === "SENDABLE", JSON.stringify(stLim));
+  check("★陰性対照: 上限でないセッションの status は limited=false",
+    stGen.limited === false, JSON.stringify(stGen));
+  const listLim = await (await fetch(`${B}/api/sessions`, { headers: H })).json();
+  const rowLim = (listLim.sessions || []).find((s) => s.id === SID_LIMIT);
+  const rowGen = (listLim.sessions || []).find((s) => s.id === SID_GEN);
+  check("★上限が一覧の live にも載る(一覧と個別で別経路を通る)",
+    rowLim?.live?.limited === true, JSON.stringify(rowLim?.live));
+  check("★陰性対照: 一覧の他の行は live.limited=false",
+    rowGen?.live?.limited === false, JSON.stringify(rowGen?.live));
 
   // 10-e2. ★陽性対照: 本文が画面に載らなかったら Enter を出さない。
   //   send-keys の成功はバイトが届いた証明であって、TUI が受け取った証明ではない。

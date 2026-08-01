@@ -33,6 +33,11 @@
  * 前提: 与える `--cwd` は **claude が既に信頼済みの dir**。未信頼だと起動直後に
  *   「Do you trust the files…」の選択画面が出る。この台本はそこで Enter を押さないので、
  *   composer が出ないまま時間切れになり、その旨を報告して落ちる(それが正しい振る舞い)。
+ *
+ * ★`--cwd` は **必須**(2026-08-02 に既定を外した)。以前の既定は `$HOME` で、これは
+ *   上の前提と真っ向から矛盾していた — `$HOME` は普通 claude の信頼済み dir ではない。
+ *   実際 edith(`$HOME=/Users/edith`)で既定のまま撃つと必ず信頼確認で止まる。
+ *   「既定値が、その道具自身が禁じている値」という形なので、既定を持たせない方を採った。
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -48,7 +53,8 @@ const TMUX_BIN =
 function parseArgs(argv) {
   // 既定の桁数は 120。**折り返しの確認が目的なので桁数は結果を変える**。偽の TUI で
   // 配管だけ確かめる時は、写しを撮った時と同じ桁(実機の写しは 80 桁)に合わせる必要がある。
-  const out = { cwd: process.env.HOME, bin: "claude", keep: false, out: null, session: null, cols: "120", rows: "40", cases: null };
+  // cwd に既定は置かない(上の理由)。未指定は下で exit 2。
+  const out = { cwd: null, bin: "claude", keep: false, out: null, session: null, cols: "120", rows: "40", cases: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--keep") out.keep = true;
@@ -143,12 +149,22 @@ async function main() {
     console.error(`使い捨てのセッション名ではない: ${session}(rc-live-<数字6桁以上> のみ)`);
     process.exit(2);
   }
-  if (tmuxOk(["has-session", "-t", `=${session}`])) {
-    console.error(`同名のセッションが既に在る: ${session}。触らずに止める。`);
+  // ★引数の検査を tmux より**先**に置く(2026-08-02)。逆順だった為、`--cwd` を忘れただけの
+  //   使い方エラーでも先に tmux を叩き、`no server running on …` という無関係な赤が
+  //   使い方の説明の上に出ていた。証拠を出す為の道具の出力に嘘の赤を混ぜない。
+  if (!opt.cwd) {
+    console.error("--cwd は必須(既定値は持たない)。**claude が既に信頼済みの dir** を渡す事。");
+    console.error("  信頼済みの dir の一覧はこれで出る:");
+    console.error("    /usr/bin/jq -r '.projects | keys[]' ~/.claude.json");
+    console.error("  例: node tools/live-inject-check.mjs --cwd /Users/edith/Projects");
     process.exit(2);
   }
-  if (!opt.cwd || !existsSync(opt.cwd)) {
-    console.error(`--cwd が無い: ${opt.cwd}`);
+  if (!existsSync(opt.cwd)) {
+    console.error(`--cwd が実在しない: ${opt.cwd}`);
+    process.exit(2);
+  }
+  if (tmuxOk(["has-session", "-t", `=${session}`])) {
+    console.error(`同名のセッションが既に在る: ${session}。触らずに止める。`);
     process.exit(2);
   }
   const outDir = opt.out || join(tmpdir(), `rc-live-${stamp}`);
@@ -186,11 +202,20 @@ async function main() {
     writeFileSync(join(outDir, "00-boot.txt"), boot.text);
     if (!boot.ok) {
       console.error(`起動後 90 秒で入力欄が出ない(state=${boot.state})。写し: ${outDir}/00-boot.txt`);
-      console.error(
-        boot.state === "CHOICE"
-          ? "  → 選択画面が出ている。信頼確認か上限の画面。**Enter は押さない**。--cwd を信頼済みの dir にする。"
-          : "  → 画面を読む事。上限に当たっている可能性がある。",
-      );
+      // ★2026-08-02: ここは「信頼確認か上限の画面」と**2つを束ねて**いた。人が次に取る手が
+      //   全く違う(片方は --cwd を変える / 片方は待つ)ので、束ねた助言は助言になっていない。
+      //   しかも画面を見れば区別できる: 上限は告知の文字列で名指しできるし、そもそも上限の
+      //   画面は入力欄が実在する = ここ(入力欄が出ない)には来ない。名指しできる物を名指しする。
+      if (limitNoticeIn(boot.text)) {
+        console.error("  → 画面に**利用上限の告知**が出ている。--cwd の問題ではない。解除を待つ事。");
+      } else if (boot.state === "CHOICE") {
+        console.error(`  → **信頼確認のダイアログ**(Do you trust the files…)が出ている。`);
+        console.error(`     この台本は選択画面で Enter を押さない(押せば「信頼する」の選択になる)。`);
+        console.error(`     --cwd に **claude が既に信頼済みの dir** を渡す事。今回渡したのは: ${opt.cwd}`);
+      } else {
+        console.error(`  → 上限の告知は画面に無く、選択画面でもない(state=${boot.state})。`);
+        console.error(`     写しを人が読む事: ${outDir}/00-boot.txt`);
+      }
       process.exitCode = 1;
       return;
     }
@@ -243,7 +268,10 @@ async function main() {
   console.log("\n| ケース | 何を見ている | 字数 | 結果 | 待ち | 相手 |");
   console.log("|---|---|---|---|---|---|");
   for (const r of results) {
-    const peer = r.limited ? "★上限" : r.limited === false ? "応答可" : "-";
+    // ★2026-08-02: `false` を「応答可」と書いていた。観測したのは**告知が画面に見えない**
+    //   事だけで、「答えが返る」は観測していない(告知が上へ流れれば false になるし、
+    //   そもそも答えが返ったかはこの列では一度も見ていない)。観測より強い語を出さない。
+    const peer = r.limited ? "★上限" : r.limited === false ? "上限の告知なし" : "-";
     console.log(`| ${r.id} | ${r.why} | ${r.chars} | ${r.result} | ${r.waited || "-"} | ${peer} |`);
   }
   const bad = results.filter((r) => r.result !== "sent delivered=verified");

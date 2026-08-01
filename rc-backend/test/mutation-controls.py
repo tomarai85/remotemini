@@ -18,7 +18,7 @@
 #   「測った上で到達しないと分かっている物」だけ理由つきで分離し、exit の判定から外す。
 #   理由には必ず (a) それを覆っているより強い守り (b) 到達しないと分かった実測 を書く。
 #   逆に注記つきが**検出された**場合も報告する(= 到達する様になった。注記を外す合図)。
-import shutil, subprocess, sys, os, tempfile, re, atexit
+import shutil, subprocess, sys, os, tempfile, re, atexit, time
 
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INJ = "src/inject.mjs"
@@ -324,8 +324,11 @@ MUT = [
  # M74-M76 = 2026-08-02。「配達できた」を「相手が答えた」と読ませない為の層。
  # 出所は自分の道具に踏まれた事: edith で 4/4 delivered=verified / exit 0 が出たのに、
  # 4件とも `You've hit your weekly limit` で一度も答えが返っていなかった。
+ # ★2026-08-02 夕: `USAGE_LIMIT` の修飾語を固定列挙から外した(inject.mjs の理由を参照)ので、
+ #   ここの的も同じ行に付け替えた。**式を直したのに的を置き去りにすると `対象行が無い` で
+ #   missed に入り exit 1** になる(黙って飛ばさない設計。付け替え漏れは `--dry` で秒で出る)。
  ("M74 上限の検出を殺す(答えられない機械が「静か」に見える)", INJ,
-  "const USAGE_LIMIT = /You'?ve hit your (weekly|usage) limit|usage limit reached/i;",
+  "const USAGE_LIMIT = /You['’]?ve hit your [^\\n]{0,24}limit|usage limit reached/i;",
   "const USAGE_LIMIT = /この文字列は画面に出ない/;"),
  ("M75 上限を常に真にする(陰性対照が無ければ M74 と区別が付かない)", INJ,
   'export function limitNoticeIn(text) {\n  return USAGE_LIMIT.test(String(text || ""));',
@@ -399,6 +402,10 @@ def die(msg):
 #   駆動する。手書きの文字列で試すと、私が想像した出力しか試せない(それで外した)。
 ENV_DEATH = re.compile(r"^RC-ENV-DEATH", re.M)
 
+# ★1つの変異を回している間に「要約が読めないまま落ちた」検査の名前が溜まる場所(行8)。
+#   本体側の for が変異ごとに空にする。
+NO_SUMMARY = []
+
 def read_suite(p, label, rx):
     """落ちたか。**終了コードが正**。要約行は読めた時だけ突き合わせる。
 
@@ -416,7 +423,12 @@ def read_suite(p, label, rx):
     rc_failed = p.returncode != 0
     if m is None:
         if rc_failed:
-            return True  # 落ちた事は終了コードで確定している
+            # ★落ちた事は終了コードで確定しているが、**何件がどう落ちたかは読めていない**。
+            #   ここを素の True で返していた間、「検査が変異を捕まえた」と「検査が起動段で
+            #   死んだ」が同じ1つの数に畳まれていた = 台本が自分の成績を水増ししうる形。
+            #   死因不明の赤も赤ではあるので判定は変えない。**内訳を残す**(行8)。
+            NO_SUMMARY.append(label)
+            return True
         die(f"{label}: exit=0 なのに要約行が読めない(書式が想定外 = 緑を確認できていない)\n"
             f"--- stdout 末尾 ---\n" + "\n".join(p.stdout.splitlines()[-8:]) +
             f"\n--- stderr 末尾 ---\n" + "\n".join(p.stderr.splitlines()[-8:]))
@@ -511,9 +523,16 @@ if ONLY is not None:
     print(f"★--only {ONLY}: {len(MUT_RUN)}/{len(MUT)} 件だけ回す = **全件の緑ではない**\n")
 
 rows = []
-for m in MUT_RUN:
+blind = []          # 要約が読めないまま落ちた検査を含む変異(行8)
+# ★進捗を1行ずつ出す(行4)。以前は 50 分間まるごと無言で、走っているのか固まったのかが
+#   外から区別できなかった(実測: 78 件 x 37 秒)。`flush=True` が要る — stdout が
+#   file にリダイレクトされると Python は既定でブロックバッファリングになり、
+#   進捗を出しているつもりで最後にまとめて吐く = 出していないのと同じになる。
+t0 = time.time()
+for i, m in enumerate(MUT_RUN, 1):
     name, f, old, new = m[0], m[1], m[2], m[3]
     why = m[4] if len(m) > 4 else None  # 有れば「測った上で到達しないと分かっている」注記
+    print(f"[{i}/{len(MUT_RUN)}] {int(time.time()-t0)}s {name[:60]}", flush=True)
     d, dst = copy_tree()
     p = os.path.join(dst, f)
     src_text = open(p).read()
@@ -523,9 +542,13 @@ for m in MUT_RUN:
         shutil.rmtree(d, ignore_errors=True)
         rows.append((name, "対象行が無い", "?", "?", why)); continue
     open(p, "w").write(src_text.replace(old, new, 1))
+    NO_SUMMARY.clear()
     ufail, efail = suites(dst)
+    blind_here = list(NO_SUMMARY)
     if ufail or efail:
-        verdict = "★注記を外せる" if why else "検出"
+        verdict = "★注記を外せる" if why else ("検出(要約なしで落ちた)" if blind_here else "検出")
+        if blind_here:
+            blind.append((name, blind_here))
     else:
         verdict = "未到達(注記)" if why else "★素通り"
     rows.append((name, verdict, "unit落ちる" if ufail else "unit通る",
@@ -536,6 +559,17 @@ w = max(len(r[0]) for r in rows)
 print(f"{'変異'.ljust(w)} | 結果         | unit       | e2e")
 for r in rows:
     print(f"{r[0].ljust(w)} | {r[1]:12} | {r[2]:10} | {r[3]}")
+
+# ★「捕まえた」の内訳(行8)。要約行が読めないまま落ちた検査は、**変異を捕まえたのか
+#   検査自体が起動段で死んだのか区別が付いていない**。判定は赤のままで正しいが、
+#   その数を「守れている件数」として読むと成績の水増しになる。数を明示して人に返す。
+if blind:
+    print(f"\n★検出のうち **{len(blind)}件** は要約行が読めないまま落ちた"
+          f"(= 変異を捕まえたのか検査が死んだのか区別できていない)。写しを読む事:")
+    for name, labels in blind:
+        print(f"  - {name}\n      要約が読めなかった検査: {', '.join(labels)}")
+else:
+    print("\n検出はすべて要約行つき(= 何件がどう落ちたかまで読めている)")
 
 noted = [r for r in rows if r[1] == "未到達(注記)"]
 if noted:

@@ -795,6 +795,38 @@ test("★★上限の告知は state と独立に出る(= 送れるのに答え�
   assert.equal(classifyScreen(promo).state, "SENDABLE", "告知帯が出ていても送れる");
 });
 
+test("★上限の告知は日付つきの形でも出る(fixture が持っていない実在の形)", () => {
+  // ★出典 = **2026-07-31 に edith の画面で読んだ物を DESIGN.md §8-3 に引用した1行**。
+  //   撮り直した capture ではない(= fixture を合成していない)。日付が入る形は、
+  //   現行 fixture(`limit-reached-edith.txt`)が持っている日付なしの形とは別に実在する。
+  //   両方拾える事をここで固定しないと、片方だけ拾える式に締めても誰も気付かない。
+  const dated = "You've hit your weekly limit · resets Aug 3 at 12am (Asia/Tokyo)";
+  const undated = "You've hit your weekly limit · resets 12am (Asia/Tokyo)"; // fixture と同形
+  assert.equal(limitNoticeIn(dated), true, "日付つき");
+  assert.equal(limitNoticeIn(undated), true, "日付なし");
+
+  // ★2026-08-02 に修飾語を固定列挙から外した(`weekly|usage` -> 1行内の短い任意)。
+  //   未観測の文言に余裕を持たせる為。ここは**その余裕が本当に効いているか**の陽性側。
+  //   実機で見た事は無い = 推測。推測である事を明示して置く(観測の顔をさせない)。
+  for (const guess of [
+    "You've hit your 5-hour limit · resets 3pm",
+    "You've hit your Opus weekly limit",
+    "You've hit your limit",
+    "You’ve hit your weekly limit", // 活字アポストロフィ(実機は ASCII。これも推測)
+  ]) {
+    assert.equal(limitNoticeIn(guess), true, `未観測だが有りうる形: ${guess}`);
+  }
+
+  // ★緩めた側の歯止め。ここが true に変わったら、広げ過ぎている合図。
+  assert.equal(limitNoticeIn("He hit your limit"), false, "主語が違う");
+  assert.equal(limitNoticeIn("You've hit your\nweekly limit"), false, "行をまたぐ骨格は取らない");
+  assert.equal(
+    limitNoticeIn("You've hit your absolutely enormous and verbose weekly limit"),
+    false, "hit your と limit が 24 字以上離れたら取らない");
+  // 実物の陰性対照を**広げた後にもう一度**通す(上の test と重複するが、ここが本題)。
+  assert.equal(limitNoticeIn(screen("promo-banner-boot")), false, "広げても告知帯で誤爆しない");
+});
+
 test("★キュー中の定型文は「空の入力欄」(本文と読むと、短い本文で届いたのに未確認になる)", () => {
   assert.equal(composerText(screen("queued-during-generation")), "Press up to edit queued messages");
   assert.equal(composerIsEmpty(screen("queued-during-generation")), true);

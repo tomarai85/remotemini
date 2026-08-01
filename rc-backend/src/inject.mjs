@@ -96,8 +96,23 @@ const IN_FLIGHT = /[✻✽✢✶✳][^\n]*…/;
  *   「答えは返りません」と断言する事は無くなった。
  * ★実物の陰性対照: `fixtures/screens/promo-banner-boot.txt`(Fable 5 の告知帯に
  *   `weekly usage limit` の語がそのまま載っている実機の画面)で false を返す事を検査済み。
+ *
+ * ★2026-08-02 に修飾語の固定列挙(`weekly|usage`)をやめた。理由と、やめてよい根拠:
+ *   - やめた理由: 上の「壊れる条件」に自分で書いておきながら、**列挙は既知の2語しか拾えない**。
+ *     `5-hour` や モデル名つき の形が出た瞬間、この関数は黙って false = 上限に当たっている事が
+ *     電話に出なくなる。外出先の Tom は永久に返らない答えを待つ。
+ *   - やめてよい根拠(実測、`scratchpad/usage-limit-regex-diff.mjs`): 現物 fixture 20 枚
+ *     全部で新旧の判定が一致(割れゼロ)。手書きの 15 例のうち**新旧で変わったのは5行で、
+ *     全部が「私が推測した未観測の文言」**。観測済みの文言と陰性対照は1つも動いていない。
+ *     = 退行を作らずに未知の文言へ余裕だけ足した形。
+ *   - 骨格 `hit your ... limit` は残す。これが陰性対照(告知帯 "your weekly usage limit" =
+ *     `hit your` を持たない)を落とさない為の防壁そのものなので、ここは緩めない。
+ *   - `{0,24}` の上限は、`hit your` と `limit` が同じ行で近くに在る事の担保。長い無関係な文を
+ *     跨いで当たるのを防ぐ。実測で「24字超」と「行またぎ」が false に落ちる事を確認済み。
+ *   - `’`(活字アポストロフィ)は**推測**。実機の現物は ASCII の `'`(0x27、fixture で確認)。
+ *     見た事は無いが、入れても陰性対照を1つも動かさないので余裕として持たせる。
  */
-const USAGE_LIMIT = /You'?ve hit your (weekly|usage) limit|usage limit reached/i;
+const USAGE_LIMIT = /You['’]?ve hit your [^\n]{0,24}limit|usage limit reached/i;
 
 /**
  * 上限の告知が画面に出ているか。
