@@ -35,6 +35,7 @@ MTX = "src/mutex.mjs"
 HDS = "src/heads.mjs"
 APP = "src/app.html"
 WRK = "src/worker.mjs"
+RNG = "src/ring.mjs"
 
 MUT = [
  ("M1 メニュー判定を外す(CHOICE を返さない)", INJ,
@@ -642,6 +643,37 @@ MUT = [
   """    const set = new Set();
     this.dying.set(sessionId, set);
     set.add(entry);"""),
+
+ # --- 追いつきリング (R) = 再接続で「間が失われた」を黙って連続に見せない層 ----------
+ # `src/ring.mjs` は 39 行で単体はあるが、**変異の的はゼロ**だった = その単体の強さが
+ # 一度も測られていない。ここの中心は `out.gap = true` —— リングから溢れて連続性を
+ # 保証できない時だけ立つ印で、これが落ちるとクライアントは /history の読み直しへ
+ # 倒さず、**欠けた列を連続として描く**(= 電話に嘘の履歴が出る)。
+ # 族の性質は M/P と同じ病気の一族: 「読めなかった」を値として通す形。
+ ("R1 溢れても切り捨てない(固定長リングが無限に伸びる)", RNG,
+  "    if (this.buf.length > this.capacity) this.buf.shift();",
+  "    void 0;"),
+ ("R2 溢れを黙って連続として渡す(gap を立てない = 嘘の連続性)", RNG,
+  "    if (seq + 1 < oldestHeld) out.gap = true;",
+  "    void oldestHeld;"),
+ # ★R3 は**退役**(2026-08-02)。素通りしたが、これは検査の穴ではなく**等価変異**だった。
+ #   的: `... : this.nextSeq` を `... : 0` に変える(空リングの起点)。
+ #   実測で挙動が変わる入力は **`since(-1)` の1点だけ**(orig gap=true / mut gap=false)。
+ #   そして負の seq は `src/tail.mjs:59` の `/^\d+$/` で撥ねられるので **since() に到達しない**
+ #   (唯一の呼び口は `server.mjs:848` の検証済み `d.seq` と、その薄い委譲 `worker.mjs:88`)。
+ #   到達しない入力でしか殺せない変異を的に残すと、それを殺す為だけの**現実に無い入力の検査**を
+ #   書く事になり、計器が嘘の穴を報告し続ける。だから的を退役させ、根拠をここに残す。
+ #   ★依存: この等価性は「buf が空 ⟹ nextSeq === 1」に乗っており、それを保証しているのは
+ #   R5 の `capacity >= 1` 検査。R5 を消すと R3 の等価性も静かに崩れる(capacity=0 なら
+ #   buf は空のまま nextSeq だけ進む)。その土台は `test/ring.test.mjs` に検査として固定した。
+ ("R4 since が要求 seq 自身も返す(再接続のたびに1件二重に見える)", RNG,
+  "    const out = this.buf.filter((e) => e.seq > seq);",
+  "    const out = this.buf.filter((e) => e.seq >= seq);"),
+ ("R5 capacity の検査を外す(0 や負で構築でき、以後 push が全部消える)", RNG,
+  """    if (!Number.isInteger(capacity) || capacity < 1) {
+      throw new Error(`EventRing: capacity must be a positive integer, got ${capacity}`);
+    }""",
+  "    void capacity;"),
 ]
 
 # ★変異の番号は一意でなければならない(2026-08-02 追加。実際に M69-M73 を重複させた)。
@@ -649,11 +681,12 @@ MUT = [
 # 「対象行が無い」で片方が空振りしても、もう片方が検出なら人は番号で見分けられない。
 # 番号は人が結果を追う為の同一性なので、機械で見張る。台本の起動段で落とす(測る前に止める)。
 # ★接頭辞の集合は「読む場所」の一覧そのもの: M = 部品の中身 / W = 繋ぎ目 /
-#   X = H2(1つの転写に書き手が2人)を守る層 / P = 電話に何が見えるか。
+#   X = H2(1つの転写に書き手が2人)を守る層 / P = 電話に何が見えるか /
+#   R = 追いつきリング(再接続で「間が失われた」を黙って連続に見せない層)。
 #   2026-08-02: ここが `[MW]` だった為、走行中のメモリにしか無かった X 系を書き戻そうとすると
 #   台本自身が起動段で落ちる状態だった = **この検査が X の復元を機械的に禁じていた**。
 #   新しい族を足す時はここも足す。足し忘れると「番号で始まっていない」で止まる(fail-closed)。
-_named = [(re.match(r"[MWXP]\d+(?=[ (])", m[0]), m[0]) for m in MUT]
+_named = [(re.match(r"[MWXPR]\d+(?=[ (])", m[0]), m[0]) for m in MUT]
 _unnamed = [t for mo, t in _named if not mo]
 if _unnamed:
     sys.exit("★台本を止める: 番号で始まっていない変異がある: " + " / ".join(_unnamed[:3]))
@@ -774,24 +807,6 @@ if "--env-death" in sys.argv:
     print("ENV-DEATH" if ENV_DEATH.search(_t) else "ok")
     sys.exit(0)
 
-# --- `--dry`: 変異の**的**が今のコードに当たるかだけを数秒で見る ---------------
-#
-# 動機(2026-08-02): M54 が狙っていた `retry: false` は、その日のうちに死に field として
-# 削除されていた。台本は 30 分走った末に「対象行が無い」と言う。**当たらない的は、
-# 走らせる前に分かる**。コードを直した直後にここだけ回せば、台本の腐りが即座に出る。
-# ★これは変異検査そのものではない(守りが効くかは何も測らない)。的の生死だけ。
-if "--dry" in sys.argv:
-    bad = 0
-    for m in MUT:
-        name, f = m[0], m[1]
-        text = open(os.path.join(SRC, f)).read()
-        ns = [text.count(o) for o in as_list(m[2])]
-        if any(n != 1 for n in ns):
-            bad += 1
-            print(f"NG({','.join(map(str, ns))}件) {name}\n      <- {f}")
-    print(f"的の照合: {len(MUT)}件 / 当たらない {bad}件")
-    sys.exit(1 if bad else 0)
-
 # --- `--only <語>`: 名前にその語を含む変異だけ回す ---------------------------
 #
 # 動機(2026-08-02): 守りを1つ足した直後に確かめたいのは**その1つ**なのに、全件は 30 分強かかる。
@@ -805,6 +820,49 @@ if "--only" in sys.argv:
     if _i + 1 >= len(sys.argv):
         die("--only の後に語が無い")
     ONLY = sys.argv[_i + 1]
+
+# ★選び方は3通り。族(`R`)と番号(`R5`)を**題名の部分一致から分ける**(2026-08-02)。
+#   きっかけ: `--only R` が題名に大文字 R を含むだけの M55/M67/M68/X6 まで拾い、
+#   5件だけの筈の族の走行が9件・353 秒になった。害は時間だけではない —— 報告表に
+#   選んでいない族が混ざるので、「R 族を測った」と「たまたま一緒に回った」が区別できない。
+#   計器は**何を選んだのか**を曖昧にしてはいけない。
+# ★ここで選ぶ(対照2枚より**前**)理由: 語を打ち間違えた時の die が、対照2枚の
+#   約2分を払った後ではなく即座に出る。fail-closed は早い方が良い。
+def _select(word):
+    if re.fullmatch(r"[MWXPR]", word):                      # 族まるごと
+        return [m for m in MUT if m[0].startswith(word) and m[0][1:2].isdigit()], f"族 {word}"
+    if re.fullmatch(r"[MWXPR]\d+", word):                    # 番号ちょうど1件
+        return [m for m in MUT if re.match(rf"{word}(?=[ (])", m[0])], f"番号 {word}"
+    return [m for m in MUT if word in m[0]], f"題名に「{word}」を含む"
+
+if ONLY is None:
+    MUT_RUN = MUT
+else:
+    MUT_RUN, _how = _select(ONLY)
+    if not MUT_RUN:
+        die(f"--only {ONLY} に当たる変異が無い(名前を確かめる)")
+    print(f"★--only {ONLY}({_how}): {len(MUT_RUN)}/{len(MUT)} 件だけ回す = **全件の緑ではない**\n")
+
+# --- `--dry`: 変異の**的**が今のコードに当たるかだけを数秒で見る ---------------
+#
+# 動機(2026-08-02): M54 が狙っていた `retry: false` は、その日のうちに死に field として
+# 削除されていた。台本は 30 分走った末に「対象行が無い」と言う。**当たらない的は、
+# 走らせる前に分かる**。コードを直した直後にここだけ回せば、台本の腐りが即座に出る。
+# ★これは変異検査そのものではない(守りが効くかは何も測らない)。的の生死だけ。
+# ★`--only` の**後ろ**に置いてある(2026-08-02)。前に在った時は `--dry --only R` が
+#   黙って全件を照合していた —— 絞ったつもりの確認が絞られていない、が起きる場所。
+#   ついでに `--dry --only <語>` が**選択そのものを秒で確かめる手段**になる。
+if "--dry" in sys.argv:
+    bad = 0
+    for m in MUT_RUN:
+        name, f = m[0], m[1]
+        text = open(os.path.join(SRC, f)).read()
+        ns = [text.count(o) for o in as_list(m[2])]
+        if any(n != 1 for n in ns):
+            bad += 1
+            print(f"NG({','.join(map(str, ns))}件) {name}\n      <- {f}")
+    print(f"的の照合: {len(MUT_RUN)}件 / 当たらない {bad}件")
+    sys.exit(1 if bad else 0)
 
 def suites(dst):
     u = subprocess.run(["npm", "test", "--silent"], cwd=dst, capture_output=True, text=True)
@@ -839,12 +897,6 @@ if not (cu and ce):
         "落ちるはずの木で落ちない = この台本は何も測れていない")
 shutil.rmtree(d, ignore_errors=True)
 print("対照 OK: 無変異=緑 / 故意に壊した木=赤。以降の判定は意味を持つ\n")
-
-MUT_RUN = [m for m in MUT if ONLY is None or ONLY in m[0]]
-if ONLY is not None:
-    if not MUT_RUN:
-        die(f"--only {ONLY} に当たる変異が無い(名前を確かめる)")
-    print(f"★--only {ONLY}: {len(MUT_RUN)}/{len(MUT)} 件だけ回す = **全件の緑ではない**\n")
 
 rows = []
 blind = []          # 要約が読めないまま落ちた検査を含む変異(行8)

@@ -32,6 +32,11 @@ export class EventRing {
     // 溢れ判定: 要求 seq の「次」の要素がもう保持されていなければ、間が失われている。
     // 空リングでは oldestHeld = nextSeq となり、まだ何も失っていない起点(seq=nextSeq-1
     // 以上)からの購読では偽にならない。
+    // ★この `: this.nextSeq` を `: 0` にしても、**現実に届く入力では挙動が変わらない**
+    //   (変異 R3 = 等価変異、2026-08-02 に実測して退役)。差が出るのは since(-1) の1点だけで、
+    //   負の seq は src/tail.mjs の `/^\d+$/` で撥ねられ、ここへ到達しない。
+    //   ただしそれは「buf が空 ⟹ nextSeq === 1」に依存し、その前提は constructor の
+    //   capacity>=1 検査が支えている。**上の throw を消すと、この等価性も静かに崩れる**。
     const oldestHeld = this.buf.length > 0 ? this.buf[0].seq : this.nextSeq;
     if (seq + 1 < oldestHeld) out.gap = true;
     return out;

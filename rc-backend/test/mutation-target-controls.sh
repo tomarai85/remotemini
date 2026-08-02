@@ -57,7 +57,53 @@ PY
 if bash "$CHECK" >/dev/null 2>&1; then ng "的を外したら赤" "exit=0 — **検査が的の欠落を見ていない**"
 else ok "的を外したら赤(欠落を捕まえる)"; fi
 
-# --- 3) 本物の木を一切触っていない事(この対照自身の安全性) ---
+# --- 3) `--only` が**何を選んだか**を曖昧にしない事(2026-08-02 追加)---
+#
+# なぜ要るか: 初版の `--only` は**題名の部分一致だけ**だった。`--only R` は題名に大文字 R を
+#   含むだけの M55/M67/M68/X6 まで拾い、4件の筈が9件・353 秒。時間の無駄より重いのは、
+#   報告表に**選んでいない族が混ざる**事 —— 「R 族を測った」と「たまたま一緒に回った」が
+#   区別できなくなる。計器が何を測ったか言えなくなるのは、この台本が防ぐべき当の病気。
+#
+# ★この対照が**空振りしない**事を先に確かめる(下の 3-0)。もし「題名に R を含む非R族」が
+#   1件も存在しなければ、3-1 は直っていなくても緑になる。**弁別できる状況である事**を
+#   測ってから、弁別を測る。
+DRY() {  # $1 = --only の語(空なら全件) → 「的の照合: N件」の N を返す
+    local out
+    if [ -z "$1" ]; then out="$(python3 "$SRC_ROOT/test/mutation-controls.py" --dry 2>&1)"
+    else out="$(python3 "$SRC_ROOT/test/mutation-controls.py" --dry --only "$1" 2>&1)"; fi
+    printf '%s\n' "$out" | sed -n 's/^的の照合: \([0-9]*\)件.*/\1/p' | tail -1
+}
+
+# 3-0) 弁別できる状況か = 「R 族でないのに題名に R を含む的」が実在するか
+decoys="$(grep -cE '^ *\("[MWXP][0-9]+[ (][^"]*R' "$SRC_ROOT/test/mutation-controls.py" || true)"
+if [ "${decoys:-0}" -ge 1 ]; then
+    ok "弁別できる状況(題名に R を含む非R族が ${decoys}件 実在する)"
+else
+    ng "弁別できる状況" "囮が0件 — 下の族選択の対照は**直っていなくても緑**になる。空振り"
+fi
+
+# 3-1) 族選択が族だけを選ぶ(囮を拾わない)
+want_r="$(grep -cE '^ *\("R[0-9]+[ (]' "$SRC_ROOT/test/mutation-controls.py" || true)"
+got_r="$(DRY R)"
+if [ "$got_r" = "$want_r" ]; then ok "族選択 --only R = ${got_r}件(並びの R 族と一致)"
+else ng "族選択 --only R" "選ばれた ${got_r}件 ≠ 並びの R 族 ${want_r}件 — 囮を拾っているか取りこぼしている"; fi
+
+# 3-2) 番号選択はちょうど1件(M1 が M10..M103 を巻き込まない)
+got_m1="$(DRY M1)"
+if [ "$got_m1" = "1" ]; then ok "番号選択 --only M1 = 1件(M10..M103 を巻き込まない)"
+else ng "番号選択 --only M1" "${got_m1}件 — 前方一致で巻き込んでいる"; fi
+
+# 3-3) 絞らない時は全件(絞りの実装が既定を壊していない事)
+got_all="$(DRY '')"; want_all="$(grep -cE '^ *\("[MWXPR][0-9]+[ (]' "$SRC_ROOT/test/mutation-controls.py" || true)"
+if [ "$got_all" = "$want_all" ]; then ok "既定(--only 無し)= ${got_all}件 = 並びの全件"
+else ng "既定は全件" "${got_all}件 ≠ 並びの ${want_all}件"; fi
+
+# 3-4) 当たらない語は**赤で止まる**(緑に丸めない)。★パイプ越しの $? は tail の値なので使わない
+python3 "$SRC_ROOT/test/mutation-controls.py" --dry --only __NO_SUCH_TARGET__ >/dev/null 2>&1
+if [ "$?" -ne 0 ]; then ok "当たらない語は exit≠0(測れていない事を隠さない)"
+else ng "当たらない語で止まる" "exit=0 — 0件を緑として報告している"; fi
+
+# --- 4) 本物の木を一切触っていない事(この対照自身の安全性) ---
 if [ -s "$SRC_ROOT/test/mutation-controls.py" ] && \
    [ "$(wc -c < "$SRC_ROOT/test/mutation-controls.py")" -gt 1000 ]; then
     ok "本物の mutation-controls.py は無傷(空にも短くもなっていない)"

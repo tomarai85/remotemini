@@ -49,3 +49,62 @@ test("空リングの since(0) は空・gap なし", () => {
   assert.equal(res.length, 0);
   assert.ok(!res.gap);
 });
+
+// ── 以下は変異 R5 の素通りで見つけた穴(2026-08-02)──────────────────────────
+// `src/ring.mjs` に的を置くまで、この部品の単体は**一度も強さを測られていなかった**。
+// R5 = 構築時の capacity 検査を丸ごと外す変異。**6件の検査が全部緑のまま通った**。
+// なぜ重いか: capacity=0 で構築できると、push の度に `buf.length(1) > 0` で即座に
+// shift されるので**リングが常に空**になる。例外も出ず、gap も立たない(空リングは
+// gap を立てない仕様)。電話から見ると「再接続したが差分は無い」= **取りこぼしが
+// 黙って消える**。この部品が防ぐ筈だった当の事故が、静かに起きる。
+test("capacity が正の整数でなければ構築時に throw する(fail-closed)", () => {
+  // ★`undefined` は入れない: 既定引数 `capacity = 512` が効くので throw しないのが正。
+  //   (下の「既定で構築できる」検査がその挙動を固定している)
+  for (const bad of [0, -1, 1.5, NaN, Infinity, "8", null]) {
+    assert.throws(
+      () => new EventRing(bad),
+      /capacity must be a positive integer/,
+      `capacity=${String(bad)} は撥ねられねばならない`,
+    );
+  }
+});
+
+test("既定(引数なし)は 512 で構築できる", () => {
+  // 上の検査を「常に throw する」形で満たしてしまわない為の対。
+  const r = new EventRing();
+  assert.equal(r.capacity, 512);
+  assert.equal(r.push({}), 1);
+});
+
+test("★capacity=0 を許すと追いつきが恒久的に死ぬ(R5 が防いでいる事故の実演)", () => {
+  // 検査を外した世界を手で作り、何が起きるかを固定する。
+  // この検査は「throw する事」でなく「throw しないと何が壊れるか」を記録している。
+  //
+  // ★2026-08-02、ここを最初「取りこぼしが黙って消える(gap も立たない)」と書いて
+  //   **検査に否定された**。実際は buf が空でも nextSeq は進んでいるので
+  //   oldestHeld = nextSeq となり gap は**立つ**。壊れ方は「黙って消える」ではなく
+  //   「**永久に gap**」= 電話は再接続の度に /history 全体の読み直しへ倒され、
+  //   この部品が存在する意味(差分で追いつく)が恒久的に失われる。安全側ではあるが死んでいる。
+  const broken = Object.create(EventRing.prototype);
+  broken.capacity = 0;
+  broken.buf = [];
+  broken.nextSeq = 1;
+  for (let i = 1; i <= 3; i++) EventRing.prototype.push.call(broken, { i });
+  const res = EventRing.prototype.since.call(broken, 0);
+  assert.equal(res.length, 0, "3件積んだのに0件 = 全部落ちている");
+  assert.equal(res.gap, true, "gap は立つ = 壊れ方は『恒久 gap』であって『黙って消える』ではない");
+});
+
+test("★capacity>=1 が『buf が空 ⟹ nextSeq===1』を成り立たせている(R3 の等価性の土台)", () => {
+  // 変異 R3(空リングの起点を nextSeq でなく 0 と読む)は素通りした。調べると、
+  // 差が出る入力は `since(-1)` の1点だけで、負の seq は `tail.mjs:59` の `^\d+$` で
+  // 撥ねられるので**到達しない** = 等価変異(検査の穴ではない)。
+  // ただしその議論は「buf が空なら nextSeq は必ず 1」に依存していて、それを保証して
+  // いるのは R5 の capacity>=1 検査。**片方の等価性がもう片方の守りに乗っている**ので、
+  // 土台の方を検査として固定しておく(R5 を消すと R3 の等価性も静かに崩れる)。
+  const r = new EventRing(1);
+  assert.equal(r.buf.length, 0);
+  assert.equal(r.nextSeq, 1);
+  r.push({});
+  assert.ok(r.buf.length >= 1, "capacity>=1 なら push 後に buf が空になる事は無い");
+});
