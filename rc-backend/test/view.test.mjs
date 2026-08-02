@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WIRE_REASONS } from "../src/blocked.mjs";
 import {
-  gapNotice, interruptResult, mergeHistory, nextAttempt, nextHistoryLimit,
+  freshness, gapNotice, interruptResult, mergeHistory, nextAttempt, nextHistoryLimit,
   relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,
 } from "../src/view.mjs";
 
@@ -396,4 +396,37 @@ test("★subtitleOf: 読み切れていない時に「発言がありません�
   assert.equal(subtitleOf({ lastPrompt: "直近の発言" }), "直近の発言");
   assert.match(subtitleOf({ lastPrompt: null, metadataIncomplete: true }), /読み取り範囲の外/);
   assert.match(subtitleOf({ lastPrompt: null, metadataIncomplete: false }), /まだ発言がありません/);
+});
+
+// ---- 一覧の古さ(§2.19 U1)---------------------------------------------------
+
+test("★一覧の古さ — 測った時刻が分からない時は「新しい」側へ倒さない", () => {
+  // ★これが本題。ここを `{text:"", stale:false}` にすると、時刻を取り損ねた画面は
+  //   **警告が消えるだけ**で、出している値は古いまま = 一番静かな嘘になる。
+  for (const bad of [0, null, undefined, NaN, Infinity]) {
+    const f = freshness(bad, 1_000_000);
+    assert.equal(f.stale, true, `${String(bad)} を新しい側へ倒した`);
+    assert.match(f.text, /不明/, "分からない事を文でも言っていない");
+  }
+});
+
+test("★一覧の古さ — 60秒で「今」を名乗るのをやめる(画面自身の目盛りに合わせる)", () => {
+  const t0 = 1_000_000;
+  // 59秒までは relTime が「たった今」に潰す領域 = より細かい古さは画面上で区別できない
+  assert.equal(freshness(t0, t0).stale, false);
+  assert.equal(freshness(t0, t0 + 59_000).stale, false, "59秒で古いと言い出した");
+  assert.equal(freshness(t0, t0 + 60_000).stale, true, "60秒を過ぎても「今」を名乗っている");
+  // ★陽性対照 — 文面が実際に切り替わる事(stale の旗だけ立てて文が同じでは読めない)
+  assert.match(freshness(t0, t0 + 30_000).text, /30秒前/);
+  assert.match(freshness(t0, t0 + 120_000).text, /2分前/);
+  assert.match(freshness(t0, t0 + 7_200_000).text, /2時間前/);
+  assert.match(freshness(t0, t0 + 172_800_000).text, /2日前/);
+  // 古い時は「どうすれば直るか」まで出す(見せるだけでは手が無い)
+  assert.match(freshness(t0, t0 + 120_000).text, /更新/);
+});
+
+test("一覧の古さ — 時計がずれて未来を指しても壊れない(relTime と同じ扱い)", () => {
+  const f = freshness(1_000_000, 900_000); // now が過去
+  assert.equal(f.stale, false);
+  assert.match(f.text, /たった今/);
 });

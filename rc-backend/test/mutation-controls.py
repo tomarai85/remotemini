@@ -730,6 +730,33 @@ MUT = [
  ("H13 項の欠落を『返済済み』に丸める(古い状態を読んだ瞬間に落下が鳴らない)", HLT,
   'const toldItsDown = prev.status === "down" && prev.owed === null;',
   'const toldItsDown = prev.status === "down" && (prev.owed === null || prev.owed === undefined);'),
+ # ★V 族 = 見た目と古さ(2026-08-03、DESIGN §2.19)。ここは**描画を観測できない**層なので、
+ #   検査が測るのは「規則がそう書かれている事」だけ。だからこそ的が要る:
+ #   規則を測る検査は、規則を消しても緑のままになりやすい(= 一番静かに死ぬ種類の検査)。
+ ("V1 画面の箱から安全域の余白を外す(送るボタンが画面の外へ出る)", APP,
+  "    padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);",
+  ""),
+ ("V2 いつ測ったか分からない一覧を『新しい』側へ倒す(警告だけ消えて値は古いまま)", VIE,
+  '    return { text: "いつ測った値か不明", stale: true };',
+  '    return { text: "", stale: false };'),
+ ("V3 古さの境目を外す(何時間前の値でも「今」を名乗る)", VIE,
+  "  if (d < 60) return { text: `${d}秒前の値`, stale: false };",
+  "  if (d < 6000) return { text: `${d}秒前の値`, stale: false };"),
+ ("V4 前面へ戻った時の一覧の取り直しを外す(拾っても20分前の値のまま)", APP,
+  'document.addEventListener("visibilitychange", onForegroundList);',
+  ""),
+ ("V5 入力欄の上限を鍵盤前の画面に戻す(鍵盤が半分を占めた時に本文が潰れる)", APP,
+  "  e.target.style.height = `${Math.min(e.target.scrollHeight, visibleHeight() * 0.4)}px`;",
+  "  e.target.style.height = `${Math.min(e.target.scrollHeight, window.innerHeight * 0.4)}px`;"),
+ ("V6 CSS 側の上限だけ古い物差しへ戻す(JS を直しても『直した筈』で残る型)", APP,
+  "  textarea { resize: none; max-height: calc(var(--vvh, 100dvh) * 0.4); }",
+  "  textarea { resize: none; max-height: 40dvh; }"),
+ ("V7 高さの物差しを2つに割る(値は正しいが読む場所が増える = 次に片方だけ古くなる)", APP,
+  "  e.target.style.height = `${Math.min(e.target.scrollHeight, visibleHeight() * 0.4)}px`;",
+  "  e.target.style.height = `${Math.min(e.target.scrollHeight, window.visualViewport.height * 0.4)}px`;"),
+ ("V8 実高さの落とし先を外す(visualViewport が無い環境で高さが 0 になる)", APP,
+  "  return Math.round((vv && vv.height) || window.innerHeight || 0);",
+  "  return Math.round((vv && vv.height) || 0);"),
 ]
 
 # ★変異の番号は一意でなければならない(2026-08-02 追加。実際に M69-M73 を重複させた)。
@@ -740,10 +767,14 @@ MUT = [
 #   X = H2(1つの転写に書き手が2人)を守る層 / P = 電話に何が見えるか /
 #   R = 追いつきリング(再接続で「間が失われた」を黙って連続に見せない層)。
 #   H = 外向きの生存信号の判定層(落ちた/戻ったを Tom に伝え終えたかを持つ層)。
+#   V = 電話の画面の**見た目と古さ**の層(安全域・実高さ・「いつ測った値か」)。
+#     ここだけ性質が違う: この計画には描画を観測できる器械が無いので、V が守る検査は
+#     「規則がそう書かれている事」しか測れない。だから的が要る = 規則を消しても緑のままなら、
+#     その検査は最初から何も掴んでいない。P(電話に何が見えるか)は判定の中身、V は画面の器。
 #   2026-08-02: ここが `[MW]` だった為、走行中のメモリにしか無かった X 系を書き戻そうとすると
 #   台本自身が起動段で落ちる状態だった = **この検査が X の復元を機械的に禁じていた**。
 #   新しい族を足す時はここも足す。足し忘れると「番号で始まっていない」で止まる(fail-closed)。
-_named = [(re.match(r"[MWXPRH]\d+(?=[ (])", m[0]), m[0]) for m in MUT]
+_named = [(re.match(r"[MWXPRHV]\d+(?=[ (])", m[0]), m[0]) for m in MUT]
 _unnamed = [t for mo, t in _named if not mo]
 if _unnamed:
     sys.exit("★台本を止める: 番号で始まっていない変異がある: " + " / ".join(_unnamed[:3]))

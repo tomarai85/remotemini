@@ -21,12 +21,26 @@
   body {
     background: var(--bg); color: var(--fg);
     font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
-    /* iOS のホーム画面追加時、下端のバーに隠れない */
-    padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
     overscroll-behavior-y: none;
   }
-  .screen { display: none; height: 100vh; height: 100dvh; flex-direction: column; }
+  /* ★安全域の余白は body ではなく **`.screen` の側**に置く(2026-08-03、DESIGN §2.19 U2)。
+     body に置くと、`box-sizing:border-box` なので余白は `height:100%` の**内側**に入る。
+     ところが子の `.screen` は `100dvh` = 画面まるごと。差の `inset-top` ぶんだけ下へはみ出し、
+     一番下に置いた `.composer`(`送る`/`止める`)がそのぶん画面の外へ出る。
+     `.screen` 側へ移せば同じ border-box の内側に収まるので積み上がらない。
+     効くのは `env(safe-area-inset-top)` が 0 でない時 = **ホーム画面に追加した時**と横向き。
+     `apple-mobile-web-app-capable` も manifest も入れてある = standalone は想定内の使い方。 */
+  .screen {
+    display: none;
+    height: 100vh;
+    height: var(--vvh, 100dvh); /* ★鍵盤が出たら実高さへ差し替わる(§2.19 U3)。JS が px を流す */
+    flex-direction: column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  }
   .screen.on { display: flex; }
+  /* 会話画面の下端は `.composer` が自分で安全域を持つ。一覧と鍵の画面は `.body` が
+     最後の子なので、ホームバーに潜らない様にこちらで下の安全域を足す。 */
+  .screen > .body:last-child { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
   header {
     display: flex; align-items: center; gap: 10px; padding: 10px 14px;
     border-bottom: 1px solid var(--line); background: var(--panel);
@@ -47,7 +61,9 @@
     width: 100%; font: inherit; color: var(--fg); background: #0f1317;
     border: 1px solid var(--line); border-radius: 10px; padding: 12px;
   }
-  textarea { resize: none; max-height: 40dvh; }
+  /* ★上限も **今見えている高さ**の4割(2026-08-03、§2.19 U4)。`40dvh` は鍵盤が出ても
+     縮まないので、JS 側だけ直しても CSS の上限が古い物差しのまま残る。両方が `--vvh` を見る。 */
+  textarea { resize: none; max-height: calc(var(--vvh, 100dvh) * 0.4); }
 
   /* 一覧 */
   .row { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line);
@@ -87,6 +103,8 @@
   .notice.refused { border-color: #4a2c28; }
   .notice.error { border-color: #4a2c28; }
   .muted { color: var(--dim); }
+  /* 古い値である事は**色でも**言う。文だけだと一覧の下端に埋もれる */
+  .muted.stale { color: var(--warn); }
   .center { text-align: center; padding: 30px 14px; color: var(--dim); }
 </style>
 </head>
@@ -134,7 +152,7 @@ import { backoffMs, createSseParser, decodeEvent } from "/frames.mjs";
 // ★判断は view.mjs 側にしか置かない。ここに書いた条件は単体検査にも変異検査にも
 //   掴めない = 間違っても緑のままになる(2026-08-02 に5箇所まとめて出した)。
 import {
-  gapNotice, interruptResult, mergeHistory, nextAttempt, nextHistoryLimit,
+  freshness, gapNotice, interruptResult, mergeHistory, nextAttempt, nextHistoryLimit,
   relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,
 } from "/view.mjs";
 
@@ -173,6 +191,27 @@ function toKey(msg) {
   show("s-key");
 }
 
+// ---- 一覧の古さ -------------------------------------------------------------
+// ★一覧は網を叩いた瞬間の観測で、その後は勝手に古くなる(DESIGN §2.19 U1)。
+//   放っておくと画面は 20 分前の値を**現在形で**出し続ける = この系が一番よく踏む型。
+//   網を叩くのは「前面に戻った時」と「更新」だけ(一覧1回 = 実測 0.75 秒。時計で
+//   叩き続けると edith に恒久的な負荷を載せる事になる)。古さは手元の時計で刻む。
+let listFetchedAt = 0;   // 一覧が**取れた**時刻(ms)。0 = まだ取れていない
+let listAgeNode = null;  // 古さを出す節点。描き直すたびに作り直す
+let listClock = null;    // 古さを刻む時計。**網は叩かない**
+
+function paintListAge() {
+  if (!listAgeNode || !listAgeNode.isConnected) return;
+  const f = freshness(listFetchedAt, Date.now()); // ★判定は view.mjs。ここに条件を書かない
+  listAgeNode.textContent = f.text;
+  listAgeNode.className = f.stale ? "center muted stale" : "center muted";
+}
+
+function startListClock() {
+  if (listClock) return;
+  listClock = setInterval(paintListAge, 1000);
+}
+
 // ---- 一覧 -------------------------------------------------------------------
 async function loadList() {
   const body = $("list-body");
@@ -191,12 +230,18 @@ async function loadList() {
     return;
   }
   const now = Date.now();
+  // ★取れた時にだけ時刻を進める。失敗した時に進めると、**古い画面が新しい顔をする**。
+  listFetchedAt = now;
   const rows = data.sessions.map((s) => sessionRow(s, now));
+  listAgeNode = el("div", "center muted", "");
   body.replaceChildren(
     ...(rows.length ? rows : [el("div", "center", "会話がありません。")]),
     // ★何本見て何本開いたかをそのまま出す。速さを主張する側が計器を持つ(§2.12)。
     el("div", "center muted", scanLine(data.scan)),
+    listAgeNode,
   );
+  paintListAge();
+  startListClock();
 }
 
 function sessionRow(s, now) {
@@ -479,7 +524,12 @@ $("conv-stop").addEventListener("click", interrupt);
 $("conv-input").addEventListener("input", (e) => {
   $("conv-notice").replaceChildren(); // 前の送信結果を残したまま次を打たせない
   e.target.style.height = "auto";
-  e.target.style.height = `${Math.min(e.target.scrollHeight, window.innerHeight * 0.4)}px`;
+  // ★上限は **今見えている高さ**の4割(2026-08-03、DESIGN §2.19 U4)。
+  //   iOS は鍵盤が出ても `window.innerHeight` も `100dvh` も縮まない(縮むのは
+  //   `visualViewport.height` だけ)。そこを基準にすると「鍵盤が無い時の画面の4割」を
+  //   許す事になり、鍵盤が半分を占めた状態では入力欄が見えている所をほぼ全部食う。
+  //   `--vvh` は syncViewportHeight が必ず入れるので、ここは同じ物差しを読むだけにする。
+  e.target.style.height = `${Math.min(e.target.scrollHeight, visibleHeight() * 0.4)}px`;
 });
 
 // ★前面へ戻った時、読んでいる最中の流れを一度畳んで張り直す(2026-08-02)。
@@ -494,6 +544,40 @@ function onForeground() {
   conv.abort.abort();
 }
 document.addEventListener("visibilitychange", onForeground);
+
+// ★前面に戻った時、一覧を出しているなら取り直す(§2.19 U1-a)。会話画面が流れを
+//   張り直すのと**同じ理屈** — 観測していない事を現在形で出さない。拾った瞬間の1回だけ。
+function onForegroundList() {
+  if (document.visibilityState !== "visible") return;
+  if (!$("s-list").classList.contains("on")) return;
+  loadList();
+}
+document.addEventListener("visibilitychange", onForegroundList);
+
+// ★画面の実高さを CSS へ流す(§2.19 U3)。`100dvh` は iOS で鍵盤に反応しない
+//   (縮むのは visualViewport の方)ので、これが無いと鍵盤が出た時に
+//   `送る`/`止める` が鍵盤の下に入る。高さが固定された段組なので頁自体も逃げられない。
+//   ★値は**必ず入れる**(visualViewport が無ければ innerHeight)。CSS 側の
+//   `var(--vvh, 100dvh)` の既定値に頼ると、`dvh` を知らない browser で計算時に
+//   宣言ごと無効になり、高さが `auto` へ落ちる。
+let lastVvh = 0;
+// ★「今どれだけ見えているか」を答える所を **1つだけ**にする(§2.19 U4)。
+//   高さを使う側が2箇所(画面の箱・入力欄の上限)在り、片方が `window.innerHeight` を
+//   読んでいた = **同じ画面を別の物差しで測っていた**。物差しを関数に閉じ込めて、
+//   使う側は必ずここを通す。ここが `visualViewport` を見る唯一の場所。
+function visibleHeight() {
+  const vv = window.visualViewport;
+  return Math.round((vv && vv.height) || window.innerHeight || 0);
+}
+function syncViewportHeight() {
+  const h = visibleHeight();
+  if (h <= 0 || h === lastVvh) return; // 同じ値で描き直しを起こさない
+  lastVvh = h;
+  document.documentElement.style.setProperty("--vvh", `${h}px`);
+}
+if (window.visualViewport) window.visualViewport.addEventListener("resize", syncViewportHeight);
+window.addEventListener("orientationchange", syncViewportHeight);
+syncViewportHeight();
 
 if (key) { show("s-list"); loadList(); } else { show("s-key"); }
 </script>

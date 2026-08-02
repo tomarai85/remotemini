@@ -344,6 +344,40 @@ export function scanLine(scan) {
   return `${scan.files ?? "?"}本のうち ${scan.read ?? "?"}本を読み、${scan.cached ?? 0}本は前の結果を使いました。`;
 }
 
+/**
+ * 一覧が**いつ測った値か**。★2026-08-03 追加(DESIGN §2.19 U1)。
+ *
+ * 一覧は網を叩いた瞬間の観測で、その後は勝手に古くなる。それを黙って現在形で
+ * 出し続けるのがこの系で一番よく踏む型 —**記録が在る事を、事象が起きた事と読む**。
+ * しかも外れる向きが悪い:「動く印なし」は「打ち込んでいい」と読めるので、
+ * 古い静けさは**生成中の所へ打たせる**側に倒れる(`workPhrase` の注記と同じ心配)。
+ *
+ * 時計での定期取得はしない(一覧1回 = 実測 0.75秒。常時 5% を edith に載せる価値が無い)。
+ * 代わりに**古さを見せる**。網を使わないので電池も相手の負荷も増えない。
+ *
+ * `stale` の境目を 60 秒に置く理由 = **この画面自身の目盛り**。`relTime` は 60 秒
+ * 未満を全部「たった今」に潰すので、それより細かい古さは画面上で区別できない。
+ * 分に乗った瞬間が、表示が「今」を名乗れなくなる最初の点。
+ *
+ * @param fetchedAtMs 一覧が**取れた**時刻(ms)。0/未設定 = まだ取れていない
+ * @param nowMs 今
+ * @returns {{text:string, stale:boolean}}
+ */
+export function freshness(fetchedAtMs, nowMs) {
+  // ★「いつ測ったか分からない」を「新しい」側へ倒さない。分からないなら分からないと出す。
+  //   ここを `{text:"", stale:false}` にすると、時刻を取り損ねた時に**何も言わない綺麗な
+  //   一覧**が出る = 古さの警告が消えるだけで、値は古いまま。fail-closed に倒す。
+  if (!fetchedAtMs || !Number.isFinite(fetchedAtMs)) {
+    return { text: "いつ測った値か不明", stale: true };
+  }
+  const d = Math.floor((nowMs - fetchedAtMs) / 1000);
+  if (d < 0) return { text: "たった今の値", stale: false }; // 時計のずれ。relTime と同じ扱い
+  if (d < 60) return { text: `${d}秒前の値`, stale: false };
+  if (d < 3600) return { text: `${Math.floor(d / 60)}分前の値(更新してください)`, stale: true };
+  if (d < 86400) return { text: `${Math.floor(d / 3600)}時間前の値(更新してください)`, stale: true };
+  return { text: `${Math.floor(d / 86400)}日前の値(更新してください)`, stale: true };
+}
+
 /** 一覧の1行に出す副題。★読み切れていない時は「無い」と書かない(§2.12)。 */
 export function subtitleOf(row) {
   const r = row || {};
