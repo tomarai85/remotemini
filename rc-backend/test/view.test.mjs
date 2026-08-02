@@ -205,9 +205,9 @@ test("routeLabel: tmux は机で開いている + 動き", () => {
 });
 
 test("★routeLabel: 観測できなかった事を「静か」と書かない(3箇所の規律を表示層だけが破っていた)", () => {
-  // 出所 = 2026-08-02。`inject.mjs:246` / `server.mjs:229` / `server.mjs:500` が揃って
+  // 出所 = 2026-08-02。`inject.mjs` の activity docstring と `server.mjs` の2箇所が揃って
   // 「observed でない事は待機中を意味しない」と書いているのに、view だけが断定していた。
-  // 実測: 生成中の1枚あたり検出率は 31%。一覧は1枚しか撮らないので 69% 外す。
+  // 実測(2026-08-03 の測り直し): 1枚あたり **18-39%** 取りこぼす。一覧は1枚しか撮らない。
   // 害の向きが悪い: 「静か」は**打ち込んで良い**と読める。
   const noWindow = routeLabel({ route: "tmux", activity: "unknown" }).text;
   assert.doesNotMatch(noWindow, /静か/, "窓が無いのに待機中を主張しない");

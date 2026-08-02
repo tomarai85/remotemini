@@ -63,8 +63,8 @@ test("★実データ: 説明はサーバの文のまま(出所を1つに保つ)
 
 test("★実データ: 観測できなかった事を「静か」と書かない", () => {
   // `activity` の値域は observed|unknown の2値。**どちらも「待機中」を意味しない**
-  // (inject.mjs の M3 / server.mjs:229 / server.mjs:500 が揃ってそう書いている)。
-  // 実測の検出率は1枚 31% なので、1枚しか撮らない一覧は生成中の 69% を外す。
+  // (inject.mjs の M3' と server.mjs の2箇所が揃ってそう書いている)。
+  // 実測(2026-08-03 の測り直し): 1枚あたり **18-39%** 取りこぼす。一覧は1枚しか撮らない。
   for (const s of PL.sessions) {
     const l = routeLabel(s.live);
     assert.doesNotMatch(l.short, /静か/, `${s.id}: 札が待機中を主張した`);
