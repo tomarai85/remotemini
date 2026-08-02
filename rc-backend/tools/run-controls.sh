@@ -55,6 +55,11 @@ LOCAL_CTLS=(
                                      # fake HOME なので edith も上限も要らない。実測1秒。
                                      # ★据えた初回に2件捕まえた: haiku を根拠にする誤答と、
                                      # `.js` が repo 内で crash する(= /tmp では動く)拡張子の罠
+    test/post-gate-batch-controls.sh # 窓が開いた後の一発勝負を撃つ台本の**門**。偽 ssh/scp なので
+                                     # edith も上限も要らない。実測1秒。★**開く方向**が本体 ——
+                                     # 「閉じている時に閉じる」は本物で撃てるが、「明けたら撃つ」は
+                                     # 窓が開くまで本物では測れない。片方向だけ見ると
+                                     # 「常に閉じる門」を緑と読む
 )
 EDITH_CTLS=(
     test/env-death-controls.sh
