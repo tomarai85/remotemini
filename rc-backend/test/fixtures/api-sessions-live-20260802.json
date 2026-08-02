@@ -1,0 +1,250 @@
+{
+ "_what": "本番(edith)の /api/sessions 応答そのまま。2026-08-02 09:56 取得。表示層の回帰検査用。",
+ "_taken_at": "2026-08-02T09:56+09:00(配備 09:5x / 観測子 09:53・09:53)",
+ "_note": "14行の内訳 = tmux 1 / worker 7 / blocked 6(全て reason=unregistered)。screen=CHOICE と route=gone はこの現物に含まれない(単体検査で担保)。",
+ "payload": {
+  "sessions": [
+   {
+    "id": "48d55690-061d-4d5b-a4dc-1f34e68855c1",
+    "project": null,
+    "cwd": "/Users/edith/Projects",
+    "title": "(未発言)",
+    "lastPrompt": "",
+    "turns": 0,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-08-02T00:50:20.737Z",
+    "fromRegistryOnly": true,
+    "live": {
+     "route": "tmux",
+     "pane": "%35",
+     "screen": "SENDABLE",
+     "activity": "unknown",
+     "limited": false
+    }
+   },
+   {
+    "id": "9918d8c9-2cc0-44b7-be95-fb9cccf7de18",
+    "project": "-private-tmp",
+    "cwd": "/private/tmp",
+    "title": "1+1 は? 数字だけ答えて。",
+    "lastPrompt": "1+1 は? 数字だけ答えて。",
+    "turns": null,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-08-01T22:13:26.799Z",
+    "live": {
+     "route": "worker",
+     "worker": "none",
+     "state": "idle",
+     "queued": 0
+    }
+   },
+   {
+    "id": "6bee9aa1-b893-4bf4-8090-16f364ee2cf5",
+    "project": "-private-tmp",
+    "cwd": "/private/tmp",
+    "title": "1+1 は? 数字だけ答えて。",
+    "lastPrompt": "1+1 は? 数字だけ答えて。",
+    "turns": null,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-08-01T22:13:13.478Z",
+    "live": {
+     "route": "worker",
+     "worker": "none",
+     "state": "idle",
+     "queued": 0
+    }
+   },
+   {
+    "id": "f44c92e4-e718-4032-a82d-e7aff3702761",
+    "project": "-private-tmp",
+    "cwd": "/private/tmp",
+    "title": "1+1 は? 数字だけ答えて。",
+    "lastPrompt": "1+1 は? 数字だけ答えて。",
+    "turns": null,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-08-01T22:12:49.631Z",
+    "live": {
+     "route": "worker",
+     "worker": "none",
+     "state": "idle",
+     "queued": 0
+    }
+   },
+   {
+    "id": "600d4359-b193-4d0c-9056-65eda03510e7",
+    "project": "-Users-Shared-dev-roundtrip",
+    "cwd": "/Users/Shared/dev/roundtrip",
+    "title": "1+1 は? 数字だけ答えて。",
+    "lastPrompt": "1+1 は? 数字だけ答えて。",
+    "turns": null,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-08-01T21:57:53.156Z",
+    "live": {
+     "route": "blocked",
+     "reason": "unregistered",
+     "candidates": 1,
+     "source": "registry",
+     "message": "この会話はペイン登録をしていないため、宛先を確定できません(同じフォルダの画面に送ると別の会話に入る恐れがあります)。その画面を rc-claude で開き直すと送れるようになります。"
+    }
+   },
+   {
+    "id": "adb4848b-3a1c-416c-9687-96e5dc574898",
+    "project": "-Users-Shared-dev-roundtrip",
+    "cwd": "/Users/Shared/dev/roundtrip",
+    "title": "これは長文の確認です。画面より遥かに長い本文を一度に送った時、入力欄の枠の判定と本文の消費確認が成立するかを見ています。…",
+    "lastPrompt": "これは長文の確認です。画面より遥かに長い本文を一度に送った時、入力欄の枠の判定と本文の消費確認が成立するかを見ています。返答は不要です。これは長文の確認です。画面より遥かに長い本文を一度に送った時、入力欄の枠の判定と本文の消費確認が成立するかを見ています。返答は不要です。これは長文の確認です。画面より遥かに長い本文を一度に送った時、入力欄の枠の判定と本文の消費確認が成立するかを見ています。返答は不…",
+    "turns": null,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-08-01T21:54:44.263Z",
+    "live": {
+     "route": "blocked",
+     "reason": "unregistered",
+     "candidates": 1,
+     "source": "cwd",
+     "message": "この会話はペイン登録をしていないため、宛先を確定できません(同じフォルダの画面に送ると別の会話に入る恐れがあります)。その画面を rc-claude で開き直すと送れるようになります。"
+    }
+   },
+   {
+    "id": "095356fa-c7fe-440c-b2ca-287ae0f96588",
+    "project": "-Users-Shared-dev-roundtrip",
+    "cwd": "/Users/Shared/dev/roundtrip",
+    "title": "095356fa",
+    "lastPrompt": null,
+    "turns": null,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-08-01T21:54:30.226Z",
+    "live": {
+     "route": "blocked",
+     "reason": "unregistered",
+     "candidates": 1,
+     "source": "cwd",
+     "message": "この会話はペイン登録をしていないため、宛先を確定できません(同じフォルダの画面に送ると別の会話に入る恐れがあります)。その画面を rc-claude で開き直すと送れるようになります。"
+    }
+   },
+   {
+    "id": "20a6cbd8-4c14-4f75-b74f-66f4b3d50846",
+    "project": "-Users-Shared-dev-roundtrip",
+    "cwd": "/Users/Shared/dev/roundtrip",
+    "title": "1+1 は? 数字だけ答えて。",
+    "lastPrompt": "1+1 は? 数字だけ答えて。",
+    "turns": null,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-08-01T21:54:05.381Z",
+    "live": {
+     "route": "blocked",
+     "reason": "unregistered",
+     "candidates": 1,
+     "source": "registry",
+     "message": "この会話はペイン登録をしていないため、宛先を確定できません(同じフォルダの画面に送ると別の会話に入る恐れがあります)。その画面を rc-claude で開き直すと送れるようになります。"
+    }
+   },
+   {
+    "id": "37b8968b-7069-4f9f-a53a-1674b5110a78",
+    "project": "-Users-edith-Projects",
+    "cwd": "/Users/edith/Projects",
+    "title": "これは長文の確認です。画面より遥かに長い本文を一度に送った時、入力欄の枠の判定と本文の消費確認が成立するかを見ています。…",
+    "lastPrompt": "これは長文の確認です。画面より遥かに長い本文を一度に送った時、入力欄の枠の判定と本文の消費確認が成立するかを見ています。返答は不要です。これは長文の確認です。画面より遥かに長い本文を一度に送った時、入力欄の枠の判定と本文の消費確認が成立するかを見ています。返答は不要です。これは長文の確認です。画面より遥かに長い本文を一度に送った時、入力欄の枠の判定と本文の消費確認が成立するかを見ています。返答は不…",
+    "turns": null,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-08-01T20:48:30.662Z",
+    "live": {
+     "route": "worker",
+     "worker": "none",
+     "state": "idle",
+     "queued": 0
+    }
+   },
+   {
+    "id": "4eb83d76-9d3e-4861-b6b6-da7bc3a19a24",
+    "project": "-Users-Shared-dev-roundtrip",
+    "cwd": "/Users/Shared/dev/roundtrip",
+    "title": "これは長文の確認です。画面より遥かに長い本文を一度に送った時、入力欄の枠の判定と本文の消費確認が成立するかを見ています。…",
+    "lastPrompt": "これは長文の確認です。画面より遥かに長い本文を一度に送った時、入力欄の枠の判定と本文の消費確認が成立するかを見ています。返答は不要です。これは長文の確認です。画面より遥かに長い本文を一度に送った時、入力欄の枠の判定と本文の消費確認が成立するかを見ています。返答は不要です。これは長文の確認です。画面より遥かに長い本文を一度に送った時、入力欄の枠の判定と本文の消費確認が成立するかを見ています。返答は不…",
+    "turns": null,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-08-01T19:03:05.124Z",
+    "live": {
+     "route": "blocked",
+     "reason": "unregistered",
+     "candidates": 1,
+     "source": "cwd",
+     "message": "この会話はペイン登録をしていないため、宛先を確定できません(同じフォルダの画面に送ると別の会話に入る恐れがあります)。その画面を rc-claude で開き直すと送れるようになります。"
+    }
+   },
+   {
+    "id": "0b6f7174-c616-4613-a775-a741ec72b410",
+    "project": "-private-tmp-rc-tui-test",
+    "cwd": "/private/tmp/rc-tui-test",
+    "title": "hi",
+    "lastPrompt": "hi",
+    "turns": null,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-07-31T12:34:26.532Z",
+    "live": {
+     "route": "worker",
+     "worker": "none",
+     "state": "idle",
+     "queued": 0
+    }
+   },
+   {
+    "id": "f2579211-9c65-44b6-a183-678d8edaecac",
+    "project": "-private-tmp-rc-tui-test",
+    "cwd": "/private/tmp/rc-tui-test",
+    "title": "Reply with exactly: INJECTED_OK",
+    "lastPrompt": "Reply with exactly: INJECTED_OK",
+    "turns": null,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-07-31T12:26:59.609Z",
+    "live": {
+     "route": "worker",
+     "worker": "none",
+     "state": "idle",
+     "queued": 0
+    }
+   },
+   {
+    "id": "974c5dbd-8f47-43e0-9609-711a9a2292df",
+    "project": "-Users-edith-Projects",
+    "cwd": "/Users/edith/Projects",
+    "title": "List exactly 8 distinct failure modes of tethered mobile int…",
+    "lastPrompt": "List exactly 8 distinct failure modes of tethered mobile internet links, one short line each, numbered. No preamble.",
+    "turns": null,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-07-30T11:14:54.384Z",
+    "live": {
+     "route": "worker",
+     "worker": "none",
+     "state": "idle",
+     "queued": 0
+    }
+   },
+   {
+    "id": "ac686843-c642-4ca4-a366-bf9d17211f5b",
+    "project": "-Users-Shared-dev-roundtrip",
+    "cwd": "/Users/Shared/dev/roundtrip",
+    "title": "ac686843",
+    "lastPrompt": null,
+    "turns": null,
+    "metadataIncomplete": false,
+    "updatedAt": "2026-07-30T00:34:29.046Z",
+    "live": {
+     "route": "blocked",
+     "reason": "unregistered",
+     "candidates": 1,
+     "source": "cwd",
+     "message": "この会話はペイン登録をしていないため、宛先を確定できません(同じフォルダの画面に送ると別の会話に入る恐れがあります)。その画面を rc-claude で開き直すと送れるようになります。"
+    }
+   }
+  ],
+  "scan": {
+   "scope": "all",
+   "limit": 0,
+   "files": 668,
+   "read": 668,
+   "cached": 0,
+   "examined": 668
+  },
+  "paneFault": null
+ }
+}

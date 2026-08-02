@@ -30,6 +30,7 @@ SES = "src/sessions.mjs"
 FRM = "src/frames.mjs"
 VIE = "src/view.mjs"
 SRV = "src/server.mjs"
+BLK = "src/blocked.mjs"
 APP = "src/app.html"
 
 MUT = [
@@ -133,6 +134,18 @@ MUT = [
   "到達しない事は主張ではなく単体検査で押さえてある(『runStrict の無い注入は構築の時点で"
   "落ちる』= 構築が投げるので listPanes まで届かない)。関門を外した瞬間に穴が開く事は"
   "M84 が別に測る。逆にこの行が『検出』に変われば、runStrict 無しの注入が復活したという事"),
+ # M86/M87 = 2026-08-02 夕。`feedTick` だけが `blockedBody()` に**理由の全域**を渡していて、
+ # `blockedMessage()` は `UNDECIDABLE` の6つ前提で書かれていた。落ちた先の既定が
+ # 「cwd 不一致」という**具体的な文**だったので、画面が消えただけの会話に
+ # 「現在地が一致しません」= 直し方まで間違った案内が出ていた(実行して判明)。
+ # 守りは2つに分けてある: (a) 出所を1つにした正規化、(b) 原因を作らない既定。
+ # (b) が無いと (a) の抜けが**検査できない**(既定がもっともらしい文だと覆い漏れが緑を通る)。
+ ("M86 none の正規化を外す(画面消失が既定の文に化ける)", BLK,
+  'const reason = !r.reason || r.reason === "none" ? "pane-gone" : r.reason;',
+  'const reason = r.reason || "pane-gone";'),
+ ("M87 既定に原因を書く(覆い漏れが「cwd 不一致」に化けて緑を通る)", BLK,
+  '  return unknownBlockedMessage(r.reason);',
+  '  return `登録されたペインの現在地(${r.panePath || "不明"})が、この会話のフォルダと一致しません。宛先を確定できないため送信しません。`;'),
  # M18-M23 = 2026-08-01 の2つ目の実測から。名前(#{pane_current_command})は機械ごとに
  # 違う値になる(edith="2.1.220" / MBP="bash")ので、判定を名前から ps の実測へ移した。
  # その移し替えで新しく守りになった点を1つずつ壊す。
@@ -244,9 +257,18 @@ MUT = [
  ("M42 チャンク間の持ち越しを捨てる(境界を跨いだレコードが消える)", LIS,
   'const buf = carry.length > 0 && raw.length === step ? Buffer.concat([raw, carry]) : raw;',
   'const buf = raw;'),
+ # ★2026-08-02 修正。旧版は `while (got < len) {` を `if (...) {` に替えるだけで、
+ # 中の `break` が孤立して **SyntaxError**(Illegal break statement)になっていた。
+ # 単体も e2e も「module が読めない」で落ちていた = 検出に見えて**何も測っていない**。
+ # 実際に測りたいのは「1回しか read しない実装を、7バイトずつ返す io が捕まえるか」。
  ("M43 短く返った read を読み直さない(繋いだ buffer に穴が開く)", LIS,
-  'while (got < len) {',
-  'if (got < len) {'),
+  '''    while (got < len) {
+      const n = io.read(fd, b.subarray(got), pos + got);
+      if (n <= 0) break; // EOF
+      got += n;
+    }''',
+  '''    const n = io.read(fd, b.subarray(got), pos + got);
+    if (n > 0) got += n;'''),
  ("M44 読み切っていなくても「無い」と断言する(metadataIncomplete を常に false)", LIS,
   'metadataIncomplete: !r.reachedStart && (m.entrypoint === null || m.lastPrompt === null),',
   'metadataIncomplete: false,'),
@@ -301,8 +323,8 @@ MUT = [
  ("M57 data の無いフレームも配信する(空の発言が画面に出る)", FRM,
   'if (!hadData) return null;',
   ''),
- ("M58 blocked の本文から文面を落とす(電話が理由コードを生で出す)", SRV,
-  '           message: blockedMessage(r) };',
+ ("M58 blocked の本文から文面を落とす(電話が理由コードを生で出す)", BLK,
+  '           message: blockedMessage(body) };',
   '         };'),
  ("M59 一覧から metadataIncomplete を落とす(読み残しを「発言なし」と表示する)", SES,
   'metadataIncomplete: !!e.meta.metadataIncomplete,',

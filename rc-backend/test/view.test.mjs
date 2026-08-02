@@ -4,6 +4,7 @@
 // 保証するのは**文面と継ぎ目の判断**だけ。それが本来ここに置いた理由。
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { WIRE_REASONS } from "../src/blocked.mjs";
 import {
   gapNotice, interruptResult, mergeHistory, nextAttempt, nextHistoryLimit,
   relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,
@@ -128,14 +129,96 @@ test("割り込み: 409 はサーバの文、401 は鍵、5xx はサーバ側の
 
 test("routeLabel: tmux は机で開いている + 動き", () => {
   assert.match(routeLabel({ route: "tmux", work: "observed" }).text, /机で開いている・動いている/);
-  assert.match(routeLabel({ route: "tmux", work: "quiet" }).text, /静か/);
+  assert.match(routeLabel({ route: "tmux", activity: "observed" }).text, /机で開いている・動いている/);
+});
+
+test("★routeLabel: 観測できなかった事を「静か」と書かない(3箇所の規律を表示層だけが破っていた)", () => {
+  // 出所 = 2026-08-02。`inject.mjs:246` / `server.mjs:229` / `server.mjs:500` が揃って
+  // 「observed でない事は待機中を意味しない」と書いているのに、view だけが断定していた。
+  // 実測: 生成中の1枚あたり検出率は 31%。一覧は1枚しか撮らないので 69% 外す。
+  // 害の向きが悪い: 「静か」は**打ち込んで良い**と読める。
+  const noWindow = routeLabel({ route: "tmux", activity: "unknown" }).text;
+  assert.doesNotMatch(noWindow, /静か/, "窓が無いのに待機中を主張しない");
+  assert.match(noWindow, /状態不明/);
+
+  // 窓が在る側(ストリーム)は**測った窓をそのまま出す**。結論ではなく観測を出す。
+  const windowed = routeLabel({ route: "tmux", work: "quiet", windowMs: 5600 }).text;
+  assert.doesNotMatch(windowed, /静か/);
+  assert.match(windowed, /6秒 動く印なし/, "5.6 秒は四捨五入して 6 秒");
+
+  // 陰性対照1 — 「全部 状態不明 と書く」実装との差。observed は今まで通り強く出る。
+  assert.match(routeLabel({ route: "tmux", work: "observed" }).text, /動いている/);
+  assert.doesNotMatch(routeLabel({ route: "tmux", work: "observed" }).text, /状態不明/);
+  // 陰性対照2 — windowMs を落とした実装が「0秒 動く印なし」と嘘をつかない事。
+  assert.equal(routeLabel({ route: "tmux", work: "quiet" }).text, "机で開いている・動く印なし");
+});
+
+test("★routeLabel: 選択待ちは**一覧の札から**見える(Enter が承認や課金になる)", () => {
+  // 見つけ方(2026-08-02): `app.html` の `sessionRow` は `label.text` しか描かず
+  // `label.screen` を捨てる。帯だけが screen を読む = 開くまで分からなかった。
+  // 送信は `SEND_REFUSAL.choice` が既に拒むが、**拒む事と見える事は別**。
+  const l = routeLabel({ route: "tmux", screen: "CHOICE", activity: "unknown" });
+  assert.match(l.short, /選択待ち/, "★一覧に出る側(short)に入っている事");
+  assert.match(l.text, /承認や課金/, "なぜ危ないかを画面で言う");
+  assert.doesNotMatch(l.text, /状態不明/, "選択待ちが分かっているのに「状態不明」に埋もれさせない");
+  // 上限と選択待ちが同時に立っても両方残す(片方を消す実装との差)。
+  const both = routeLabel({ route: "tmux", screen: "CHOICE", limited: true }).text;
+  assert.match(both, /選択待ち/);
+  assert.match(both, /利用上限/);
+  // 陰性対照 — 常に選択待ちと言う実装との差。
+  assert.doesNotMatch(routeLabel({ route: "tmux", screen: "SENDABLE" }).short, /選択待ち/);
+  assert.doesNotMatch(routeLabel({ route: "worker", state: "idle" }).short, /選択待ち/);
+});
+
+test("★routeLabel: 一覧の札は短く、説明は会話画面(92文字の札を一覧に出さない)", () => {
+  // 実測 2026-08-02: 本番14行のうち6行が blocked で、札が**全部同じ92文字**だった。
+  // 他の札は 9-10 文字。丸い札(border-radius:999px / 12px)に入る長さではない。
+  const server = "この会話はペイン登録をしていないため、宛先を確定できません(同じフォルダの画面に送ると別の会話に入る恐れがあります)。その画面を rc-claude で開き直すと送れるようになります。";
+  const l = routeLabel({ route: "blocked", reason: "unregistered", message: server });
+  assert.equal(l.text, server, "説明はサーバの文のまま(出所を1つに保つ)");
+  assert.ok(l.short.length <= 12, `一覧の札は短い(実際 ${l.short.length} 文字)`);
+  assert.match(l.short, /送れない/);
+  assert.ok(!/unregistered/.test(l.short), "理由コードを生で出さない");
+  // 陰性対照 — 全部「送れない」に潰す実装との差。理由ごとに違う札になる。
+  assert.notEqual(routeLabel({ route: "blocked", reason: "ambiguous" }).short,
+                  routeLabel({ route: "blocked", reason: "unregistered" }).short);
+});
+
+test("★routeLabel: 電話に流れる理由を**全部**覆う(表が2枚ある = 片方だけ欠ける)", () => {
+  // 覆うべき集合は目分量ではなく `blocked.mjs` の `WIRE_REASONS`(サーバが出しうる値の全域)。
+  // ★2026-08-02: 目で突き合わせて2つ足した後にこの検査を書いたら、`not-claude` が**まだ**
+  //   残っていた。表を2枚とも人が読んで揃える方法は、実際に1つ取りこぼした。
+  for (const reason of WIRE_REASONS) {
+    const tag = routeLabel({ route: "blocked", reason });          // サーバの文が無い = 一覧の札
+    assert.match(tag.short, /送れない/, `${reason}: 札が既定`);
+    assert.notEqual(tag.short, "送れない", `${reason}: 札が既定に落ちている`);
+    assert.ok(!new RegExp(reason).test(tag.short), `${reason}: 理由コードが生で出ている`);
+    assert.notEqual(tag.text, "宛先を確定できません。", `${reason}: 会話画面の文が既定`);
+  }
+  // 陰性対照 — 覆っていない値はちゃんと既定に落ちる(上が常に緑ではない事)。
+  const un = routeLabel({ route: "blocked", reason: "made-up-reason" });
+  assert.equal(un.short, "送れない");
+  assert.equal(un.text, "宛先を確定できません。");
+});
+
+test("★routeLabel: 古い購読が運んでくる gone も blocked と同じ扱い(死んだ経路名を残さない)", () => {
+  // 旧実装は `server.mjs:486` が `route:"gone"` を産み、使う側が**1つも無かった**。
+  // 既定に落ちて「状態不明」= 理由が画面から消えていた(2026-08-02 に実行して確認)。
+  // サーバ側は `blockedBody()` に寄せたが、繋ぎっ放しの購読が古い本文を持つので受け続ける。
+  const l = routeLabel({ route: "gone", reason: "pane-gone" });
+  assert.notEqual(l.kind, "unknown", "既定に落とさない");
+  assert.match(l.short, /送れない/);
 });
 
 test("★routeLabel: 利用上限は「静か」と区別して出す(待ち続けさせない)", () => {
   // 出所 = edith 実機 2026-08-02。4回送って4回とも上限だったが、画面は
   // 入力欄が空なだけで「静か」と全く同じに見えた。電話の側はこれを見分けられない。
   assert.match(routeLabel({ route: "tmux", work: "quiet", limited: true }).text, /利用上限/);
-  assert.doesNotMatch(routeLabel({ route: "tmux", work: "quiet", limited: true }).text, /静か/);
+  // ★旧版はここで `/静か/` を否定していたが、「静か」自体を廃したので**空の対照**になった。
+  //   守りたかったのは「上限の見出しが動きの語に埋もれない」事なので、そちらを直接測る。
+  const lim = routeLabel({ route: "tmux", work: "quiet", windowMs: 5600, limited: true }).text;
+  assert.doesNotMatch(lim, /動く印なし/, "上限の時は動きの語に場所を譲らない");
+  assert.doesNotMatch(lim, /状態不明/);
   // 陰性対照 — 常に上限と言う実装でも上の2行は緑になる。
   assert.doesNotMatch(routeLabel({ route: "tmux", work: "quiet", limited: false }).text, /利用上限/);
   assert.doesNotMatch(routeLabel({ route: "tmux", work: "observed" }).text, /利用上限/);
@@ -158,7 +241,7 @@ test("★routeLabel: 上限の告知が残っていても**動いているなら
 
   // 陰性対照1 — 「動いている時は限界を全部黙る」実装との差。
   //   その実装だと上の3行のうち最後が落ちる。
-  // 陰性対照2 — 静かな時は今まで通り強い文言のまま(弱めていない事の確認)。
+  // 陰性対照2 — 動きを観測できていない時は今まで通り強い文言のまま(弱めていない事の確認)。
   const quiet = routeLabel({ route: "tmux", activity: "unknown", limited: true }).text;
   assert.match(quiet, /答えは返りません/);
   // 陰性対照3 — `work` 経由でも同じに倒れる(activity だけ直して work を忘れる形を塞ぐ)。

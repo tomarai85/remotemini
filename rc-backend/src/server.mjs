@@ -21,6 +21,7 @@ import { WorkerManager } from "./worker.mjs";
 import { TmuxInjector, looksLikeClaudePane, makeTmuxRunner } from "./inject.mjs";
 import { PaneRegistry, resolveSessionPane, registryOnlySessions } from "./registry.mjs";
 import { psSnapshot } from "./procs.mjs";
+import { paneFaultReason, UNDECIDABLE, blockedMessage, blockedBody } from "./blocked.mjs";
 
 const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
@@ -321,52 +322,10 @@ function registryCtx(entries) {
   };
 }
 
-/**
- * ペイン一覧が取れなかった時の理由札。**「読めた出力が壊れている」と「そもそも届かない」は別**。
- * 直し方が違う(前者=書式/locale、後者=tmux 自体かソケット)ので画面にも別の文で出す。
- */
-function paneFaultReason(e) {
-  return e?.code === "TMUX_UNAVAILABLE" ? "tmux-unavailable" : "panes-unreadable";
-}
-
-/** 決められなかった理由のうち、ワーカー経路にも落としてはいけないもの。 */
-const UNDECIDABLE = new Set([
-  "ambiguous",
-  "unregistered",
-  "stale",
-  "cwd-mismatch",
-  "panes-unreadable",
-  "tmux-unavailable",
-]);
-
-/** 拒否理由を Tom が読める1文にする(画面にそのまま出る)。 */
-function blockedMessage(r) {
-  if (r.reason === "ambiguous") {
-    return `同じフォルダで Claude が ${r.candidates} 個開いています。どの画面かを特定できないため送信しません。`;
-  }
-  if (r.reason === "unregistered") {
-    // 直せる拒否なので、直し方まで書く。ここが「エラーで終わり」だと電話側で詰む。
-    return "この会話はペイン登録をしていないため、宛先を確定できません(同じフォルダの画面に送ると別の会話に入る恐れがあります)。その画面を rc-claude で開き直すと送れるようになります。";
-  }
-  if (r.reason === "stale") {
-    return "この会話が登録したペインは、今は別の会話が使っています。宛先を確定できないため送信しません。";
-  }
-  if (r.reason === "panes-unreadable") {
-    // 電話の持ち主が取れる手が無い種類の故障なので、**故障だと分かる文**にする。
-    // 「ペインが無い」風に書くと、机で開いている会話が消えたように読めて誤解を招く。
-    return "サーバが tmux の画面一覧を読めていません(書式の壊れた出力が返っています)。宛先を確定できないため送信しません。復旧するまでこの会話には送れません。";
-  }
-  if (r.reason === "tmux-unavailable") {
-    return "サーバが tmux に届いていません(画面一覧を取れませんでした)。宛先を確定できないため送信しません。復旧するまでこの会話には送れません。";
-  }
-  return `登録されたペインの現在地(${r.panePath || "不明"})が、この会話のフォルダと一致しません。宛先を確定できないため送信しません。`;
-}
-function blockedBody(r) {
-  // ★文面の出所を1つに保つ。電話側に同じ日本語を書くと、直した時に片方だけ古くなる。
-  // 一覧の行にも 409 の本文にも、ここで作った同じ1文が載る(e2e が同一性を検査する)。
-  return { route: "blocked", reason: r.reason, candidates: r.candidates, source: r.source,
-           message: blockedMessage(r) };
-}
+// `paneFaultReason` / `UNDECIDABLE` / `blockedMessage` / `blockedBody` は `blocked.mjs` へ出した。
+// ★このファイルは import した瞬間に listen する(末尾)= **単体検査から呼べない**。文面の判断を
+//   ここに置いていた間、覆い漏れ(`none` / `not-claude` が cwd 不一致の文に化ける)は e2e で
+//   実行するまで誰も掴めなかった。判断は listen しない層に置き、domain を検査で押さえる。
 
 // ---- ワーカー ---------------------------------------------------------------
 const manager = new WorkerManager({
@@ -483,7 +442,13 @@ function feedTick(sessionId, f, resolvePaneFn) {
   }
   if (++f.tick % FEED_SCREEN_EVERY === 0) {
     const r = resolvePaneFn();
-    const body = r.pane ? screenBody(f, r.pane) : { route: "gone", reason: r.reason || "pane-gone" };
+    // ★旧: `{ route:"gone" }`。**産む所1・使う所0**の死んだ経路名で、`routeLabel` に分岐が
+    //   無いので画面には「状態不明」としか出なかった(2026-08-02 に実行して確認)。
+    //   ★ここは `blockedBody()` に**理由の全域**を渡す唯一の呼び口(他は `UNDECIDABLE` で
+    //   絞ってから渡す)。一度 `reason || "pane-gone"` と書いたが、`resolveSessionPane()` は
+    //   **文字列 "none" を返す**ので偽が真にならず素通りした(実行して判明)。正規化は
+    //   `blockedBody()` 側の1箇所に移した — 呼び口ごとに書けば書き忘れた口だけが嘘を出す。
+    const body = r.pane ? screenBody(f, r.pane) : blockedBody(r);
     const key = JSON.stringify(body);
     if (key !== f.lastScreen) {
       f.lastScreen = key;
@@ -508,7 +473,11 @@ function screenBody(f, pane) {
     pane,
     screen: s.screen,
     work: f.work.some(Boolean) ? "observed" : "quiet",
-    windowMs: FEED_WORK_WINDOW * FEED_SCREEN_EVERY * FEED_TICK_MS,
+    // ★窓は「溜まった枚数ぶん」。固定値だと購読直後に**4倍の窓を主張する**(1枚しか
+    //   撮っていないのに 5.6 秒見たと言う)。画面はこの数字をそのまま「N秒 動く印なし」と
+    //   出すので、ここが嘘だとそのまま嘘が出る。`f.work` は FEED_WORK_WINDOW で頭打ちなので
+    //   定常状態は今まで通り 5600。変わるのは立ち上がりだけ。
+    windowMs: f.work.length * FEED_SCREEN_EVERY * FEED_TICK_MS,
   };
 }
 

@@ -725,6 +725,67 @@ try {
   const rIG = await fetch(`${B}/api/sessions/${SID_GONE}/interrupt`, { method: "POST", headers: H });
   check("未発言+ペイン消失の interrupt は落ちず「止める物が無い」", rIG.status === 200 && (await rIG.json()).interrupted === false);
 
+  // 12-f. ★ストリームの `screen` 事象を初めて検査する(2026-08-02)
+  //   測って分かった穴: `grep -rln 'screenBody|event: "screen"' test/` = **0件**、
+  //   `grep -rn '"gone"' test/` = **0件**。`/stream` を購読している検査は在ったが、
+  //   見ていたのは `message` 事象だけ。だから `route:"gone"`(産む所1・使う所0の死んだ
+  //   経路名 = 電話には「状態不明」としか出ない)が誰にも見られずに生き残っていた。
+  //
+  //   ★到達条件を実装から確かめてある: `/stream` は**購読時**に `resolvePane()` して
+  //   ペインが無ければワーカー経路に落ちる(server.mjs の `if (found.pane)`)。つまり
+  //   「最初から消えている会話」ではこの枝に入らない。入るのは**購読中に消えた**時だけ。
+  //   よって生きている %23 で購読してから、偽 tmux の一覧から %23 を抜く。
+  {
+    const ctl = new AbortController();
+    const chunks = [];
+    const sres = await fetch(`${B}/api/sessions/${SID_FRESH}/stream`, { headers: H, signal: ctl.signal });
+    const pump = (async () => {
+      const reader = sres.body.getReader();
+      const dec = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(dec.decode(value));
+      }
+    })().catch(() => {});
+    // 出荷する parser で解く(生の文字列 includes だと「バイトが来た」しか言えない)。
+    const screens = () => {
+      const p = createSseParser();
+      const out = [];
+      for (const c of chunks) out.push(...p.push(c));
+      return out.filter((e) => e.type === "screen").map(decodeEvent).filter((d) => d.ok).map((d) => d.body);
+    };
+    await waitFor(() => screens().length > 0, 3000);
+    const first = screens()[0] || {};
+    check("★購読直後に今の画面が1件来る(tmux 経路)", first.route === "tmux" && first.pane === "%23",
+      JSON.stringify(first));
+    // ★窓は溜まった枚数ぶん。固定値だと1枚しか撮っていないのに 5.6 秒見たと主張する
+    //   (画面はこれをそのまま「N秒 動く印なし」と出すので、そのまま嘘になる)。
+    check("★購読直後の windowMs が観測枚数ぶん(4倍の窓を主張しない)",
+      first.windowMs === 1400, `windowMs=${first.windowMs}`);
+
+    // ここでペインを消す。偽 tmux は毎回 tmux-panes.txt を読み直すので即座に効く。
+    writeFileSync(join(SB, "tmux-panes.txt"),
+      PANES.split("\n").filter((l) => !l.startsWith("%23" + PANE_SEP)).join("\n"));
+    const blocked = () => screens().find((s) => s.route !== "tmux");
+    await waitFor(() => !!blocked(), 4000);
+    const b = blocked() || {};
+    check("★購読中にペインが消えたら blocked を流す(死んだ経路名 gone を残さない)",
+      b.route === "blocked" && b.reason === "pane-gone", JSON.stringify(b));
+    // ★これが本体。`blocked` と名乗るだけの**嘘の文**を通さない。
+    //   `blockedMessage()` には pane-gone の枝が無く、既定は cwd 不一致の文だった:
+    //   「登録されたペインの現在地(不明)が、この会話のフォルダと一致しません。」
+    //   画面が消えた事と現在地がずれた事は別の事実で、後者は「開き直せば直る」と読める。
+    check("★pane-gone の説明が cwd 不一致の文にすり替わっていない(既定に落ちる嘘の対照)",
+      typeof b.message === "string" && !/現在地.*一致しません/.test(b.message), JSON.stringify(b.message));
+    check("★pane-gone の説明が画面消失の事を言っている",
+      /見つかりません|閉じられた/.test(String(b.message)), JSON.stringify(b.message));
+
+    writeFileSync(join(SB, "tmux-panes.txt"), PANES); // 後続に影響させない
+    ctl.abort();
+    await pump;
+  }
+
   // 12-e. 登録簿にも jsonl にも居ない ID は今まで通り 404
   check("登録も jsonl も無い ID -> 404",
     (await fetch(`${B}/api/sessions/aaaaaaaa-0000-0000-0000-0000000000ff/status`, { headers: H })).status === 404);

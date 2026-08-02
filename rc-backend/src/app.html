@@ -60,6 +60,7 @@
   .tag.tmux { color: var(--ok); border-color: #2c4a32; }
   .tag.worker { color: var(--link); border-color: #24384f; }
   .tag.blocked { color: var(--warn); border-color: #4a3f22; }
+  .tag.choice { color: var(--bad); border-color: #5a2f2b; font-weight: 600; }
   .tag.unknown { color: var(--dim); }
   .cwd { font-variant: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
 
@@ -204,7 +205,7 @@ function sessionRow(s, now) {
     (() => {
       const m = el("div", "m");
       m.append(
-        el("span", `tag ${label.kind}`, label.text),
+        el("span", `tag ${label.kind}`, label.short || label.text),
         el("span", "cwd", s.cwd || ""),
         el("span", "", relTime(s.updatedAt, now)),
       );
@@ -232,11 +233,14 @@ async function openConv(s) {
     id: s.id, title: s.title || s.id, gen: myGen,
     history: [], live: [], historyLoaded: false, truncated: false,
     lastEventId: "", abort: null, wake: null,
+    // ★一覧が知っている経路状態。`screen` 事象が来るまで、そして**来ない会話では最後まで**
+    //   これが帯の中身になる(ペインの無い会話は購読がワーカー経路に落ちて screen が来ない)。
+    state: s.live || null,
   };
   $("conv-title").textContent = conv.title;
   $("conv-body").replaceChildren(el("div", "center", "読み込んでいます…"));
   $("conv-notice").replaceChildren();
-  band("", "つないでいます…");
+  band("", stateText(conv.state, "つないでいます…"));
   show("s-conv");
   // ★購読を**先に**開く。履歴を先に撮ると、その隙間に書かれた発言がどちらにも入らない。
   //   先に開けば同じ隙間は「重なる」に変わり、mergeHistory が剥がせる(view.mjs)。
@@ -287,6 +291,16 @@ function renderConv() {
 
 const nearBottom = (n) => n.scrollHeight - n.scrollTop - n.clientHeight < 80;
 
+/**
+ * 帯に出す文。★出所は `routeLabel` ただ1つ = 一覧の札と会話の帯が食い違わない。
+ * 状態を知らない時だけ `fallback`(接続の様子)に落ちる。
+ */
+function stateText(v, fallback) {
+  if (!v) return fallback;
+  const l = routeLabel(v);
+  return l.screen ? `${l.text}(${l.screen})` : l.text;
+}
+
 function band(kind, text) {
   const b = $("conv-band");
   b.className = `band ${kind}`;
@@ -312,7 +326,7 @@ async function streamLoop(myGen) {
       if (r.status === 401) return toKey("鍵が通りませんでした。貼り直してください。");
       if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
       openedAt = Date.now();
-      band("live", "つながっています");
+      band("live", stateText(conv && conv.gen === myGen ? conv.state : null, "つながっています"));
       const parser = createSseParser();
       const reader = r.body.getReader();
       const dec = new TextDecoder();
@@ -357,8 +371,8 @@ function onEvent(ev, myGen) {
   if (d.id) conv.lastEventId = d.id;
   if (!d.ok) { notice("warn", "読めない通知が来ました(表示は続きます)。"); return; }
   if (d.type === "screen") {
-    const l = routeLabel(d.body);
-    band("live", l.screen ? `${l.text}(${l.screen})` : l.text);
+    conv.state = d.body; // 以後の再接続でも同じ状態を出せる(帯が接続の話に戻らない)
+    band("live", stateText(conv.state, ""));
     return;
   }
   if (d.type === "gap") {

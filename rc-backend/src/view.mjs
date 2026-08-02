@@ -111,10 +111,48 @@ export function interruptResult(status, body) {
 }
 
 /** 一覧・会話の見出しに出す経路の印。 */
+/**
+ * tmux の行に出す「動き」の語。
+ *
+ * ★**「観測できなかった」を「静か」と書かない**(2026-08-02 に直した)。
+ * `inject.mjs` の activity docstring・`server.mjs:229`・`server.mjs:500` の3箇所が揃って
+ * 「observed でない事は待機中を意味しない」と書いているのに、表示層だけが「静か」と
+ * 断定していた。`activity` の値域は `"observed" | "unknown"` の2値で、待機中を表す値は
+ * **存在しない**。値の言い換えではなく創作だった。
+ *
+ * 誤りの大きさ(実測の検出率 31% から): 一覧は1枚しか撮らないので生成中の **69%** を、
+ * ストリームの4枚窓でも約 23%(独立仮定の上界・未実測)を「静か」と書いていた。
+ * 向きも悪い —「静か」は「打ち込んでいい」と読めるので、生成中の所へ打たせる方に外す。
+ *
+ * `work:"quiet"` は窓が在るので**測った窓をそのまま出す**(結論ではなく観測)。
+ * `activity` しか無い一覧は窓が無いので「状態不明」。
+ */
+function workPhrase(v) {
+  if (v.work === "observed" || v.activity === "observed") return "動いている";
+  if (v.work === "quiet") {
+    const sec = Math.round((v.windowMs || 0) / 1000);
+    return sec > 0 ? `${sec}秒 動く印なし` : "動く印なし";
+  }
+  return "状態不明";
+}
+
 export function routeLabel(live) {
   const v = live || {};
   if (v.route === "tmux") {
-    const work = v.work === "observed" ? "動いている" : v.activity === "observed" ? "動いている" : "静か";
+    // ★選択待ちを最優先。Enter が承認や課金の選択になる唯一の状態なのに、一覧は
+    //   `label.text` しか描かない(`app.html` の `sessionRow`)ので `screen` に入れておくだけでは
+    //   **一覧から見えなかった**(2026-08-02 発見)。帯だけが screen を読む = 開くまで分からない
+    //   = 順序が逆。送信は `SEND_REFUSAL.choice` が既に拒むが、**拒む事と見える事は別**。
+    if (v.screen === "CHOICE") {
+      const lim = v.limited ? " / 利用上限の告知も出ています" : ""; // 事実をどちらも消さない
+      return {
+        kind: "choice",
+        short: "★選択待ち",
+        text: `机で開いている・★選択待ち(Enter が承認や課金になります)${lim}`,
+        screen: v.screen,
+      };
+    }
+    const work = workPhrase(v);
     // ★上限は「静か」と見分けが付かないまま外出先で待たされる元(2026-08-02 edith 実測:
     //   4回送って4回とも上限、画面上は入力欄が空で静かなだけに見える)。
     //   これを言わないと、電話の側は「返事が遅い」と読んで待ち続ける。
@@ -131,21 +169,51 @@ export function routeLabel(live) {
     //     推論の根拠は「履歴は回転子より上に残る」という TUI の構造。撮れたら fixture にする。
     if (v.limited) {
       return work === "動いている"
-        ? { kind: "tmux", text: "机で開いている・動いている(★画面に利用上限の告知が残っている)", screen: v.screen || "" }
-        : { kind: "tmux", text: "机で開いている・★利用上限(答えは返りません)", screen: v.screen || "" };
+        ? { kind: "tmux", short: "動いている・★上限", text: "机で開いている・動いている(★画面に利用上限の告知が残っている)", screen: v.screen || "" }
+        : { kind: "tmux", short: "★利用上限", text: "机で開いている・★利用上限(答えは返りません)", screen: v.screen || "" };
     }
-    return { kind: "tmux", text: `机で開いている・${work}`, screen: v.screen || "" };
+    return { kind: "tmux", short: `机・${work}`, text: `机で開いている・${work}`, screen: v.screen || "" };
   }
   if (v.route === "worker") {
-    return { kind: "worker", text: v.state ? `ワーカー・${v.state}` : "ワーカー", screen: "" };
+    const w = v.state ? `ワーカー・${v.state}` : "ワーカー";
+    return { kind: "worker", short: w, text: w, screen: "" };
   }
-  if (v.route === "blocked") {
+  // `"gone"` は旧いストリームが送ってくる経路名(産む所1・使う所0だった)。server 側で
+  // `blockedBody()` に寄せたが、繋ぎっ放しの購読が古い本文を持っている事があるので受ける。
+  if (v.route === "blocked" || v.route === "gone") {
     // サーバが文を付けてきたらそれが正(文面の出所は1つ = server.mjs の blockedMessage)。
     // 付いていない時だけ、ここの短い言い換えに落ちる。**理由コードを生で出さない**。
-    return { kind: "blocked", text: v.message || BLOCKED_SHORT[v.reason] || "宛先を確定できません。", screen: "" };
+    // ★`short` を別に持つのは**置き場所が違う**から: 92文字の説明は電話の一覧の丸い札に
+    //   入らない(他の札は9-10文字。2026-08-02 実測)。説明は会話画面の帯で出す。
+    //   同じ文を2箇所に書くのではなく、一覧=要約 / 会話画面=サーバの文、と役割を分ける。
+    return {
+      kind: "blocked",
+      short: BLOCKED_TAG[v.reason] || "送れない",
+      text: v.message || BLOCKED_SHORT[v.reason] || "宛先を確定できません。",
+      screen: "",
+    };
   }
-  return { kind: "unknown", text: "状態不明", screen: "" };
+  return { kind: "unknown", short: "状態不明", text: "状態不明", screen: "" };
 }
+
+/**
+ * 一覧の札に出す**短い**理由。`BLOCKED_SHORT` は会話画面用の言い換え(サーバの文が無い時)で、
+ * こちらは一覧の丸い札用。★理由コードを生で出さない原則は両方に効く。
+ * ★覆うべき集合は `blocked.mjs` の `WIRE_REASONS`(= 電話に実際に流れる理由の全域)。
+ *   「`blockedMessage()` の枝を覆う」と書いていた頃、その `blockedMessage()` 自身が
+ *   全域を覆っていなかったので、基準にしていた物が既に欠けていた。検査は
+ *   `test/view.test.mjs` が `WIRE_REASONS` を回して両方の表を突く。
+ */
+const BLOCKED_TAG = {
+  ambiguous: "送れない(複数該当)",
+  unregistered: "送れない(未登録)",
+  stale: "送れない(登録ずれ)",
+  "cwd-mismatch": "送れない(現在地ずれ)",
+  "pane-gone": "送れない(画面消失)",
+  "not-claude": "送れない(別プログラム)",
+  "panes-unreadable": "送れない(tmux 故障)",
+  "tmux-unavailable": "送れない(tmux 不達)",
+};
 
 const BLOCKED_SHORT = {
   ambiguous: "同じフォルダで複数開いているため、宛先を確定できません。",
@@ -153,6 +221,13 @@ const BLOCKED_SHORT = {
   stale: "登録したペインを今は別の会話が使っています。",
   "cwd-mismatch": "登録ペインの現在地が一致しません。",
   "pane-gone": "開いていたペインが見つかりません。",
+  // ★2026-08-02 追加。この3つが**抜けていた**ので、サーバの文が届かなかった時だけ
+  //   「宛先を確定できません。」という**故障だと分からない文**に落ちていた。
+  //   前2つは `BLOCKED_TAG` を作った時に鍵の集合を突き合わせて発見、`not-claude` は
+  //   同日夕方に `WIRE_REASONS` を回す検査を書いて発見 = **目で突き合わせても1つ残った**。
+  "not-claude": "その画面は今は Claude ではありません(シェルに戻っています)。",
+  "panes-unreadable": "サーバが tmux の画面一覧を読めていません(故障)。",
+  "tmux-unavailable": "サーバが tmux に届いていません(故障)。",
 };
 
 /**

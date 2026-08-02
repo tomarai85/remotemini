@@ -1,0 +1,27 @@
+M43 短く返った read を読み直さない(繋いだ buffer に穴が開く)
+
+=== e2e ===
+$ exit=1
+--- stdout 末尾 ---
+
+--- stderr 末尾 ---
+file:///private/var/folders/yn/5m6bw9z92y94qmcy4tsnxdlw0000gn/T/mut-il8wr5zq/rc/test/e2e-local.mjs:333
+    throw new Error(`server did not start:\n${svlog}`);
+          ^
+
+Error: server did not start:
+file:///private/var/folders/yn/5m6bw9z92y94qmcy4tsnxdlw0000gn/T/mut-il8wr5zq/rc/src/listing.mjs:175
+      if (n <= 0) break; // EOF
+                  ^^^^^
+
+SyntaxError: Illegal break statement
+    at compileSourceTextModule (node:internal/modules/esm/utils:338:16)
+    at ModuleLoader.moduleStrategy (node:internal/modules/esm/translators:102:18)
+    at #translate (node:internal/modules/esm/loader:468:12)
+    at ModuleLoader.loadAndTranslate (node:internal/modules/esm/loader:515:27)
+
+Node.js v22.14.0
+
+    at file:///private/var/folders/yn/5m6bw9z92y94qmcy4tsnxdlw0000gn/T/mut-il8wr5zq/rc/test/e2e-local.mjs:333:11
+
+Node.js v22.14.0
