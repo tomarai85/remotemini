@@ -288,7 +288,7 @@ echo 39-43ms / clear 38-42ms。8/01 の MBP と同じ台本・同じ結果。
 |---|---|---|---|
 | 1 | `/opt/homebrew/bin/node tools/live-inject-check.mjs --cwd /Users/edith/Projects --cases A` | **exit 0**・`delivered=verified` | 1件で「上限が明けた」事自体が判る。ここが赤なら以降は全部無意味 |
 | 2 | `/opt/homebrew/bin/node tools/live-inject-check.mjs --cwd /Users/edith/Projects`(4件) | **exit 0**・4/4 `verified` | edith という機械での一巡。台本は Jervis で 4/4 済み = 差分は機械だけ |
-| 3 | `/opt/homebrew/bin/node tools/live-http-check.mjs` | **exit 0** | 鎖③(電話 → HTTP → tmux → 返答)。**ここが exit 0 になるまで「一巡した」とは書かない** |
+| 3 | `/opt/homebrew/bin/node tools/live-http-check.mjs --cwd /Users/edith/Projects` | **exit 0** | 鎖③(電話 → HTTP → tmux → 返答)。**ここが exit 0 になるまで「一巡した」とは書かない**。`--cwd` は無くても台本が信頼済み dir へ寄せるが、**どこへ寄るかを運任せにしない**為に明示する |
 | 4 | ★**`--fork-session` の実挙動を1回測る**(使い捨て会話を1つ作り、`claude -p --resume <sid>` と `claude -p --resume <sid> --fork-session` を各1回。転写ファイルが増えるか・`sessionId` が変わるかだけ見る) | 既定 = **同じファイルに追記**(= H2 実在の確定)、`--fork-session` = **新 ID の別ファイル** | `DESIGN.md` §2.17 の worker 経路の設計がこの1点に乗っている。今は `--help` の文言からの**推論**であって実測ではない。**測るまで「測った」と書かない** |
 
 ★4 は上限をほとんど食わない(応答は「ok」1語でよい)ので、1-3 が赤でも**4 だけは撃ってよい**
@@ -317,8 +317,35 @@ usage    = input 0 / output 0 / total_cost_usd 0
 | `/Users/edith/Projects`(必須の `--cwd`) | 在る | OK |
 | 配備された台本 vs repo(sha256) | `1d1d5aa2…fdcaa7` で**一致** | 同じ物を測れる |
 | tmux の pane の `PATH`(使い捨てセッションで実測) | `/opt/homebrew/bin:/Users/edith/.local/bin:…` → `claude` が解決 | 台本が pane に打つ**裸の `claude` は通る**。`work` は無傷 |
+| ★**登録の鎖が実際に発火するか**(使い捨て pane に `rc-claude` を打って実測) | **1秒**で画面右下に `[rc %46]`・`~/.rc-backend/panes/<sid>.json` が**新規1件**(鍵 = `model,pane,pid,session_id,tmux`) | item 3 の残っていた最後の前提。**上限に関係なく測れた**(statusLine は上限中でも描画される) |
+| 片付け(上の probe の後) | session 0件・`panes/` が**元の一覧に完全復帰**・`work: 2 windows` | 既存 8 件には触っていない(所有者不明の物を消さない規則) |
 
 → **1-3 の実行形は「`node`」ではなく `/opt/homebrew/bin/node`**。表の写しをそのまま打たない事。
+
+★登録の鎖が測れた事で、item 3 の exit 2(prep 中止)の芽は
+「実行ファイルが無い」「登録の仕組みが無い」「cwd が未信頼」の3つとも潰れた。
+**残る 3 の中止理由は上限の帯だけ** = 00:00 以降なら、赤は本物の赤として読める。
+
+#### 1-G-1c. item 4 の前提も潰した(22:5x 実測。**上限中なので消費 0**)
+
+item 4 は「使い捨て会話を `mktemp -d` の下に作る」と書いてあったが、**その dir は未信頼**。
+信頼確認が出るなら詰みだった —— **信頼を機械的に与えるのは禁止**(安全確認を自動化に押させない)。
+上限中の `claude -p` は `usage = 0/0` なので、**タダで**確かめられる:
+
+| 測った物 | 値 | 意味 |
+|---|---|---|
+| 未信頼 `mktemp -d` で `claude -p`(launchd の中) | exit 1・分類 = **上限の帯のみ** | 信頼の文言も `Not logged in` も**出ない** → **`-p` では信頼は関門ではない**。item 4 は mktemp のままでよい |
+| 転写の置き場 | `~/.claude/projects/<cwd を `-` で符号化>` | `/tmp/x` は **`/private/tmp` に解決**されるので dir 名は `-private-tmp-x` |
+| その dir の初期状態 | **新規に出来て空** | item 4 の「転写 file が増えるか」は 0→1→(1 か 2)で**自明に測れる**。既存 14 dir には触らない |
+
+**★この節は、最初の版が測っていないのに答えを出した。** 1回目の probe は exit **127**
+(`/usr/bin/timeout` は macOS に無い = claude が起動していない)なのに、分類器は
+**「★信頼(trust)の文言」を検出したと報告した** —— シェルのエラー文に載った**台本自身の名前**
+(`rc-trustprobe.sh`)に一致していた。分類器が自分の file 名を測定結果と読み違えた形。
+そのまま信じていれば「信頼が関門」と結論して item 4 を書き換えていた。
+→ 直した点は2つ: 台本名から `trust` を外す / **「走ったか」を確かめてから分類する**
+(JSON が返ったか・`is_error` が在るか。exit 127 なら分類せず**未測定**と言う)。
+—— 名前の一致は事象ではない。分類器は、**自分の入力に自分が混じっていないか**を先に見る。
 
 **★同時に、上の 1-G-2 の適用範囲を訂正した(過剰適用を防ぐ)**:
 「ssh からだと keychain が開かない」は **`claude` を直接 exec する時の話**。
@@ -326,8 +353,31 @@ usage    = input 0 / output 0 / total_cost_usd 0
 tmux server**(edith は 7/28 起動の `work`)から来るので、ログインシェルの文脈をそのまま持つ。
 証拠: 8/02 05:48 の ssh 経由の走行は 4/4 delivered で、画面は `Not logged in` ではなく
 **`You've hit your weekly limit`**(`test/fixtures/screens/limit-reached-edith.txt`)= **認証は通っていた**。
-→ 1・2 は ssh 越しでも正しく測れる。`tools/edith-gui-run.sh` が本当に要るのは **3・4**
-(`claude` を直接 exec する側)。**道具が在るからと全部そこへ通すのは、別の過剰適用。**
+→ 1・2 は ssh 越しでも正しく測れる。
+
+**★★さらに訂正(8/02 22:3x 実測)= 上の行は最初「要るのは 3・4」と書いていた。3 は違う。**
+同じ過剰適用を、**訂正を書いた同じ節の中で、その3行下でもう一度やっていた**。
+
+読んだのは記憶ではなく実物: `tools/live-http-check.mjs:339` は
+`tmux send-keys -t pane -l -- opt.bin` —— **pane に打ち込む方式**であって直接 exec ではない。
+つまり 1・2 と同じ経路なので、launchd に通す理由が無い。それどころか**通すと壊れる**:
+
+| 測った物(`command -v rc-claude`) | 素の ssh | launchd `gui/501` の中 |
+|---|---|---|
+| `PATH` | `/Users/edith/fleet-tools:/Users/edith/.local/bin:/opt/homebrew/bin:…` | `/usr/bin:/bin:/usr/sbin:/sbin` |
+| 解決するか | `/Users/edith/.local/bin/rc-claude` | ★**解決しない** |
+
+`live-http-check.mjs:251-266` は起動前に**走らせる側の PATH** で実行ファイルを解決する
+(打ち込む先の pane の PATH ではない)。だから launchd 越しに撃つと、上限とは何の関係も無く
+**prep 段階で exit 2「起動に使う実行ファイルが見つからない」**。
+一発勝負の解除窓を、道具の置き場所の話で焼くところだった。
+
+→ **確定した振り分け: 1・2・3 = 素の ssh / 4 のみ `tools/edith-gui-run.sh`。**
+4 だけが `claude -p --resume` の**直接 exec**(= 上の表の keychain の話が効く唯一の item)。
+
+**この節の教訓は「道具の適用範囲を書け」ではない**(それは既に書いてあって、書いた直後に破った)。
+**測ったから見つかった**。範囲の宣言は守りにならず、`command -v` を両文脈で撃った1回が守りになった。
+—— 検査は、そこに規則が書いてある事ではなく、**値が返る事**でしか成立しない。
 
 ### 1-G-2. ★★ssh から `claude -p` を測ると**必ず**「Not logged in」になる(製品ではなく計器の欠陥)
 

@@ -151,7 +151,14 @@ cleanup() {
   #    edith に残骸が溜まり続けていた)
   #   自分で mktemp した木の中だけを、再帰なしで畳む。
   find "$DIR" -type f -print0 2>/dev/null | xargs -0 /bin/rm -f 2>/dev/null
-  rmdir "$DIR" 2>/dev/null
+  # ★file だけ導出して dir を導出しないと、**子 dir が1つ在るだけで畳めない**。
+  #   2026-08-02 22:5x、別の probe の後片付けで実際に踏んだ: claude が cwd の登録簿に
+  #   `memory/` を作り、file 0件なのに `rmdir` が落ちて残骸が居座った。
+  #   ここは今のところ平らな file しか置かないので**到達しない欠陥**だが、
+  #   一発勝負の窓の最中に DIRT=94 で気付くのは最悪なので先に畳んでおく。
+  #   再帰的な削除(`rm -rf`)は使わない —— 深い順に**空 dir だけ**畳む。
+  find "$DIR" -type d 2>/dev/null | awk '{print length, $0}' | sort -rn | cut -d' ' -f2- |
+    while read -r d; do rmdir "$d" 2>/dev/null; done
   # ★不在を**確認**する。消したつもりで終わらない。
   if [ -e "$DIR" ]; then echo "DIRT $DIR が残っている"; fi
   if launchctl print "gui/$UID_N/$LABEL" >/dev/null 2>&1; then echo "DIRT job $LABEL が残っている"; fi

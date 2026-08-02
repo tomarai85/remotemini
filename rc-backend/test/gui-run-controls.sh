@@ -101,6 +101,19 @@ else
     ng "G5 launchd 文脈" "中=$inside / ssh直=$outside — 中で解錠に手が届いていない。claude を走らせても Not logged in になる"
 fi
 
+# ── G6) 走った命令が**子 dir を作っても**片付けが最後まで畳めるか ──────────
+# 2026-08-02 に別の probe で踏んだ形: claude が cwd の登録簿に `memory/` を作り、
+# **file は 0件なのに** `rmdir` が落ちて残骸が居座った。file だけ導出して dir を
+# 導出しない片付けは、子 dir 1つで止まる。
+#   命令側は $DIR を知らないので glob で見つける(対照は直列に回るので衝突しない)。
+bash "$RUN" --timeout 60 -- /bin/sh -c 'for d in /tmp/rcprobe.*; do mkdir -p "$d/sub/deeper"; done' \
+    >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ]; then
+    ok "G6 子 dir を作られても畳み切る(残骸なし)"
+else
+    ng "G6 子 dir の片付け" "0 を期待して $rc(94 = 残骸あり。深い順に空 dir を畳んでいるか)"
+fi
+
 echo ""
 echo "GUI-RUN-CONTROLS: pass=$pass fail=$fail"
 exit $(( fail > 0 ))
