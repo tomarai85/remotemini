@@ -31,6 +31,8 @@ FRM = "src/frames.mjs"
 VIE = "src/view.mjs"
 SRV = "src/server.mjs"
 BLK = "src/blocked.mjs"
+MTX = "src/mutex.mjs"
+HDS = "src/heads.mjs"
 APP = "src/app.html"
 
 MUT = [
@@ -395,8 +397,8 @@ MUT = [
  ("M76 電話の表示から上限を落とす(検出はできているのに人に届かない)", VIE,
   '''    if (v.limited) {
       return work === "動いている"
-        ? { kind: "tmux", text: "机で開いている・動いている(★画面に利用上限の告知が残っている)", screen: v.screen || "" }
-        : { kind: "tmux", text: "机で開いている・★利用上限(答えは返りません)", screen: v.screen || "" };
+        ? { kind: "tmux", short: "動いている・★上限", text: "机で開いている・動いている(★画面に利用上限の告知が残っている)", screen: v.screen || "" }
+        : { kind: "tmux", short: "★利用上限", text: "机で開いている・★利用上限(答えは返りません)", screen: v.screen || "" };
     }
 ''',
   ''),
@@ -416,13 +418,122 @@ MUT = [
  ("M78 サーバの応答から limited を落とす(分類器は見えているのに電話へ渡らない)", SRV,
   '    return { screen: s.state, activity: s.activity, limited: s.limited };',
   '    return { screen: s.state, activity: s.activity };'),
+# ================= H1 の鍵まわり (2026-08-02 追加) =========================
+# ここから下は「同じ物理キーボードを2人で叩かない」を守る層。写し(git archive HEAD の
+# 複製)の上で先に測ってから入れた。写しでの結果 = 22件すべて検出 / 素通り 0。
+#
+# ★M88-M103 は当初 `scratchpad/rc/neg.py` という**別の台本**で回していた。別台本のままだと
+#   「回した」記録は残っても、次に誰かが `mutation-controls.py` を回した時この層は測られない。
+#   台本が2本ある = 片方だけ回して緑を名乗れる、という事なので畳む。
+ ("M88 中止しても呼ぶ側に返さない(押した人が待ち続ける)", MTX,
+  "          reject(mutexError(MUTEX_ABORTED, `${key}: 順番待ちの間に期限切れ。**送っていない**`));",
+  "          void mutexError;"),
+ ("M89 待ちの上限を1本ゆるめる", MTX,
+  "if (q.length >= maxWaiters) {",
+  "if (q.length > maxWaiters) {"),
+ ("M90 fn が投げた時に鍵を渡さない(finally を外す)", MTX,
+  """    try {
+      return await fn();
+    } finally {
+      // fn が投げても必ず渡す。ここを条件付きにすると、1回の失敗で鍵が永久に埋まる。
+      releaseAndPump(key);
+    }""",
+  """    const out = await fn();
+    releaseAndPump(key);
+    return out;"""),
+ ("M91 中止した待ち手を行列から外さない", MTX,
+  "          if (i >= 0) q.splice(i, 1);",
+  "          void i;"),
+ ("M92 呼ばれた時点の中止済みを見ない", MTX,
+  """    if (signal?.aborted) {
+      throw mutexError(MUTEX_ABORTED, `${key}: 呼ばれた時点で中止済み。**走らせていない**`);
+    }""",
+  ""),
+ ("M93 待たずに全員が鍵を持つ(直列化そのものを外す)", MTX,
+  "      await enqueue(key, signal); // ここを抜けた = 自分が持ち主",
+  "      queueOf(key); // 直列化しない"),
+ ("M94 鍵の値を無視して全部1本にする(並列性を殺す)", MTX,
+  "  async function run(key, fn, { signal, maxWaiters = defaultMaxWaiters } = {}) {",
+  "  async function run(key0, fn, { signal, maxWaiters = defaultMaxWaiters } = {}) {\n    const key = typeof key0 === 'string' && key0 ? 'ALL' : key0;"),
+
+ # ★M95 が本丸。頭が読めない時に祖先へ倒すと、机の TUI と同じ転写ファイルを2人で書く。
+ ("M95 頭が読めない時に**祖先**を返す(= 共有書き込みへ倒す。H2 が防ぐ破壊そのもの)", HDS,
+  '  const e = parseHead(text, name);\n  return e ? e.head : "";',
+  '  const e = parseHead(text, name);\n  return e ? e.head : ancestor;'),
+ ("M96 ファイル名と中身の祖先の突き合わせを外す(名前を付け替えた登録が通る)", HDS,
+  "  if (`${ancestor}.json` !== name) return null;",
+  "  void name;"),
+ ("M97 書きかけを `.json` で置く(部分的に書かれた中身が頭として読まれる)", HDS,
+  "  return join(dir, `${ancestor}.${pid}.${tempSeq}.tmp`);",
+  "  return join(dir, `${ancestor}.${pid}.${tempSeq}.json`);"),
+ ("M98 rename を経ずに直接書く(原子性を失う)", HDS,
+  """  const tmp = tempPathFor(dir, ancestor, pid);
+  const dest = join(dir, `${ancestor}.json`);
+  fs.writeFileSync(tmp, JSON.stringify({ ancestor, head }) + "\\n");""",
+  """  const dest = join(dir, `${ancestor}.json`);
+  const tmp = dest;
+  fs.writeFileSync(dest, JSON.stringify({ ancestor, head }) + "\\n");"""),
+ ("M99 書きかけの名を固定にする(2本が互いの書きかけを rename する)", HDS,
+  "  tempSeq += 1;",
+  "  tempSeq = 1;"),
+ ("M100 ID の形の判定を緩める(何でも祖先・頭として通る)", HDS,
+  "const SESSION_ID = /^[0-9a-f-]{8,64}$/i;",
+  "const SESSION_ID = /^.*$/;"),
+ ("M101 壊れた1件を一覧から捨てない(空の登録が混ざる)", HDS,
+  "      if (e) out.push(e);",
+  '      out.push(e || { ancestor: "", head: "" });'),
+ # ★注記つき = **素通りが正しい**。対になっている事は M103 が測る。
+ ("M102 走査の `.json` 絞りを外す(書きかけが一覧に出る)", HDS,
+  'const isHeadFile = (name) => name.endsWith(".json");',
+  'const isHeadFile = (name) => !name.startsWith(".");',
+  "走査の絞りとファイル名照合は**どちらか片方だけで足りる**冗長な守り。片方を外しても"
+  "他方が止めるので単独では観測できない(死んだ枝ではなく、実際に走る二重の守り)。"
+  "対になっている事は M103 が測る = この注記は M103 が検出である限りにおいて有効"),
+ ("M103 ★二重の守りを**両方**外す(冗長だと言い張れなくなる合図)", HDS,
+  ['const isHeadFile = (name) => name.endsWith(".json");',
+   "  if (`${ancestor}.json` !== name) return null;"],
+  ['const isHeadFile = (name) => !name.startsWith(".");',
+   "  void name;"]),
+
+ # --- 配線 (W) = `inject.mjs` / `server.mjs` が鍵を**実際に通っている**か -------
+ # 鍵単体(M88-M94)が完璧でも、注入器がそれを通らなければ何も守られない。
+ # M と分けたのは、壊れた時に読む場所が違うから(M = 鍵の中身 / W = 繋ぎ目)。
+ ("W1 送信が鍵を通らない(直列化を素通りする)", INJ,
+  "      return await this.mutex.run(pane, () => this.#sendExclusive(pane, text), { signal });",
+  "      return await this.#sendExclusive(pane, text);"),
+ ("W2 鍵の値をペインでなく固定にする(別ペインが互いに待つ)", INJ,
+  "      return await this.mutex.run(pane, () => this.#sendExclusive(pane, text), { signal });",
+  '      return await this.mutex.run("ALL", () => this.#sendExclusive(pane, text), { signal });'),
+ ("W3 断ったのに送ったと名乗る(`sent:true` / `delivered:\"verified\"`)", INJ,
+  '      return { sent: false, state: "BUSY", delivered: null, reason: "pane-busy" };',
+  '      return { sent: true, state: "BUSY", delivered: "verified", reason: null };'),
+ ("W4 止めていないのに「止めた」と返す", INJ,
+  "      if (e?.code === MUTEX_BUSY || e?.code === MUTEX_ABORTED) return false;",
+  "      if (e?.code === MUTEX_BUSY || e?.code === MUTEX_ABORTED) return true;"),
+ ("W5 割り込みを鍵の外へ出す(Escape が本文と Enter の間に落ちる)", INJ,
+  """      return await this.mutex.run(
+        pane,
+        () => {
+          this.tmux.run(["send-keys", "-t", pane, "Escape"]);
+          return true;
+        },
+        { signal },
+      );""",
+  """      this.tmux.run(["send-keys", "-t", pane, "Escape"]);
+      return true;"""),
+ # ★W6 は**継ぎ目**を撃つ(M78 と同じ狙い)。注入器が false を返しても、サーバが
+ #   200 で「止めた」と返せば、電話には「止めた」と出る。両端が緑でも間で落ちる。
+ #   素通りで返ってきたら、それは**継ぎ目に検査が無い**という答え。
+ ("W6 断られた割り込みを 200 で返す(まだ止めていないのに電話へ「止めた」が出る)", SRV,
+  "        if (!stopped) {",
+  "        if (false) {"),
 ]
 
 # ★変異の番号は一意でなければならない(2026-08-02 追加。実際に M69-M73 を重複させた)。
 # 重複しても走行は正しいが、**報告と `--only` がどちらの変異の事か言えなくなる**。
 # 「対象行が無い」で片方が空振りしても、もう片方が検出なら人は番号で見分けられない。
 # 番号は人が結果を追う為の同一性なので、機械で見張る。台本の起動段で落とす(測る前に止める)。
-_named = [(re.match(r"M\d+(?=[ (])", m[0]), m[0]) for m in MUT]
+_named = [(re.match(r"[MW]\d+(?=[ (])", m[0]), m[0]) for m in MUT]
 _unnamed = [t for mo, t in _named if not mo]
 if _unnamed:
     sys.exit("★台本を止める: 番号で始まっていない変異がある: " + " / ".join(_unnamed[:3]))
@@ -439,6 +550,16 @@ if _dupes:
 # Node 25 の機械(edith)ではこの文字列が原理的に現れず、**全変異が「検出」になっていた**。
 # 走って、exit 0 を返して、何も測っていない = この台本が防ごうとしている失敗そのもの。
 # → 正は**終了コード**にし、要約行は両書式で読んで突き合わせる。読めない時は止める。
+def as_list(v):
+    """変異の的は1本でも複数でもよい。
+
+    複数 = **冗長だと言い張っている守りを同時に外す**形(M103)。片方ずつ外しても
+    他方が止めるので観測できず、その「単独では素通り」を冗長の証拠として
+    使い回せてしまう。両方外して初めて、冗長という言い分そのものが測れる。
+    """
+    return v if isinstance(v, list) else [v]
+
+
 UNIT_FAIL = re.compile(r"^[#ℹ]\s*fail\s+(\d+)\s*$", re.M)
 E2E_FAIL = re.compile(r"fail=(\d+)")
 
@@ -542,11 +663,12 @@ if "--env-death" in sys.argv:
 if "--dry" in sys.argv:
     bad = 0
     for m in MUT:
-        name, f, old = m[0], m[1], m[2]
-        n = open(os.path.join(SRC, f)).read().count(old)
-        if n != 1:
+        name, f = m[0], m[1]
+        text = open(os.path.join(SRC, f)).read()
+        ns = [text.count(o) for o in as_list(m[2])]
+        if any(n != 1 for n in ns):
             bad += 1
-            print(f"NG({n}件) {name}\n      <- {f}")
+            print(f"NG({','.join(map(str, ns))}件) {name}\n      <- {f}")
     print(f"的の照合: {len(MUT)}件 / 当たらない {bad}件")
     sys.exit(1 if bad else 0)
 
@@ -612,18 +734,22 @@ blind = []          # 要約が読めないまま落ちた検査を含む変異(
 #   進捗を出しているつもりで最後にまとめて吐く = 出していないのと同じになる。
 t0 = time.time()
 for i, m in enumerate(MUT_RUN, 1):
-    name, f, old, new = m[0], m[1], m[2], m[3]
+    name, f = m[0], m[1]
+    olds, news = as_list(m[2]), as_list(m[3])
     why = m[4] if len(m) > 4 else None  # 有れば「測った上で到達しないと分かっている」注記
     print(f"[{i}/{len(MUT_RUN)}] {int(time.time()-t0)}s {name[:60]}", flush=True)
     d, dst = copy_tree()
     p = os.path.join(dst, f)
     src_text = open(p).read()
-    if old not in src_text:
+    if any(o not in src_text for o in olds):
         # 走行中に返す(下の atexit が最後に拾うので**漏れてはいない**が、
         # 木まるごとのコピーなので走っている間の /var/folders を無駄に太らせない)。
         shutil.rmtree(d, ignore_errors=True)
         rows.append((name, "対象行が無い", "?", "?", why)); continue
-    open(p, "w").write(src_text.replace(old, new, 1))
+    mutated = src_text
+    for _o, _n in zip(olds, news):
+        mutated = mutated.replace(_o, _n, 1)
+    open(p, "w").write(mutated)
     NO_SUMMARY.clear()
     ufail, efail = suites(dst)
     blind_here = list(NO_SUMMARY)

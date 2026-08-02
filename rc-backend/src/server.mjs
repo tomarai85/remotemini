@@ -254,6 +254,12 @@ const SEND_REFUSAL = {
     "本文を入れた直後に選択画面が出ました。Enter を押さずに中断しました。画面を確認してください。",
   "composer-mismatch":
     "本文が入力欄に載りませんでした。Enter は押していません。もう一度お試しください。",
+  // ★鍵が取れなかった時(DESIGN §2.18-1)。どちらも**打鍵を1文字もしていない**。
+  //   「混ざった物を送る」より「送らずに断る」が安全側、という決め事の表側。
+  "pane-busy":
+    "このペインは今ほかの送信を処理中で、順番待ちも一杯です。**何も送っていません**。少し待ってからお試しください。",
+  "pane-wait-timeout":
+    "順番待ちの間に時間切れになりました。**何も送っていません**。もう一度お試しください。",
 };
 
 /**
@@ -756,7 +762,17 @@ const server = createServer(async (req, res) => {
         return json(res, 409, { error: blockedMessage(r), ...blockedBody(r) });
       }
       if (r.pane) {
-        injector.interrupt(r.pane); // Escape のみ。C-c は送らない。
+        // Escape のみ。C-c は送らない。**送信と同じ鍵**を取るので、送信の途中には割り込まない
+        // (割り込むと送信側が「入力欄が空 = 届いた」と誤認する。inject.mjs の interrupt を参照)。
+        const stopped = await injector.interrupt(r.pane);
+        if (!stopped) {
+          // ★false を 200 で返さない。押したのに止めていない事を「止めた」と報告する形になる。
+          return json(res, 409, {
+            error:
+              "このペインは今ほかの送信を処理中で、順番待ちも一杯です。**まだ止めていません**。もう一度お試しください。",
+            interrupted: false, route: "tmux", pane: r.pane, reason: "pane-busy",
+          });
+        }
         return json(res, 200, { interrupted: true, route: "tmux", pane: r.pane });
       }
       const had = manager.interrupt(sessionId);

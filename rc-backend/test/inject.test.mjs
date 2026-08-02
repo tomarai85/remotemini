@@ -617,10 +617,13 @@ test("キュー API は存在しない(復活したら設計が退行してい�
 
 // ---- 割り込み ----
 
-test("割り込みは Escape。C-c は使わない", () => {
+// ★`interrupt` は 2026-08-02 に非同期になった(ペイン鍵を取る為)。**必ず await する**。
+//   鍵が空いている時は中身が同期で走るので await 無しでも偶然通ってしまうが、それは
+//   `mutex.mjs` の内部の都合であって、この検査が頼ってよい性質ではない。
+test("割り込みは Escape。C-c は使わない", async () => {
   const t = fakeTmux(screen("generating"));
   const inj = new TmuxInjector({ tmux: t });
-  inj.interrupt("%1");
+  assert.equal(await inj.interrupt("%1"), true);
   assert.deepEqual(sends(t)[0], ["send-keys", "-t", "%1", "Escape"]);
   assert.ok(!JSON.stringify(t.calls).includes("C-c"), "C-c は緊急専用で通常経路に出さない");
 });

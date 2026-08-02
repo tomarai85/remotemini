@@ -44,6 +44,9 @@
  * — それがこの `composer-rule-in-body` の本文の中の罫線、つまり除外すべき当の物だった。
  * 不変量として `test/inject.test.mjs` に固定してある(fixture が増えても崩れたら赤になる)。
  */
+
+import { makeKeyedMutex, MUTEX_BUSY, MUTEX_ABORTED } from "./mutex.mjs";
+
 const BOX_RULE = /^─{8,}\s*$/;
 /** composer の行。`❯` で始まる(空でも `Press up to edit queued messages` でも同じ)。 */
 const COMPOSER_HEAD = /^\s*❯/;
@@ -512,8 +515,13 @@ export class TmuxInjector {
    *   ここで代用を合成すると「一覧が空 = ペインが無い」という嘘が復活する(M84)。
    * @param {number} [opts.echoBudgetMs] 画面反映を待つ上限
    * @param {(ms:number)=>Promise<void>} [opts.sleep] 待ちの注入
+   * @param {{run:Function}} [opts.mutex] ペイン鍵の直列化(既定 = この注入器専用に1本作る)。
+   *   差し替えられるのは検査の為だけ。**共有しない**: 鍵は「同じ物理キーボード」を守るので、
+   *   注入器が2本になったら鍵も2本になり、直列化は成り立たない。
+   *   今の構成では `server.mjs` が注入器を1本しか作らないのでこれで足りる(実測: `new TmuxInjector` は
+   *   `server.mjs:209` の1箇所。`tools/live-*.mjs` は別プロセスの点検道具)。
    */
-  constructor({ tmux, echoBudgetMs = ECHO_BUDGET_MS, sleep } = {}) {
+  constructor({ tmux, echoBudgetMs = ECHO_BUDGET_MS, sleep, mutex } = {}) {
     if (!tmux || typeof tmux.run !== "function") {
       throw new Error("TmuxInjector: tmux runner injection required");
     }
@@ -529,6 +537,21 @@ export class TmuxInjector {
     this.tmux = tmux;
     this.echoBudgetMs = echoBudgetMs;
     this.sleep = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.mutex = mutex || makeKeyedMutex();
+  }
+
+  /**
+   * 鍵が取れなかった時の返し。**送っていない / 押していない**を必ず名乗る。
+   * `send()` の返り値の形をそのまま保つ(呼ぶ側に新しい分岐を増やさない為)。
+   */
+  static #refusedByLock(e) {
+    if (e?.code === MUTEX_BUSY) {
+      return { sent: false, state: "BUSY", delivered: null, reason: "pane-busy" };
+    }
+    if (e?.code === MUTEX_ABORTED) {
+      return { sent: false, state: "BUSY", delivered: null, reason: "pane-wait-timeout" };
+    }
+    return null; // 鍵と無関係の失敗は握り潰さない
   }
 
   /**
@@ -574,9 +597,32 @@ export class TmuxInjector {
    * 終わっていた(偽 tmux は即時反映なので緑のままだった = テストが届いていなかった型)。
    * → 観測を「1枚だけ撮る」から「確定するまで撮り直す」に変える。上限は実測由来(§ECHO_BUDGET_MS)。
    *
+   * ★2026-08-02、鍵で囲った(DESIGN §2.18-1/2)。囲う範囲は**この手続きの全体**。
+   *   短くして「Enter を押すまで」にすると、最後の確認(下の `gone`)が**他人の入力欄**を読む。
+   *   実際に起きる並び:
+   *     A が Enter を押して鍵を放す → B が本文を打ち込む → A が「入力欄に自分の本文が無い」
+   *     のを見て `delivered:"verified"` を返す。A は自分の本文が消えた所を**一度も見ていない**。
+   *   これはこの手続き自身が上で禁じている推論(「本文が見えない」を「送れた」と読まない)に
+   *   別の入口から到達する形。だから**確認まで含めて**1人の物にする。
+   *   囲い方も「行数を人が数えない」形にしてある = 本体ごと `#sendExclusive` に閉じ込める。
+   *
+   * @param {object} [opts]
+   * @param {AbortSignal} [opts.signal] **順番待ちの間だけ**効く期限。取った後は効かない
+   *   (途中で降りると入力欄に本文が残り、次の送信に混ざる = §2.18 の決め事1)。
    * @returns {Promise<{sent:boolean, state:string, delivered:("verified"|"unverified"|null), reason:(string|null), waited?:object}>}
    */
-  async send(pane, text) {
+  async send(pane, text, { signal } = {}) {
+    try {
+      return await this.mutex.run(pane, () => this.#sendExclusive(pane, text), { signal });
+    } catch (e) {
+      const refused = TmuxInjector.#refusedByLock(e);
+      if (refused) return refused;
+      throw e;
+    }
+  }
+
+  /** 鍵の中でだけ走る本体。**直接呼ばない**(呼ぶと直列化を素通りする)。 */
+  async #sendExclusive(pane, text) {
     const before = this.capture(pane);
     const s0 = classifyScreen(before);
     if (s0.state !== "SENDABLE") {
@@ -637,10 +683,37 @@ export class TmuxInjector {
     };
   }
 
-  /** 割り込み。規約3: Escape のみ。C-c はここでは送らない。 */
-  interrupt(pane) {
-    this.tmux.run(["send-keys", "-t", pane, "Escape"]);
-    return true;
+  /**
+   * 割り込み。規約3: Escape のみ。C-c はここでは送らない。
+   *
+   * ★**送信と同じ鍵を取る**(2026-08-02、`send()` を読んで判った)。Escape は送信と同じ
+   *   キーボードを叩くので、本文を打ってから Enter を押すまでの間に割り込むと入力欄が空になる。
+   *   すると送信側の最後の確認は「入力欄から本文が消えた = 取り込まれた」と読み、
+   *   **一度も届いていない本文に `delivered:"verified"`** を返す。
+   *   `send()` の確認が成り立つ前提は「この入力欄は今の自分の物」で、その前提を壊すのは
+   *   別の送信だけではなく**割り込みも**同じ。だから同じ鍵の中に入れる。
+   *
+   *   待たされる事は受け入れる。上限は `echoBudgetMs` の2倍程度(= 送信1回の最長)で、
+   *   その間に起きるのは「本文が送られてから止まる」= 筋の通る結末。
+   *   逆に割り込みを先に通すと、上の嘘が出る。
+   *
+   * @returns {Promise<boolean>} false = **まだ止めていない**(鍵が取れなかった)。
+   *   ここで true を返すと「押したのに止まらない」を「止めた」と報告する事になる。
+   */
+  async interrupt(pane, { signal } = {}) {
+    try {
+      return await this.mutex.run(
+        pane,
+        () => {
+          this.tmux.run(["send-keys", "-t", pane, "Escape"]);
+          return true;
+        },
+        { signal },
+      );
+    } catch (e) {
+      if (e?.code === MUTEX_BUSY || e?.code === MUTEX_ABORTED) return false;
+      throw e;
+    }
   }
 
   /**

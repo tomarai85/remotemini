@@ -669,6 +669,42 @@ try {
   check("★interrupt: stale は 409(別の会話を止めない)", rIntrS.status === 409, String(rIntrS.status));
   check("★interrupt: stale で send-keys が0件", sentKeys().length === beforeIntrS);
 
+  // 11-g2. ★送信で鍵が満杯の最中の割り込みは 409。「押したのに止めていない」を 200 で返さない。
+  //   出典: DESIGN §2.18-2。interrupt は送信と**同じ鍵**を取るので、満杯なら Escape は
+  //   1本も出ない。そこで 200 を返すと電話には「止めた」と出るのに実際は止まっていない
+  //   = 画面の見た目と機械の状態が食い違う。ここは 11-g の 409 とは別物で、あちらは
+  //   「宛先が決まらない」、こちらは「宛先は決まったが今は押せない」。
+  //
+  //   ★鍵を埋める仕掛けは「tmux を遅くする」では作れない(2026-08-02、実測して作り替えた)。
+  //   tmux は `execFileSync`(server.mjs:206)なので、capture を遅くすると **event loop ごと
+  //   止まる**。すると後続の要求はそもそも parse されず、鍵に並ぶ前に順番待ちになる
+  //   = 鍵の行列は常に空のまま、6本目が 202 で通ってしまう(初版はこれで4件赤になった)。
+  //   鍵が **await をまたいで** 握られる場所は1つだけ: pollScreen の `await sleep(25)`。
+  //   だから本文が入力欄に載らないペイン(%16 = SID_DEAF)へ送る。そこは echo が来ないまま
+  //   ECHO_BUDGET_MS(1500ms)ぶん poll し続けるので、その間に他の要求が鍵へ並べる。
+  const S16 = join(SB, "screen-16.txt");
+  const screen16 = readFileSync(S16, "utf8");
+  const beforeBusy = sentKeys().length;
+  const busySends = Array.from({ length: 5 }, (_, i) => send(SID_DEAF, `混雑${i}`));
+  await sleep(500); // 1本が鍵を持ち、残り4本が上限(maxWaiters=4)まで並ぶ
+  // 前提そのものを測る。ここが赤なら、下の 409 は「鍵が満杯だったから」ではない。
+  const rFull = await send(SID_DEAF, "満杯の確認");
+  const jFull = await rFull.json();
+  check("前提: 鍵が満杯(6本目の送信は 409 pane-busy = 積まない)",
+    rFull.status === 409 && jFull.reason === "pane-busy", `${rFull.status} ${JSON.stringify(jFull)}`);
+  const rBusy = await fetch(`${B}/api/sessions/${SID_DEAF}/interrupt`, { method: "POST", headers: H });
+  const jBusy = await rBusy.json();
+  // 判定は済んだ。行列を 1500ms x5 待たない為に画面を選択肢に化けさせて全員を早く降ろす。
+  writeFileSync(S16, readFileSync(join(SB, "screen-choice.txt"), "utf8"));
+  await Promise.all(busySends.map((p) => p.then((r) => r.text())));
+  writeFileSync(S16, screen16); // 後続の検査に影響させない
+  check("★interrupt: 鍵が満杯の時は 409(200 で「止めた」と名乗らない)", rBusy.status === 409, String(rBusy.status));
+  check("★interrupt: 理由は pane-busy / interrupted:false",
+    jBusy.reason === "pane-busy" && jBusy.interrupted === false, JSON.stringify(jBusy));
+  check("★interrupt: 断ったのだから Escape は1本も出ていない",
+    !sentKeys().slice(beforeBusy).some((k) => k.at(-1) === "Escape"),
+    JSON.stringify(sentKeys().slice(beforeBusy).filter((k) => k.at(-1) === "Escape")));
+
   // 11-h. 壊れた登録ファイルがあっても他の会話は生きる(1件で全体を落とさない)
   writeFileSync(join(PANE_DIR, `${SID_REG_B}.json`), '{"session_id":"aaaa');
   const jBroken = await (await fetch(`${B}/api/sessions/${SID_REG_A}/status`, { headers: H })).json();
