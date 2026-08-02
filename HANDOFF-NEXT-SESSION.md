@@ -286,10 +286,22 @@ echo 39-43ms / clear 38-42ms。8/01 の MBP と同じ台本・同じ結果。
 
 | # | 何を撃つか | 要求する値 | なぜこの順か |
 |---|---|---|---|
-| 1 | `/opt/homebrew/bin/node tools/live-inject-check.mjs --cwd /Users/edith/Projects --cases A` | **exit 0**・`delivered=verified` | 1件で「上限が明けた」事自体が判る。ここが赤なら以降は全部無意味 |
-| 2 | `/opt/homebrew/bin/node tools/live-inject-check.mjs --cwd /Users/edith/Projects`(4件) | **exit 0**・4/4 `verified` | edith という機械での一巡。台本は Jervis で 4/4 済み = 差分は機械だけ |
-| 3 | `/opt/homebrew/bin/node tools/live-http-check.mjs --cwd /Users/edith/Projects` | **exit 0** | 鎖③(電話 → HTTP → tmux → 返答)。**ここが exit 0 になるまで「一巡した」とは書かない**。`--cwd` は無くても台本が信頼済み dir へ寄せるが、**どこへ寄るかを運任せにしない**為に明示する |
-| 4 | ★**`--fork-session` の実挙動を1回測る**(使い捨て会話を1つ作り、`claude -p --resume <sid>` と `claude -p --resume <sid> --fork-session` を各1回。転写ファイルが増えるか・`sessionId` が変わるかだけ見る) | 既定 = **同じファイルに追記**(= H2 実在の確定)、`--fork-session` = **新 ID の別ファイル** | `DESIGN.md` §2.17 の worker 経路の設計がこの1点に乗っている。今は `--help` の文言からの**推論**であって実測ではない。**測るまで「測った」と書かない** |
+| 1 | `cd /Users/edith/rc-backend && /opt/homebrew/bin/node tools/live-inject-check.mjs --cwd /Users/edith/Projects --cases A` | **exit 0**・`delivered=verified` | 1件で「上限が明けた」事自体が判る。ここが赤なら以降は全部無意味 |
+| 2 | `cd /Users/edith/rc-backend && /opt/homebrew/bin/node tools/live-inject-check.mjs --cwd /Users/edith/Projects`(4件) | **exit 0**・4/4 `verified` | edith という機械での一巡。台本は Jervis で 4/4 済み = 差分は機械だけ |
+| 3 | `cd /Users/edith/rc-backend && /opt/homebrew/bin/node tools/live-http-check.mjs --cwd /Users/edith/Projects` | **exit 0** | 鎖③(電話 → HTTP → tmux → 返答)。**ここが exit 0 になるまで「一巡した」とは書かない**。`--cwd` は無くても台本が信頼済み dir へ寄せるが、**どこへ寄るかを運任せにしない**為に明示する |
+| 4 | ★**`tools/live-fork-check.mjs` を launchd 越しに1回**(下の 1-G-1d に手順。手打ちしない = 台本化済) | **exit 0**(= 既定は同じ file に追記 / `--fork-session` は新 ID の別 file) | `DESIGN.md` §2.17 の worker 経路の設計がこの1点に乗っている。今は `--help` の文言からの**推論**であって実測ではない。**測るまで「測った」と書かない**。exit 1 が出たら**設計の方を書き換える** |
+
+★**`cd` は飾りではない**(8/02 23:0x に足した)。素の ssh の既定 cwd は `/Users/edith` で、
+そこに `tools/` は無い —— 元の書き方(`node tools/…`)は上限に触る前に *Cannot find module* で
+落ちる。**しかも edith には rc-backend の木が2本在る**:
+
+| 場所 | 中身 | 何者か |
+|---|---|---|
+| `/Users/edith/rc-backend` | 137 file・`src/` 18・`tools/` 26・版印 `deb8eae` | ★**これが配備先**。`tools/live-http-check.mjs` は手元の repo と1バイト違わない(`e82b9c28…`) |
+| `/Users/edith/Projects/rc-backend` | 14 file・`src/` 6・**`tools/` は0**・版印なし・7/31 16:53 で止まっている | 7/31 の破片。**消していない**(素性が確かめられていない物は消さない)。ここから撃つと item 3 は「file が無い」で落ち、それを私は「赤」と読む |
+
+`--cwd /Users/edith/Projects`(信頼済み dir)と `cd /Users/edith/rc-backend`(台本の置き場)は
+**別々の話**で、名前が似ているだけ。前者は claude に渡す作業場所、後者は node に渡す台本の場所。
 
 ★4 は上限をほとんど食わない(応答は「ok」1語でよい)ので、1-3 が赤でも**4 だけは撃ってよい**
 = 判るのが設計の前提だから。使い捨て会話は `mktemp -d` の下に作り、終わったら消して不在を確認する。
@@ -325,6 +337,57 @@ usage    = input 0 / output 0 / total_cost_usd 0
 ★登録の鎖が測れた事で、item 3 の exit 2(prep 中止)の芽は
 「実行ファイルが無い」「登録の仕組みが無い」「cwd が未信頼」の3つとも潰れた。
 **残る 3 の中止理由は上限の帯だけ** = 00:00 以降なら、赤は本物の赤として読める。
+
+#### 1-G-1d. item 4 は台本になった(2026-08-02 22:5x〜23:2x)
+
+`tools/live-fork-check.mjs` + `test/fork-check-controls.sh`。**答え以外は全部リハーサル済み**
+(上限中でも配管は測れる。上限が明けた1回で配管の不備に気付くのでは遅い)。
+
+**撃ち方**(1-3 と経路が違う。ここだけ launchd 越し):
+
+```sh
+D=$(ssh edith@10.0.0.0 'mktemp -d /tmp/rc-forktool.XXXXXX')
+scp -q tools/live-fork-check.mjs "edith@10.0.0.0:$D/"
+bash tools/edith-gui-run.sh --timeout 90 -- \
+  /opt/homebrew/bin/node "$D/live-fork-check.mjs" --bin /Users/edith/.local/bin/claude
+# 後始末: $D を消して不在を確認(台本自身の使い捨て cwd と転写 dir は台本が畳む)
+```
+
+★**なぜ 4 だけ launchd 越しなのか、実測で確定した**(23:1x)。素の ssh で `claude -p` を
+撃つと、返るのは上限ではなく:
+
+```
+is_error: True
+result  : 'Not logged in · Please run /login'
+```
+
+**login keychain がロックされていて資格情報が読めない**。launchd(`gui/501`)の中でだけ
+解錠されている(`test/gui-run-controls.sh` の G5 が両方向で測っている)。
+1-3 の道具は tmux の**ペインに打ち込む**形で、ペインは GUI 由来の tmux server
+(pid 64533)を継ぐので素の ssh でよい。**4 だけが `claude` を直に起動する**ので、
+ここだけ経路が違う。★この「経路が違う理由」は推論ではなく、両方で撃った結果。
+
+| 終了コード | 意味 | その時どうするか |
+|---|---|---|
+| 0 | 期待どおり(既定=追記 / fork=別 file) | DESIGN §2.17 の前提が実測になる。§2.17 に観測値を書く |
+| 1 | **測れたが違った** | worker 経路の設計を書き換える。緑にしない |
+| 2 | 未測定(実行ファイル無し / 未ログイン / 転写 dir が既在) | 経路を直して撃ち直す。**上限とは別の事実** |
+| 3 | 未測定(上限) | まだ明けていない。撃ち直す |
+
+**リハーサルで出た値**(launchd 越し・上限中): `REMOTE-EXIT=3` / 2秒 /
+「★未測定 — 利用上限で相手が答えられない」/ 残骸 0件・`projects` 14個のまま。
+
+対照 `test/fork-check-controls.sh` は **10/10**(偽の claude を7通りに振る舞わせる)。
+実地で**2つ欠陥が出て塞いだ** —— どちらも上限が明けた夜に踏んでいたら痛い形:
+
+| 欠陥 | 何が起きたか | 直し |
+|---|---|---|
+| ★「JSON が parse できた = 走った」 | 上限の応答は **`is_error:true` の正しい JSON**。parse は通るので台本は先へ進み、file が増えないのを見て **「DESIGN §2.17 の前提と違う = 設計を書き換えろ」** と言い出した。**1回も測っていないのに** | `is_error` を見てから分類。上限=3 / 未ログイン=2 / その他の失敗=2。**「違った」と「測っていない」を混ぜない** |
+| ★片付けの出口が2つ在った | 転写 dir を消すのは**成功路だけ**だった。edith で1回撃ったら `projects` が 14 → **15** に増え、`memory/` を抱えた dir が残った | `cleanupAll()` に畳んでどの出口でも同じ物を消す。対照は**自己申告でなく file system を直に数える**(自己申告は cwd しか見ていなかったので、この欠陥を見逃していた) |
+
+★対照そのものにも陰性対照を当てた: 片付けの直しを**外した木**で回すと F8 だけが
+「転写 dir が 1 件残った」で赤くなる(終了コードは 3 のまま緑 = **終了コードでは
+捕まらない欠陥**だった事の証拠)。
 
 #### 1-G-1c. item 4 の前提も潰した(22:5x 実測。**上限中なので消費 0**)
 

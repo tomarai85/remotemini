@@ -48,6 +48,9 @@ LOCAL_CTLS=(
     test/gui-run-controls.sh         # edith の launchd の中で走らせる計器が、終了コードを
                                      # ちゃんと持ち帰るか。実測6秒。**網が要る** —— 届かない時は
                                      # 2(未測定)を返す。緑に丸めない事
+    test/fork-check-controls.sh      # `--fork-session` を測る台本が、**測れていない時に
+                                     # 測れていないと言う**か。偽の claude を7通りに振る舞わせる
+                                     # ので上限を1トークンも食わない。実測2秒。網も不要
 )
 EDITH_CTLS=(
     test/env-death-controls.sh
