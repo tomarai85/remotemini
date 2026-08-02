@@ -41,6 +41,8 @@ LOCAL_CTLS=(
     test/pii-controls.sh
     test/verify-script-controls.sh
     test/deploy-dirt-controls.sh
+    test/child-reaping-controls.sh   # 実際に変異台本を起こして殺す。実測10秒だが e2e の子が
+                                     # 上がるまで待つので状況で伸びる(上限90秒で測定不成立)
 )
 EDITH_CTLS=(
     test/env-death-controls.sh

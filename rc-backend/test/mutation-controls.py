@@ -18,7 +18,7 @@
 #   「測った上で到達しないと分かっている物」だけ理由つきで分離し、exit の判定から外す。
 #   理由には必ず (a) それを覆っているより強い守り (b) 到達しないと分かった実測 を書く。
 #   逆に注記つきが**検出された**場合も報告する(= 到達する様になった。注記を外す合図)。
-import shutil, subprocess, sys, os, tempfile, re, atexit, time
+import shutil, subprocess, sys, os, tempfile, re, atexit, time, signal
 
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INJ = "src/inject.mjs"
@@ -864,9 +864,96 @@ if "--dry" in sys.argv:
     print(f"的の照合: {len(MUT_RUN)}件 / 当たらない {bad}件")
     sys.exit(1 if bad else 0)
 
+# ── 子は「群」ごと始末する(2026-08-02 追加)─────────────────────────────────
+#
+# なぜ要るか(実際に起きた事): この台本は変異1件ごとに `npm test` と
+# `node test/e2e-local.mjs` を起こす。e2e は**ポートを掴むサーバ**を上げるので、
+# 子が生き残るとそのポートを掴んだ孤児が残る。実測でその形は既に起きていて —
+# **pid 45236 が port 8861 を 11時間33分 保持**していた — 後続の走行でサーバが上がらず
+# → 要約行が出ず → 終了コードだけ見て**「変異を検出した」と数える**、という
+# 「守れていない物を守れたと報告する」経路になっていた(DESIGN §2.18-10、表の①)。
+#
+# ★`subprocess.run` は**親が死んでも子を殺さない**。しかも本体は `npm` の**孫**の node
+#   なので、直の子だけ殺しても足りない。だから
+#     (a) `start_new_session=True` で子を独立した**群**にする
+#     (b) 1件終わるごとに群ごと SIGKILL = 取りこぼした孫をその場で落とす(孤児の予防)
+#     (c) SIGTERM/SIGINT/SIGHUP を受けたら群を全部落としてから降りる(中断時の予防)
+#   (b) が本命。(c) だけだと `kill -9` された時に何も走らない。
+#
+# ★群 ID の再利用について正直に書く: (b) の killpg は `communicate()` が直の子を
+#   wait した**直後**に撃つので、理屈の上では「その pid が別プロセスに再利用された後に
+#   撃つ」窓が存在する。窓は Python のバイトコード数命令分で、そこへ当てるには OS が
+#   pid 空間をほぼ一周させる必要がある。実用上は無視できるが、**無いとは書かない**。
+_CHILD_PGIDS = set()
+
+# 実測: `npm test` 約0.7秒 / e2e 約35秒。600秒 = 17倍の余裕。
+# ★これは「遅かったら赤」の閾値ではなく**無限に待たない為の上限**。
+#   ここに引っ掛かったら測定は失敗であって「検出」ではないので、下では die する。
+CHILD_TIMEOUT_S = 600
+
+def _reap_children(grace=1.0):
+    if not _CHILD_PGIDS:
+        return
+    for pgid in list(_CHILD_PGIDS):
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    time.sleep(grace)
+    for pgid in list(_CHILD_PGIDS):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    _CHILD_PGIDS.clear()
+
+atexit.register(_reap_children)
+
+def _on_signal(signum, _frame):
+    # ★まず子を落とす。その後 sys.exit で降りる = **atexit が走る**ので、
+    #   作業コピー(mkdtemp)の片付けも一緒に効く。既定の始末に戻して撃ち直すと
+    #   atexit が走らず、178MB の残骸を作った 8/02 未明の形に戻る。
+    _reap_children()
+    sys.exit(128 + signum)
+
+for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(_sig, _on_signal)
+
+def run_child(cmd, cwd, label):
+    p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+    try:
+        pgid = os.getpgid(p.pid)
+    except ProcessLookupError:
+        pgid = p.pid            # 即死した = 群 ID は pid と同じ(start_new_session の性質)
+    _CHILD_PGIDS.add(pgid)
+    timed_out = False
+    try:
+        out, err = p.communicate(timeout=CHILD_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        out, err = p.communicate()
+    finally:
+        try:
+            os.killpg(pgid, signal.SIGKILL)   # ★孫の取りこぼしをここで必ず落とす
+        except (ProcessLookupError, PermissionError):
+            pass
+        _CHILD_PGIDS.discard(pgid)
+    if timed_out:
+        die(f"{label}: {CHILD_TIMEOUT_S} 秒を超えた(実測は 0.7〜35 秒)。\n"
+            f"これは**測定の失敗**であって「変異を検出した」ではないので、"
+            f"検出に丸めずここで止める。\n"
+            f"--- stdout 末尾 ---\n" + "\n".join(out.splitlines()[-8:]) +
+            f"\n--- stderr 末尾 ---\n" + "\n".join(err.splitlines()[-8:]))
+    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+
 def suites(dst):
-    u = subprocess.run(["npm", "test", "--silent"], cwd=dst, capture_output=True, text=True)
-    e = subprocess.run(["node", "test/e2e-local.mjs"], cwd=dst, capture_output=True, text=True)
+    u = run_child(["npm", "test", "--silent"], dst, "単体")
+    e = run_child(["node", "test/e2e-local.mjs"], dst, "e2e")
     return read_suite(u, "単体", UNIT_FAIL), read_suite(e, "e2e", E2E_FAIL)
 
 # 作業コピーは中断路(die / 対象行が無くて continue)でも必ず消す。
