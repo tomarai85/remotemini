@@ -379,13 +379,57 @@ usage    = input 0 / output 0 / total_cost_usd 0
 
 #### 1-G-1b-3. ★門の「前」の写真 — 上限が明けたかを**生成を起こさずに**判る安い検査(23:0x 実測)
 
-00:00 の直後に item 1 をいきなり撃つ前に、これを撃つと「上限が明けたか」だけが1往復で判る
-(トークンを1個も使わない。読み取りだけ):
+00:00 の直後に item 1 をいきなり撃つ前に、これを撃つと「上限が明けたか」だけが判る
+(トークンを1個も使わない。読み取りだけ)。
+
+★**`/api/sessions` では判らない** —— 一覧は末尾の有界読みで組むので **`turns` は常に `null`**
+(`listing.mjs:138`、設計どおり。§DESIGN の該当項)。**転写を直に数える**のが正しい:
+
+台本 = **`rc-backend/tools/limit-lifted-check.mjs`**(repo に入れた。手打ちしない):
 
 ```sh
-ssh edith@10.0.0.0 'K=$(cat ~/.rc-backend/api.key)
-  curl -s -H "Authorization: Bearer $K" http://127.0.0.1:8787/api/sessions'
+scp rc-backend/tools/limit-lifted-check.mjs edith@10.0.0.0:/tmp/lc.mjs && \
+ssh edith@10.0.0.0 '/opt/homebrew/bin/node /tmp/lc.mjs; /bin/rm -f /tmp/lc.mjs'
 ```
+
+★**必ず edith 側で回す(手元で回さない)**。この道具は**走らせた機械の転写しか読めない**ので、
+MBP で回すと MBP の答え(= `claude-opus-5: 成功 34173` → 堂々と「明けている」)が出る。
+それは edith の上限について**何も言っていない**。誤読を防ぐため出力の1行目に
+`測った所: <hostname> : <path>` を出す —— **その行が edith でなければ、その green は無効**。
+
+★**対照 = `bash rc-backend/test/limit-lifted-controls.sh`(10/10、fake HOME、edith も上限も不要、1秒)**。
+道具を触ったら先にこれ。実際これが下の2件を捕まえている。
+
+★**model 別に数える事が肝**。初版は「エラーでない assistant が 1件でも在れば明けた」にしていて、
+**負の対照(= 今夜は必ず『明けていない』が出る筈)で落ちた**: 21:40 JST の
+**`claude-haiku-4-5` の成功 2件**を拾って「明けている」と言った。haiku は**週次上限とは別枠**
+(だから MBP 側のリハーサルは `--model haiku` で消費を避けられた)。
+**「答えた」は「上限が明けた」ではない —— どの model が答えたかを見るまでは。**
+
+★**2件目 = 拡張子。`.js` では repo 内で crash していた**(23:2x、対照を書いた瞬間に発覚)。
+`package.json` に `"type": "module"` が在るので **repo 内の `.js` は ESM 扱い** → `require` が
+`ReferenceError`。ところが `/tmp/lc.js` は package.json の圏外なので **CJS 扱いで動く**。
+**同じ bytes が置き場所で意味を変えていた** —— だから edith のリハーサルは緑のまま通った。
+`import` に直して `.js` のままにすると罠が反転するだけ(今度は `/tmp` 側が落ちる)ので
+**`.mjs`(どちらでも ESM)**にした。教訓: **持ち出して動いた事は、家で動く事の証拠ではない**。
+
+実測(8/02 23:19、上限中、**`.mjs` 版を edith で実行**。後片付けの不在も確認済み):
+
+```
+測った所: Edith : /Users/edith/.claude/projects
+直近2時間: 転写6本
+   <synthetic>: 成功 0 / エラー 3
+   claude-haiku-4-5-20251001: 成功 2 / エラー 0
+→ まだ明けていない(撃たない。haiku の成功は別枠なので根拠にしない)
+REMOTE-EXIT=3
+```
+
+**次に回した時も1行目が `測った所: Edith` である事を確認する**。そこが手元の hostname なら、
+測っているのは別アカウントなので、その答えは 0 でも 3 でも捨てる。
+
+★副産物 — **上限の告知は `message.model === "<synthetic>"`**(= クライアントが作った偽の
+assistant 応答で、API から来た物ではない)。`isApiErrorMessage` と併せて、
+**本文の正規表現照合なしに**「これは相手の言葉ではない」と判る印が2つある。
 
 **今夜(門の前)の値**:
 

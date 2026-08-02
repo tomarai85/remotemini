@@ -51,6 +51,10 @@ LOCAL_CTLS=(
     test/fork-check-controls.sh      # `--fork-session` を測る台本が、**測れていない時に
                                      # 測れていないと言う**か。偽の claude を7通りに振る舞わせる
                                      # ので上限を1トークンも食わない。実測2秒。網も不要
+    test/limit-lifted-controls.sh    # 「上限が明けたか」の門番が両方向に壊れていないか。
+                                     # fake HOME なので edith も上限も要らない。実測1秒。
+                                     # ★据えた初回に2件捕まえた: haiku を根拠にする誤答と、
+                                     # `.js` が repo 内で crash する(= /tmp では動く)拡張子の罠
 )
 EDITH_CTLS=(
     test/env-death-controls.sh
