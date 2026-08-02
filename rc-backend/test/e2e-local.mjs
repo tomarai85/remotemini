@@ -7,7 +7,7 @@
 //   blocked    = 同じ cwd に claude が複数で特定不能 → どちらにも送らない
 // 偽 tmux は send-keys を**全部ログに残す**ので「1文字も送っていない」を実測で言える。
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, chmodSync, existsSync, rmSync, utimesSync, realpathSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, chmodSync, existsSync, rmSync, utimesSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -326,6 +326,44 @@ const rp = (p) => { try { return realpathSync(p); } catch { return p; } };
 //   検査だけが古い形で通り続ける(継ぎ目の検査が継ぎ目を跨がなくなる)。
 mkdirSync(join(SB, "keys", "heads"), { recursive: true, mode: 0o700 });
 writeHead(join(SB, "keys", "heads"), SID_H2_HEAD, H2_HEAD_ID);
+
+// ---- §3-T: fork した会話(祖先 -> 頭)を畳む材料 ------------------------------
+// ★枝の続きは**別 file**に書かれ、祖先の file は fork の後 mtime が止まって中身も増えない。
+//   だから素の一覧は「行が古くなる」だけでなく、mtime 順 + `limit` で**行ごと消える**。
+//   作るのは2組: (a) 頭が生きている祖先 (b) 頭が記録されているのに file が無い祖先。
+const SID_FORK_ANC    = "bbbbbbbb-0000-0000-0000-000000000040";
+const SID_FORK_HEAD   = "bbbbbbbb-0000-0000-0000-000000000041";
+const SID_FORK_ORPHAN = "bbbbbbbb-0000-0000-0000-000000000042";
+const SID_FORK_GHOST  = "bbbbbbbb-0000-0000-0000-000000000043"; // file を作らない = 消えた頭
+const CWD_FORK = join(SB, "fork-work");
+// 実物の枝は `cwd: ~`(§3-V 以前に開いた物)。ここでは祖先と**違う**事だけが要るので
+// 一目で分かる値にする。行の cwd がこちらに化けたら 4b が落ちる。
+const FORK_BRANCH_CWD = "/枝の記録の居場所";
+fixture(SID_FORK_ANC, CWD_FORK, "fork の祖先");
+fixture(SID_FORK_ORPHAN, CWD_FORK, "頭が消えた祖先");
+// ★頭は **`cli`** で置く。実物の枝は `-p` 起動なので `sdk-cli` になる筈だが、それで置くと
+//   「頭の行を落とす」検査が篩(`entrypoint !== "cli"`)のおかげで勝手に緑になり、落とす
+//   処理を消しても気付けない。篩に依らず畳み込みだけを測る為に `cli` にする
+//   (DESIGN §2.18-4b「`entrypoint` の篩に頼らない」の実装)。
+writeFileSync(join(PROJ, `${SID_FORK_HEAD}.jsonl`), [
+  JSON.stringify({ entrypoint: "cli", cwd: FORK_BRANCH_CWD, type: "user", message: { role: "user", content: "枝で言った事" } }),
+  JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "枝からの返事" }] } }),
+  JSON.stringify({ type: "ai-title", aiTitle: "枝の題" }),
+  JSON.stringify({ type: "last-prompt", lastPrompt: "枝で言った事" }),
+].join("\n"));
+writeHead(join(SB, "keys", "heads"), SID_FORK_ANC, SID_FORK_HEAD);
+writeHead(join(SB, "keys", "heads"), SID_FORK_ORPHAN, SID_FORK_GHOST);
+// ★時刻を**手で置く**。祖先は1時間前、頭は他のどの材料よりも新しい。こうしないと
+//   「畳まないと行が消える」状況が机の上で再現できない(材料が全部同時刻になる)。
+//   頭が少し先の時刻なのは砂場なので害が無く、代わりに順序が確定する。
+const FORK_OLD = Date.now() / 1000 - 3600;
+const FORK_NEW = Date.now() / 1000 + 300;
+utimesSync(join(PROJ, `${SID_FORK_ANC}.jsonl`), FORK_OLD, FORK_OLD);
+utimesSync(join(PROJ, `${SID_FORK_ORPHAN}.jsonl`), FORK_OLD, FORK_OLD);
+utimesSync(join(PROJ, `${SID_FORK_HEAD}.jsonl`), FORK_NEW, FORK_NEW);
+// ★祖先を**登録簿にも載せる**。`scope=registered`(D5 の既定側)で畳めているかを測る為で、
+//   ペインは実在しない `%99` で良い —— 測るのは「絞り込みの網に頭を通したか」だけ。
+putRegistry(SID_FORK_ANC, "%99");
 
 const fakeWork = join(SB, "fake-claude-work");
 // RC_E2E_WORKER_DELAY_MS = 応答を意図的に遅らせる栓。既定 0。
@@ -1237,8 +1275,13 @@ try {
     //   陽性対照が「混ざっている」と赤を出した。対照が実装ではなく自分の名前選びを
     //   捕まえた形で、赤の出所を読まずに実装を直していたら間違った修正をしていた。
     for (let i = 0; i < 5; i++) {
-      writeFileSync(join(PROJ, `0adabe70-0000-0000-0000-00000000000${i}.jsonl`),
-        JSON.stringify({ entrypoint: "sdk-cli", cwd: "/adapter", type: "user", message: { content: `adapter ${i}` } }));
+      const np = join(PROJ, `0adabe70-0000-0000-0000-00000000000${i}.jsonl`);
+      writeFileSync(np, JSON.stringify({ entrypoint: "sdk-cli", cwd: "/adapter", type: "user", message: { content: `adapter ${i}` } }));
+      // ★雑音は**枝の頭より新しく**置く。§3-T の畳み込みで祖先が頭の時刻を名乗る様に
+      //   なった為、素のままだと祖先が1本目に来て雑音が一度も読まれず、下の
+      //   `examined >= 6`(= 読み飛ばした事が計器に出る)が**前提ごと**消える。
+      //   新しくしておくと、検査3 は「より新しい雑音を越えて祖先が枠を取る」に強くなる。
+      utimesSync(np, FORK_NEW + 60, FORK_NEW + 60);
     }
     const lNoise = await (await fetch(`${B}/api/sessions?limit=1`, { headers: H })).json();
     const scannedN = lNoise.sessions.filter((s) => !s.fromRegistryOnly);
@@ -1260,8 +1303,87 @@ try {
 
     // ★§2.12 で測った正直さが HTTP まで出ている事。中で正直でも外に出さなければ同じ。
     const row = lall.sessions.find((s) => s.id === SID1);
+    // ★`row` を素で触らない(2026-08-03)。行が1つ消えるだけで走行ごと落ちて、以降の
+    //   検査が**一度も走らない**。変異 P12 が実際にここで台本を殺し、素通り0でも
+    //   「捕まえたのか検査が死んだのか」が写しを読むまで確定しなかった。
+    //   落ちない = 赤が出る。計器は落ちるより赤を出す方が強い。
     check("一覧の行が metadataIncomplete を名乗る",
-      typeof row.metadataIncomplete === "boolean", JSON.stringify(row).slice(0, 200));
+      typeof row?.metadataIncomplete === "boolean", JSON.stringify(row ?? null).slice(0, 200));
+
+    // ★§3-T 検査3(並び)。ここに置くのは、edith の分布(新しい方が全部 `sdk-cli`)を
+    //   作っているのがこの block だけだから。机の分布では差が出ずに素通りする。
+    //   祖先の file は1時間前で止まっていて、頭だけが全材料中いちばん新しい。
+    //   → 畳んでいれば `limit=1` の1枠は**祖先**が取る。畳みを `sort` の**後**に置くと
+    //     (変異 P10)祖先はここで落ちる = 電話から見て「送った会話が消えた」。
+    const lFork = await (await fetch(`${B}/api/sessions?limit=1`, { headers: H })).json();
+    const forkIds = lFork.sessions.filter((s) => !s.fromRegistryOnly).map((s) => s.id);
+    check("★§3-T 3: 頭が新しければ祖先が `limit` の1枠を取る(行が消えない)",
+      forkIds.length === 1 && forkIds[0] === SID_FORK_ANC, JSON.stringify(forkIds));
+  }
+
+  // ---- 12-c. §3-T fork した会話は「頭」を見る -------------------------------
+  // 出荷済みの欠陥。今の電話は、机で fork した会話の**現在**を持っていない。
+  {
+    const all = await (await fetch(`${B}/api/sessions`, { headers: H })).json();
+    const row = all.sessions.find((s) => s.id === SID_FORK_ANC);
+
+    // 検査1: 枝の側の現在が祖先の行に出る
+    check("★§3-T 1: 祖先の行に**頭の** lastPrompt が出る",
+      Boolean(row) && row.lastPrompt === "枝で言った事", JSON.stringify(row));
+    check("★§3-T 1: 祖先の行の updatedAt は**頭の** mtime(祖先の古い時刻ではない)",
+      Boolean(row) && Math.abs(Date.parse(row.updatedAt) - FORK_NEW * 1000) < 2000,
+      String(row && row.updatedAt));
+    // 陰性対照。差し替えは**読み手の仕事**であって、file が書き換わった訳ではない。
+    // ここが赤なら上の2本は「畳めた」証拠にならない(材料の方が動いている)。
+    check("★§3-T 陰性対照: 祖先の file 自身は古いまま(材料が動いていない)",
+      Math.abs(statSync(join(PROJ, `${SID_FORK_ANC}.jsonl`)).mtimeMs - FORK_OLD * 1000) < 2000,
+      String(statSync(join(PROJ, `${SID_FORK_ANC}.jsonl`)).mtimeMs));
+
+    // 検査2: 頭そのものは行として出ない / 陽性対照 = 頭を持たない会話は出る
+    check("★§3-T 2: 頭そのものの file は行として出ない(枝が別会話として湧かない)",
+      !all.sessions.some((s) => s.id === SID_FORK_HEAD),
+      JSON.stringify(all.sessions.map((s) => s.id).filter((i) => String(i).startsWith("bbbbbbbb"))));
+    check("★§3-T 2 陽性対照: 頭を持たない普通の会話は出る(全部落とす実装で緑にならない)",
+      all.sessions.some((s) => s.id === SID_READY), String(all.sessions.length));
+
+    // 検査4: 頭の file が消えている → 祖先の値で行が**残る**
+    const orphan = all.sessions.find((s) => s.id === SID_FORK_ORPHAN);
+    check("★§3-T 4: 頭の file が無い会話は祖先の値で行が残る(消さない)",
+      Boolean(orphan) && orphan.title === "頭が消えた祖先", JSON.stringify(orphan));
+
+    // 検査4b: 所属は祖先のまま。丸ごと頭から採ると `~` に化ける
+    check("★§3-T 4b: 行の cwd / project は**祖先のまま**(枝の記録の cwd に化けない)",
+      Boolean(row) && row.cwd === CWD_FORK && row.project === "-rc-e2e-work", JSON.stringify(row));
+    check("★§3-T 4b: 題も祖先のまま(メタを丸ごと頭から採っていない)",
+      Boolean(row) && row.title === "fork の祖先", String(row && row.title));
+
+    // 検査5: /history の引き先
+    const hj = await (await fetch(`${B}/api/sessions/${SID_FORK_ANC}/history?limit=50`, { headers: H })).json();
+    const hText = JSON.stringify(hj.history);
+    check("★§3-T 5: /history が**頭**を読む(fork の後の番が出る)",
+      hText.includes("枝で言った事") && hText.includes("枝からの返事"), hText.slice(0, 200));
+    const hOrphan = await (await fetch(`${B}/api/sessions/${SID_FORK_ORPHAN}/history?limit=50`, { headers: H })).json();
+    check("★§3-T 5: 頭の file が無ければ祖先を読む(500 にも空にもしない)",
+      Array.isArray(hOrphan.history) && hOrphan.history.length > 0, JSON.stringify(hOrphan).slice(0, 200));
+    const hPlain = await (await fetch(`${B}/api/sessions/${SID_READY}/history?limit=50`, { headers: H })).json();
+    check("★§3-T 5 陰性対照: 頭を持たない会話は今まで通り自分の転写を読む",
+      Array.isArray(hPlain.history) && hPlain.history.length > 0 && !JSON.stringify(hPlain.history).includes("枝で言った事"),
+      JSON.stringify(hPlain).slice(0, 160));
+    const hHead = await (await fetch(`${B}/api/sessions/${SID_FORK_HEAD}/history?limit=50`, { headers: H })).json();
+    check("★§3-T 罠2: 頭を直接引くと**頭の**中身が返る(取り違えていない)",
+      JSON.stringify(hHead.history).includes("枝からの返事"), JSON.stringify(hHead).slice(0, 200));
+
+    // ★罠1(変異 P14 の的): `scope=registered` でも畳めている事。登録簿は**祖先の id しか
+    //   持たない**ので、`only` を走査の前に `registered ∪ {頭の id}` へ広げないと、
+    //   頭の file が「開く前に」落ちて畳めない。しかも黙って古い行が出るだけなので、
+    //   `scope=all` の検査だけ書いていると**一番使う経路が測られないまま緑**になる。
+    const lreg = await (await fetch(`${B}/api/sessions?scope=registered`, { headers: H })).json();
+    const rrow = lreg.sessions.find((s) => s.id === SID_FORK_ANC);
+    check("★§3-T 罠1: scope=registered でも祖先の行に**頭の**現在が出る",
+      Boolean(rrow) && rrow.lastPrompt === "枝で言った事", JSON.stringify(rrow));
+    check("★§3-T 罠1 陽性対照: その時も頭そのものは行として出ない",
+      !lreg.sessions.some((s) => s.id === SID_FORK_HEAD),
+      JSON.stringify(lreg.sessions.map((s) => s.id)));
   }
 
   // ---- 13-b. ★二重起動は「読める一行」を残して落ちる ----------------------

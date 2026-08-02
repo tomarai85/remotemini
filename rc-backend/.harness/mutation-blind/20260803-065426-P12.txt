@@ -1,0 +1,55 @@
+P12 頭が読めない時に行ごと落とす(fail-loud 側へ倒れて会話が消える)
+
+=== e2e ===
+$ exit=1
+--- stdout 末尾 ---
+PASS  ★interrupt: stale は 409(別の会話を止めない)
+PASS  ★interrupt: stale で send-keys が0件
+PASS  前提: 鍵が満杯(容量を超えた送信は 409 pane-busy = 積まない)
+PASS  ★interrupt: 鍵が満杯の時は 409(200 で「止めた」と名乗らない)
+PASS  ★interrupt: 理由は pane-busy / interrupted:false
+PASS  ★interrupt: 断ったのだから Escape は1本も出ていない
+PASS  壊れた登録が1件あっても A は解決できる
+PASS  ★未発言の会話が一覧に出る
+PASS  ★未発言: 中身が無いことを名乗る(捏造しない)
+PASS  ★未発言: cwd はペインの現在地
+PASS  ★未発言: 一覧の live は tmux/%23
+PASS  ★陽性対照: ペインが消えた登録は一覧に出ない
+PASS  ★未発言: history は 404 でなく空配列
+PASS  ★未発言: status は tmux/registry
+PASS  ★未発言: 最初の一言が %23 へ注入される
+PASS  ★未発言: 本文は %23 だけに届いた
+PASS  ★陽性対照: 未発言+ペイン消失 -> 409 pane-gone(ワーカーに落とさない)
+PASS  ★陽性対照: pane-gone で send-keys が0件
+PASS  未発言+ペイン消失の interrupt は落ちず「止める物が無い」
+PASS  ★購読直後に今の画面が1件来る(tmux 経路)
+PASS  ★購読直後の windowMs が観測枚数ぶん(4倍の窓を主張しない)
+PASS  ★購読中にペインが消えたら blocked を流す(死んだ経路名 gone を残さない)
+PASS  ★pane-gone の説明が cwd 不一致の文にすり替わっていない(既定に落ちる嘘の対照)
+PASS  ★pane-gone の説明が画面消失の事を言っている
+PASS  登録も jsonl も無い ID -> 404
+PASS  ★未登録+同cwdに claude 1つ -> 409 unregistered(推測で注入しない)
+PASS  ★陽性対照: そのペインへ send-keys が0件
+PASS  ★拒否文が直し方(rc-claude)を含む
+PASS  ★unregistered はワーカー経路にも落ちない
+PASS  status も unregistered を返す
+PASS  一覧でも blocked/unregistered として見える
+PASS  一覧の blocked 行が**文面**を持つ(電話が理由コードを生で出さずに済む)
+PASS  ★一覧の文面と、送信を断った時の文面が同一(出所が1つ)
+PASS  ?limit= は**会話の件数**として効く(file の件数ではない)
+PASS  ★埋まったら読むのをやめる(全部は開かない)
+PASS  ★新しい方が全部 sdk-cli でも cli の会話が返る(edith の分布の再現)
+PASS  ★その為に雑音を読み飛ばした事が計器に出る
+PASS  ★陽性対照: sdk-cli は一覧に出ない(混ぜない)
+PASS  ?scope=registered は登録簿に居る会話だけを返す
+FAIL  知らない scope は既定(all)に落ちる  {"scope":"all","limit":0,"files":24,"read":0,"cached":25,"examined":24}
+--- stderr 末尾 ---
+file:///private/var/folders/yn/5m6bw9z92y94qmcy4tsnxdlw0000gn/T/mut-eu34_s61/rc/test/e2e-local.mjs:1307
+      typeof row.metadataIncomplete === "boolean", JSON.stringify(row).slice(0, 200));
+                 ^
+
+TypeError: Cannot read properties of undefined (reading 'metadataIncomplete')
+    at file:///private/var/folders/yn/5m6bw9z92y94qmcy4tsnxdlw0000gn/T/mut-eu34_s61/rc/test/e2e-local.mjs:1307:18
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+
+Node.js v22.14.0

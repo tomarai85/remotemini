@@ -23,7 +23,7 @@ import { makeKeyedMutex } from "./mutex.mjs";
 import { PaneRegistry, resolveSessionPane, registryOnlySessions } from "./registry.mjs";
 // ★別名で入れる。素の `writeHead` はこのファイルで 3 回使う `res.writeHead` と紛らわしく、
 //   手が滑って裸で呼んでも**静かに通る**位置に居る(HTTP 応答のつもりが枝の頭を書く)。
-import { readHead as readBranchHead, writeHead as writeBranchHead } from "./heads.mjs";
+import { readHead as readBranchHead, writeHead as writeBranchHead, readAllHeads } from "./heads.mjs";
 import { psSnapshot } from "./procs.mjs";
 import { paneFaultReason, UNDECIDABLE, blockedMessage, blockedBody, WORKER_REFUSAL } from "./blocked.mjs";
 import { cwdVerdict } from "./trust.mjs";
@@ -92,8 +92,21 @@ const metaCache = new MetaCache({ max: 4000 });
  * @param {number} [o.limit] mtime の新しい順に何本まで開くか(0 = 無制限)
  * @returns {{entries:Array, unreadable:Array, files:number, read:number, cached:number}}
  */
-function scanSessions({ only = null, limit = 0 } = {}) {
-  const found = [];
+function scanSessions({ only = null, limit = 0, heads = null } = {}) {
+  // ★§2.18-4b-i 罠1: `only` は**広げてから**使う。登録簿が持っているのは祖先の id だけ
+  //   (電話の取っ手が祖先だから)で、枝の id は入っていない。素直に走ると下の `scope.has()`
+  //   が枝の file を**開く前に**落とすので、祖先の行は古い `st` のままになり、当てが
+  //   `scope=registered` の時だけ静かに死ぬ。手順「地図 → only を広げる → 走査 → 畳む →
+  //   sort」はどれ1つ前後させても直らない。
+  let scope = only;
+  if (only && heads) {
+    scope = new Set(only);
+    for (const a of only) {
+      const h = heads.get(a);
+      if (h) scope.add(h);
+    }
+  }
+  let found = [];
   let slugs = [];
   try {
     slugs = readdirSync(PROJECTS_DIR);
@@ -110,16 +123,42 @@ function scanSessions({ only = null, limit = 0 } = {}) {
     }
     for (const f of files) {
       const sessionId = basename(f, ".jsonl");
-      if (only && !only.has(sessionId)) continue; // ★開く前に落とす
+      if (scope && !scope.has(sessionId)) continue; // ★開く前に落とす
       try {
         const p = join(dir, f);
-        found.push({ p, slug, sessionId, st: statSync(p) });
+        const st = statSync(p);
+        // `sortMs` = 並びと `updatedAt` に使う時刻。既定は自分の mtime で、fork した
+        // 会話だけ下で**枝の mtime**に差し替わる。`st` 自体は触らない(罠2)。
+        found.push({ p, slug, sessionId, st, sortMs: st.mtimeMs, head: null });
       } catch {
         continue; // 消えたファイルで一覧全体を落とさない
       }
     }
   }
-  found.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs);
+  // ★§2.18-4b: fork した会話の続きは枝の file に書かれる。ここで `祖先 -> 頭` に畳む。
+  //   ★`sort` の**前**でなければ、上限に当たって行が消える型((b))は直らない(変異 P10)。
+  if (heads && heads.size) {
+    const byId = new Map(found.map((e) => [e.sessionId, e]));
+    const headIds = new Set();
+    for (const e of found) {
+      const h = heads.get(e.sessionId);
+      if (!h || h === e.sessionId) continue;
+      const he = byId.get(h);
+      // 枝の file が無い / 走査の外 → **祖先の値のまま出す**。行は消さない(変異 P12)。
+      // `heads.mjs` の「読めない = 頭が無い」と同じ倒れ方に揃える。
+      if (!he) continue;
+      headIds.add(h);
+      // ★`st` と `p` は**組のまま**持つ。`MetaCache.keyOf(st)` は inode 由来で path を
+      //   含まない(`listing.mjs:241`)ので、片方だけ差し替えると祖先の中身が枝の鍵で
+      //   仕舞われる(罠2 / 変異 P15)。畳むのは「どこを見るか」であって行の身元ではない。
+      e.head = { p: he.p, st: he.st, slug: he.slug };
+      e.sortMs = he.st.mtimeMs; // 並びも updatedAt も枝の側の現在
+    }
+    // ★頭そのものの行は落とす。枝が別の会話として湧かない(変異 P11)。
+    //   `entrypoint` の篩に頼らない —— 篩を触った人にこの正しさは見えない。
+    if (headIds.size) found = found.filter((e) => !headIds.has(e.sessionId));
+  }
+  found.sort((a, b) => b.sortMs - a.sortMs);
 
   // ★2026-08-02、edith の実機で踏んだ defect を直した形。
   //   旧: `found.slice(0, limit)` = **絞る前の file 数**で切ってから読み、その後で
@@ -138,7 +177,7 @@ function scanSessions({ only = null, limit = 0 } = {}) {
   let read = 0;
   let cached = 0;
   let examined = 0;
-  for (const { p, slug, sessionId, st } of found) {
+  for (const { p, slug, sessionId, st, sortMs, head } of found) {
     // 出す物が揃ったら**そこで読むのをやめる**。揃う前に file を使い切ったら全部見た事になる。
     if (limit > 0 && entries.length + unreadable.length >= limit) break;
     examined += 1;
@@ -159,7 +198,7 @@ function scanSessions({ only = null, limit = 0 } = {}) {
           title: "(読めない)",
           lastPrompt: "",
           turns: null,
-          updatedAt: new Date(st.mtimeMs).toISOString(),
+          updatedAt: new Date(sortMs).toISOString(),
           readable: false,
           errorCode: e.code === "EACCES" ? "TRANSCRIPT_UNREADABLE" : String(e.code || "TRANSCRIPT_UNREADABLE"),
         });
@@ -171,7 +210,28 @@ function scanSessions({ only = null, limit = 0 } = {}) {
     // ★出す物だけを数える。ここで混ぜると `limit` がまた「file の件数」に戻る
     //   (判定の正本は sessions.mjs の `isPhoneVisible`。同じ式を書かない)。
     if (!isPhoneVisible(meta)) continue;
-    entries.push({ sessionId, projectSlug: slug, mtimeMs: st.mtimeMs, meta });
+    // ★枝から採るのは**枝の側で増える物だけ**(`lastPrompt` / `turns`)。
+    //   `cwd` / `project` は**祖先のまま**にする。丸ごと頭から採ると行の所属が化ける
+    //   (§3-V より前に開いた枝は `cwd: ~` のまま残っている。変異 P12b)。
+    //   見える / 見えないの判定も**祖先**で決める。枝は `-p` 起動なので必ず `sdk-cli` で、
+    //   枝で判定すると畳んだ会話が全部消える。
+    if (head) {
+      const hkey = MetaCache.keyOf(head.st);
+      let hm = metaCache.get(hkey);
+      if (hm === null) {
+        try {
+          hm = readMetaFromPath(head.p);
+          read += 1;
+          metaCache.set(hkey, hm);
+        } catch {
+          hm = null; // 枝が読めない = 祖先の値のまま出す。行は消さない
+        }
+      } else {
+        cached += 1;
+      }
+      if (hm) meta = { ...meta, lastPrompt: hm.lastPrompt, turns: hm.turns };
+    }
+    entries.push({ sessionId, projectSlug: slug, mtimeMs: sortMs, meta });
   }
   return { entries, unreadable, files: found.length, read, cached, examined };
 }
@@ -385,6 +445,20 @@ function registryCtx(entries) {
 //   別の物を同じ dir に混ぜると、片方の掃除がもう片方を巻き込む)。
 const HEADS_DIR = join(KEY_DIR, "heads");
 mkdirSync(HEADS_DIR, { recursive: true, mode: 0o700 });
+
+/**
+ * `祖先 -> 頭` の地図。fork した会話は続きが**枝の file** に書かれるので、一覧はこの地図で
+ * 「今の様子はどの file に在るか」を決める(§2.18-4b)。頭が自分自身の物は載せない
+ * (畳む必要が無い = 下流で「頭の行を落とす」に巻き込まれない)。
+ * 読めない頭は `readAllHeads` が黙って落とす = 地図に載らない = 祖先のまま出る。
+ */
+function headMap() {
+  const m = new Map();
+  for (const { ancestor, head } of readAllHeads(HEADS_DIR)) {
+    if (head && head !== ancestor) m.set(ancestor, head);
+  }
+  return m;
+}
 
 const manager = new WorkerManager({
   // H2(DESIGN §2.18-4〜6, §2.18-10): 既定の `--resume` は**元の ID を再利用する**ので、
@@ -661,7 +735,10 @@ const server = createServer(async (req, res) => {
       const requestedScope = url.searchParams.get("scope") === "registered" ? "registered" : "all";
       const limit = Math.max(0, Math.trunc(Number(url.searchParams.get("limit")) || 0));
       const registered = new Set(entries.map((e) => e.sessionId));
-      const scan = scanSessions({ only: requestedScope === "registered" ? registered : null, limit });
+      // ★地図は走査の**前**に1回だけ読む(手順の1番目)。走査の中で会話ごとに読むと
+      //   open が file 数だけ増える上、`only` を広げる判断が走査より後になって罠1 を踏む。
+      const heads = headMap();
+      const scan = scanSessions({ only: requestedScope === "registered" ? registered : null, limit, heads });
       const scanned = [...buildListing(scan.entries), ...scan.unreadable];
       // jsonl がまだ無い会話(開いただけ・未発言)も、登録簿に居てペインが生きていれば出す。
       // 見えないと電話から最初の一言を送れない = Tom 裁定「いつでも干渉できる」に反する。
@@ -747,9 +824,14 @@ const server = createServer(async (req, res) => {
 
     if (action === "history" && req.method === "GET") {
       const limit = Math.min(Number(url.searchParams.get("limit") || 50), 500);
-      if (!file) return json(res, 200, { history: [] }); // まだ何も言っていない会話
+      // ★§2.18-4b: fork の後、本文も返事も**枝の file** に書かれる。祖先を読むと電話には
+      //   fork より前しか出ず、送った筈の一言が消えて見える。引き先を頭へ付け替える
+      //   (変異 P13)。頭が無い / 頭の file が見つからない = 祖先のまま = 何も失わない。
+      const headId = readBranchHead(HEADS_DIR, sessionId);
+      const target = (headId && headId !== sessionId && findSessionFile(headId)) || file;
+      if (!target) return json(res, 200, { history: [] }); // まだ何も言っていない会話
       try {
-        const h = readHistoryFromPath(file, limit);
+        const h = readHistoryFromPath(target, limit);
         // truncated = これより前がある。電話側が「以前を読む」を出せる様に名乗る。
         return json(res, 200, { history: h.history, truncated: h.truncated });
       } catch (e) {

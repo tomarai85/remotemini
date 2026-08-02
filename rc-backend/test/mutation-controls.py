@@ -663,6 +663,41 @@ MUT = [
   ["    void d;",
    "    conv.history = d.history || [];"]),
 
+ # --- P10-P15: fork した会話を頭へ畳む (§3-T / DESIGN §2.18-4b) -----------------
+ # ★この族は新機能の守りではなく**出荷済みの欠陥に当てた回帰の的**。素通りしたら、
+ #   電話は「机で fork した会話の現在」をまた失う(古い行 → やがて `limit` で行ごと消える)。
+ # ★罠2(P15)を撃つのは e2e の検査1。`st` と `p` の組を崩すと `head` が付かず、
+ #   祖先の行に**祖先の**(空の)lastPrompt が出る。覚え書きの汚れ自体は外から見えないので、
+ #   見える所に出る同じ原因を的にしている。
+ ("P10 頭への差し替えを sort の後へ回す(limit に当たった時だけ祖先が消える)", SRV,
+  "  found.sort((a, b) => b.sortMs - a.sortMs);",
+  "  found.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs);"),
+ ("P11 頭そのものの行を落とさない(枝が別の会話として湧く)", SRV,
+  "    if (headIds.size) found = found.filter((e) => !headIds.has(e.sessionId));",
+  "    // mutated: 頭の行を落とさない"),
+ ("P12 頭が読めない時に行ごと落とす(fail-loud 側へ倒れて会話が消える)", SRV,
+  "      if (!he) continue;",
+  "      if (!he) { headIds.add(e.sessionId); continue; }"),
+ ("P12b メタを丸ごと頭から採る(行の所属が枝の cwd に化ける)", SRV,
+  "      if (hm) meta = { ...meta, lastPrompt: hm.lastPrompt, turns: hm.turns };",
+  "      if (hm) meta = { ...meta, ...hm };"),
+ ("P13 /history の引き先を祖先へ戻す(fork の後の番が電話に出ない)", SRV,
+  "      const target = (headId && headId !== sessionId && findSessionFile(headId)) || file;",
+  "      const target = file;"),
+ ("P14 only を広げない(scope=registered でだけ静かに畳めなくなる)", SRV,
+  """  let scope = only;
+  if (only && heads) {
+    scope = new Set(only);
+    for (const a of only) {
+      const h = heads.get(a);
+      if (h) scope.add(h);
+    }
+  }""",
+  "  const scope = only;"),
+ ("P15 st だけ差し替えて p を祖先のまま残す(覚え書きの鍵と中身がずれる)", SRV,
+  "      e.head = { p: he.p, st: he.st, slug: he.slug };",
+  "      e.st = he.st;"),
+
  # --- 子プロセスの生き死に (X) = H2「1つの転写に書き手が2人」を守る層 -------------
  # ★★この族は **復元** である。原本は 2026-08-02 16:43 開始の 119 件走行の中にしか存在せず、
  #   走行中(16:55)に台本が上書きされて disk からも 12 commit 全部からも消えた。走行ログに
@@ -825,12 +860,24 @@ MUT = [
 #   2026-08-02: ここが `[MW]` だった為、走行中のメモリにしか無かった X 系を書き戻そうとすると
 #   台本自身が起動段で落ちる状態だった = **この検査が X の復元を機械的に禁じていた**。
 #   新しい族を足す時はここも足す。足し忘れると「番号で始まっていない」で止まる(fail-closed)。
-_named = [(re.match(r"[MWXPRHV]\d+(?=[ (])", m[0]), m[0]) for m in MUT]
+#   2026-08-03: 族の文字は**ここ1箇所**に持つ。同じ一覧が起動段の検査と `--only` の
+#   選び方に2重に書かれていて、`--only` 側は `[MWXPR]` のまま = H/V を族として選べず、
+#   題名の部分一致に黙って落ちていた(`--only V` が題名に大文字 V を含む物まで拾う)。
+#   上の「新しい族を足す時はここも足す」が守れなかったのは、足す場所が2つあったから。
+FAM = "MWXPRHV"
+
+# ★番号の後ろの1文字(`P12b`)を許す(2026-08-03)。`b` は「**同じ場所を別の壊し方で撃つ**」
+#   という既にある書き方で、DESIGN §2.18-4b の検査 4b と対を成す。別番号(P16)へ逃がすと
+#   題名を読んでも**どの的の変種か**が分からなくなるので、番号の側を広げる。
+_named = [(re.match(rf"[{FAM}]\d+[a-z]?(?=[ (])", m[0]), m[0]) for m in MUT]
 _unnamed = [t for mo, t in _named if not mo]
 if _unnamed:
     sys.exit("★台本を止める: 番号で始まっていない変異がある: " + " / ".join(_unnamed[:3]))
 _ids = [mo.group(0) for mo, _ in _named]
-_dupes = sorted({i for i in _ids if _ids.count(i) > 1}, key=lambda s: int(s[1:]))
+# 並べ替えの鍵は接尾辞に耐える事(`int("12b")` は ValueError)。重複が出た時にしか通らない
+# 道なので、壊れていても普段は誰も踏まない = 気付ける機会が無い。ここで潰す。
+_dupes = sorted({i for i in _ids if _ids.count(i) > 1},
+                key=lambda s: (int(re.match(r"[A-Z](\d+)", s).group(1)), s))
 if _dupes:
     sys.exit(
         f"★台本を止める: 変異の番号が重複している: {', '.join(_dupes)}\n"
@@ -968,9 +1015,9 @@ if "--only" in sys.argv:
 # ★ここで選ぶ(対照2枚より**前**)理由: 語を打ち間違えた時の die が、対照2枚の
 #   約2分を払った後ではなく即座に出る。fail-closed は早い方が良い。
 def _select(word):
-    if re.fullmatch(r"[MWXPR]", word):                      # 族まるごと
+    if re.fullmatch(rf"[{FAM}]", word):                     # 族まるごと
         return [m for m in MUT if m[0].startswith(word) and m[0][1:2].isdigit()], f"族 {word}"
-    if re.fullmatch(r"[MWXPR]\d+", word):                    # 番号ちょうど1件
+    if re.fullmatch(rf"[{FAM}]\d+[a-z]?", word):             # 番号ちょうど1件(`P12b` も1件)
         return [m for m in MUT if re.match(rf"{word}(?=[ (])", m[0])], f"番号 {word}"
     return [m for m in MUT if word in m[0]], f"題名に「{word}」を含む"
 
@@ -1198,8 +1245,12 @@ if blind:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     print(f"\n★検出のうち **{len(blind)}件** は要約行が読めないまま落ちた"
           f"(= 変異を捕まえたのか検査が死んだのか区別できていない)。写しを読む事:")
-    for name, items in blind:
-        tag = re.match(r"M\d+", name).group(0) if re.match(r"M\d+", name) else "M?"
+    for _bi, (name, items) in enumerate(blind, 1):
+        # ★族の文字は `FAM` から取る(2026-08-03)。ここが `M\d+` 固定だった為、M 以外の
+        #   写しが全部 `M?` になっていた = **どの変異の物か名前から言えない**上、同じ秒に
+        #   2件落ちると上書きで片方が消える。番号の接尾辞(`P12b`)も拾う。
+        _mo = re.match(rf"[{FAM}]\d+[a-z]?", name)
+        tag = _mo.group(0) if _mo else f"unnamed{_bi}"
         path = os.path.join(bd, f"{stamp}-{tag}.txt")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(name + "\n\n" + "\n\n".join(f"=== {lab} ===\n{txt}" for lab, txt in items))
