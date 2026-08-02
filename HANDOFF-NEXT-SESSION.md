@@ -288,10 +288,10 @@ echo 39-43ms / clear 38-42ms。8/01 の MBP と同じ台本・同じ結果。
 |---|---|---|---|
 | 1 | `cd /Users/edith/rc-backend && /opt/homebrew/bin/node tools/live-inject-check.mjs --cwd /Users/edith/Projects --cases A` | **exit 0**・`delivered=verified` | 1件で「上限が明けた」事自体が判る。ここが赤なら以降は全部無意味 |
 | 2 | `cd /Users/edith/rc-backend && /opt/homebrew/bin/node tools/live-inject-check.mjs --cwd /Users/edith/Projects`(4件) | **exit 0**・4/4 `verified` | edith という機械での一巡。台本は Jervis で 4/4 済み = 差分は機械だけ |
-| 3 | `cd /Users/edith/rc-backend && /opt/homebrew/bin/node tools/live-http-check.mjs --cwd /Users/edith/Projects` | **exit 0** | 鎖③(電話 → HTTP → tmux → 返答)。**ここが exit 0 になるまで「一巡した」とは書かない**。`--cwd` は無くても台本が信頼済み dir へ寄せるが、**どこへ寄るかを運任せにしない**為に明示する |
+| 3 | `cd /Users/edith/rc-backend && /opt/homebrew/bin/node tools/live-http-check.mjs --cwd /Users/edith/Projects` | **exit 0** | 鎖③(電話 → HTTP → tmux → 返答)。**ここが exit 0 になるまで「一巡した」とは書かない**。`--cwd` は無くても台本が信頼済み dir へ寄せるが、**どこへ寄るかを運任せにしない**為に明示する。★**上限中に丸ごと1回走らせて 16 OK / 0 NG まで確認済**(1-G-1b-2)= 残る失敗理由は上限だけ |
 | 4 | ★**`tools/live-fork-check.mjs` を launchd 越しに1回**(下の 1-G-1d に手順。手打ちしない = 台本化済) | **exit 0**(= 既定は同じ file に追記 / `--fork-session` は新 ID の別 file) | `DESIGN.md` §2.17 の worker 経路の設計がこの1点に乗っている。今は `--help` の文言からの**推論**であって実測ではない。**測るまで「測った」と書かない**。exit 1 が出たら**設計の方を書き換える** |
 
-★**`cd` は飾りではない**(8/02 23:0x に足した)。素の ssh の既定 cwd は `/Users/edith` で、
+★**`cd` は飾りではない**(8/02 22:5x に足した = dac9d32)。素の ssh の既定 cwd は `/Users/edith` で、
 そこに `tools/` は無い —— 元の書き方(`node tools/…`)は上限に触る前に *Cannot find module* で
 落ちる。**しかも edith には rc-backend の木が2本在る**:
 
@@ -338,7 +338,46 @@ usage    = input 0 / output 0 / total_cost_usd 0
 「実行ファイルが無い」「登録の仕組みが無い」「cwd が未信頼」の3つとも潰れた。
 **残る 3 の中止理由は上限の帯だけ** = 00:00 以降なら、赤は本物の赤として読める。
 
-#### 1-G-1d. item 4 は台本になった(2026-08-02 22:5x〜23:2x)
+#### 1-G-1b-2. ★item 3 を**上限中に丸ごと1回走らせた** = 16 OK / 0 NG(2026-08-02 22:5x、edith 実機)
+
+前項は「落ちる芽」を1つずつ見た物。ここでは **item 3 の台本そのもの**
+(`tools/live-http-check.mjs --cwd /Users/edith/Projects`)を edith の上で最後まで通した。
+上限中なので `LIVE-EXIT=3`(= 未測定)で終わるが、**運ぶ層は全部緑になった**:
+
+| 測れた事 | 実測値 |
+|---|---|
+| 登録簿に名乗る | `9fcf42cb-…`(403ms) |
+| サーバが起きる / 鍵無しは 401 | `GET / → 200`(325ms) / `status=401` |
+| 一覧に自分が出る | `件数=15` / `route=tmux screen=SENDABLE` |
+| status / history | `200 "SENDABLE"` / `件数=0` |
+| ★**送信が通り、届いた事を確認して返す** | `status=202 route=tmux` **`delivered=verified`** |
+| ★**返答が history に出る** | **1508ms** で反映 |
+| ★**電話が返答に到達できる** | `経路=reread` / gap 1 件(`[tail-attached]`)→ 読み直した結果 返答が在った |
+| 画面イベントが溢れない | `screen 4 件 / work=quiet`(1枚ごとの明滅なし) |
+| interrupt / 未知 session | `200 route=tmux` / `404` |
+| 片付け | 使い捨て session は **不在を確認**・`work: 2 windows` 無傷 |
+
+**唯一の非緑はこれ**(= 上限そのもの):
+
+```
+--  ★相手が答えたか: 答えていない — 返ってきたのは上限の告知:
+    You've hit your weekly limit · resets 12am (Asia/Tokyo)
+```
+
+→ これで **item 3 の失敗理由は「上限」1つに絞れた**。00:00 以降に赤が出たら、
+それは配管の赤ではなく**本物の赤**として読んでよい —— 逆に言えば、
+**赤が出た時に「たぶん環境のせい」で流す事はもう出来ない**。ここが preflight の値打ち。
+
+★ただし `LIVE-EXIT=3` を緑と読まない事。台本自身が末尾でそう書いている:
+「緑が意味するのは運ぶ層 —— **会話が進んだ事は確かめていない**」。
+**`exit 0` が出るまで「一巡した」とは書かない。**
+
+**残す物についての注記**: 使い捨て会話の転写(`~/.claude/projects/-Users-edith-Projects/<sid>.jsonl`)は
+**消えない**(台本の仕様。tmux session と `panes/` は消える)。実測 = この dir は今 **3件 / 128K**
+(内1件が今夜の `9fcf42cb`)。1回の走行につき1件増える。増え方は緩いので掃除は不要だが、
+**後から「身元不明のゴミ」に見えないようにここに名前を書いておく**。
+
+#### 1-G-1d. item 4 は台本になった(2026-08-02 22:3x〜22:5x)
 
 `tools/live-fork-check.mjs` + `test/fork-check-controls.sh`。**答え以外は全部リハーサル済み**
 (上限中でも配管は測れる。上限が明けた1回で配管の不備に気付くのでは遅い)。
@@ -353,7 +392,7 @@ bash tools/edith-gui-run.sh --timeout 90 -- \
 # 後始末: $D を消して不在を確認(台本自身の使い捨て cwd と転写 dir は台本が畳む)
 ```
 
-★**なぜ 4 だけ launchd 越しなのか、実測で確定した**(23:1x)。素の ssh で `claude -p` を
+★**なぜ 4 だけ launchd 越しなのか、実測で確定した**(22:5x)。素の ssh で `claude -p` を
 撃つと、返るのは上限ではなく:
 
 ```
