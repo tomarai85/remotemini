@@ -213,7 +213,8 @@ doc = {
         "電話から実際に打ち込んで返事が返るか(= live-inject-check の仕事)",
         "会話の文脈が復元されるか(この job は --resume しない。設計通り)",
         "一覧に出た後、その行が tmux のペインに繋がるか(= route が worker でなく tmux か)。"
-        "今日の実測では登録が古い会話は全部 worker 送りになっていた",
+        "2026-08-02 の配備後に phone の会話は route:tmux になった(1/14)が、"
+        "それを測るのは /api/sessions 側であってこの job ではない",
     ],
 }
 with open(os.environ["OUT"], "w", encoding="utf-8") as f:

@@ -1,0 +1,47 @@
+{
+  "what": "鎖③④(tmux の中に話せる相手が居て、登録簿に載っている)の観測",
+  "expect": "present",
+  "verdict": "ok",
+  "chains": {
+    "3_window": "ok",
+    "3_scheduler": "ok",
+    "4_registry": "ok",
+    "4_listed": "ok"
+  },
+  "label": "com.edith.rc-phone-window",
+  "target": "work:phone",
+  "host": "edith@10.0.0.0",
+  "fresh_threshold_s": 180,
+  "observed": {
+    "host": "Edith",
+    "observed_at": "2026-08-02T09:53:55+0900",
+    "job_present": "true",
+    "job_pid": "-",
+    "job_last_exit": "0",
+    "attempt_age_s": "49",
+    "success_age_s": "49",
+    "last_state": "ok 1785631986",
+    "log_bytes": "144",
+    "errlog_bytes": "0",
+    "script_procs": "0",
+    "session_present": "true",
+    "windows": "2.1.220 phone",
+    "phone_windows": "1",
+    "phone_pane": "%35",
+    "phone_pane_pid": "94840",
+    "phone_pane_cmd": "2.1.220",
+    "phone_auto_rename": "0",
+    "phone_panes_alive": "1",
+    "registry_hits": "1",
+    "phone_session_id": "48d55690-061d-4d5b-a4dc-1f34e68855c1",
+    "listed_in_api": "true",
+    "window0_pane": "%0",
+    "window0_pane_pid": "64534"
+  },
+  "failures": [],
+  "not_measured_here": [
+    "電話から実際に打ち込んで返事が返るか(= live-inject-check の仕事)",
+    "会話の文脈が復元されるか(この job は --resume しない。設計通り)",
+    "一覧に出た後、その行が tmux のペインに繋がるか(= route が worker でなく tmux か)。2026-08-02 の配備後に phone の会話は route:tmux になった(1/14)が、それを測るのは /api/sessions 側であってこの job ではない"
+  ]
+}

@@ -8,6 +8,81 @@
 
 ---
 
+## 2026-08-02 09:5x — 配備して**受け入れの2値を実測**。0/13 → 1/14。**ただし動かした変数は `runStrict` ではない**
+
+### 1. 受け入れ基準(HANDOFF §1-G-3 に自分で書いた物)の実測
+
+| 基準 | 配備前 | 配備後 |
+|---|---|---|
+| `route:"tmux"` が1本以上 | **0 / 13** | **1 / 14** — `48d55690` / pane `%35` / `screen:SENDABLE` |
+| `48d55690 (未発言)` の行が出る | **無し** | **有り**(title = `(未発言)`) |
+| `verify-phone-window.sh` の `chains.4_listed` | — | **ok**(4鎖すべて ok / `failures: []` / exit 0) |
+
+`phone_session_id` = `48d55690-061d-4d5b-a4dc-1f34e68855c1`。「id は毎回変わるので
+リテラルは古いかも」と疑っていたが、この窓は生きたまま残っていたので**リテラルのまま当たった**。
+
+### 2. ★何がこの 0→1 を作ったのか(**推論を1回外してから差分で確定させた**)
+
+route の内訳:
+
+| | worker | blocked | tmux | 計 |
+|---|---|---|---|---|
+| 配備前 | 13 | **0** | 0 | 13 |
+| 配備後 | 7 | **6** | 1 | 14 |
+
+**最初に書いた説明は間違いだった**。「edith に載っていたのは `blocked` 経路を持たない古い版」と書いたが、
+`git log -S unregistered` で見ると `blocked/unregistered` は **8/01 00:06 から入っている**。
+旧い木にも在った。誤り。
+
+差分で確定した真因 — `aa03db3`(07:14 の配備時点)→ `a4cc822` の `src/server.mjs`:
+
+```js
+// 旧: server.mjs が自前の runner を持っていた(locale を被せない)
+const tmuxRunner = { run: (args) => { try { return execFileSync(TMUX_BIN, args, {encoding:"utf8"}); } catch { return ""; } } };
+// 新: 被せる場所を1つに寄せた
+const tmuxRunner = makeTmuxRunner({ tmuxBin: TMUX_BIN, exec: execFileSync, socketsPresent: tmuxSocketsPresent });
+```
+
+観測: `git show aa03db3:./src/server.mjs | grep -n "LANG\|LC_ALL\|LC_CTYPE"` = **0 行**。
+`makeTmuxRunner` 側は `inject.mjs:336` に `LC_ALL: "en_US.UTF-8"`。
+= launchd 起動には LANG が無い → `list-panes -F` の区切りが潰れる → 一覧 0 件 →
+候補 0 → 全会話がワーカー経路。**`blocked` が 0 本だったのは経路が無いからではなく、候補が 0 だったから**。
+
+つまり **HANDOFF §1-G-3 の仮説(M79 の故障が実機で起きている)が当たっていた**。
+それを直した commit は **`3bc1302`(08-02 07:17)= 07:14 の配備の3分後**。だから今日まで一度も edith に載っていなかった。
+
+`runStrict` の関門はこの数字の原因では**ない**(本番は元々 `makeTmuxRunner` 経由で両方持っていた)。
+あれは潜在的な fail-open を構造で塞いだ物。功績の付け先が違う。
+
+自分への戒め2つ:
+- **「直した」と「直後に数字が動いた」を接着しない**。同じ配備に複数の変更を載せた時点で、差分を読むまで犯人は決まらない。
+- **推論を結論の形で .md に書かない**。上の誤った説明は、`git log -S` を1回叩けば5秒で否定できた。書く前に叩く。
+
+### 2b. ★計器の穴: **edith に何版が載っているか、後から言えない**
+
+`verify-rc-backend-state.sh` の artifact は `deployed_head: "no-git(rsync で .git を送っていない = 正常)"`。
+rsync が `.git` を除外する設計は正しいが、その結果**「動いている木の版」を答える手段がゼロ**になっている。
+今回の犯人特定は、たまたま WORKLOG に「pid 82407 → 86420」の時刻が残っていたから出来ただけ。
+→ 配備時に版を刻む(§4 の次の一手)。
+
+### 3. 計器から古い断定を1つ剥がした
+
+`tools/verify-phone-window.sh` の `not_measured_here` が
+「今日の実測では登録が古い会話は全部 worker 送りになっていた」と**事実として**書いていた。
+たった今それが偽になったので、測っていない事の説明はそのまま残し、事実の部分を
+「2026-08-02 の配備後に route:tmux になった(1/14)が、それを測るのは `/api/sessions` 側であってこの job ではない」
+に差し替え。**計器に古い断定を残すと、次に読む人はそれを観測値と誤読する**。
+
+### 4. 次の一手
+
+1. 全件の変異(**85件**・的の照合 85/85・当たらない 0)を走行中 → 結果が出たらここに追記。
+   `--only M8` の 7/7 は全件の緑ではない、と自分で書いた分の回収。
+2. **配備時に版を刻む**(§2b)。`deploy-to-edith.sh` が送る側の `git rev-parse HEAD` を
+   edith 上のファイルに書き、`verify-rc-backend-state.sh` がそれを読んで artifact に載せる。
+   これが在れば「本番は何版か」は推理でなく観測になる。
+
+---
+
 ## 2026-08-02 10:2x — 変異の走行が出た(83件・素通り0)。凍結を解いて **`runStrict` の潜在穴を構造で塞いだ**
 
 ### 1. 待っていた値: 83件 → 80 検出 / 3 未到達(注記) / **素通り 0**

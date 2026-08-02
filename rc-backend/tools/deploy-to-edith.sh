@@ -23,6 +23,26 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DRY=""
 [ "${1:-}" = "--dry-run" ] && DRY="--dry-run"
 
+# ★変異の走行中は `src/` が**意図的に壊されている**。その窓で配備すると、壊れた木を本番へ送る。
+#   走行は50分近く続くので窓は現実に在る(2026-08-02 に自分で踏みかけた)。
+#   step 3/4 の検査が大半は止めるが、**未到達の変異は検査を素通りする**ので検査任せにしない。
+#   逃げ道は置かない: 本当に配備したいなら走行が終わるまで待つか、走行を止める方が正しい。
+if pgrep -f 'mutation-controls\.py' >/dev/null 2>&1; then
+    echo "★配備しない: 変異の走行が動いている(src/ が壊れている最中)。" >&2
+    echo "  終わるまで待つか、走行を止めてから回す事。" >&2
+    exit 1
+fi
+
+# ★送る木の版を**送る前に**確定させる(rsync 中に手元が変わっても、刻む値は送った物と一致する)。
+#   これが無いと本番は「何版が動いているか」を答えられない = 2026-08-02 に実際に困った:
+#   数字が動いた原因を、WORKLOG に残っていた pid の時刻から推理する羽目になった。
+#   `.git` は送らない(正しい)ので、版は**別の物として刻む**しかない。
+#   汚れた木からの配備は隠さない: dirty を値に出す(嘘の版を刻む位が、版が無いより悪い)。
+SRC_REV="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+if [ -n "$(git -C "$SRC" status --porcelain 2>/dev/null)" ]; then
+    SRC_REV="${SRC_REV}-dirty"
+fi
+
 # 送らない物: git の中身と、e2e が作る作業場(そもそもここには無い筈だが保険)。
 # ★`--delete` を使うので、除外に入れた物は宛先に在っても消されない = 意図的。
 say() { printf '\n=== %s ===\n' "$1"; }
@@ -38,6 +58,12 @@ if [ -n "$DRY" ]; then
     echo "(dry-run。ここで終わり)"
     exit 0
 fi
+
+say "1b. 送った木の版を宛先に刻む(= 本番の版を推理でなく観測にする)"
+# rsync --delete は SRC に無いこの file を次回消すが、その直後にこの行が書き直す。
+# 途中で落ちれば刻印は消えたまま = 観測子は "unknown" を出す(黙って古い版を名乗らない)。
+ssh "$EDITH" "printf '%s\n%s\n' '$SRC_REV' \"\$(date -Iseconds)\" > '$DEST/DEPLOYED-REV'"
+echo "刻んだ版: $SRC_REV"
 
 say "2. edith 側の実行系を観測"
 ssh "$EDITH" "$NODE -v && cd '$DEST' && ls -1 src/ test/ | wc -l"

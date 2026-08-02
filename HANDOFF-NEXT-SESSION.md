@@ -314,6 +314,37 @@ launchd に locale が無い → `list-panes -F` の区切りが潰れる → �
 **その1件は今の一覧に出ていない** = 未発言(転写ファイルがまだ無い)会話は、
 配備中の古いコードでは一覧に載らない。**配備後は `48d55690 (未発言)` の行が出る事**が要求値。
 
+---
+
+#### 1-G-3-R. ★**8/02 09:5x に配備して測った = 上の仮説は当たっていた**(結果と、犯人の特定)
+
+| 要求値 | 配備前 | 配備後 | 判定 |
+|---|---|---|---|
+| `route:"tmux"` が1本以上 | 0 / 13 | **1 / 14** (`48d55690` / `%35` / `screen:SENDABLE`) | **満たした** |
+| `48d55690 (未発言)` の行 | 無し | **有り**(title = `(未発言)`) | **満たした** |
+| `verify-phone-window.sh` `chains.4_listed` | — | **ok**(4鎖 ok / `failures: []` / exit 0) | **満たした** |
+
+route の内訳は `worker 13 / blocked 0 / tmux 0` → **`worker 7 / blocked 6 / tmux 1`**。
+
+★**犯人は `runStrict` の関門ではない**(本番は元々 `makeTmuxRunner` 経由で両方持っていた)。
+差分で確定した真因 = `src/server.mjs` が**自前の runner を持っていて locale を被せていなかった**事:
+
+```
+git show aa03db3:./src/server.mjs | grep -n "LANG\|LC_ALL\|LC_CTYPE"   → 0 行
+inject.mjs:336(makeTmuxRunner 側)                                    → LC_ALL: "en_US.UTF-8"
+```
+
+直した commit は **`3bc1302`(08-02 07:17)**。直前の配備が **07:14** だったので、**3分違いで載っていなかった**。
+= §1-G-3 が「理論ではなく今の本番の値」と書いた通り、M79 の故障が本当に実機で起きていて、今それが消えた。
+
+★**次の人が踏む罠**: 私は最初「edith に載っていたのは `blocked` 経路を持たない古い版」と書いた。**誤り**。
+`git log -S unregistered` で `blocked/unregistered` は 8/01 00:06 から在ると分かる。
+**配備に複数の変更を載せた後、差分を読まずに犯人を決めない**。
+
+★**まだ塞がっていない計器の穴**: artifact の `deployed_head` は `no-git`(rsync が `.git` を送らない)。
+= **「本番が何版か」を答える手段が無い**。今回の特定は WORKLOG に pid の時刻が残っていた偶然に依存した。
+→ 配備時に `git rev-parse HEAD` を edith 側へ刻み、`verify-rc-backend-state.sh` に読ませる(未着手)。
+
 **★台本の起動には「claude が信頼済みの dir」が要る(ここを次の人が必ず踏む)**
 
 既定の `--cwd` は `$HOME` で、edith の `/Users/edith` は**信頼済みではない**。

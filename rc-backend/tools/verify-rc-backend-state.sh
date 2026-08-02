@@ -102,7 +102,19 @@ echo "  \"service\": \"$label\","
 echo "  \"host\": \"$(hostname -s)\","
 echo "  \"mode\": \"$mode\","
 echo "  \"plist_present\": $([ -f "$plist" ] && echo true || echo false),"
-echo "  \"deployed_head\": \"$(cd /Users/edith/rc-backend 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo 'no-git(rsync で .git を送っていない = 正常)')\","
+# ★版は `.git` からではなく **配備が刻んだ札** から読む(rsync は .git を送らない設計なので、
+#   git に訊く限り永久に答えは出ない = 2026-08-02 に実際に犯人特定が推理に落ちた)。
+#   札が無い = 「配備を通していない木」か「配備が途中で落ちた」= unknown を出す。黙って埋めない。
+rev_file="${RC_REV_FILE:-/Users/edith/rc-backend/DEPLOYED-REV}"  # 上書きは検査用
+if [ -r "$rev_file" ]; then
+  deployed_rev="$(sed -n '1p' "$rev_file")"
+  deployed_at="$(sed -n '2p' "$rev_file")"
+else
+  deployed_rev="unknown(DEPLOYED-REV が無い = deploy-to-edith.sh を通していないか、途中で落ちた)"
+  deployed_at=""
+fi
+echo "  \"deployed_rev\": \"$deployed_rev\","
+echo "  \"deployed_at\": \"$deployed_at\","
 echo "  \"node\": \"$(/opt/homebrew/bin/node -v 2>/dev/null)\","
 
 if [ "$mode" = "observe" ]; then
