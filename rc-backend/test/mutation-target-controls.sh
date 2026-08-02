@@ -94,7 +94,19 @@ if [ "$got_m1" = "1" ]; then ok "番号選択 --only M1 = 1件(M10..M103 を巻�
 else ng "番号選択 --only M1" "${got_m1}件 — 前方一致で巻き込んでいる"; fi
 
 # 3-3) 絞らない時は全件(絞りの実装が既定を壊していない事)
-got_all="$(DRY '')"; want_all="$(grep -cE '^ *\("[MWXPR][0-9]+[ (]' "$SRC_ROOT/test/mutation-controls.py" || true)"
+#
+# ★族の頭文字を**ここに書き写さない**。本体の起動段の正規表現から取り出す。
+#   2026-08-02 に現物で踏んだ: ここが `[MWXPR]` 固定だったので、H 族(生存信号の判定層)を
+#   13枚足した瞬間にこの対照だけが赤くなった —— 並びも走行も正しく、**数え方が古かった**。
+#   同じ一覧が2つの file に居ると、族を足す作業が必ず片方を置き去りにする。
+#   取り出しに失敗したら空になり、下の grep が0件を返して**赤で止まる**(黙って緑にならない)。
+ALPHA="$(sed -n 's/.*re\.match(r"\[\([A-Z][A-Z]*\)\]\\d+.*/\1/p' "$SRC_ROOT/test/mutation-controls.py" | head -1)"
+if [ "${#ALPHA}" -ge 3 ]; then
+    ok "族の頭文字を本体から取り出せた(${ALPHA} — 写しを持たない)"
+else
+    ng "族の頭文字の取り出し" "取れたのは「${ALPHA}」— 本体の起動段の形が変わった。下の全件検査は当てにならない"
+fi
+got_all="$(DRY '')"; want_all="$(grep -cE "^ *\\(\"[${ALPHA}][0-9]+[ (]" "$SRC_ROOT/test/mutation-controls.py" || true)"
 if [ "$got_all" = "$want_all" ]; then ok "既定(--only 無し)= ${got_all}件 = 並びの全件"
 else ng "既定は全件" "${got_all}件 ≠ 並びの ${want_all}件"; fi
 

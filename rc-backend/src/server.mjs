@@ -37,6 +37,21 @@ const KEY_DIR = process.env.RC_KEY_DIR || join(HOME, ".rc-backend");
 const KEY_FILE = join(KEY_DIR, "api.key");
 const TMUX_BIN = process.env.RC_TMUX_BIN || "/opt/homebrew/bin/tmux";
 
+// 配備時に `tools/deploy-to-edith.sh` が刻む版(`DEPLOYED-REV` の1行目)。
+// ★**起動時に1回だけ**読む。答えたいのは「ディスクに在る版」ではなく
+//   **「今動いているプロセスが読み込んだ版」**だから。配備したのに再起動を忘れた場合、
+//   古いプロセスは古い版を名乗り続ける = それが正しい(嘘の新版を名乗らない)。
+//   読めなければ "unknown"。黙って別の値を名乗らない。
+const DEPLOYED_REV = (() => {
+  try {
+    return readFileSync(new URL("../DEPLOYED-REV", import.meta.url), "utf8")
+      .split("\n")[0].trim() || "unknown";
+  } catch {
+    return "unknown";
+  }
+})();
+const STARTED_AT = Date.now();
+
 // ---- 認証キー(無ければ生成、0600) --------------------------------------
 function loadOrCreateKey() {
   mkdirSync(KEY_DIR, { recursive: true, mode: 0o700 });
@@ -583,6 +598,20 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { "content-type": type, "cache-control": "no-cache" });
       res.end(body);
       return;
+    }
+
+    // ★外向きの生存信号(DESIGN §7-P)。認証の**外**、`/api/` の外に置く。
+    //   認証を掛けない理由: 掛けると観測者に鍵の複製が要る = 秘密の置き場が1つ増える。
+    //   代わりに**返す物を秘密でない値だけに絞る**。セッション名も cwd も一覧も**件数も**返さない
+    //   (件数は「今日は何本開いていたか」を外へ漏らす)。
+    //   tailnet + `tailscale serve` の内側なので公開面でもない。
+    if (req.method === "GET" && path === "/healthz") {
+      return json(res, 200, {
+        ok: true,
+        pid: process.pid,
+        uptime: Math.floor((Date.now() - STARTED_AT) / 1000),
+        version: DEPLOYED_REV,
+      });
     }
 
     // ★表に無いパスはここで落ちる = 総当たりの静的ファイルサーバを作らない。

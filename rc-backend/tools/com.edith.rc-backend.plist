@@ -6,10 +6,15 @@
   電話(iPhone)から edith 上の Claude Code セッションを見る / 打ち込む為の面。
   設計 = ~/Infra/mobile-work/DESIGN.md(§2.10 宛先 / §2.13 画面 / §6 経路と常設)。
 
+  ★この注釈の中に**ハイフン2連続を書けない**(XML コメントの規則)。旗は
+    「serve の https=443 旗」の様に語で書く。`plutil -lint` はこれを通してしまい、
+    `xmllint` だけが落とす —— 2026-08-02 に本 file が実際に引っ掛かった。
+    検査 = `test/example-artifacts-controls.sh` の A3。
+
   形:
     node は 127.0.0.1:8787 だけに bind する(RC_BIND の既定)。
-    tailnet に晒す面は tailscaled 側で、起動ラッパが `tailscale serve --https=443` を
-    冪等に入れ直す。→ https://desk.tailnet.example/ で開く。
+    tailnet に晒す面は tailscaled 側で、起動ラッパが `tailscale serve` を
+    https=443 旗つきで冪等に入れ直す。→ https://desk.tailnet.example/ で開く。
 
   ★依存(launchd に "After=" は無い。KeepAlive で自己修復する形にしてある):
     - tailscaled(Tailscale.app)が上がっている事。落ちていれば serve が入らないが、
@@ -18,10 +23,10 @@
       「打ち込む」は 409 で断る(DESIGN §6「tmux サーバは launchd より先に居ない」)。
       これは欠陥ではなく構造。電話には日本語で理由が出る。
 
-  ★触らない物(同期の外。deploy-to-edith.sh の --delete が届かない):
+  ★触らない物(同期の外。deploy-to-edith.sh の delete 旗が届かない):
     /Users/edith/.rc-backend/api.key       鍵。作り直すと電話に貼った鍵が失効する
     /Users/edith/.rc-backend/panes/*.json  登録簿
-    /Users/edith/Library/Logs/rc-backend/  ログ(★同期ツリーの中に置くと --delete で消える)
+    /Users/edith/Library/Logs/rc-backend/  ログ(★同期ツリーの中に置くと delete 旗で消える)
 
   INSTALL(私が実行する。Tom ゲートではない = 可逆なローカル/常設操作):
     # 0. 先に緑を取る。ここが赤なら入れない

@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  rc-backend 生存監視の launchd 見本(DESIGN §7-P)。
+
+  ★★これは**見本であって、まだどこにも据え付けていない**。
+     観測者を置くノードは艦隊の移動計画が確定してから決める(持って行かない機械に
+     監視を据えるのが、この件で一番間抜けな失敗)。据える時は:
+
+       cp tools/com.fleet.rc-health-observer.plist.example \
+          ~/Library/LaunchAgents/com.fleet.rc-health-observer.plist
+       # ProgramArguments の __台本の絶対パス__ を実物に書き換える
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.fleet.rc-health-observer.plist
+       launchctl kickstart -p gui/$(id -u)/com.fleet.rc-health-observer   # 1回撃って目で見る
+
+  ★据えたら**必ず1回、偽の失敗で経路を撃つ**:
+       tools/health-observer.sh に inject-fail の旗(先頭にハイフン2つ)を付けて叩く。
+       閾値どおり3回で鳴る。
+     yoda が 46 時間気付けなかったのは閾値でも判定でもなく**通知先**だった。
+     「Issue は作られた」は届いた事の証拠ではない —— Tom の画面に出るまでを見る。
+
+  ★この file 自身の構文を `test/example-artifacts-controls.sh` が測る。
+     見本が壊れていると、据える人は**据える瞬間に初めて**それを知る事になる。
+     (最初の版は3つ落としていた: DOCTYPE 無し / XML コメントにハイフン2連続 /
+      置き換え箇所を山括弧で書いて**タグに化けていた**)
+     ★2つ目は `plutil -lint` を**素通りする**。落とすのは `xmllint` だけ。だから
+      対照は両方に通す(A1=plutil / A3=xmllint)。器が欠陥より弱い事が在る。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.fleet.rc-health-observer</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__台本の絶対パス__/tools/health-observer.sh</string>
+    </array>
+
+    <!-- 10 分毎。閾値 3 と合わせて「約 30 分沈黙したら鳴る」。 -->
+    <key>StartInterval</key>
+    <integer>600</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- ★launchd の PATH は素。台本側も絶対パスを使うが、node の場所は設定でも渡す。 -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- 台本自身が壊れた時の受け皿。台本の通常ログ(RC_HEALTH_LOG)とは別物 —
+         こちらに何か出ていたら「監視の外側」が壊れている。 -->
+    <key>StandardOutPath</key>
+    <string>/tmp/rc-health-observer.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/rc-health-observer.err</string>
+</dict>
+</plist>

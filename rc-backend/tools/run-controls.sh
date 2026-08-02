@@ -43,6 +43,8 @@ LOCAL_CTLS=(
     test/deploy-dirt-controls.sh
     test/child-reaping-controls.sh   # 実際に変異台本を起こして殺す。実測10秒だが e2e の子が
                                      # 上がるまで待つので状況で伸びる(上限90秒で測定不成立)
+    test/health-observer-controls.sh # 本物の HTTP サーバを立てて probe を測る。実測3秒
+    test/example-artifacts-controls.sh # 見本(plist / conf)が据える前に壊れていないか。実測1秒
 )
 EDITH_CTLS=(
     test/env-death-controls.sh

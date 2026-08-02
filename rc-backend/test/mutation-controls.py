@@ -36,6 +36,7 @@ HDS = "src/heads.mjs"
 APP = "src/app.html"
 WRK = "src/worker.mjs"
 RNG = "src/ring.mjs"
+HLT = "src/health.mjs"
 
 MUT = [
  ("M1 メニュー判定を外す(CHOICE を返さない)", INJ,
@@ -674,6 +675,49 @@ MUT = [
       throw new Error(`EventRing: capacity must be a positive integer, got ${capacity}`);
     }""",
   "    void capacity;"),
+ # ---- H 系(外向きの生存信号の判定層。DESIGN §7-P)-----------------------
+ # ★13枚とも砂場で先に「赤くなる」事を層ごとに実測してから入れた(APPLY-PLAN-phaseP §3)。
+ #   変異走行は `npm test` と `test/e2e-local.mjs` を回すが `health-observer-controls.sh` は
+ #   回さない。素通りしたら検査の穴でなく**当て損ね**を先に疑う。
+ ("H1 戻り判定の門を外す(落ちていないのに『戻りました』と鳴る)", HLT,
+  'if (prev.status === "down") {',
+  'if (prev.status !== "xxx") {'),
+ ("H2 重複抑止を外す(落ちた後も10分毎に鳴り続ける = 黙らされる)", HLT,
+  "fails >= threshold && !toldItsDown",
+  "fails >= threshold"),
+ ("H3 閾値の比較をずらす(>= → >。1回ぶん遅れて鳴る)", HLT,
+  "fails >= threshold &&",
+  "fails > threshold &&"),
+ ("H4 since を連続の頭でなく毎回今にする(『何時から』が嘘になる)", HLT,
+  "prev.fails === 0 ? now : prev.firstFailAt",
+  "now"),
+ ("H5 連続を数えない(fails が増えず**永久に鳴らない**)", HLT,
+  "const fails = prev.fails + 1;",
+  "const fails = 1;"),
+ ("H6 閾値の門を外す(0 を通す = 黙って鳴らない監視が作れる)", HLT,
+  "if (!Number.isInteger(threshold) || threshold < 1) {",
+  "if (false) {"),
+ ("H7 成功で連続を消さない(復旧を挟んでも数え続ける)", HLT,
+  'state: { status: "up", fails: 0, firstFailAt: null, owed: null },',
+  'state: { status: "up", fails: prev.fails, firstFailAt: prev.firstFailAt, owed: null },'),
+ ("H8 秒/分の境目をずらす(60秒を『0分』と言う側へ)", HLT,
+  "if (sec < 60) return",
+  "if (sec < 61) return"),
+ ("H9 『伝え済み』の判定から status を落とす(初回の落下が一度も鳴らない)", HLT,
+  'const toldItsDown = prev.status === "down" && prev.owed === null;',
+  "const toldItsDown = prev.owed === null;"),
+ ("H10 借りを返しても消さない(同じ警報を10分毎に鳴らし続ける)", HLT,
+  "return { ...state, owed: null };",
+  "return { ...state };"),
+ ("H11 未配達の『戻りました』を鳴らし直さない(復旧を Tom が永久に知らない)", HLT,
+  'if (prev.owed !== null && prev.owed !== undefined && prev.owed.kind === "recovered") {',
+  "if (false) {"),
+ ("H12 鳴らし直す復帰の秒数を測り直す(落ちていた長さが10分毎に伸びる嘘)", HLT,
+  "const note = { ...prev.owed };",
+  "const note = { ...prev.owed, seconds: now };"),
+ ("H13 項の欠落を『返済済み』に丸める(古い状態を読んだ瞬間に落下が鳴らない)", HLT,
+  'const toldItsDown = prev.status === "down" && prev.owed === null;',
+  'const toldItsDown = prev.status === "down" && (prev.owed === null || prev.owed === undefined);'),
 ]
 
 # ★変異の番号は一意でなければならない(2026-08-02 追加。実際に M69-M73 を重複させた)。
@@ -683,10 +727,11 @@ MUT = [
 # ★接頭辞の集合は「読む場所」の一覧そのもの: M = 部品の中身 / W = 繋ぎ目 /
 #   X = H2(1つの転写に書き手が2人)を守る層 / P = 電話に何が見えるか /
 #   R = 追いつきリング(再接続で「間が失われた」を黙って連続に見せない層)。
+#   H = 外向きの生存信号の判定層(落ちた/戻ったを Tom に伝え終えたかを持つ層)。
 #   2026-08-02: ここが `[MW]` だった為、走行中のメモリにしか無かった X 系を書き戻そうとすると
 #   台本自身が起動段で落ちる状態だった = **この検査が X の復元を機械的に禁じていた**。
 #   新しい族を足す時はここも足す。足し忘れると「番号で始まっていない」で止まる(fail-closed)。
-_named = [(re.match(r"[MWXPR]\d+(?=[ (])", m[0]), m[0]) for m in MUT]
+_named = [(re.match(r"[MWXPRH]\d+(?=[ (])", m[0]), m[0]) for m in MUT]
 _unnamed = [t for mo, t in _named if not mo]
 if _unnamed:
     sys.exit("★台本を止める: 番号で始まっていない変異がある: " + " / ".join(_unnamed[:3]))

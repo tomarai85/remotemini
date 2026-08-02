@@ -416,6 +416,81 @@ try {
     }
   }
 
+  // 1-c. 外向きの生存信号(DESIGN §7-P)。**認証の外**に在る唯一の API なので、ここで撃つ。
+  //
+  // なぜ e2e に置くか(単体にしない理由): 測りたい性質が3つとも**走っているサーバでしか
+  // 存在しない**。①鍵無しで通る事 ②答えているのが本物のサーバである事 ③応答に会話の
+  // 情報が混ざらない事。`server.mjs` は import すると listen するので単体からは触れず、
+  // ここが唯一この3つを同時に見られる場所(`test/blocked.test.mjs` の頭の注記と同じ事情)。
+  {
+    const hz = await fetch(`${B}/healthz`);           // ★鍵を**付けない**
+    const raw = await hz.text();
+    check("/healthz は鍵無しで 200(観測者に鍵の複製を持たせない為)",
+      hz.status === 200, `status=${hz.status}`);
+
+    let hj = null;
+    try { hj = JSON.parse(raw); } catch { /* 下の check が理由付きで落ちる */ }
+    check("/healthz は JSON を返す", hj !== null && typeof hj === "object", raw.slice(0, 120));
+
+    if (hj) {
+      check("ok:true を名乗る", hj.ok === true, JSON.stringify(hj));
+      // ★答えているのが**本物のサーバ**である事。tailscale の受け口や proxy が
+      //   200 を返しているだけの状態を「生きている」と読まない為の同定。
+      //   `sv.pid` はこの検査が起こした node そのものなので、これが一致する以外に
+      //   この値が出る筋が無い。
+      check("★pid が実際に起こしたサーバと一致する(別物が 200 を返しているのではない)",
+        hj.pid === sv.pid, `body=${hj.pid} spawned=${sv.pid}`);
+      check("uptime は 0 以上の整数", Number.isInteger(hj.uptime) && hj.uptime >= 0, String(hj.uptime));
+
+      // 版は「ディスクに在る物」ではなく「**起動時に読んだ物**」。手元には
+      // `DEPLOYED-REV` が無いので "unknown"、edith では配備台本が刻んだ短ハッシュ。
+      // どちらでも同じ式で言える形にして、値を検査に**手書きしない**。
+      const revFile = join(ROOT, "DEPLOYED-REV");
+      const wantRev = existsSync(revFile)
+        ? (readFileSync(revFile, "utf8").split("\n")[0].trim() || "unknown")
+        : "unknown";
+      check("version は DEPLOYED-REV の1行目(無ければ unknown)",
+        hj.version === wantRev, `body=${hj.version} file=${wantRev}`);
+
+      // ★本命の陰性対照 — 会話の情報が1つも載っていない事。
+      //   名前で確かめる(将来 field を足した時に素通りしない)…
+      const FORBIDDEN_KEYS = ["session", "sessions", "cwd", "pane", "title", "count", "key", "projects"];
+      const gotKeys = Object.keys(hj);
+      for (const k of FORBIDDEN_KEYS) {
+        check(`  応答に "${k}" という項が無い`, !gotKeys.includes(k), gotKeys.join(","));
+      }
+      //   …と、**この検査が実際に作った現物**で確かめる(手書きの想定でなく生成元から取る、
+      //   run-controls.sh 冒頭の規則(1))。値が偶然一致する事は無い長さの物だけを見る。
+      //
+      // ★落ちた時の detail に本文を出すかを行ごとに分ける。**秘密を守る検査が、
+      //   落ちた時にその秘密を印字してはいけない** —— 鍵の行だけ本文を伏せる。
+      //   (最初これを一律 `raw.slice(0,200)` で書いていた = 鍵が混ざった時にだけ
+      //    鍵が端末とログに出る形になっていた。守る対象と漏らす経路が同じ行に在った)
+      for (const [label, needle, showBody] of [
+        ["会話 ID", SID1, true], ["cwd", CWD_READY, true], ["鍵", KEY, false],
+      ]) {
+        check(`  応答本文に ${label} が現れない`, !raw.includes(needle),
+          showBody ? raw.slice(0, 200) : `(本文は伏せる — 鍵が混ざった疑いなので印字しない。長さ=${raw.length})`);
+      }
+      // 件数も漏らさない(「今日は何本開いていたか」は会話の情報)。
+      check("  応答は 4 項だけ(ok / pid / uptime / version)",
+        gotKeys.length === 4, gotKeys.join(","));
+    }
+
+    // GET 以外は開けない。生存信号は**読む**物であって、外から叩ける口を増やさない。
+    for (const method of ["POST", "DELETE"]) {
+      const r = await fetch(`${B}/healthz`, { method });
+      check(`  ${method} /healthz は 404(生存信号は読み取り専用)`, r.status === 404, `status=${r.status}`);
+    }
+
+    // 鍵を付けても**同じ物**が出る(認証の有無で答えが変わらない = 分岐が生えていない)。
+    const hz2 = await fetch(`${B}/healthz`, { headers: H });
+    const hj2 = await hz2.json().catch(() => null);
+    check("鍵を付けても同じ形が返る(認証で分岐していない)",
+      hz2.status === 200 && hj2 && hj2.ok === true && hj2.pid === sv.pid,
+      `status=${hz2.status}`);
+  }
+
   // 2. 一覧
   const list = await (await fetch(`${B}/api/sessions`, { headers: H })).json();
   const ids = list.sessions.map((s) => s.id);
