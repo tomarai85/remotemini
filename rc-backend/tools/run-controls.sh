@@ -45,6 +45,9 @@ LOCAL_CTLS=(
                                      # 上がるまで待つので状況で伸びる(上限90秒で測定不成立)
     test/health-observer-controls.sh # 本物の HTTP サーバを立てて probe を測る。実測3秒
     test/example-artifacts-controls.sh # 見本(plist / conf)が据える前に壊れていないか。実測1秒
+    test/gui-run-controls.sh         # edith の launchd の中で走らせる計器が、終了コードを
+                                     # ちゃんと持ち帰るか。実測6秒。**網が要る** —— 届かない時は
+                                     # 2(未測定)を返す。緑に丸めない事
 )
 EDITH_CTLS=(
     test/env-death-controls.sh
