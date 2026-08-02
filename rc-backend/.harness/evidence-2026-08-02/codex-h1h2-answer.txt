@@ -1,0 +1,18 @@
+codex
+Verdict 1: correct for the stated single-process architecture. Lock by `paneId`, and hold it across body injection, visibility wait, and Enter. The missing failure mode is timeout cancellation: a timed-out waiter must be removed from the FIFO atomically, or it can later acquire the mutex and perform a “ghost send” after the API already refused it. Release in `finally`, and bound the holder operation too.
+
+Your stale-lock rationale is wrong: an OS-backed advisory lock such as `flock` is released when the process exits and does not suffer stale ownership. The real justification is that every programmatic injector is structurally routed through one process. Human typing is unrelated to whether cross-process locking works between cooperative writers.
+
+Verdict 2: per-ancestor files fix cross-ancestor read-modify-write loss, but not same-ancestor races. Two simultaneous first sends can both observe “no head,” both fork, and both rename their result over the same ancestor file. One branch becomes orphaned. Serialize the entire same-logical-conversation transaction:
+
+`read head → choose fork/resume → start worker → obtain child ID → persist head`
+
+Atomic rename prevents torn files; it is not compare-and-swap. Also use unique temp names and ignore temp files during scans.
+
+Your correction is correct: fork based on registry state, not process lifetime. The exact rule is:
+
+- No registered head: fork from the ancestor and register the child.
+- Registered head: resume that head, including after idle timeout.
+- Never fork merely because the worker process was restarted.
+
+Worker kill/reap, head lookup, and respawn must share the same logical-conversation mutex, or an idle-timeout/send race can still create overlapping workers.

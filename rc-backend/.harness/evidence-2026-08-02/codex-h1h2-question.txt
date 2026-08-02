@@ -1,0 +1,15 @@
+Node.js single-process HTTP backend that lets a phone drive Claude Code sessions running in tmux on a Mac mini. Two design verdicts of mine — refute them or point at the failure mode I missed. Be specific, no hedging.
+
+CONTEXT (all measured, not assumed):
+- Sending to a live session = injector.send(paneId, text): type body into the tmux pane -> WAIT until the body is visible in the pane -> send Enter. The wait is an await, so two concurrent sends to the SAME pane interleave: A types "aaa", B types "bbb", A's Enter submits "aaabbb". Phone double-tap does this.
+- The contended resource is the pane's keyboard, not the conversation. Different conversations can target the same pane.
+- A human sitting at the desk can type into the same pane. No lock we hold can stop them.
+- When no pane exists for a conversation, we fall back to a "worker": `claude -p --resume <id> --input-format stream-json`. Default --resume REUSES the original session id, so the worker and a desk TUI would write the same transcript file = lost update. Fix chosen: the worker ALWAYS forks (`--fork-session` creates a new session id), and a registry maps logical-conversation -> current head id so the phone's 2nd, 3rd message resume the HEAD (not fork again), otherwise every message splits into its own branch.
+- Worker processes are killed after 10 min idle and re-spawned on the next send.
+- Registry dir ~/.rc-backend/panes/ is written by a DIFFERENT owner (a statusline hook), one JSON per session, read-only to us.
+
+VERDICT 1 (lock placement): NO cross-process file lock. Instead (a) an in-process async mutex keyed by pane id, living in a pure module the injector calls (not in the HTTP server file, which listens on import and is therefore untestable), and (b) make the diagnostic CLI tools go through the server's HTTP API instead of calling the injector directly, so there is structurally ONE injector process. Rationale: the lock is best-effort anyway (cannot exclude the human), and a stale file lock's failure mode — silently blocking every send from the phone — is worse than the interleave it prevents. Waiters queue FIFO with a bounded depth and a wait timeout; on timeout we REFUSE to send rather than sneak in behind the holder.
+
+VERDICT 2 (head-pointer storage): one file per ancestor, ~/.rc-backend/heads/<ancestor-session-id>.json, written temp+rename. NOT a single heads.json read-modify-write map — using a read-modify-write file to fix a lost-update bug reintroduces the same class. Reverse lookup (head -> ancestor, needed to label the list) is built by scanning the dir; expected size is tens of files. If the heads dir is unreadable/missing we FORK AGAIN rather than resume the ancestor: splitting a conversation is a naming problem and recoverable, sharing a transcript with a desk writer is corruption and is not.
+
+Also confirm or refute this correction I made to my own earlier plan: "fork only on the worker's first start" is wrong as written, because an idle-timeout kill + later send hits the same code path and would fork a second time. The rule must be "fork only when no head is registered for this logical conversation".
