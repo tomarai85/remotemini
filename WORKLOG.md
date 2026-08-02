@@ -53,9 +53,33 @@
 - `check-no-pii.sh` → 新規2 file からの検出 **0件**(既知の DESIGN §8-3 の2件は据え置き。伏字にしない)
 - edith 残骸: 全走行のあと `/tmp/rcprobe.*` **不在** / `com.edith.rcprobe-*` **不在** / 本番 `com.edith.rc-backend` **state = running**
 
+### 続けて、00:00 の一発勝負を**些末な事で落とさない為**の前提潰し(22:2x)
+
+解除は1回きりなので、§1-G の1-4 が「上限以外の理由」で落ちる芽を先に全部見に行った。**1件在った**:
+
+| 見た物 | 値 | 判定 |
+|---|---|---|
+| launchd `gui/501` の `PATH` | `/usr/bin:/bin:/usr/sbin:/sbin` | ★**`node`/`claude`/`tmux` が全部無い** = `node tools/…` は command not found |
+| 絶対 path で launchd の中から実行 | node v25.9.0 / tmux 3.7b / claude **2.1.220** すべて exit 0 | 絶対 path なら通る |
+| 配備台本 vs repo(sha256) | `1d1d5aa2…fdcaa7` 一致 | 同じ物を測れる |
+| tmux pane の `PATH`(使い捨てセッション) | homebrew + `.local/bin` → 裸の `claude` が解決 | 台本の打ち込み方式は無事。`work` は無傷 |
+
+→ HANDOFF §1-G の表を `node` から **`/opt/homebrew/bin/node`** へ書き換えた。
+
+### ★同時に、自分の道具の**適用範囲を狭めた**(道具が在ると全部そこへ通したくなる)
+
+「ssh からだと keychain が開かない」(§1-G-2)は **`claude` を直接 exec する時の話**であって、
+**tmux の pane に打ち込む方式には当てはまらない**。pane の環境は先に立っている tmux server
+(edith は 7/28 起動の `work`)から来るのでログインシェルの文脈をそのまま持つ。
+証拠は既に手元に在った —— 8/02 05:48 の **ssh 経由**の走行は 4/4 delivered で、画面は
+`Not logged in` ではなく `You've hit your weekly limit`(`test/fixtures/screens/limit-reached-edith.txt`)。
+**あの時点で認証は通っていた**。
+→ §1-G の 1・2 は ssh 越しで足りる。新しい計器が本当に要るのは **3・4**(直接 exec する側)。
+  ★型: 新しい道具を作った直後は、**要らない場面にまで通す**方向に間違える。範囲を書いて縛る。
+
 ### 次の一手
 
-00:00 JST を過ぎたので §1-G の4点セットが解ける。**この計器を通して**測る(ssh 直では測らない)。
+00:00 JST に §1-G の4点セットが解ける。**1・2 は ssh 越し / 3・4 は `edith-gui-run.sh` 越し**。
 据え付け(launchd)には変わらず手を付けない —— 艦隊の移動計画待ち。
 
 ## 2026-08-02 22:2x — H 族 13枚が全部死んだ。ついでに「見本を一度も実行していない」層を潰した

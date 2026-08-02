@@ -22,6 +22,18 @@
 #   在るかどうかを聞くだけなら錠は要らない。
 #   型: 片側しか測らない緑は「差が在る」の証拠にならない。必ず反対側も撃つ事。
 #
+# ── ★この台本を**要らない場面で使わない**(2026-08-02 深夜、範囲の訂正) ────────
+# 上の「ssh では keychain が開かない」は **`claude` を直接 exec する時の話**であって、
+# **tmux の pane に `claude` と打ち込む時には当てはまらない**。pane の環境は
+# **先に立っている tmux server** から来る(edith の server は 7/28 起動・Tom の `work`)ので、
+# ログインシェルの PATH と keychain 文脈をそのまま持っている。実測:
+#     pane の PATH → /opt/homebrew/bin:/Users/edith/.local/bin:… で `claude` が解決する
+#     8/02 05:48 の ssh 経由の走行 → 4/4 delivered、画面は **`You've hit your weekly limit`**
+#       = `Not logged in` ではない = **あの時点で認証は通っていた**
+# だから `tools/live-inject-check.mjs`(pane に打ち込む方式)は ssh 越しでも正しく測れる。
+#   ★この台本が本当に要るのは **`claude` を直接 exec する検査**(`-p` 系 / `live-http-check`)。
+#   証拠の在り処 = `test/fixtures/screens/limit-reached-edith.txt`
+#
 # ── 使い方 ─────────────────────────────────────────────────────────────
 #   bash tools/edith-gui-run.sh -- /usr/bin/true
 #   bash tools/edith-gui-run.sh --timeout 300 -- node /path/live-inject-check.mjs --cases A

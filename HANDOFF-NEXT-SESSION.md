@@ -286,9 +286,9 @@ echo 39-43ms / clear 38-42ms。8/01 の MBP と同じ台本・同じ結果。
 
 | # | 何を撃つか | 要求する値 | なぜこの順か |
 |---|---|---|---|
-| 1 | `node tools/live-inject-check.mjs --cwd /Users/edith/Projects --cases A` | **exit 0**・`delivered=verified` | 1件で「上限が明けた」事自体が判る。ここが赤なら以降は全部無意味 |
-| 2 | `node tools/live-inject-check.mjs --cwd /Users/edith/Projects`(4件) | **exit 0**・4/4 `verified` | edith という機械での一巡。台本は Jervis で 4/4 済み = 差分は機械だけ |
-| 3 | `node tools/live-http-check.mjs` | **exit 0** | 鎖③(電話 → HTTP → tmux → 返答)。**ここが exit 0 になるまで「一巡した」とは書かない** |
+| 1 | `/opt/homebrew/bin/node tools/live-inject-check.mjs --cwd /Users/edith/Projects --cases A` | **exit 0**・`delivered=verified` | 1件で「上限が明けた」事自体が判る。ここが赤なら以降は全部無意味 |
+| 2 | `/opt/homebrew/bin/node tools/live-inject-check.mjs --cwd /Users/edith/Projects`(4件) | **exit 0**・4/4 `verified` | edith という機械での一巡。台本は Jervis で 4/4 済み = 差分は機械だけ |
+| 3 | `/opt/homebrew/bin/node tools/live-http-check.mjs` | **exit 0** | 鎖③(電話 → HTTP → tmux → 返答)。**ここが exit 0 になるまで「一巡した」とは書かない** |
 | 4 | ★**`--fork-session` の実挙動を1回測る**(使い捨て会話を1つ作り、`claude -p --resume <sid>` と `claude -p --resume <sid> --fork-session` を各1回。転写ファイルが増えるか・`sessionId` が変わるかだけ見る) | 既定 = **同じファイルに追記**(= H2 実在の確定)、`--fork-session` = **新 ID の別ファイル** | `DESIGN.md` §2.17 の worker 経路の設計がこの1点に乗っている。今は `--help` の文言からの**推論**であって実測ではない。**測るまで「測った」と書かない** |
 
 ★4 は上限をほとんど食わない(応答は「ok」1語でよい)ので、1-3 が赤でも**4 だけは撃ってよい**
@@ -305,6 +305,29 @@ usage    = input 0 / output 0 / total_cost_usd 0
 
 **上限中は「安い測定」という概念が無い**(応答が1語でも、応答が返らない)。4 も 8/03 00:00 JST 以降。
 副産物として、この1回で**解除時刻が3枚目の証拠として取れた**(7/31 の日付入り・8/02 05:48・8/02 09:1x)。
+
+#### 1-G-1b. ★撃つ前に潰した前提(2026-08-02 22:2x 実測。**一発勝負を些末な事で落とさない為**)
+
+解除は1回きりなので、上の1-4 が「上限以外の理由」で落ちる芽を先に全部見に行った。**1件見つかった**:
+
+| 見た物 | 値 | 判定 |
+|---|---|---|
+| launchd `gui/501` の `PATH` | `/usr/bin:/bin:/usr/sbin:/sbin` | ★**`node` も `claude` も `tmux` も無い**。`node tools/…` と書くと *command not found* で落ちる |
+| 絶対 path で launchd の中から実行 | `node v25.9.0` / `tmux 3.7b` / `claude 2.1.220` すべて exit 0 | 絶対 path なら通る |
+| `/Users/edith/Projects`(必須の `--cwd`) | 在る | OK |
+| 配備された台本 vs repo(sha256) | `1d1d5aa2…fdcaa7` で**一致** | 同じ物を測れる |
+| tmux の pane の `PATH`(使い捨てセッションで実測) | `/opt/homebrew/bin:/Users/edith/.local/bin:…` → `claude` が解決 | 台本が pane に打つ**裸の `claude` は通る**。`work` は無傷 |
+
+→ **1-3 の実行形は「`node`」ではなく `/opt/homebrew/bin/node`**。表の写しをそのまま打たない事。
+
+**★同時に、上の 1-G-2 の適用範囲を訂正した(過剰適用を防ぐ)**:
+「ssh からだと keychain が開かない」は **`claude` を直接 exec する時の話**。
+**tmux の pane に打ち込む方式には当てはまらない** —— pane の環境は**先に立っている
+tmux server**(edith は 7/28 起動の `work`)から来るので、ログインシェルの文脈をそのまま持つ。
+証拠: 8/02 05:48 の ssh 経由の走行は 4/4 delivered で、画面は `Not logged in` ではなく
+**`You've hit your weekly limit`**(`test/fixtures/screens/limit-reached-edith.txt`)= **認証は通っていた**。
+→ 1・2 は ssh 越しでも正しく測れる。`tools/edith-gui-run.sh` が本当に要るのは **3・4**
+(`claude` を直接 exec する側)。**道具が在るからと全部そこへ通すのは、別の過剰適用。**
 
 ### 1-G-2. ★★ssh から `claude -p` を測ると**必ず**「Not logged in」になる(製品ではなく計器の欠陥)
 
