@@ -7,7 +7,7 @@
 //   blocked    = 同じ cwd に claude が複数で特定不能 → どちらにも送らない
 // 偽 tmux は send-keys を**全部ログに残す**ので「1文字も送っていない」を実測で言える。
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, chmodSync, existsSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, chmodSync, existsSync, rmSync, utimesSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -310,6 +310,18 @@ function workerArgv() {
   if (!existsSync(ARGV_LOG)) return [];
   return readFileSync(ARGV_LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
 }
+// ★子が**実際に開いた dir**の窓(§3-V の本丸)。argv とは別 file にする ——
+//   `workerArgv()` は 1行 = 配列を前提にしているので、同じ file に別形を混ぜると読み手が壊れる。
+//   2026-08-03 の実測で、変異 W19(居場所を spawn に渡さない)を e2e が素通ししていた。
+//   引数だけ見ていて **cwd は spawn の option** なので argv には現れないのが原因。
+const CWD_LOG = join(SB, "worker-cwd.log");
+function workerCwds() {
+  if (!existsSync(CWD_LOG)) return [];
+  return readFileSync(CWD_LOG, "utf8").split("\n").filter(Boolean);
+}
+// 子の `os.getcwd()` は symlink を解いた形で返る(砂場は /var -> /private/var)。
+// 比べる側も必ず実体にする。片側だけ正規化して偽って落とすのが §2.25 で踏んだ穴。
+const rp = (p) => { try { return realpathSync(p); } catch { return p; } };
 // ★頭は**出荷する writeHead で**書く。手で JSON を組むと、書式が変わった時に
 //   検査だけが古い形で通り続ける(継ぎ目の検査が継ぎ目を跨がなくなる)。
 mkdirSync(join(SB, "keys", "heads"), { recursive: true, mode: 0o700 });
@@ -325,6 +337,10 @@ DELAY=float(os.environ.get("RC_E2E_WORKER_DELAY_MS","0"))/1000.0
 LOG=os.environ.get("RC_E2E_ARGV_LOG")
 if LOG:
     with open(LOG,"a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")
+# ★自分が**どの dir で開かれたか**。cwd は spawn の option なので argv には現れない。
+CWDLOG=os.environ.get("RC_E2E_CWD_LOG")
+if CWDLOG:
+    with open(CWDLOG,"a") as f: f.write(os.getcwd()+"\\n")
 # 本物の claude は起動直後に system/init で自分のセッション ID を名乗る。
 # --fork-session なら**新しい ID**、そうでなければ --resume した ID をそのまま名乗る。
 argv=sys.argv[1:]
@@ -367,6 +383,7 @@ const sv = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
     RC_FLEET_ACCOUNT: fakeAcct,
     RC_KEY_DIR: join(SB, "keys"),
     RC_E2E_ARGV_LOG: ARGV_LOG,
+    RC_E2E_CWD_LOG: CWD_LOG,
     RC_PHONE_TRUST_FILE: TRUST_FILE,
     // ★echo 待ちの予算を広げる栓(server.mjs 側に理由を書いた)。11-g2 が測る
     //   「鍵が満杯」の窓がこの値ぶんしか続かないので、既定 1500ms だと検査側の
@@ -675,6 +692,14 @@ try {
       Boolean(resumeArgv) && !resumeArgv.includes("--fork-session") &&
       !resumeArgv.includes(SID_H2_HEAD),
       JSON.stringify(resumeArgv));
+
+    // ★§3-V の本丸。ここまでに起きた子は全部 CWD_WORK の会話なので、開いた dir も CWD_WORK。
+    //   変異 W19(居場所を渡さない = HOME で開く)はここで初めて e2e に映る。
+    const cwds = await waitFor(() => (workerCwds().length ? workerCwds() : false));
+    check("★§3-V: 子は**会話の居場所**で開かれる(HOME ではない)",
+      cwds.every((c) => c === rp(CWD_WORK)), JSON.stringify(cwds));
+    check("★§3-V: 子の cwd に HOME が1件も現れない(既定値へ落ちていない)",
+      !cwds.includes(rp(process.env.HOME || "/")), JSON.stringify(cwds));
   }
 
   // 9. 異常系: bad body / unknown session
@@ -725,6 +750,11 @@ try {
   check("★zsh だけの cwd -> 注入せずワーカーで**受理**される",
     jShell.route === "worker" && jShell.accepted === true, JSON.stringify(jShell));
   check("★zsh ペインへは send-keys が0件", sentKeys().length === beforeShell);
+  // ★居場所が**会話ごとに違う**事まで押さえる。ここを H2 と同じ dir にすると、
+  //   「常に定数を渡す」当てでも両方緑になってしまう(定数の的は1箇所では作れない)。
+  const shellCwd = await waitFor(() => workerCwds().find((c) => c === rp(CWD_SHELL)));
+  check("★§3-V: 別の会話は**別の**居場所で開く(cwd は会話ごとの値)",
+    shellCwd === rp(CWD_SHELL), JSON.stringify(workerCwds()));
 
   // 10-c-2. ★§3-V: 未信頼 / 消えた居場所では**子を起こす前に**断る。
   //   起こしてから断ると、電話が答えられない信頼確認の画面を1枚作ってから謝る事になる。
@@ -1245,7 +1275,7 @@ try {
     const dup = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
       env: { ...process.env, RC_PROJECTS_DIR: join(SB, "projects"), RC_CLAUDE_WORK: fakeWork,
              RC_FLEET_ACCOUNT: fakeAcct, RC_KEY_DIR: join(SB, "keys"), RC_PORT: String(PORT),
-             RC_PHONE_TRUST_FILE: TRUST_FILE, RC_TMUX_BIN: fakeTmux },
+             RC_PHONE_TRUST_FILE: TRUST_FILE, RC_E2E_CWD_LOG: CWD_LOG, RC_TMUX_BIN: fakeTmux },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let dupLog = "";
