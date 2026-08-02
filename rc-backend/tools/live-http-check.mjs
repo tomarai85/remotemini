@@ -41,17 +41,31 @@ import { request as httpRequest } from "node:http";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TmuxInjector, classifyScreen, limitNoticeIn } from "../src/inject.mjs";
+import { TmuxInjector, makeTmuxRunner, classifyScreen, limitNoticeIn, tmuxChildEnv } from "../src/inject.mjs";
 
 const HOME = homedir();
 const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
 const TMUX_BIN =
   process.env.RC_TMUX_BIN ||
   (existsSync("/opt/homebrew/bin/tmux") ? "/opt/homebrew/bin/tmux" : "tmux");
+
+/**
+ * 注入層に渡すランナー。**`makeTmuxRunner` を経由する**のが要点で、こうすると
+ * `run`(飲む)と `runStrict`(投げる)の両方が揃う。一覧は runStrict を通るので、
+ * ここを裸の `{ run: tmux }` に戻すと構築の時点で落ちる(= M84 が塞いだ穴)。
+ * `quiet:false` は今までと同じ意味(この道具では tmux の失敗はそのまま失敗)。
+ */
+const injectorRunner = () => makeTmuxRunner({
+  tmuxBin: TMUX_BIN,
+  exec: (bin, args, opts) => execFileSync(bin, args, { ...opts, maxBuffer: 8 * 1024 * 1024 }),
+  quiet: false,
+});
 const PANE_DIR = process.env.RC_PANE_DIR || join(HOME, ".rc-backend", "panes");
 const KEY_FILE = join(process.env.RC_KEY_DIR || join(HOME, ".rc-backend"), "api.key");
 
-const tmux = (args) => execFileSync(TMUX_BIN, args, { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+// ★locale を明示する理由は inject.mjs の PANE_FORMAT 注記(タブが `_` に潰れる)。
+const tmux = (args) =>
+  execFileSync(TMUX_BIN, args, { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: tmuxChildEnv() });
 const tmuxOk = (args) => {
   try {
     tmux(args);
@@ -321,7 +335,7 @@ async function main() {
     const before = new Set(readPanes());
     tmux(["new-session", "-d", "-s", session, "-x", "120", "-y", "40", "-c", opt.cwd]);
     const pane = tmux(["list-panes", "-t", `=${session}`, "-F", "#{pane_id}"]).trim().split("\n")[0];
-    const injector = new TmuxInjector({ tmux: { run: tmux }, echoBudgetMs: 8000 });
+    const injector = new TmuxInjector({ tmux: injectorRunner(), echoBudgetMs: 8000 });
     tmux(["send-keys", "-t", pane, "-l", "--", opt.bin]);
     tmux(["send-keys", "-t", pane, "Enter"]);
 

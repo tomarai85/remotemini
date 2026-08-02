@@ -43,11 +43,23 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TmuxInjector, classifyScreen, limitNoticeIn } from "../src/inject.mjs";
+import { TmuxInjector, makeTmuxRunner, classifyScreen, limitNoticeIn, tmuxChildEnv, PANE_SEP } from "../src/inject.mjs";
 
 const TMUX_BIN =
   process.env.RC_TMUX_BIN ||
   (existsSync("/opt/homebrew/bin/tmux") ? "/opt/homebrew/bin/tmux" : "tmux");
+
+/**
+ * 注入層に渡すランナー。**`makeTmuxRunner` を経由する**のが要点で、こうすると
+ * `run`(飲む)と `runStrict`(投げる)の両方が揃う。一覧は runStrict を通るので、
+ * ここを裸の `{ run: tmux }` に戻すと構築の時点で落ちる(= M84 が塞いだ穴)。
+ * `quiet:false` は今までと同じ意味(この道具では tmux の失敗はそのまま失敗)。
+ */
+const injectorRunner = () => makeTmuxRunner({
+  tmuxBin: TMUX_BIN,
+  exec: (bin, args, opts) => execFileSync(bin, args, { ...opts, maxBuffer: 8 * 1024 * 1024 }),
+  quiet: false,
+});
 
 /** 引数を素朴に読む。値を取る物だけ列挙する。 */
 function parseArgs(argv) {
@@ -83,7 +95,12 @@ function parseArgs(argv) {
  * ここは検査の道具なので、失敗を空文字にすると「画面が空だった」と読み違える。
  */
 function tmux(args) {
-  return execFileSync(TMUX_BIN, args, { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  // ★locale を明示する。UTF-8 でないと tmux は `-F` の中のタブを `_` に潰し、
+  //   下の `#{session_name}\t#{pane_id}` が1列に化ける(2026-08-02 edith 実測、tmux 3.7b)。
+  //   シェルから走らせている限り LANG が在るので緑のまま = 気付けない側の故障。
+  return execFileSync(TMUX_BIN, args, {
+    encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: tmuxChildEnv(),
+  });
 }
 function tmuxOk(args) {
   try {
@@ -185,14 +202,15 @@ async function main() {
     tmux(["new-session", "-d", "-s", session, "-x", opt.cols, "-y", opt.rows, "-c", opt.cwd]);
 
     // ★ペインは**自分のセッションから**取る。名前で当てず、セッション名の一致を確かめる。
-    const listed = tmux(["list-panes", "-t", `=${session}`, "-F", "#{session_name}\t#{pane_id}"])
+    // 区切りは本体と同じ物を使う(タブは locale 次第で `_` に潰れる。inject.mjs の PANE_SEP 注記)。
+    const listed = tmux(["list-panes", "-t", `=${session}`, "-F", `#{session_name}${PANE_SEP}#{pane_id}`])
       .split("\n")
-      .map((l) => l.split("\t"))
+      .map((l) => l.split(PANE_SEP))
       .filter((p) => p[0] === session && p[1]);
     if (listed.length !== 1) throw new Error(`ペインが1つに定まらない: ${listed.length}`);
     pane = listed[0][1];
 
-    const injector = new TmuxInjector({ tmux: { run: tmux }, echoBudgetMs: 8000 });
+    const injector = new TmuxInjector({ tmux: injectorRunner(), echoBudgetMs: 8000 });
 
     // claude を起動。ここだけは composer がまだ無いので injector を通さない(素の shell 相手)。
     tmux(["send-keys", "-t", pane, "-l", "--", opt.bin]);

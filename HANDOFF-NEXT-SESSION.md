@@ -238,6 +238,82 @@ echo 39-43ms / clear 38-42ms。8/01 の MBP と同じ台本・同じ結果。
 - 計器は設計通りに振る舞った(delivered は真、結論位置に警告、exit 3)。
   **この節の守りは実機で1回発火済み**。
 
+**★8/03 00:00 JST 以降に「まとめて」撃つ物**(上限を1回の解除で使い切らない為に順番も決めておく。
+上から順、前が緑でなければ次へ行かない):
+
+| # | 何を撃つか | 要求する値 | なぜこの順か |
+|---|---|---|---|
+| 1 | `node tools/live-inject-check.mjs --cwd /Users/edith/Projects --cases A` | **exit 0**・`delivered=verified` | 1件で「上限が明けた」事自体が判る。ここが赤なら以降は全部無意味 |
+| 2 | `node tools/live-inject-check.mjs --cwd /Users/edith/Projects`(4件) | **exit 0**・4/4 `verified` | edith という機械での一巡。台本は Jervis で 4/4 済み = 差分は機械だけ |
+| 3 | `node tools/live-http-check.mjs` | **exit 0** | 鎖③(電話 → HTTP → tmux → 返答)。**ここが exit 0 になるまで「一巡した」とは書かない** |
+| 4 | ★**`--fork-session` の実挙動を1回測る**(使い捨て会話を1つ作り、`claude -p --resume <sid>` と `claude -p --resume <sid> --fork-session` を各1回。転写ファイルが増えるか・`sessionId` が変わるかだけ見る) | 既定 = **同じファイルに追記**(= H2 実在の確定)、`--fork-session` = **新 ID の別ファイル** | `DESIGN.md` §2.17 の worker 経路の設計がこの1点に乗っている。今は `--help` の文言からの**推論**であって実測ではない。**測るまで「測った」と書かない** |
+
+★4 は上限をほとんど食わない(応答は「ok」1語でよい)ので、1-3 が赤でも**4 だけは撃ってよい**
+= 判るのが設計の前提だから。使い捨て会話は `mktemp -d` の下に作り、終わったら消して不在を確認する。
+
+★★**訂正(8/02 09:1x、実測)= 「1-3 が赤でも 4 だけは撃ってよい」は成立しない**。
+上限は「少しなら食える」ではなく **0 トークン**。launchd の中から `claude -p` を1回撃った結果:
+
+```
+is_error = True
+result   = You've hit your weekly limit · resets 12am (Asia/Tokyo)
+usage    = input 0 / output 0 / total_cost_usd 0
+```
+
+**上限中は「安い測定」という概念が無い**(応答が1語でも、応答が返らない)。4 も 8/03 00:00 JST 以降。
+副産物として、この1回で**解除時刻が3枚目の証拠として取れた**(7/31 の日付入り・8/02 05:48・8/02 09:1x)。
+
+### 1-G-2. ★★ssh から `claude -p` を測ると**必ず**「Not logged in」になる(製品ではなく計器の欠陥)
+
+2026-08-02 09:0x に踏んで、その場で切り分けた。**次の人は必ずここを踏む**ので先に書く。
+
+| 測った物 | 値 | 意味 |
+|---|---|---|
+| `ssh edith@… claude -p …` の結果 | `is_error=true` / `result = Not logged in · Please run /login` | 一見「edith は未ログイン」 |
+| `~/.claude/.credentials.json` | **存在しない** | 資格情報はファイルではない |
+| `security find-generic-password -s "Claude Code-credentials"`(**メタ情報のみ**) | exit **0** | 項目自体は login keychain に在る |
+| 同上に `-w`(秘密の読み出し)を **ssh から** | exit **36** = interaction not allowed | ssh の非対話セッションは login keychain を**開けない** |
+| 同上を **launchd `gui/501` の中から** | exit **0** | 本番の文脈では**読める** |
+| launchd の中から `claude -p` | `Not logged in` **ではなく** `weekly limit` | 認証は通っている。止めているのは上限だけ |
+
+→ **結論**: ワーカー経路(`claude -p --resume`)は**本番(launchd)では認証を通せる**。
+`Not logged in` は **ssh という測り方が作った値**であって、製品の状態ではない。
+
+★**これは今夜3回目の同じ型** — locale(`makeTmuxRunner`)・`runStrict`(§3)・そして今回。
+**計器が製品と違う経路を測ると、製品の状態と無関係な赤が出る**。
+`ssh` 越しに `claude -p` を含む検査を書いたら、それは**何も測っていない**。
+launchd の中で測る事(使い捨ての LaunchAgent を `gui/501` に bootstrap → ログを読む →
+bootout → ファイル削除 → 不在確認)。今回の観測子は**この手順で立てて畳んだ**
+(`com.edith.kcprobe`、残骸ゼロを確認済み。本番 `com.edith.rc-backend` は無傷 = `state=running`)。
+
+### 1-G-3. ★★本番の `/api/sessions` は**今この瞬間 13/13 が `route: "worker"`**(= 区切り故障が実機で起きている)
+
+2026-08-02 09:2x、edith の常設(port 8787、pid 93561)へ実際に問い合わせた値:
+
+```
+scan  = {files: 665, read: 0, cached: 665}
+一覧  = 13件、全件 live = {"route":"worker","worker":"none","state":"idle","queued":0}
+```
+
+同時刻の tmux には**生きた claude が2本**在る
+(`%0` `/dev/ttys001` cwd `/Users/Shared/dev/roundtrip`(7/30 から3日連続) /
+`%35` `/dev/ttys002` cwd `/Users/edith/Projects`)。
+一覧13件のうち**5件の cwd は `/Users/Shared/dev/roundtrip`** = 本来 tmux 経路に載るはず。
+
+→ **これが M79(区切りがタブに戻る)が守っている故障そのもの**。
+launchd に locale が無い → `list-panes -F` の区切りが潰れる → 一覧が空 →
+**全会話が静かにワーカー経路へ落ちる**。理論ではなく、**今の本番の値**。
+
+★**だから配備後の受け入れ条件が数字で決まる**:
+- **今(配備前) = `route:"tmux"` が 0/13**
+- **配備後の要求 = roundtrip の会話が `route:"tmux"` になる(1本以上)**
+これが動かなければ配備は失敗。「テストが緑」では代わりにならない。
+
+★**もう1つ、配備前の値**: 登録簿 `~/.rc-backend/panes/` は **8件中1件だけ生きている**
+(`48d55690` = pane `%35` / pid 94840 / 心拍は2秒ごとに更新中)。
+**その1件は今の一覧に出ていない** = 未発言(転写ファイルがまだ無い)会話は、
+配備中の古いコードでは一覧に載らない。**配備後は `48d55690 (未発言)` の行が出る事**が要求値。
+
 **★台本の起動には「claude が信頼済みの dir」が要る(ここを次の人が必ず踏む)**
 
 既定の `--cwd` は `$HOME` で、edith の `/Users/edith` は**信頼済みではない**。
@@ -262,8 +338,9 @@ edith の信頼済み dir(`~/.claude.json` の `hasTrustDialogAccepted`、実測
 
 ## 2. 実装の現状(`~/Infra/mobile-work/rc-backend/` = git・local only)
 
-node 22/25 両対応、依存ゼロ、`node:http` のみ。**単体 220 / e2e 100、全緑**(8/02 に `src/tail.mjs` の
-16 本、有界読みの 32 本 = `listing` 20 + `history` 12、**電話画面の 35 本 = `frames` 18 + `view` 17** を足した)。
+node 22/25 両対応、依存ゼロ、`node:http` のみ。**単体 253 / e2e 115、全緑**(8/02 08:3x 実測。
+`src/tail.mjs` 16 / 有界読み 32 = `listing` 20 + `history` 12 / 電話画面 47 = `frames` 18 + `view` 29 /
+返答の到達可能性 `reply-route` 4 / **tmux 面 68**(locale 由来の区切り消失の直しで +10)を含む)。
 **MBP(Node v22.14.0)と edith(Node v25.9.0)の両方で、現行コードを実測済み**(8/1 深夜)。
 edith へは `rsync` → `mktemp -d` の使い捨てコピーで走らせ、検査後に `rm -rf` + `ls` で不在を確認。
 この手順は `rc-backend/tools/verify-on-edith.sh` に台本化した
@@ -292,13 +369,27 @@ edith へは `rsync` → `mktemp -d` の使い捨てコピーで走らせ、検�
 
 変異検査の現況(**対照2枚を通過した台本での値**):
 
+★**8/02 10:0x に出た**(上の待ちは解消)。値は下の表の最上段。
+規則自体は生きている: **変異の一巡は直すたびに取り直す。前回の値は再利用できない**。
+
 | 機械 | 結果 |
 |---|---|
-| **MBP(Node 22)· 8/02 03:0x = 最新**(有界読みを入れた木) | **51件**(41 + `listing.mjs` 用 10)→ **48 検出 / 3 未到達(M2/M6/M26、注記つき) / 素通り 0** → exit 0。対照2枚 OK。新規 M42-M51 は**10件すべて検出**、うち **M42(チャンク間の持ち越しを捨てる)/ M43(短い read を読み直さない)は e2e でも落ちる** = 継ぎ目の守りが HTTP まで効いている |
+| **MBP(Node 22)· 8/02 10:0x**(locale 由来の区切り消失を直した木 = `3bc1302`) | **83件** → **80 検出 / 3 未到達(M2/M6/M26、注記つき) / ★素通り 0** → exit 0。対照2枚 OK。**新規 M79-M83 は5件とも検出**(いずれも `unit 落ちる / e2e 通る`)= 区切り・不達・ソケット判定の守りに検査が当たっている。★1件(**M43**)だけ「検出(要約なしで落ちた)」= 赤なのは終了コードで確定しているが、**変異を捕まえたのか検査が起動段で死んだのかは区別が付いていない**。M43 は `unit 落ちる` 側でも捕まっているので判定はこの e2e の合図に依存しない |
+| 〃 8/02 10:2x(**上の木に runStrict 必須化を足した木**・`--only M8` の部分走行) | 7件 → **7/7 想定どおり**(M8/M80/M81/M82/M83/**M84** = 検出、**M85** = 未到達(注記))。★**全件ではない**ので、この行だけで「変異も緑」とは読まない。全件の取り直しは配備後 |
+| **MBP(Node 22)· 8/02 03:0x**(有界読みを入れた木・**現在の木ではない**) | **51件**(41 + `listing.mjs` 用 10)→ **48 検出 / 3 未到達(M2/M6/M26、注記つき) / 素通り 0** → exit 0。対照2枚 OK。新規 M42-M51 は**10件すべて検出**、うち **M42(チャンク間の持ち越しを捨てる)/ M43(短い read を読み直さない)は e2e でも落ちる** = 継ぎ目の守りが HTTP まで効いている |
 | MBP(Node 22)· 8/02 00:5x(参考・木が古い)(commit `0d62b88` の木) | **41件**(既存34 + `tail.mjs` 用7)→ **38 検出 / 3 未到達(M2/M6/M26、注記つき) / 素通り 0** → exit 0。対照2枚 OK。追加7件は**全て「unit 落ちる / e2e 通る」** = 新しい検査が狙った守りに当たっている |
 | MBP(Node 22)· 8/01 23:5x(参考・木が古い) | **34件** → **31 検出 / 3 未到達(M2/M6/M26、注記つき) / 素通り 0** → exit 0。M29 の回帰を入れた木で取り直した値 |
 | edith(Node 25)· 8/02 00:0x = **run10**(commit `f366877` の木) | 34件 → **31 検出 / 3 未到達 / 素通り 0** → 合算 exit 0。単体 137 / e2e 78 / PII 対照 17 PASS / 片付け不在確認。**両機が同じ木で同じ値** = run9 で開いていた M29 の素通りは閉じた |
 | 〃 8/01 23:0x = run9(参考・**もう有効な値ではない**) | 34件 → 30 検出 / ★素通り 1(M29)→ exit 1。撃った時点の作業ツリーに M29 の回帰がまだ無い(単体 136 = 回帰前の本数)ので、run9 は「素通りだった木」を正しく素通りと報告していた。**残す理由は、変異の値は木ごとに取り直す物だと示す為** |
+
+★**M43 の「写しを読む事」は実行できなかった — 写しがどこにも保存されていなかったから**(8/02 10:1x)。
+台本は「要約が読めないまま落ちた」件を数えて名前を出し、最後に「写しを読む事」と指図するのに、
+その写しを**残していなかった**。50 分の走行をやり直す以外に読む手が無い状態を、指図の形で人に渡していた。
+直した(`test/mutation-controls.py`): 走行中に stdout/stderr の末尾 40 行ずつを取り、
+`.harness/mutation-blind/<日時>-M<番号>.txt` に書いて**その path を報告に印字する**。
+規則として: **人に次の一手を指図する出力は、その一手に要る物を自分で残す**。
+なお M43 の判定自体は揺れない — `unit 落ちる` 側で独立に捕まっているので、
+この e2e の合図が読めなくても「守りが在る」の根拠は残る。次に M43 が blind で出たら写しが取れる。
 
 ★**一致したのは run10 を取ってから**。それまでの2行(MBP と run9)は同じ木の値ではなく、
 「両機で一致」と書ける状態ではなかった。**変異の一巡は直すたびに取り直す。前回の値は再利用できない**
@@ -318,17 +409,18 @@ edith へは `rsync` → `mktemp -d` の使い捨てコピーで走らせ、検�
 | `src/listing.mjs` | **末尾からの有界読み**(8/2 新設)。`readLinesBackward` = 後方チャンク読みの唯一の実装(持ち越し / 短い read の読み直し / 改行での切り出し / 予算 / `reachedStart`)+ 一覧メタ4項目 + `MetaCache` | 20 |
 | `src/ring.mjs` | SSE 再接続追いつき用リングバッファ(gap 検出) | 6 |
 | `src/worker.mjs` | `-p --resume` 経路の状態機械(TUI が無い会話専用) | 10 |
-| `src/inject.mjs` | tmux 面。ペイン列挙 / **画面分類** / 3相送信 / Escape | 58 |
+| `src/inject.mjs` | tmux 面。ペイン列挙 / **画面分類** / 3相送信 / Escape。**唯一の tmux 呼び口 `makeTmuxRunner`**(子 env に `LC_ALL` を被せる)+ 区切り `PANE_SEP="\|&\|"`(印字可能 ASCII)+ `parsePaneListStrict`(1行でも壊れていれば一覧ごと捨てる)| 68 |
 | `src/registry.mjs` | 登録簿の読み手。`resolveSessionPane` = 宛先の決定 | 46 |
 | `src/procs.mjs` | **`ps` の実測層**(8/1 新設)。前面判定 `pgid==tpgid` / 誕生時刻 / claude が居る tty 集合。node の API を import しない純関数 + runner 注入 | 10 |
 | `src/tail.mjs` | **jsonl の追記 tail**(8/2 新設)= ライブ配信の下回り。世代交代の検出(inode / 切り詰め / checkpoint)+ SSE 再開判定の純関数 `resumeDecision` | 16 |
 | `src/frames.mjs` | **SSE の枠解き**(8/2 新設)= 電話側の下回り。チャンク跨ぎ / 単独 CR の持ち越し / `backoffMs` 上限 15 秒 | 18 |
-| `src/view.mjs` | **電話側の判断**(8/2 新設)= 文面と継ぎ目。`mergeHistory`(履歴とライブの重複除去)/ `sendResult`(202 は警告であって失敗ではない・409 は再試行不可)/ `relTime` | 17 |
+| `src/view.mjs` | **電話側の判断**(8/2 新設)= 文面と継ぎ目。`mergeHistory`(履歴とライブの重複除去)/ `sendResult`(202 は警告であって失敗ではない・409 は再試行不可)/ `relTime` | 29 |
 | `src/app.html` | **電話の画面**(8/2 新設)。**DOM 貼り付けのみ**。判断を書かない — ここに書いた判定は単体でも変異でも見えなくなる | (0・意図的) |
 | `src/server.mjs` | HTTP 面(8エンドポイント + 検証ページ + bearer + **tmux 経路のライブ配信** + **静的配信の明示表**) | e2e で覆う |
 | `test/e2e-local.mjs` | 偽 tmux / 偽 claude-work を注入した実サーバ通し検証 | 100 |
 | `test/fixtures/screens/` | **実機の画面 18 枚**(手書き fixture は撤去) | 両方の入力 |
-| `test/mutation-controls.py` | **守りを1つずつ壊して検査が気付くか測る** | 59件(34 + tail 7 + listing 10 + 電話面 8) |
+| `test/mutation-controls.py` | **守りを1つずつ壊して検査が気付くか測る**。番号の重複を起動段で落とす(8/02 追加。実際に M69-M73 を既存と衝突させ、報告が「どちらの M70 か」を言えなくなった)| **83件**(M1-M83。8/02 に locale 由来の区切り消失の M79-M83 を追加) |
+| `test/phone-window-controls.sh` | 実 tmux を使う対照。**L1/L2/L3 = locale の負の対照**(L3 = 旧書式のタブは今もこの機械で潰れる、が `garbled` のままである事を毎回測る) | 50 OK / 0 NG |
 | `tools/live-http-check.mjs` | **本物の TUI 相手に HTTP 面を通しで駆動**(8/2 新設)。認証 → 一覧 → status → history → SSE → 送信 → 返答待ち → interrupt → 404 | 16 判定 |
 
 ### 2-A. 送信は3相(この順序が守りの本体)
@@ -598,6 +690,10 @@ Web Push が使えない。iOS は背面化で SSE を切る(これは経路を�
 | ★★**選択画面(CHOICE)に電話から答える道が無い**(8/02 07:0x に実測で発覚。探していた物ではなく、`live-http-check` が信頼確認で止まった副産物) | API は `GET /api/sessions` / `POST …/messages` / `POST …/interrupt` / `POST /api/account/next` の4つだけ。**キーを送る口が無い**。送信は CHOICE を検出したら**必ず断る**(2-D の設計で、これ自体は正しい)。結果、会話が選択画面に入った瞬間、電話からは**見えるが答えられない**。Claude Code は許可確認・信頼確認・`/model` 等で日常的にここへ入るので、頻度は低くない。Tom の裁定「返答待ちであれ作業中であれいつでも見て、**干渉できれば**いい」の「返答待ち」がまさにこれ | ★**未着手。設計から**。自由なキー入力を通す口(= 何でも送れる)は作らない — 断りの規約(2-B)ごと無効になる。当てる形: **画面から読み取った選択肢に対する「N 番を選ぶ / Esc」だけを受ける**口。①`classifyScreen` は既に CHOICE を返す ②選択肢の行(`❯ 1. …`)を読む所は未実装 ③送るのは `1`..`9` / `Enter` / `Escape` に限定し、**画面が CHOICE の時だけ**通す ④ここは「電話から Yes を押す」= 安全確認の遠隔応答なので、Tom の裁定を先に取る(私が仕様を決める所ではない) |
 | ★**edith の `/Users/edith` は Claude Code に信頼されていない**(8/02 07:0x 実測。`~/.claude.json` の `projects` を読んで確認) | 既定の cwd で会話を建てると、入力欄でなく信頼確認の選択画面で止まる。上の行と重なると **「電話から起こした会話が、電話からは進められない」** が完成する。`live-http-check` はこれで 90 秒無言のまま exit 1(=「壊れている」)を出していた | 計器側は直した(信頼済みの dir を読んで寄せる + 名指しで exit 2)。**機械側は未対応**: `/Users/edith` を信頼するかは「その home 配下を Claude Code に read/edit/execute させるか」の判断なので Tom に出す。信頼済みは現状 `/private/tmp` `/Users/edith/Projects` 等 |
 | ~~**edith に rc-backend の常設が無い**~~ **入れた(8/02 04:40)。この行は 07:1x まで「無い」のまま残っていた** | 配置 = `/Users/edith/rc-backend`、常駐 = launchd `com.edith.rc-backend`、外向き = `tailscale serve` 443 → 127.0.0.1:8787。**入れ替えは `kickstart -k`(bootout はしない = 定義を触らない)**。同一性は pid で見る(`launchd の job == 8787 の listener == server.mjs`)。artifact = `.harness/evidence-2026-08-02/verify-rc-backend-observe-20260802-071405.json`(全層 86420 で一致) | 残 = **止められる事の再確認**は `--prove-stop` で取れる(bootout するので人が使っていない時間帯に)。★この行が丸一日「無い」のままだったのが教訓: **穴の表と状態の表を別々に更新すると、片方だけ古くなる**。次に Phase を閉じる時は両方を同じ commit で触る |
+| ~~★★**本番(launchd)だけがペイン一覧の区切りを失っていた = 全会話が worker 経路 = lost update**~~ **根治した(8/02 08:3x)** | tmux は locale が無いと `-F` 出力の制御文字を潰す(実測: 3.7b/edith・3.6a/MBP 両方で `%0<TAB>2.1.220` → `%0_2.1.220`。`LANG=C` でも化ける)。plist が子に渡すのは `RC_PORT`/`PATH`/`HOME`/`RC_BIND` の4つだけ = **locale 変数が無いのは launchd 起動プロセスだけ**。ssh も開発シェルも `LANG` を持つので、**既存の検査は1本も赤くならなかった**。連鎖 = 区切り消失 → パーサが空配列 → 全部「tmux ペイン無し」 → 全部 worker(`claude -p --resume`)→ **tmux で開いている会話に第2の書き手** | 直し = ①区切りを **`PANE_SEP="\|&\|"`(印字可能 ASCII のみ)** にして locale 依存を根から抜く(`\x1f` 等の制御文字はタブと同じ理由で潰され得るので採らない)②**文法を境界に使う** = 先頭列が `^%\d+$` でない行は拒否 ③`makeTmuxRunner` が唯一の呼び口で子 env に `LC_ALL` を被せる(= **防御層**。存在しない locale 名だと `setlocale()` が C に落ちて再発するので単独では信じない)④**`refused > 0` で一覧ごと捨てる**(1行だけ読めて残りが壊れた場合が最悪 = 読めなかったペインだけが「存在しない」ことになり、まさにその会話が worker に落ちる)⑤一覧経路は `runStrict` を通し、`ENOENT`/非zero/signal/「ソケットは在るのに繋がらない」を **`tmux-unavailable` = 送信拒否** に分ける。`run`(quiet)は capture-pane 用に残す — **実測で `capture-pane` は locale の影響を受けず、`classifyScreen("")` は `UNKNOWN`(≠`SENDABLE`)なので既に fail-closed** だから。検査 = 単体 +10(計 68)/ 変異 **M79-M83** / 実 tmux の負の対照 **L1/L2/L3**(L3 = 旧書式のタブは今もこの機械で潰れる、が `garbled` のままである事を毎回測る) |
+| ★**TOCTOU: 一覧を取ってから worker を起動するまでにペインの状態が変わる**(8/02、Codex Q3。未着手) | 一覧の時点で「ペイン無し」でも、worker を起こす時には tmux 側で TUI が開いている可能性がある。**観測は正しかったのに結果は lost update** になるので、上の fail-closed では防げない(fail-closed は「読めなかった」を止める仕組みで、「読めたが古い」は止めない) | ★**08:5x に設計決着(正本 = `DESIGN.md` §2.17)**。当て = **worker は必ず fork する**(`--fork-session`)。「起こす直前に取り直す」= 窓を狭めるだけなので **却下**(Codex 裁定、私も一度反対したが撤回 — worker 経路に落ちるのはペインが無い時だけで、その時に干渉すべき相手は居ない)。★ただし `--fork-session` を足すだけでは電話の中で会話が砕ける(毎回 S→S1, S→S2 と分岐する)ので、**登録簿に「S の頭」を持ち、2通目以降はその頭へ `--resume`** が要る。★H2 が実在する事の決め手は `claude --help` の `--fork-session` = 「When resuming, create a new session ID **instead of reusing the original**」= **既定の `--resume` は元 ID を使い回す**。転写の同居数 0(手元 1,329 / edith 652)を根拠にしかけたが、edith の `rc-backend.log` に worker 起動が一度も無い = 「起きていない」であって「起きない」ではなかった |
+| ★**`listPanes()` に「`runStrict` が無ければ `run` で代用する」逃げ道が残っている**(8/02 08:5x、自分の diff を読み返して発見。**罠であって現行の欠陥ではない**) | `listPanes()` は `this.tmux.runStrict ? … : this.tmux.run(args)`。`runStrict` を持たないランナーで `TmuxInjector` を組むと、今夜塞いだ fail-open が**そのまま復活**する。★実際にそういう組み方をしている所が在る = `tools/live-http-check.mjs:326` の `new TmuxInjector({ tmux: { run: tmux } })`(他に `live-inject-check` / `live-choice-check` / e2e の偽物 / `registry.test.mjs:43`)。**ただし現時点では届いていない**: これらは `capture()` と `send(pane, …)` しか呼ばず、`listPanes()` にも `resolvePane()` にも入らない(実測 = 呼び出し箇所を全部 grep)。だから「今壊れている」ではなく「**次に足す1行で静かに壊れる**」 | 直し = **`runStrict` を必須にする**(無ければ構築時に落とす。「失敗を報告できないランナーは、空が主張になる呼び出しには使わせない」)。偽物側は `runStrict` も生やす小さな helper を test に1つ置く。★これを「本番は `makeTmuxRunner` を通るから問題無い」で閉じない — **計器が製品と違う経路を測る**のが今夜ずっと踏んでいた型そのもの。変異 **M84**(必須化を外して ternary に戻す)を同時に足す |
+| ★**同一会話への並行送信で、tmux 経路の打鍵が混ざる**(8/02、Codex Q3 由来。**08:5x に中身を実測で訂正**。未着手) | ★**最初「両方が worker 経路を選んで二重 spawn」と書いていたが、それは誤り**。`src/worker.mjs:8` の通り WorkerManager は会話 ID の Map への**同期**アクセスだけで到達し、busy なら FIFO キューに積む = **二重 spawn は起きない**。経路判定(`resolvePane()` = 同期の `list-panes`)から `manager.send()` までに `await` が無いので、そこも1ティックで閉じている。**実在する危険は tmux 経路の方**: `injector.send(pane, text)` は本文を打つ→画面に載るまで待つ→Enter、と **await を挟む**。同じペインに2本走ると A が「aaa」を打った後、Enter の前に B が「bbb」を打ち、A の Enter が **「aaabbb」を1通として送る**。電話の二度押しで普通に起きる | ★**08:5x に鍵が決着(正本 = `DESIGN.md` §2.17)= 鍵はペイン ID**。Codex 裁定「競合している実資源は conversation ではなく **pane の単一キーボード/composer**。異なる会話でも同じペインへ同時送信すれば混ざる」。私の会話単位案は誤りだった。**掴んだ後に『このペインはまだその会話か』を再検証**する二段が要る。★上の TOCTOU と**同じ機構では閉じない**(あちらは fork、こちらはペイン錠)= この2行は**別々の当て**。「一緒に考える」と書いていたのは撤回。★置き場所の未決 = 錠を `TmuxInjector` の中に置くか外か(外だと `live-*` の道具が素通りする = §3 の `runStrict` 罠と同じ型) |
 
 ### 3-N. 変異の3回目が明けたら**すぐ**やる小さい直し(2026-08-02 06:0x に積み、07:0x に**全部済**)
 
@@ -870,6 +966,56 @@ Codex の一撃目: **「ローカルの 401 確認だけでは、海外から�
    ★**幽霊の判定自体は正しく効いている**(`registry.mjs` の同一性経路 = pid が死んでいれば
    心拍を問わず死と判定)。だから**この幽霊 file は消さない** — 実機に在る唯一の
    「同一性つきで死んでいる登録」= 生きた fixture として価値がある。害は無い(常に落とされる)。
+
+   ★★**09:2x の再測(上の表は 03:1x の値。**古い**)**:
+
+   | 測った物 | 03:1x | 09:2x |
+   |---|---|---|
+   | tmux `work` の生きた Claude Code | 1本(`%0`) | **2本**(`%0` + `%35`) |
+   | 登録簿 `~/.rc-backend/panes/` | 1件(全部幽霊) | **8件・うち生存1件**(`48d55690` = `%35` / pid 94840) |
+   | 電話から宛先に出来る会話 | 0本 | **1本**(ただし本番の一覧には出ない = 未発言) |
+
+   増えた1本の正体 = **`--settings` で statusLine を注入して起動した claude**
+   (`claude --settings '{"statusLine":{"type":"command","command":"bash \"…/rc-pane-register.sh\"","refreshInterval":2}}'`、
+   pid 94840、8/02 07:54 起動、tmux `work` の窓2 = `%35`、cwd `/Users/edith/Projects`)。
+   心拍は2秒ごとに更新されている = **登録の経路そのものは実機で動いている**。
+
+   ---
+
+   ★★**訂正(09:4x、実測)= この `%35` の由来を私は取り違えていた。「私が手で起動した実演用の
+   会話」ではなく、`launchd` が維持している**常設の電話用窓**だった**。
+
+   下に書いていた「畳む時は `tmux kill-pane -t %35` の1手で戻せる」は**戻し方ではない**
+   (60秒後に同じ物が生え直す)。実演用の置き土産と読んだ次の人が消しに行く事故を防ぐ為、
+   由来を測り直した値で置き換える:
+
+   | 測った物 | 値 |
+   |---|---|
+   | `%35` の所属 | tmux `work` の window `@34`、**window 名 = `phone`** |
+   | それを立てている物 | LaunchAgent **`com.edith.rc-phone-window`**(`StartInterval = 60`、**`runs = 90`**、`last exit code = 0`) |
+   | その中身 | `/Users/edith/rc-backend/tools/ensure-phone-window.sh` |
+   | 起動するコマンド | `RC_PHONE_CMD = /Users/edith/.local/bin/rc-claude`(= `--settings` を足して `exec claude` するラッパ) |
+   | 場所の指定 | `RC_PHONE_SESSION = work` / `RC_PHONE_WINDOW = phone` / `RC_PHONE_CWD = /Users/edith/Projects` |
+
+   つまり `--settings` の注入は**私の手作業ではなく、既に常設の経路として動いている**。
+   `%35` は残骸ではなく**製品の一部**。★**消さない。`kill-pane` しても 60 秒で戻る**。
+   本当に止めるなら `launchctl bootout gui/501/com.edith.rc-phone-window` = これは
+   本番停止であって「実験の後始末」ではない。
+
+   ★**ゲート自体は残るが、重みは下がる。上の「入れるまで製品に映る物がゼロ」は今は成立しない**:
+
+   | | 訂正前に書いていた事 | 実際 |
+   |---|---|---|
+   | 自動登録は動いているか | `settings.json` に無い = 動いていない | **`phone` 窓については動いている**(常設・心拍2秒) |
+   | 1行が無いと届かない範囲 | edith の会話ぜんぶ | **Tom が机で自分で `claude` と打った会話だけ** |
+   | 根拠 | — | Tom の D5「**remote-mini を on にしたセッションだけ一覧に出れば十分**」。`rc-claude` 経由が その "on" の実体 |
+
+   ★**それでもゲートを消さない理由**(自分の案を潰しておく): Tom が机で素の `claude` を開き、
+   その会話を電話から触りたくなる場面は「**返答待ちであれ作業中であれいつでも見て、干渉できれば
+   いい**」に真っ直ぐ当たる。登録が無いと **session_id → pane の対応が存在しない**
+   (`list-panes` は「このペインがどの会話か」を教えない)ので、その会話は tmux 経路に載らず
+   ワーカー経路へ落ちる = H2(同一 transcript の二重書き)。よって**「素の `claude` で開いた会話」
+   の1件のみがこの1行の守備範囲**。急ぎではないが、消えてもいない。
 2. `sudo mkdir -p /Users/tomtim && sudo chown edith:staff /Users/tomtim`(sudo は構造的に不可能)。
    **持ち出し/戻し機能だけが依存**。本体はこれ無しで動く。急がない。
 3. **★edith をどの Claude アカウントで走らせるか**。実測: `oauthAccount.emailAddress` =
@@ -937,6 +1083,19 @@ Codex の一撃目: **「ローカルの 401 確認だけでは、海外から�
    `launchctl print gui/501/<label>` の `pid` を正とする。後者の方が層が1つ少ない。
    このレーンで書いた `rc-backend/tools/verify-rc-backend-state.sh` は既に後者で測っている
    ので、**動く見本は在る**。
+
+7. ~~**渡米中に「rc-backend が落ちた」をどこに通知するか**~~ → **取り下げた。Tom 項目ではない**
+   (2026-08-02 09:2x に足して 09:3x に自分で取り下げ。経緯 = `DESIGN.md` §8-7)。
+
+   足した時点で私は艦隊の現物を読んでいなかった。読んだら答えは既に在った:
+   `~/bin/discord-notify.sh` → athenas の `~/個人/friday/fleet-notify.sh` →
+   **Tom が既に見ているチャンネル**へ **@mention 付き**、しかも **`"id"` の検査**と
+   **iMessage への退避**まで入っている(= yoda で 46 時間不達になった原因への当てが既に在る)。
+   宛先アカウント・チャンネル・メッセージ種別のどれも変わらないので、私の Tom ゲートに当たらない。
+   **私が決めて作る**。
+
+   ★残す教訓: **「外部宛先だから Tom」と型で判断する前に、艦隊に既に答えが在るかを見る**
+   (コスト = `ls ~/bin` と2ファイル = 1分)。
 
 ---
 

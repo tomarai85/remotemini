@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSseParser, decodeEvent } from "../src/frames.mjs";
+import { PANE_SEP } from "../src/inject.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SB = mkdtempSync(join(tmpdir(), "rc-e2e-"));
@@ -87,23 +88,25 @@ fixture(SID_MISMATCH, CWD_REG, "居場所不一致"); // 会話は CWD_REG。登
 
 // ---- 偽 tmux ----------------------------------------------------------------
 // 実物の観測に合わせてある(2026-07-31 edith):
-//   list-panes -F "#{pane_id}\t#{pane_current_command}\t#{pane_tty}\t#{pane_current_path}"
+//   list-panes -F "#{pane_id}<SEP>#{pane_current_command}<SEP>#{pane_tty}<SEP>#{pane_current_path}"
 //   → 対話 claude の command は "2.1.220"(バージョン文字列)、素のシェルは "zsh"
+// ★区切りは本体から取る(PANE_SEP)。ここに文字列を写すと、本体が区切りを変えた時に
+//   この偽物だけが古い区切りを喋り続け、e2e は緑のまま本番だけ壊れる(2026-08-02 の型)。
 const PANES = [
-  `%10\t2.1.220\t/dev/ttys010\t${CWD_READY}`,
-  `%11\t2.1.220\t/dev/ttys011\t${CWD_CHOICE}`,
-  `%12\tzsh\t/dev/ttys012\t${CWD_SHELL}`,
-  `%13\t2.1.220\t/dev/ttys013\t${CWD_AMBIG}`,
-  `%14\t2.1.220\t/dev/ttys014\t${CWD_AMBIG}`, // 同じ cwd に2つめ
-  `%15\t2.1.220\t/dev/ttys015\t${CWD_GEN}`,
-  `%16\t2.1.220\t/dev/ttys016\t${CWD_DEAF}`,  // 送っても画面が動かない(load-bearing: Enter を出さない対照)
-  `%17\t2.1.220\t/dev/ttys017\t${CWD_RACE}`,  // 本文の直後に選択画面が出る
-  `%18\t2.1.220\t/dev/ttys018\t${CWD_LIMIT}`, // 上限の告知が出ている(送れるが答えは返らない)
-  `%20\t2.1.220\t/dev/ttys020\t${CWD_REG}`,   // 登録簿検証: 同じ cwd に claude が3つ並ぶ
-  `%21\t2.1.220\t/dev/ttys021\t${CWD_REG}`,
-  `%22\t2.1.220\t/dev/ttys022\t${CWD_OTHER}`, // 居場所不一致の検証用
-  `%23\t2.1.220\t/dev/ttys023\t${CWD_FRESH}`, // 未発言の会話が居るペイン(jsonl は無い)
-  `%24\t2.1.220\t/dev/ttys024\t${CWD_UNREG}`, // 未登録の会話の cwd に居る唯一の claude
+  `%10${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys010${PANE_SEP}${CWD_READY}`,
+  `%11${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys011${PANE_SEP}${CWD_CHOICE}`,
+  `%12${PANE_SEP}zsh${PANE_SEP}/dev/ttys012${PANE_SEP}${CWD_SHELL}`,
+  `%13${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys013${PANE_SEP}${CWD_AMBIG}`,
+  `%14${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys014${PANE_SEP}${CWD_AMBIG}`, // 同じ cwd に2つめ
+  `%15${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys015${PANE_SEP}${CWD_GEN}`,
+  `%16${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys016${PANE_SEP}${CWD_DEAF}`,  // 送っても画面が動かない(load-bearing: Enter を出さない対照)
+  `%17${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys017${PANE_SEP}${CWD_RACE}`,  // 本文の直後に選択画面が出る
+  `%18${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys018${PANE_SEP}${CWD_LIMIT}`, // 上限の告知が出ている(送れるが答えは返らない)
+  `%20${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys020${PANE_SEP}${CWD_REG}`,   // 登録簿検証: 同じ cwd に claude が3つ並ぶ
+  `%21${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys021${PANE_SEP}${CWD_REG}`,
+  `%22${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys022${PANE_SEP}${CWD_OTHER}`, // 居場所不一致の検証用
+  `%23${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys023${PANE_SEP}${CWD_FRESH}`, // 未発言の会話が居るペイン(jsonl は無い)
+  `%24${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys024${PANE_SEP}${CWD_UNREG}`, // 未登録の会話の cwd に居る唯一の claude
 ].join("\n") + "\n";
 // ★2026-08-01: 画面はもう手で書かない。使い捨てセッションから撮った生の capture-pane 出力
 // (test/fixtures/screens/)をそのまま使う。前の版はここに手書きの画面を置いていて、

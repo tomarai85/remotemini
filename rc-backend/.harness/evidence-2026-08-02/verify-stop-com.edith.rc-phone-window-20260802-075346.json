@@ -1,0 +1,19 @@
+{
+  "service": "com.edith.rc-phone-window",
+  "host": "edith@10.0.0.0",
+  "verified_at": "2026-08-02T07:53:46+0900",
+  "stopped": "true",
+  "checks": {
+    "launchd_unloaded": "true",
+    "plist_state": "absent",
+    "process_absent": "true",
+    "queue_empty": "no_queue_file",
+    "last_outbound_time": "no_log",
+    "last_outbound_stable": "true",
+    "stable_days_threshold": "7",
+    "vercel_deletion_excluded": "true (= deletion is not counted as stop, Layer 1 required)",
+    "verification_artifact": ".harness/evidence-2026-08-02/verify-stop-com.edith.rc-phone-window-20260802-075346.json"
+  },
+  "rule_reference": "~/.claude/rules/true-stop-definition.md",
+  "notes": "STOPPED=true requires ALL 6 conditions (= true-stop-definition.md). ssh_unreachable = state unknown, NOT stopped. needs_review = manual stat check recommended."
+}

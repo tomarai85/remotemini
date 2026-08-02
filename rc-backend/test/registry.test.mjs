@@ -39,8 +39,11 @@ function fakeFs(files) {
 }
 
 // cwd フォールバックは実物の resolvePane を使う(二重実装で乖離しないように)
-const injectorFor = (paneList) =>
-  new TmuxInjector({ tmux: { run: (a) => (a[0] === "list-panes" ? paneList : "") } });
+const injectorFor = (paneList) => {
+  // 偽物は失敗しないので run と runStrict は同じ実体。両方渡すのは構築の要件(M84)。
+  const run = (a) => (a[0] === "list-panes" ? paneList : "");
+  return new TmuxInjector({ tmux: { run, runStrict: run } });
+};
 const byCwd = (cwd, panes) => injectorFor("").resolvePane(cwd, panes);
 
 // 下のテストの登録は mtimeMs が 1〜1000(小さい絶対値で新旧関係だけを表す)。

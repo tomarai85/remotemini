@@ -298,22 +298,148 @@ export function composerIsEmpty(text) {
   return t === "" || t === COMPOSER_PLACEHOLDER;
 }
 
-// 区切りはタブ。cwd に空白が入りうるので空白分割は使えない(実在する: "/Users/tom/My Docs")。
-// 対象は #{pane_id}(= "%12" 形式)。session:window.pane と違いウィンドウ番号の振り直しで動かない。
-// tty は path より**前**に置く。path は空白もタブも入りうるので末尾で rest.join("\t") に
-// 吸わせる必要があり、その後ろに項目を足すと path に食われる。
-const PANE_FORMAT = "#{pane_id}\t#{pane_current_command}\t#{pane_tty}\t#{pane_current_path}";
+/**
+ * ペイン一覧の区切り。**印字可能な ASCII しか使わない**。
+ *
+ * ★初版はタブだった。タブは **tmux 側の locale 次第で消える**(2026-08-02 edith 実測、
+ *   tmux 3.7b / MBP 3.6a でも同じ)。locale が UTF-8 でないと tmux は `-F` の出力中の
+ *   制御文字を潰し、タブが `_` になる:
+ *       env -i ... tmux list-panes -a -F '#{pane_id}\t#{pane_current_command}'
+ *         -> "%0_2.1.220"      (LANG/LC_ALL/LC_CTYPE のどれか = *.UTF-8 なら "%0\t2.1.220")
+ *   launchd は locale を渡さない = **本番の server だけ区切りを失っていた**。開発シェルには
+ *   LANG が在るので、手元と ssh の検査は永久に緑。実際に本番だけが壊れていた。
+ *   ★`\x1f` 等の他の制御文字に替えても同じ理由で潰れる。だから区切りは印字可能に倒す。
+ *   ★locale を被せる対策(makeTmuxRunner)は**残す**が、それ単独を根拠にしない。
+ *     locale 名は環境に在るとは限らず、無い名前を渡すと setlocale が C に落ちて再発する。
+ *
+ * 空白は使えない: cwd に空白が入りうる(実在する: "/Users/tom/My Docs")。
+ * 値に紛れ込まない形として、印字可能 ASCII 3文字を使う。万一 path に現れても
+ * 「解釈できない行」として拒否側に倒れる(= 送らない)ので、静かに壊れることはない。
+ */
+export const PANE_SEP = "|&|";
 
-/** list-panes の出力を行ごとに構造化する。純関数。 */
-export function parsePaneList(out) {
+// 対象は #{pane_id}(= "%12" 形式)。session:window.pane と違いウィンドウ番号の振り直しで動かない。
+// tty は path より**前**に置く。path は区切り以外の何でも入りうるので末尾で吸わせる必要があり、
+// その後ろに項目を足すと path に食われる。
+const PANE_FORMAT = ["#{pane_id}", "#{pane_current_command}", "#{pane_tty}", "#{pane_current_path}"].join(
+  PANE_SEP,
+);
+
+/**
+ * tmux を子プロセスとして起こす時に**必ず被せる** env。
+ *
+ * ここで locale を明示しないと上の PANE_FORMAT のタブが落ちる。呼び側の env を信じない
+ * (launchd・cron・systemd 相当の起動には locale が無い)。上書きは意図的:
+ * 親が LC_ALL=C を持っていても、我々の制御用 tmux 呼び出しだけは UTF-8 で回す。
+ */
+export function tmuxChildEnv(base = process.env) {
+  return { ...base, LC_ALL: "en_US.UTF-8" };
+}
+
+/** tmux が動いていない事を示す tmux 自身の言い分。これだけは「ペインが無い」と読んでよい。 */
+const NO_SERVER_RE = /no server running|error connecting to/i;
+
+/**
+ * 本番で使う tmux ランナー。**locale を被せるのはここ1箇所**。
+ *
+ * `run` と `runStrict` は失敗の扱いが違う:
+ *   - `run`       失敗を "" にする。**画面を撮る系**専用(撮れなければ画面は UNKNOWN 判定に
+ *                 なり、送信は既に止まる = 空文字が状態の主張にならない)。
+ *   - `runStrict` 失敗を分類して投げる。**一覧のように「空」が状態の主張になる呼び出し**用。
+ *                 ここで飲むと「読めなかった」が「ペインが無い」に化け、tmux で開いている
+ *                 会話がワーカー経路(別プロセスの claude)に落ちて lost-update になる。
+ *
+ * @param {object} o
+ * @param {string} o.tmuxBin tmux の絶対パス
+ * @param {(bin:string,args:string[],opts:object)=>string} o.exec execFileSync 相当
+ * @param {boolean} [o.quiet] `run` の失敗を "" にして飲む
+ * @param {(()=>boolean|null)} [o.socketsPresent] tmux のソケットが実在するか。
+ *   「接続できない」には2つの意味がある: **本当に tmux が動いていない**(= ペイン0 は真)と、
+ *   **動いているのに別のソケットを見ている**(= ペインは在る。ワーカーに落とすと lost-update)。
+ *   この2つを分けられるのはソケットの実在だけなので、判定を外から挿す。
+ *   省略時 = 分けられない → 接続失敗は投げる(fail-closed)。
+ */
+export function makeTmuxRunner({ tmuxBin, exec, quiet = true, env = process.env, socketsPresent = null }) {
+  const call = (args) => exec(tmuxBin, args, { encoding: "utf8", env: tmuxChildEnv(env) });
+  return {
+    run(args) {
+      try {
+        return call(args);
+      } catch (e) {
+        if (quiet) return "";
+        throw e;
+      }
+    },
+    runStrict(args) {
+      try {
+        return call(args);
+      } catch (e) {
+        const stderr = String(e?.stderr || e?.message || "");
+        if (e?.code === "ENOENT") {
+          // PATH や設定の誤りでも同じ形で来る。tmux が実在しないと決めつけない。
+          throw new TmuxUnavailableError(`tmux を起動できない(実行ファイルが見つからない: ${tmuxBin})`, stderr);
+        }
+        if (NO_SERVER_RE.test(stderr)) {
+          const present = socketsPresent ? socketsPresent() : null;
+          if (present === false) return ""; // tmux は本当に動いていない = ペインは無い(観測)
+          if (present === null) {
+            throw new TmuxUnavailableError("tmux に接続できず、ソケットの有無も確かめられない", stderr);
+          }
+          throw new TmuxUnavailableError("tmux のソケットは在るのに接続できない(別のソケットを見ている疑い)", stderr);
+        }
+        throw new TmuxUnavailableError(`tmux が異常終了した(status=${e?.status ?? "?"} signal=${e?.signal ?? "-"})`, stderr);
+      }
+    },
+  };
+}
+
+/** 区切りを失った出力を「ペインが無い」と読み違えない為の投げ物。 */
+export class TmuxUnreadableError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "TmuxUnreadableError";
+    this.code = "TMUX_UNREADABLE";
+  }
+}
+
+/** tmux 自体に届かなかった事を「ペインが無い」と読み違えない為の投げ物。 */
+export class TmuxUnavailableError extends Error {
+  constructor(message, detail = "") {
+    super(detail ? `${message}: ${String(detail).trim().slice(0, 200)}` : message);
+    this.name = "TmuxUnavailableError";
+    this.code = "TMUX_UNAVAILABLE";
+  }
+}
+
+/**
+ * list-panes の出力を構造化し、**読めなかった行数も返す**。純関数。
+ *
+ * `panes` だけを返すと「ペインが1つも無い」と「1行も解釈できなかった」が同じ `[]` になる。
+ * この2つは取るべき行動が正反対(前者=ワーカー経路で安全 / 後者=宛先不明なので送らない)
+ * なので、値の側で分ける。
+ */
+export function parsePaneListStrict(out) {
   const panes = [];
+  let lines = 0;
+  let refused = 0;
   for (const line of String(out || "").split("\n")) {
     if (!line.trim()) continue;
-    const [pane, command, tty, ...rest] = line.split("\t");
-    if (!pane || rest.length === 0) continue;
-    panes.push({ pane, command: command || "", tty: tty || "", path: rest.join("\t") });
+    lines += 1;
+    const [pane, command, tty, ...rest] = line.split(PANE_SEP);
+    // 先頭は tmux の pane_id 文法(`%12`)。区切りに頼らず**形**でも縛る:
+    // 区切りが壊れた行は1列に潰れて `%0_2.1.220` のようになり、ここで落ちる。
+    if (!/^%\d+$/.test(String(pane || "")) || rest.length === 0) {
+      refused += 1;
+      continue;
+    }
+    panes.push({ pane, command: command || "", tty: tty || "", path: rest.join(PANE_SEP) });
   }
-  return panes;
+  return { panes, lines, refused };
+}
+
+/** list-panes の出力を行ごとに構造化する。純関数(寛容側。判定は Strict を使う)。 */
+export function parsePaneList(out) {
+  return parsePaneListStrict(out).panes;
 }
 
 /**
@@ -378,13 +504,27 @@ const ECHO_POLL_MS = 25;
 export class TmuxInjector {
   /**
    * @param {object} opts
-   * @param {{run:(args:string[])=>string}} opts.tmux tmux 実行の注入(テスト容易性)
+   * @param {{run:(args:string[])=>string, runStrict:(args:string[])=>string}} opts.tmux
+   *   tmux 実行の注入(テスト容易性)。**両方**要る:
+   *   - `run` = 失敗を飲んでよい呼び出し(送る・撮る)
+   *   - `runStrict` = 失敗を投げる呼び出し(一覧のように「空」が状態の主張になる所)
+   *   `runStrict` の無い注入は**構築時に落とす**。飲む `run` から投げる版は作れないので、
+   *   ここで代用を合成すると「一覧が空 = ペインが無い」という嘘が復活する(M84)。
    * @param {number} [opts.echoBudgetMs] 画面反映を待つ上限
    * @param {(ms:number)=>Promise<void>} [opts.sleep] 待ちの注入
    */
   constructor({ tmux, echoBudgetMs = ECHO_BUDGET_MS, sleep } = {}) {
     if (!tmux || typeof tmux.run !== "function") {
       throw new Error("TmuxInjector: tmux runner injection required");
+    }
+    // ★runStrict を任意にしない。任意にすると listPanes() が飲む run に落ち、
+    //   tmux の失敗が「ペイン0本」に化けて会話がワーカー経路へ流れる(= lost-update)。
+    //   makeTmuxRunner() が両方を返すので、正しい注入は必ずこれを満たす。
+    if (typeof tmux.runStrict !== "function") {
+      throw new Error(
+        "TmuxInjector: tmux.runStrict injection required " +
+          "(一覧は失敗を投げる必要がある。makeTmuxRunner() を使うか、run と同じ実体を runStrict にも渡す)",
+      );
     }
     this.tmux = tmux;
     this.echoBudgetMs = echoBudgetMs;
@@ -503,9 +643,29 @@ export class TmuxInjector {
     return true;
   }
 
-  /** 今ある全ペイン。1回の tmux 呼び出しで取り、呼び側で使い回す。 */
+  /**
+   * 今ある全ペイン。1回の tmux 呼び出しで取り、呼び側で使い回す。
+   *
+   * ★出力は在るのに1行も解釈できない時は **投げる**。空配列を返すと呼び側は
+   *   「tmux にペインが無い」と読み、tmux で開いている会話をワーカー経路(別プロセスの
+   *   claude)に落とす = 同じ会話を2つが読む lost-update。区切りが消える実在の条件が
+   *   locale なので(PANE_FORMAT の注記)、これは理論上の話ではなく本番で起きていた。
+   */
   listPanes() {
-    return parsePaneList(this.tmux.run(["list-panes", "-a", "-F", PANE_FORMAT]));
+    const args = ["list-panes", "-a", "-F", PANE_FORMAT];
+    // 一覧は「空」が状態の主張になる呼び出しなので、失敗を飲む run は使わない。
+    const raw = this.tmux.runStrict(args);
+    const { panes, lines, refused } = parsePaneListStrict(raw);
+    // ★1行でも解釈できない行が在れば、一覧**全体**を信じない。
+    //   「読めた分だけ返す」は最悪の形になる: 読めた1行のせいで例外は起きず、読めなかった
+    //   ペインだけが「存在しない」ことになり、その会話が静かにワーカー経路へ落ちる。
+    if (refused > 0) {
+      throw new TmuxUnreadableError(
+        `tmux の一覧を解釈できない(${lines} 行中 ${refused} 行が書式に合わない)。` +
+          `期待する形は「%<数字>${PANE_SEP}…」。区切りが潰れていないか、makeTmuxRunner を経由しているかを確認する。`,
+      );
+    }
+    return panes;
   }
 
   /**

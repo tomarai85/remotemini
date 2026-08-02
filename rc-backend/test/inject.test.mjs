@@ -23,6 +23,10 @@ import {
   composerBox,
   composerIsEmpty,
   parsePaneList,
+  parsePaneListStrict,
+  PANE_SEP,
+  makeTmuxRunner,
+  tmuxChildEnv,
   looksLikeClaudePane,
   limitNoticeIn,
 } from "../src/inject.mjs";
@@ -74,25 +78,31 @@ const SENDABLE_FIXTURES = [
 // 実行されたコマンドを記録するだけの偽 tmux。
 // paneText に配列を渡すと capture-pane の**呼び出し順**に消費する(最後の1枚は使い回す)。
 // send() は撮る→本文→撮る→Enter→撮る の3相なので、相の間で画面が変わる状況を再現できる。
-function fakeTmux(paneText = "", paneList = "%1\t2.1.220\t/dev/ttys001\t/Users/Shared/dev/roundtrip\n") {
+const paneLine = (...cols) => cols.join(PANE_SEP);
+function fakeTmux(paneText = "", paneList = paneLine("%1", "2.1.220", "/dev/ttys001", "/Users/Shared/dev/roundtrip") + "\n") {
   const calls = [];
   const frames = Array.isArray(paneText) ? [...paneText] : [paneText];
   let n = 0;
-  return {
-    calls,
-    captures: () => n,
-    run: (args) => {
-      calls.push(args);
-      if (args[0] === "capture-pane") {
-        const f = frames[Math.min(n, frames.length - 1)];
-        n++;
-        return f;
-      }
-      if (args[0] === "list-panes") return paneList;
-      return "";
-    },
+  const run = (args) => {
+    calls.push(args);
+    if (args[0] === "capture-pane") {
+      const f = frames[Math.min(n, frames.length - 1)];
+      n++;
+      return f;
+    }
+    if (args[0] === "list-panes") return paneList;
+    return "";
   };
+  // 偽 tmux は失敗しないので run と runStrict は同じ実体で足りる。
+  // ただし **両方を渡す**事自体に意味がある: 構築が runStrict を必須にしたので、
+  // 本番の注入が片方を落とせばテストではなく起動が落ちる(M84)。
+  return { calls, captures: () => n, run, runStrict: run };
 }
+/** 一覧の出力だけを固定で返す注入。run/runStrict は同じ実体(偽物は失敗しない)。 */
+const listing = (out) => {
+  const run = () => out;
+  return { run, runStrict: run };
+};
 const sends = (t) => t.calls.filter((c) => c[0] === "send-keys");
 
 // ---- 画面状態の判定 ----
@@ -627,19 +637,21 @@ test("cwd からペインを引ける(実物の cmd は claude でなくバー�
 });
 
 test("パスに空白があっても壊れない(空白分割していない)", () => {
-  const panes = parsePaneList("%3\t2.1.220\t/dev/ttys003\t/Users/tom/My Docs/proj\n");
+  const panes = parsePaneList(paneLine("%3", "2.1.220", "/dev/ttys003", "/Users/tom/My Docs/proj") + "\n");
   assert.deepEqual(panes, [
     { pane: "%3", command: "2.1.220", tty: "/dev/ttys003", path: "/Users/tom/My Docs/proj" },
   ]);
 });
 
-// ★path はタブを含みうる(macOS のファイル名はタブを許す)。tty を path より後ろに置くと
-//   ここが path に食われて tty が壊れる。列の並びが load-bearing だという対照。
-test("パスにタブが入っていても tty が壊れない(tty は path より前の列)", () => {
-  const panes = parsePaneList("%4\t2.1.220\t/dev/ttys004\t/tmp/a\tb\n");
+// ★path は区切りに使う文字列すら含みうる(macOS のファイル名はほぼ何でも許す)。tty を
+//   path より後ろに置くとここが path に食われて tty が壊れる。列の並びが load-bearing。
+test("パスに区切りそのものが入っていても tty が壊れない(tty は path より前の列)", () => {
+  const panes = parsePaneList(paneLine("%4", "2.1.220", "/dev/ttys004", `/tmp/a${PANE_SEP}b`) + "\n");
   assert.deepEqual(panes, [
-    { pane: "%4", command: "2.1.220", tty: "/dev/ttys004", path: "/tmp/a\tb" },
+    { pane: "%4", command: "2.1.220", tty: "/dev/ttys004", path: `/tmp/a${PANE_SEP}b` },
   ]);
+  // タブは値として素通しする(区切りではなくなったので、もう意味を持たない)。
+  assert.equal(parsePaneList(paneLine("%5", "zsh", "/dev/ttys005", "/tmp/a\tb") + "\n")[0].path, "/tmp/a\tb");
 });
 
 /** 実機の観測に出てくる cwd(下の findPaneByCwd の一次資料と同じ)。 */
@@ -650,13 +662,12 @@ const CWD_RT = "/Users/Shared/dev/roundtrip";
 //   落とすと列がずれ、全ペインが読み捨てられて「tmux に誰も居ない」= 開いている TUI に
 //   対してワーカーを起こす(lost-update)方向に倒れるので、ここは対で検査する。
 function formatAwareTmux(rows) {
-  return {
-    run: (args) => {
-      if (args[0] !== "list-panes") return "";
-      const fmt = args[args.indexOf("-F") + 1];
-      return rows.map((r) => fmt.replace(/#\{(\w+)\}/g, (_, k) => r[k] ?? "")).join("\n") + "\n";
-    },
+  const run = (args) => {
+    if (args[0] !== "list-panes") return "";
+    const fmt = args[args.indexOf("-F") + 1];
+    return rows.map((r) => fmt.replace(/#\{(\w+)\}/g, (_, k) => r[k] ?? "")).join("\n") + "\n";
   };
+  return { run, runStrict: run };
 }
 
 test("★要求した書式と読み側の対応が保たれている(列を1つ落とすと全ペインが消える)", () => {
@@ -684,14 +695,14 @@ test("★同一性の検証に要る tty がペイン一覧に必ず載る", () 
 });
 
 test("★cwd は一致するが claude でないペインには送らない(素の zsh に打ち込む事故)", () => {
-  const inj = new TmuxInjector({ tmux: fakeTmux("", "%9\tzsh\t/dev/ttys009\t/private/tmp\n") });
+  const inj = new TmuxInjector({ tmux: fakeTmux("", paneLine("%9", "zsh", "/dev/ttys009", "/private/tmp") + "\n") });
   const r = inj.resolvePane("/private/tmp");
   assert.equal(r.pane, null);
   assert.equal(r.reason, "not-claude");
 });
 
 test("★同じ cwd に claude が2つある時は決めない(別の会話へ届く事故)", () => {
-  const list = "%1\t2.1.220\t/dev/ttys001\t/Users/Shared/dev/roundtrip\n%2\t2.1.220\t/dev/ttys002\t/Users/Shared/dev/roundtrip\n";
+  const list = paneLine("%1", "2.1.220", "/dev/ttys001", CWD_RT) + "\n" + paneLine("%2", "2.1.220", "/dev/ttys002", CWD_RT) + "\n";
   const inj = new TmuxInjector({ tmux: fakeTmux("", list) });
   const r = inj.resolvePane("/Users/Shared/dev/roundtrip");
   assert.equal(r.pane, null);
@@ -851,4 +862,147 @@ test("★キュー中の定型文は「空の入力欄」(本文と読むと、�
   // 印がこの定型文の部分文字列になりうる事の現物確認(`up` / `edit` / `messages` 等)。
   const flat = "Press up to edit queued messages".replace(/\s+/g, "");
   assert.ok(flat.includes("edit"), "前提: 短い本文の印がこの定型文に含まれうる");
+});
+
+// --- tmux の区切りが locale で消える(2026-08-02 edith 実機で踏んだ本番故障) -------
+//
+// 実測(tmux 3.7b edith / 3.6a MBP、どちらも同じ):
+//   env -i ... tmux list-panes -a -F '#{pane_id}\t#{pane_current_command}'
+//     -> "%0_2.1.220"                              (locale 無し / LANG=C)
+//     -> "%0\t2.1.220"                             (LANG / LC_ALL / LC_CTYPE = *.UTF-8)
+// launchd は locale を渡さないので、**本番の server だけが区切りを失っていた**。
+// 症状: ペイン一覧 0 件 -> 全会話が route=worker -> 電話から tmux の会話に届かない
+//       (= 同じ会話を2プロセスが読む lost-update)。
+// 手元と ssh には LANG が在るので、この故障は開発側からは永久に見えない。
+//
+// 直しは2段。**どちらか一方では足りない**:
+//   (1) 区切りを印字可能 ASCII にする  = locale に潰される文字を使わない(根)
+//   (2) tmux の子に locale を被せる     = 画面の描画等、他の経路の保険(層)
+// (2) だけに寄せない理由: 指定した locale 名がその機械に無いと setlocale は C に落ちる。
+test("★区切りは locale に潰されない文字だけで出来ている(制御文字を使わない)", () => {
+  assert.ok(!/[\x00-\x1f]/.test(PANE_SEP), "制御文字は tmux の -F 出力で潰される");
+  assert.ok(!/\s/.test(PANE_SEP), "空白は cwd に現れる");
+});
+
+test("★区切りが潰れた出力を「ペインが無い」と読まない(launchd の locale 欠落)", () => {
+  const sanitized = "%0_2.1.220_/dev/ttys001_/Users/edith/Projects\n";
+  const strict = parsePaneListStrict(sanitized);
+  assert.equal(strict.panes.length, 0);
+  assert.equal(strict.lines, 1);
+  assert.equal(strict.refused, 1, "読めなかった行数が値として出る = 空と区別できる");
+
+  // 本物のペインが無い状態(= 空文字)は refused 0。ここを混ぜると故障と平常が同じ値になる。
+  const empty = parsePaneListStrict("");
+  assert.deepEqual({ panes: empty.panes.length, refused: empty.refused }, { panes: 0, refused: 0 });
+
+  const inj = new TmuxInjector({ tmux: listing(sanitized) });
+  assert.throws(() => inj.listPanes(), /解釈できない/,
+    "空配列を返すと呼び側がワーカー経路に落とす = 同じ会話を2プロセスが読む");
+
+  // 平常時は投げない(この投げ物が普段から出るなら誰も見なくなる)。
+  const good = paneLine("%0", "2.1.220", "/dev/ttys001", "/Users/edith/Projects") + "\n";
+  assert.equal(new TmuxInjector({ tmux: listing(good) }).listPanes().length, 1);
+  assert.equal(new TmuxInjector({ tmux: listing("") }).listPanes().length, 0);
+});
+
+// ★Codex 指摘(2026-08-02): 「1行も読めない時だけ投げる」では足りない。**一部だけ**壊れた
+//   出力が最悪で、読めた行のせいで例外は起きず、読めなかったペインだけが「存在しない」に
+//   なる = その会話だけが静かにワーカー経路へ落ちる。だから refused>0 で一覧全体を捨てる。
+test("★一部の行だけ壊れていても一覧全体を信じない(読めた分だけ返さない)", () => {
+  const mixed = paneLine("%1", "2.1.220", "/dev/ttys001", "/a") + "\n" + "%2_2.1.220_/dev/ttys002_/b\n";
+  const strict = parsePaneListStrict(mixed);
+  assert.deepEqual({ panes: strict.panes.length, refused: strict.refused }, { panes: 1, refused: 1 });
+  assert.throws(() => new TmuxInjector({ tmux: listing(mixed) }).listPanes(), /解釈できない/);
+});
+
+test("★先頭列が pane_id の形(%数字)でない行は拒否する(区切りに頼らない二重の縛り)", () => {
+  const bogus = paneLine("ttys001", "2.1.220", "/dev/ttys001", "/a") + "\n";
+  assert.equal(parsePaneListStrict(bogus).refused, 1);
+});
+
+test("★tmux の子には locale を被せる(被せる場所は makeTmuxRunner の1箇所)", () => {
+  assert.equal(tmuxChildEnv({ PATH: "/bin" }).LC_ALL, "en_US.UTF-8");
+  assert.equal(tmuxChildEnv({ PATH: "/bin" }).PATH, "/bin", "他の env を落とさない");
+  assert.equal(tmuxChildEnv({ LC_ALL: "C" }).LC_ALL, "en_US.UTF-8", "親の C を意図的に上書きする");
+
+  let seen = null;
+  const runner = makeTmuxRunner({
+    tmuxBin: "/opt/homebrew/bin/tmux",
+    exec: (bin, args, opts) => { seen = { bin, args, env: opts.env }; return "out"; },
+    env: { PATH: "/bin" },
+  });
+  assert.equal(runner.run(["list-panes"]), "out");
+  assert.equal(seen.bin, "/opt/homebrew/bin/tmux");
+  assert.equal(seen.env.LC_ALL, "en_US.UTF-8", "★ここが落ちると本番だけ一覧が空になる");
+});
+
+// --- tmux に届かなかった時(2026-08-02 Codex 指摘②で塞いだ、同じ形の2つ目の穴) -------
+//
+// 区切りの故障と原因は違うが、**壊れ方は同一**: 観測できなかったものが「ペイン0」になり、
+// 机で開いている会話がワーカー経路に落ちる。よって扱いも同じ = 送らない。
+test("★実行そのものが失敗したら投げる(空一覧に化けさせない)", () => {
+  const boom = (err) => makeTmuxRunner({
+    tmuxBin: "/opt/homebrew/bin/tmux",
+    exec: () => { throw err; },
+    socketsPresent: () => false,
+  });
+
+  const enoent = Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" });
+  assert.throws(() => boom(enoent).runStrict(["list-panes"]), (e) => e.code === "TMUX_UNAVAILABLE",
+    "PATH の誤りでもここに来る。tmux が実在しないと決めつけない");
+
+  const crashed = Object.assign(new Error("x"), { status: 139, stderr: "Segmentation fault" });
+  assert.throws(() => boom(crashed).runStrict(["list-panes"]), (e) => e.code === "TMUX_UNAVAILABLE");
+
+  // `run`(画面を撮る系)は従来どおり空文字。空の画面は classifyScreen で UNKNOWN になり
+  // 送信は既に止まるので、ここは状態の主張にならない(2026-08-02 実測で確認)。
+  assert.equal(boom(enoent).run(["capture-pane"]), "");
+});
+
+test("★「接続できない」は2つの意味を持つ。ソケットの有無で分ける", () => {
+  const noServer = Object.assign(new Error("x"), {
+    status: 1, stderr: "error connecting to /tmp/tmux-501/default (No such file or directory)",
+  });
+  const runner = (socketsPresent) => makeTmuxRunner({
+    tmuxBin: "/opt/homebrew/bin/tmux", exec: () => { throw noServer; }, socketsPresent,
+  });
+
+  // (a) ソケットが無い = tmux は本当に動いていない = ペイン0 は正しい観測
+  assert.equal(runner(() => false).runStrict(["list-panes"]), "");
+  // (b) ソケットは在るのに繋がらない = 別のソケットを見ている疑い = ペインは在りうる
+  assert.throws(() => runner(() => true).runStrict(["list-panes"]), /別のソケット/);
+  // (c) 確かめられない = 分けられないので投げる(既定を fail-closed に置く)
+  assert.throws(() => runner(null).runStrict(["list-panes"]), /確かめられない/);
+  assert.throws(() => runner(() => null).runStrict(["list-panes"]), /確かめられない/);
+});
+
+test("★一覧は失敗を飲む run ではなく runStrict を通る", () => {
+  let used = null;
+  const inj = new TmuxInjector({
+    tmux: {
+      run: () => { used = "run"; return ""; },
+      runStrict: () => { used = "runStrict"; return paneLine("%1", "zsh", "/dev/ttys001", "/tmp") + "\n"; },
+    },
+  });
+  assert.equal(inj.listPanes().length, 1);
+  assert.equal(used, "runStrict", "ここが run に戻ると、tmux 不達がまた空一覧に化ける");
+  assert.ok(typeof makeTmuxRunner({ tmuxBin: "x", exec: () => "" }).runStrict === "function",
+    "本番のランナーが runStrict を持たなくなると、上の分岐は静かに run へ落ちる");
+});
+
+// ★上のテストは「runStrict が**在れば**それを通る」しか言えない。無い注入を作れる限り、
+//   listPanes は run に落ちる道を残している(実際 2026-08-02 まで三項演算子で残っていた)。
+//   だから**無い物は構築できない**側で塞ぐ。飲む run から投げる runStrict は合成できない
+//   ので、既定値を与える逃げ道は取らない(合成すると嘘の runStrict が生まれる)。
+test("★runStrict の無い注入は構築の時点で落ちる(合成して補わない)", () => {
+  assert.throws(
+    () => new TmuxInjector({ tmux: { run: () => "" } }),
+    /runStrict/,
+    "ここが通ると、一覧の失敗がまた「ペイン0本」に化けてワーカー経路へ落ちる",
+  );
+  // run が無い場合の従来の縛りも残っている事(片方だけの検査にしない)。
+  assert.throws(() => new TmuxInjector({ tmux: { runStrict: () => "" } }), /runner injection required/);
+  assert.throws(() => new TmuxInjector({}), /runner injection required/);
+  // 本番の作り方(makeTmuxRunner)は当然通る = この縛りが正しい入口を塞いでいない事の対照。
+  assert.ok(new TmuxInjector({ tmux: makeTmuxRunner({ tmuxBin: "x", exec: () => "" }) }));
 });

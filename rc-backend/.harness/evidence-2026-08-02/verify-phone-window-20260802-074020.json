@@ -1,0 +1,32 @@
+{
+  "what": "鎖③④(tmux の中に話せる相手が居て、登録簿に載っている)の観測",
+  "expect": "present",
+  "verdict": "fail",
+  "label": "com.edith.rc-phone-window",
+  "target": "work:phone",
+  "host": "edith@10.0.0.0",
+  "fresh_threshold_s": 180,
+  "observed": {
+    "host": "Edith",
+    "observed_at": "2026-08-02T07:40:20+0900",
+    "job_present": "false",
+    "heartbeat_age_s": "-1",
+    "script_procs": "0",
+    "session_present": "true",
+    "windows": "2.1.220",
+    "phone_windows": "0",
+    "registry_hits": "0",
+    "window0_pane": "%0",
+    "window0_pane_pid": "64534"
+  },
+  "failures": [
+    "launchd に job が居ない(= 60 秒ごとに戻す仕掛けが無い)",
+    "heartbeat が古い/無い(-1s > 180s)= job は居ても走っていない",
+    "work:phone が 0 枚(1 枚でなければならない。0=鎖③未達 / 2+=増殖)",
+    "登録簿に載っていない(= 電話の一覧に出ない = 鎖④未達)"
+  ],
+  "not_measured_here": [
+    "電話から実際に打ち込んで返事が返るか(= live-inject-check の仕事)",
+    "会話の文脈が復元されるか(この job は --resume しない。設計通り)"
+  ]
+}

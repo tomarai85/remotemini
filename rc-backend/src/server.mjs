@@ -18,7 +18,7 @@ import { JsonlTail, resumeDecision } from "./tail.mjs";
 import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
 import { WorkerManager } from "./worker.mjs";
-import { TmuxInjector, looksLikeClaudePane } from "./inject.mjs";
+import { TmuxInjector, looksLikeClaudePane, makeTmuxRunner } from "./inject.mjs";
 import { PaneRegistry, resolveSessionPane, registryOnlySessions } from "./registry.mjs";
 import { psSnapshot } from "./procs.mjs";
 
@@ -179,15 +179,32 @@ function findSessionFile(sessionId) {
 // 振り分け:
 //   机で開かれている(cwd に一致する tmux ペインがある) -> 注入経路(TmuxInjector)
 //   開かれていない                                      -> ワーカー経路(-p --resume)
-const tmuxRunner = {
-  run: (args) => {
-    try {
-      return execFileSync(TMUX_BIN, args, { encoding: "utf8" });
-    } catch {
-      return ""; // tmux が無い/対象が消えた -> 空文字。呼び側は UNKNOWN 扱いになり fail-closed。
-    }
-  },
-};
+//
+// ★ここで自前に execFileSync を書かない。tmux の子には **locale を被せる必要がある**
+//   (inject.mjs の PANE_FORMAT 注記。launchd 起動だと `-F` の区切りが潰れ、
+//   一覧が 0 件 = 全会話がワーカー経路に落ちる)。被せる場所を1つに保つ為に
+//   makeTmuxRunner を通す。
+/**
+ * tmux のソケットが1つでも在るか。**「接続できない」の2つの意味を分ける唯一の材料**。
+ *
+ * 本当に tmux が動いていない -> ペイン0 は正しい観測 -> ワーカー経路で良い。
+ * 動いているのに別のソケットを見ている -> ペインは在る -> ワーカーに落とすと lost-update。
+ * 置き場所は tmux と同じ規則(TMUX_TMPDIR があればその下、無ければ /tmp)。
+ * 読めない(権限など)= 分けられないので null を返す -> 呼び側は投げる(fail-closed)。
+ */
+function tmuxSocketsPresent() {
+  const base = process.env.TMUX_TMPDIR || "/tmp";
+  try {
+    return readdirSync(join(base, `tmux-${process.getuid()}`)).length > 0;
+  } catch (e) {
+    return e?.code === "ENOENT" ? false : null;
+  }
+}
+const tmuxRunner = makeTmuxRunner({
+  tmuxBin: TMUX_BIN,
+  exec: execFileSync,
+  socketsPresent: tmuxSocketsPresent,
+});
 const injector = new TmuxInjector({ tmux: tmuxRunner });
 const registry = new PaneRegistry({ dir: join(KEY_DIR, "panes") });
 
@@ -259,11 +276,20 @@ const SEND_REFUSAL = {
  */
 function livePaneFor(sessionId, sessionCwd, panes, entries, ctx) {
   const es = entries || registry.read();
+  // ★ペイン一覧が**読めなかった**時は、決められない側に倒す。空一覧として扱うと
+  //   reason="none" -> ワーカー経路 = tmux で開いている会話を別プロセスで開く。
+  if (!panes) {
+    try {
+      panes = injector.listPanes();
+    } catch (e) {
+      return { pane: null, reason: paneFaultReason(e), candidates: 0, detail: e.message };
+    }
+  }
   return resolveSessionPane({
     sessionId,
     cwd: sessionCwd,
     entries: es,
-    panes: panes || injector.listPanes(),
+    panes,
     isClaude: looksLikeClaudePane,
     resolveByCwd: (cwd, free) => injector.resolvePane(cwd, free),
     ...(ctx || registryCtx(es)),
@@ -295,8 +321,23 @@ function registryCtx(entries) {
   };
 }
 
+/**
+ * ペイン一覧が取れなかった時の理由札。**「読めた出力が壊れている」と「そもそも届かない」は別**。
+ * 直し方が違う(前者=書式/locale、後者=tmux 自体かソケット)ので画面にも別の文で出す。
+ */
+function paneFaultReason(e) {
+  return e?.code === "TMUX_UNAVAILABLE" ? "tmux-unavailable" : "panes-unreadable";
+}
+
 /** 決められなかった理由のうち、ワーカー経路にも落としてはいけないもの。 */
-const UNDECIDABLE = new Set(["ambiguous", "unregistered", "stale", "cwd-mismatch"]);
+const UNDECIDABLE = new Set([
+  "ambiguous",
+  "unregistered",
+  "stale",
+  "cwd-mismatch",
+  "panes-unreadable",
+  "tmux-unavailable",
+]);
 
 /** 拒否理由を Tom が読める1文にする(画面にそのまま出る)。 */
 function blockedMessage(r) {
@@ -309,6 +350,14 @@ function blockedMessage(r) {
   }
   if (r.reason === "stale") {
     return "この会話が登録したペインは、今は別の会話が使っています。宛先を確定できないため送信しません。";
+  }
+  if (r.reason === "panes-unreadable") {
+    // 電話の持ち主が取れる手が無い種類の故障なので、**故障だと分かる文**にする。
+    // 「ペインが無い」風に書くと、机で開いている会話が消えたように読めて誤解を招く。
+    return "サーバが tmux の画面一覧を読めていません(書式の壊れた出力が返っています)。宛先を確定できないため送信しません。復旧するまでこの会話には送れません。";
+  }
+  if (r.reason === "tmux-unavailable") {
+    return "サーバが tmux に届いていません(画面一覧を取れませんでした)。宛先を確定できないため送信しません。復旧するまでこの会話には送れません。";
   }
   return `登録されたペインの現在地(${r.panePath || "不明"})が、この会話のフォルダと一致しません。宛先を確定できないため送信しません。`;
 }
@@ -534,7 +583,16 @@ const server = createServer(async (req, res) => {
     if (path === "/api/sessions" && req.method === "GET") {
       // ペイン一覧と登録簿は1回だけ引いて全セッションで使い回す
       // (会話数ぶん tmux を起動したり登録簿を読み直したりしない)
-      const panes = injector.listPanes();
+      // ★読めなかった時に空一覧へ倒さない。空 = 「tmux に何も無い」= 全会話をワーカー経路に
+      //   落とす、が本番で実際に起きた形(2026-08-02、launchd に locale が無くタブが潰れた)。
+      let panes = [];
+      let paneFault = null; // { reason, detail } — 読めなかった時だけ入る
+      try {
+        panes = injector.listPanes();
+      } catch (e) {
+        paneFault = { pane: null, reason: paneFaultReason(e), candidates: 0, detail: e.message };
+        console.error(`[rc-backend] ペイン一覧が取れない(${paneFault.reason}): ${e.message}`);
+      }
       const entries = registry.read();
       const ctx = registryCtx(entries); // 登録の生死判定も1回だけ(tmux/ps を会話数ぶん起こさない)
       // ① scope を確定してから ② 読む対象を決める(読んでから捨てない)。
@@ -556,10 +614,14 @@ const server = createServer(async (req, res) => {
       // それを一覧の底に埋めると D5 裁定(いつでも干渉できる)を満たせない。
       const listing = [
         ...scanned,
-        ...registryOnlySessions({ listing: scanned, entries, panes, isClaude: looksLikeClaudePane, ...ctx }),
+        // ★一覧が読めていない時は**足さない**。読めない状態で「未発言の会話が居る/居ない」を
+        //   名乗ると、居るのに出ない(見落とし)か、居ないのに出る(嘘)のどちらかになる。
+        ...(paneFault
+          ? []
+          : registryOnlySessions({ listing: scanned, entries, panes, isClaude: looksLikeClaudePane, ...ctx })),
       ].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0)).map((s) => {
         // 机で開かれている会話は画面が真実。開かれていなければワーカーの状態。
-        const r = livePaneFor(s.id, s.cwd, panes, entries, ctx);
+        const r = paneFault || livePaneFor(s.id, s.cwd, panes, entries, ctx);
         const live = r.pane
           ? { route: "tmux", pane: r.pane, ...screenOf(r.pane) }
           : UNDECIDABLE.has(r.reason)
@@ -577,6 +639,10 @@ const server = createServer(async (req, res) => {
         //   (`examined === files` = これ以上は無い)。区別できないと「以前を読む」が
         //   押しても何も起きないボタンになる(変異 M65 と同じ形)。
         scan: { scope: requestedScope, limit, files: scan.files, read: scan.read, cached: scan.cached, examined: scan.examined },
+        // ★故障を一覧の本文に載せる。行が全部 blocked になった時、原因が「机で開いていない」
+        //   なのか「サーバが tmux を読めない」なのかは電話から区別できない。
+        //   reason まで載せるのは、直す先が違うから(書式/locale か、tmux 自体かソケットか)。
+        paneFault: paneFault ? { reason: paneFault.reason, detail: paneFault.detail } : null,
       });
     }
 

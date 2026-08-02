@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.edith.rc-phone-window
+  ============================================================================
+  鎖③ = 「無人再起動の後、tmux の中に話せる相手が居る」を戻す唯一の部品。
+  設計 = ~/Infra/mobile-work/DESIGN.md §6「常設の完了条件は…鎖4本」。
+  中身 = tools/ensure-phone-window.sh(**判断は全部あちらに在る**。ここは呼ぶだけ)。
+
+  鎖の分担(ここを取り違えると「サーバが上がった = 電話が使える」と誤読する):
+    ① 機械が起きて rc-backend が上がる … com.edith.rc-backend
+    ② tmux `work` が在る              … com.tom.work-tmux(60秒ごと・**素の shell**)
+    ③ その中で Claude Code が走る      … ★この job
+    ④ 登録簿に載る                    … ③ が `rc-claude` 経由で起動する事で満たす
+
+  ★なぜ 60 秒ごとの再試行なのか(一度きりではなく):
+    ② を作るのは別の job で、launchd に順序の概念は無い。冷起動でこちらが先に走れば
+    session はまだ無い(script は exit 10 = 異常ではない、で降りる)。60 秒後に居る。
+    → 完全復帰まで最大およそ 2 分。**それが上限だと分かっている**事が大事で、
+      「順序を仮定して一度だけ試す」形にすると、外れた時に静かに何も起きない。
+
+  ★なぜ既存の com.tom.work-tmux に足さないか: あれは Tom の job(com.tom.*)。
+    片方の都合でもう片方を書き換えると、次に読む人が所有者を取り違える。分ける。
+
+  ★ProcessType = Background の射程(誤読しやすい所):
+    絞られるのは**この script 自身**(数ミリ秒の shell)だけ。ここが作る Claude Code の
+    ペインは `tmux new-window` を通じて **tmux サーバが fork する**ので、この job の
+    子ではなく、この区分を継がない。= 電話の応答が遅くなる方向には効かない。
+
+  ★触らない物: 既存の window / pane に一切触れない(new-window だけ)。
+    Tom の `work:0` は彼の物(DESIGN §6「%0 は Tom の物」)。
+
+  INSTALL(私が実行する。可逆なローカル/常設操作 = Tom ゲートではない):
+    # 0. 先に対照を緑にする。赤なら入れない
+    bash ~/Infra/mobile-work/rc-backend/test/phone-window-controls.sh
+    # 1. 木を転送(この plist と script はその中に居る)
+    bash ~/Infra/mobile-work/rc-backend/tools/deploy-to-edith.sh
+    # 2. plist を置く
+    scp .../com.edith.rc-phone-window.plist edith@10.0.0.0:/Users/edith/Library/LaunchAgents/
+    # 3. ★load ではなく bootstrap(2026-07-17 の教訓 = load は stale 定義を掴む)
+    ssh edith@10.0.0.0 'launchctl bootstrap gui/501 /Users/edith/Library/LaunchAgents/com.edith.rc-phone-window.plist'
+    # 4. 観測(「入れた」ではなく「効いている」を見る)
+    ssh edith@10.0.0.0 'launchctl list | grep rc-phone-window'
+    ssh edith@10.0.0.0 'tmux list-windows -t work'          # phone が1枚
+    ssh edith@10.0.0.0 'tail -5 ~/Library/Logs/rc-backend/phone-window.log'
+
+  TEARDOWN(この job を止めるだけ。生えた window は残るので別途 kill する):
+    ssh edith@10.0.0.0 'launchctl bootout gui/501/com.edith.rc-phone-window'
+    ssh edith@10.0.0.0 'tmux kill-window -t work:phone'
+
+  変更する時: plist を書き換えたら **bootout してから bootstrap**。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.edith.rc-phone-window</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/edith/rc-backend/tools/ensure-phone-window.sh</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- python3(信頼判定に使う)は /usr/bin/python3。実測 2026-08-02:
+         `env -i PATH=…` で解決する事を確かめてある。ここが解決できないと script は
+         「信頼を確かめられない」= exit 22 で**永久に何も作らない**(fail-closed だが無言)。 -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/edith</string>
+    <!-- 既定と同じ値をあえて書く。既定に依存すると、既定が変わった時に黙って動きが変わる。
+         ★RC_PHONE_CWD は **Claude Code に信頼されている dir** でなければならない。
+         未信頼だと TUI が信頼確認の選択画面で固まり、電話からその画面には答えられない
+         (API に key 送信の口が無い = DESIGN §3 の穴)。script 側でも実行時に確かめて、
+         未信頼なら**作らずに** exit 20 する。実測 2026-08-02 の信頼済み一覧:
+           /Users/edith/Projects  /Users/Shared/dev/roundtrip  /private/tmp
+         (`/Users/edith` は**未信頼**。ここを使わない理由がそれ) -->
+    <key>RC_PHONE_CWD</key>
+    <string>/Users/edith/Projects</string>
+    <key>RC_PHONE_CMD</key>
+    <string>/Users/edith/.local/bin/rc-claude</string>
+    <key>RC_PHONE_SESSION</key>
+    <string>work</string>
+    <key>RC_PHONE_WINDOW</key>
+    <string>phone</string>
+  </dict>
+
+  <!-- rc-backend の plist と同じ理由(2026-07-07 に edith で一度事故って直された形)。 -->
+  <key>LimitLoadToSessionType</key>
+  <array>
+    <string>Aqua</string>
+    <string>Background</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- ★KeepAlive は**張らない**。これは常駐ではなく「見て、必要なら1枚足して、降りる」仕事。
+       KeepAlive を張ると数ミリ秒で終わる script を launchd が延々と再起動する。 -->
+  <key>StartInterval</key>
+  <integer>60</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/edith/Library/Logs/rc-backend/phone-window.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/edith/Library/Logs/rc-backend/phone-window.error.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

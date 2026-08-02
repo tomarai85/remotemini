@@ -22,12 +22,26 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TmuxInjector, classifyScreen } from "../src/inject.mjs";
+import { TmuxInjector, makeTmuxRunner, classifyScreen, tmuxChildEnv, PANE_SEP } from "../src/inject.mjs";
 
 const TMUX_BIN =
   process.env.RC_TMUX_BIN ||
   (existsSync("/opt/homebrew/bin/tmux") ? "/opt/homebrew/bin/tmux" : "tmux");
-const tmux = (args) => execFileSync(TMUX_BIN, args, { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+
+/**
+ * 注入層に渡すランナー。**`makeTmuxRunner` を経由する**のが要点で、こうすると
+ * `run`(飲む)と `runStrict`(投げる)の両方が揃う。一覧は runStrict を通るので、
+ * ここを裸の `{ run: tmux }` に戻すと構築の時点で落ちる(= M84 が塞いだ穴)。
+ * `quiet:false` は今までと同じ意味(この道具では tmux の失敗はそのまま失敗)。
+ */
+const injectorRunner = () => makeTmuxRunner({
+  tmuxBin: TMUX_BIN,
+  exec: (bin, args, opts) => execFileSync(bin, args, { ...opts, maxBuffer: 8 * 1024 * 1024 }),
+  quiet: false,
+});
+// ★locale を明示する理由は inject.mjs の PANE_FORMAT 注記(タブが `_` に潰れる)。
+const tmux = (args) =>
+  execFileSync(TMUX_BIN, args, { encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: tmuxChildEnv() });
 const tmuxOk = (args) => {
   try {
     tmux(args);
@@ -97,13 +111,14 @@ async function main() {
 
   try {
     tmux(["new-session", "-d", "-s", session, "-x", opt.cols, "-y", opt.rows, "-c", opt.cwd]);
-    const listed = tmux(["list-panes", "-t", `=${session}`, "-F", "#{session_name}\t#{pane_id}"])
+    // 区切りは本体と同じ物を使う(タブは locale 次第で `_` に潰れる。inject.mjs の PANE_SEP 注記)。
+    const listed = tmux(["list-panes", "-t", `=${session}`, "-F", `#{session_name}${PANE_SEP}#{pane_id}`])
       .split("\n")
-      .map((l) => l.split("\t"))
+      .map((l) => l.split(PANE_SEP))
       .filter((p) => p[0] === session && p[1]);
     if (listed.length !== 1) throw new Error(`ペインが1つに定まらない: ${listed.length}`);
     const pane = listed[0][1];
-    const injector = new TmuxInjector({ tmux: { run: tmux }, echoBudgetMs: 8000 });
+    const injector = new TmuxInjector({ tmux: injectorRunner(), echoBudgetMs: 8000 });
 
     tmux(["send-keys", "-t", pane, "-l", "--", opt.bin]);
     tmux(["send-keys", "-t", pane, "Enter"]);

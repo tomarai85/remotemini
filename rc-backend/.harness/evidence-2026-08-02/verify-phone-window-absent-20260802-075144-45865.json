@@ -1,0 +1,30 @@
+{
+  "what": "鎖③④(tmux の中に話せる相手が居て、登録簿に載っている)の観測",
+  "expect": "absent",
+  "verdict": "ok",
+  "label": "com.edith.rc-phone-window",
+  "target": "work:phone",
+  "host": "edith@10.0.0.0",
+  "fresh_threshold_s": 180,
+  "observed": {
+    "host": "Edith",
+    "observed_at": "2026-08-02T07:51:44+0900",
+    "job_present": "false",
+    "attempt_age_s": "-1",
+    "success_age_s": "-1",
+    "log_bytes": "0",
+    "errlog_bytes": "0",
+    "script_procs": "0",
+    "session_present": "true",
+    "windows": "2.1.220",
+    "phone_windows": "0",
+    "registry_hits": "0",
+    "window0_pane": "%0",
+    "window0_pane_pid": "64534"
+  },
+  "failures": [],
+  "not_measured_here": [
+    "電話から実際に打ち込んで返事が返るか(= live-inject-check の仕事)",
+    "会話の文脈が復元されるか(この job は --resume しない。設計通り)"
+  ]
+}

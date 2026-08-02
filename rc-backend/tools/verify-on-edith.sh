@@ -87,7 +87,7 @@ REMOTE
   say "3/5 作業ツリーを転送(.git / node_modules は送らない)"
   rsync -a --delete --exclude '.git' --exclude 'node_modules' "$SRC"/ "$HOST:$REMOTE_DIR"/ || exit 2
 
-  say "4/5 検査(単体 → e2e → PII 対照 → serve 判定 → 環境死の関門 → 変異)"
+  say "4/5 検査(単体 → e2e → PII 対照 → serve 判定 → 環境死の関門 → phone window → 変異)"
   # ★`cmd | tail` は tail の終了コードを返す = 落ちても 0 に化ける。ここは検査台本なので
   # その fail-open が一番害が大きい(「緑だった」と報告して実際は赤)。remote 側で
   # `pipefail` を立て、各段の終了コードを明示的に足し合わせる。
@@ -110,6 +110,16 @@ echo '--- serve 判定 ---'; bash tools/serve-decision-check.sh 2>&1 | tail -14;
 # 自分で大声を出すが、「関門が本物の衝突を見逃す」向き(= 偽の検出を素通しする側)は
 # 変異段からは一切見えない。そちらを測るのはこの1段だけ。**本物の bind 失敗**で駆動する。
 echo '--- 環境死の関門 ---'; bash test/env-death-controls.sh 2>&1 | tail -16; rc=$((rc + $?))
+# ★鎖③(tmux の中に話せる相手を戻す部品)の対照。**この機械で回す事に意味がある**段:
+# 測っている性質が「既存のペインに触れずに window を1枚足す」で、それは本物の tmux でしか
+# 測れない。使い捨ての session 名(`rcphone-ctl-$$`)を建てて、Tom の `work` には触れない。
+# ★ここだけ `| tail` を使わない。NG は2行組(見出し + 期待/実際)なので tail で切ると
+# 落ちた理由が消える。全出力を掴んでから NG 行だけ出し、緑なら総計1行で足りる。
+echo '--- phone window 対照 ---'
+pw_out=$(TMUX_BIN="$(command -v tmux || echo /opt/homebrew/bin/tmux)" bash test/phone-window-controls.sh 2>&1); pw_rc=$?
+printf '%s\n' "$pw_out" | grep -E '^(NG|      期待=|合計)' || true
+[ "$pw_rc" -eq 2 ] && echo '★判定不能(tmux か検査対象が無い)= 緑ではない'
+rc=$((rc + pw_rc))
 # ★変異だけは tail で切らない。切ると対照2枚の行(= この道具が赤を見分けられる証明)と
 # 表の大半が消え、「証拠を出す為の台本が証拠を捨てる」状態になる。8/1 に一度これで
 # edith の対照行を見失った。全文を出す(40行前後)。

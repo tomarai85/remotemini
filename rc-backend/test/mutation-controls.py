@@ -94,8 +94,45 @@ MUT = [
   '(e) => e.pane === entry.pane && e.sessionId !== sessionId && e.mtimeMs >= entry.mtimeMs,',
   '(e) => e.pane === entry.pane && e.sessionId !== sessionId && e.mtimeMs > entry.mtimeMs,'),
  ("M17 tty をペイン一覧から落とす(同一性の検証材料を失う)", INJ,
-  'const PANE_FORMAT = "#{pane_id}\\t#{pane_current_command}\\t#{pane_tty}\\t#{pane_current_path}";',
-  'const PANE_FORMAT = "#{pane_id}\\t#{pane_current_command}\\t#{pane_current_path}";'),
+  '"#{pane_current_command}", "#{pane_tty}",',
+  '"#{pane_current_command}",'),
+ # M79-M83 = 2026-08-02、本番だけが壊れていた故障(launchd に locale が無く `-F` のタブが
+ # `_` に潰れ、ペイン一覧が 0 件 = 全会話がワーカー経路 = lost-update)の直しを1つずつ壊す。
+ # ★最初 M69-M73 で書いて **既存の SRV/SES 側の M70-M73 と番号が衝突していた**。
+ #   衝突しても走行自体は正しいが、報告(と `--only`)が「どちらの M70 か」を区別できなくなる。
+ #   = 今夜ずっと直していた「区別の付かない計器」そのもの。下の重複検出で機械に見張らせた。
+ ("M79 区切りをタブに戻す(locale の無い本番でだけ潰れる文字に戻す)", INJ,
+  'export const PANE_SEP = "|&|";',
+  'export const PANE_SEP = "\\t";'),
+ ("M80 一部だけ壊れた一覧を「読めた分だけ」返す(その会話だけ静かにワーカーへ落ちる)", INJ,
+  '    if (refused > 0) {',
+  '    if (panes.length === 0 && refused > 0) {'),
+ ("M81 pane_id の形の縛りを外す(区切りが潰れた行を1列の値として通す)", INJ,
+  'if (!/^%\\d+$/.test(String(pane || "")) || rest.length === 0) {',
+  'if (!pane || rest.length === 0) {'),
+ ("M82 一覧を失敗を飲む run で取る(tmux 不達がまた空一覧に化ける)", INJ,
+  'const raw = this.tmux.runStrict(args);',
+  'const raw = this.tmux.run(args);'),
+ ("M83 ソケットの有無を確かめられない時に「tmux は動いていない」と決める(fail-open)", INJ,
+  '          if (present === null) {',
+  '          if (false) {'),
+ # M84/M85 = 2026-08-02。M82 を入れた時、listPanes は
+ #   `this.tmux.runStrict ? this.tmux.runStrict(args) : this.tmux.run(args)`
+ # という三項で書いてあった。runStrict を持たない注入(道具3本と偽 tmux)が現に居たので、
+ # **その経路だけ黙って旧挙動(飲む run)に戻る**潜在の穴が残っていた。M82 は「runStrict を
+ # run に書き換える」変異なので、この分岐そのものは掴めない。塞ぎ方は2枚:
+ #   M84 = 構築時に runStrict を必須にする関門(= 無い注入は作れない)
+ #   M85 = その関門が在る限り三項の else 側は到達しない事の記録
+ ("M84 runStrict 必須の関門を外す(runStrict の無い注入をまた作れる様にする)", INJ,
+  '    if (typeof tmux.runStrict !== "function") {',
+  '    if (false) {'),
+ ("M85 一覧の呼び出しを三項に戻す(runStrict が無ければ飲む run に落ちる形)", INJ,
+  'const raw = this.tmux.runStrict(args);',
+  'const raw = this.tmux.runStrict ? this.tmux.runStrict(args) : this.tmux.run(args);',
+  "覆う守り = M84(構築時の関門)。関門が在る限り else 側は**実行時に到達し得ない**。"
+  "到達しない事は主張ではなく単体検査で押さえてある(『runStrict の無い注入は構築の時点で"
+  "落ちる』= 構築が投げるので listPanes まで届かない)。関門を外した瞬間に穴が開く事は"
+  "M84 が別に測る。逆にこの行が『検出』に変われば、runStrict 無しの注入が復活したという事"),
  # M18-M23 = 2026-08-01 の2つ目の実測から。名前(#{pane_current_command})は機械ごとに
  # 違う値になる(edith="2.1.220" / MBP="bash")ので、判定を名前から ps の実測へ移した。
  # その移し替えで新しく守りになった点を1つずつ壊す。
@@ -359,6 +396,22 @@ MUT = [
   '    return { screen: s.state, activity: s.activity };'),
 ]
 
+# ★変異の番号は一意でなければならない(2026-08-02 追加。実際に M69-M73 を重複させた)。
+# 重複しても走行は正しいが、**報告と `--only` がどちらの変異の事か言えなくなる**。
+# 「対象行が無い」で片方が空振りしても、もう片方が検出なら人は番号で見分けられない。
+# 番号は人が結果を追う為の同一性なので、機械で見張る。台本の起動段で落とす(測る前に止める)。
+_named = [(re.match(r"M\d+(?=[ (])", m[0]), m[0]) for m in MUT]
+_unnamed = [t for mo, t in _named if not mo]
+if _unnamed:
+    sys.exit("★台本を止める: 番号で始まっていない変異がある: " + " / ".join(_unnamed[:3]))
+_ids = [mo.group(0) for mo, _ in _named]
+_dupes = sorted({i for i in _ids if _ids.count(i) > 1}, key=lambda s: int(s[1:]))
+if _dupes:
+    sys.exit(
+        f"★台本を止める: 変異の番号が重複している: {', '.join(_dupes)}\n"
+        "(走らせれば結果は出るが、その結果がどの変異の物か言えない = 計器として壊れている)"
+    )
+
 # ★2026-08-01 に実機で踏んだ欠陥: 落ちたかを `"# fail 0" not in stdout` で見ていた。
 # node の test reporter は **22 が `# fail 0` / 25 が `ℹ fail 0`** と書式が違うので、
 # Node 25 の機械(edith)ではこの文字列が原理的に現れず、**全変異が「検出」になっていた**。
@@ -402,8 +455,13 @@ def die(msg):
 #   駆動する。手書きの文字列で試すと、私が想像した出力しか試せない(それで外した)。
 ENV_DEATH = re.compile(r"^RC-ENV-DEATH", re.M)
 
-# ★1つの変異を回している間に「要約が読めないまま落ちた」検査の名前が溜まる場所(行8)。
-#   本体側の for が変異ごとに空にする。
+# ★1つの変異を回している間に「要約が読めないまま落ちた」検査が溜まる場所(行8)。
+#   本体側の for が変異ごとに空にする。要素は (検査名, 出力の写し)。
+#
+# ★2026-08-02 に写しを足した。それまでは名前だけを溜めて最後に「写しを読む事」と
+#   印字していたが、**写しはどこにも保存していなかった**。実際 M43 がこの状態で出て、
+#   指示どおり読もうとしても読む物が無かった(50 分の走行をやり直す以外に手が無い)。
+#   人に次の一手を指図する出力は、その一手に要る物を自分で残しておく事。
 NO_SUMMARY = []
 
 def read_suite(p, label, rx):
@@ -427,7 +485,9 @@ def read_suite(p, label, rx):
             #   ここを素の True で返していた間、「検査が変異を捕まえた」と「検査が起動段で
             #   死んだ」が同じ1つの数に畳まれていた = 台本が自分の成績を水増ししうる形。
             #   死因不明の赤も赤ではあるので判定は変えない。**内訳を残す**(行8)。
-            NO_SUMMARY.append(label)
+            NO_SUMMARY.append((label, f"$ exit={p.returncode}\n"
+                                      f"--- stdout 末尾 ---\n" + "\n".join(p.stdout.splitlines()[-40:]) +
+                                      f"\n--- stderr 末尾 ---\n" + "\n".join(p.stderr.splitlines()[-40:])))
             return True
         die(f"{label}: exit=0 なのに要約行が読めない(書式が想定外 = 緑を確認できていない)\n"
             f"--- stdout 末尾 ---\n" + "\n".join(p.stdout.splitlines()[-8:]) +
@@ -564,10 +624,19 @@ for r in rows:
 #   検査自体が起動段で死んだのか区別が付いていない**。判定は赤のままで正しいが、
 #   その数を「守れている件数」として読むと成績の水増しになる。数を明示して人に返す。
 if blind:
+    # 写しは走行中に既に取ってある(NO_SUMMARY)。**場所を印字する**まで含めて1つの報告。
+    bd = os.path.join(SRC, ".harness", "mutation-blind")
+    os.makedirs(bd, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
     print(f"\n★検出のうち **{len(blind)}件** は要約行が読めないまま落ちた"
           f"(= 変異を捕まえたのか検査が死んだのか区別できていない)。写しを読む事:")
-    for name, labels in blind:
-        print(f"  - {name}\n      要約が読めなかった検査: {', '.join(labels)}")
+    for name, items in blind:
+        tag = re.match(r"M\d+", name).group(0) if re.match(r"M\d+", name) else "M?"
+        path = os.path.join(bd, f"{stamp}-{tag}.txt")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(name + "\n\n" + "\n\n".join(f"=== {lab} ===\n{txt}" for lab, txt in items))
+        print(f"  - {name}\n      要約が読めなかった検査: {', '.join(lab for lab, _ in items)}"
+              f"\n      写し: {path}")
 else:
     print("\n検出はすべて要約行つき(= 何件がどう落ちたかまで読めている)")
 
