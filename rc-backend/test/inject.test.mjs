@@ -121,7 +121,10 @@ test("★実機で撮った 7 枚は全部 SENDABLE(生成中も含む)", () => 
 
 test("★スピナーが見えない生成中の画面も SENDABLE(これを塞いだのが前の版の欠陥)", () => {
   // M3: 6.5 秒の生成中にスピナーが見えたのは 26 サンプル中 8 枚(31%)。
-  // 残り 18 枚は同じ行を tmux のヒント文が占拠する。
+  // ★その理由の説明は 2026-08-03 に覆った。「同じ行を tmux のヒント文が占拠する」では
+  //   なく、**規則がスピナーの 5 コマ中 1 コマ(`·`)を持っていなかった**。足して 61-82%。
+  //   ただし**この画面は今でも `unknown`** = 被覆が上がっても取りこぼしは残るので、
+  //   下の「見えない事を理由に送信を止めない」という結論は据え置き(DESIGN §2.9-X)。
   const hidden = classifyScreen(screen("generating-spinner-hidden"));
   assert.equal(hidden.activity, "unknown", "この画面にスピナーは写っていない");
   assert.equal(hidden.state, "SENDABLE", "見えないことを理由に送信を止めてはいけない");
@@ -754,6 +757,71 @@ test("★②出力の前に止めた = 印は出ない。消えて戻らない�
   const r = await inj.interrupt("%1");
   assert.equal(interruptMarksIn(screen("edith-interrupt-rewound")), 0, "前提: この止まり方に印は無い事");
   assert.equal(r.stopped, "verified", "印が出ない止まり方を「止まっていない」と報告した");
+});
+
+test("★★★戻ってくる空白を「止まった」と読まない(生成中の 2-3 枠の途切れ)", async () => {
+  // ★この検査は**変異が素通りした事**から生まれた(2026-08-03、`--only W` で W11 が生存)。
+  //   W11 = `++quiet >= QUIET_FRAMES` を落として、進行の印が 1 枚消えた瞬間に "stopped" と
+  //   言う版。unit も e2e も**全部緑のまま通った** = この夜作り直した判定の中で、
+  //   一番結果が重い枝(電話に「止めました」と出す枝)に検査が1本も無かった。
+  //   実機ではスピナーは生成中でも 2-3 枠(≈300-450ms)消える(DESIGN §2.9-X)。
+  //   その空白を止まりと読むと、Claude が喋り続けているのに電話は「止めました」と出す
+  //   = この作り直しが消しに来た嘘そのものが、逆向きで戻る。
+  const gen = screen("edith-generating-dot-frame");
+  // ★`generating-spinner-hidden` は **`generating-spinner-visible` と同一セッションの 6 秒差**で
+  //   撮った枠(上の「activity は表示専用」の検査が同じ 2 枚を使っている)。つまり
+  //   「生成中なのにスピナーが写っていない」実物であって、私が作った画面ではない。
+  const gap = screen("generating-spinner-hidden");
+  assert.equal(classifyScreen(gap).activity, "unknown", "前提: この枠に進行の印が無い事");
+  assert.equal(interruptMarksIn(gap), 0, "前提: 割り込みの印も無い事");
+  assert.equal(doneMarksIn(gap), 0, "前提: 完了の印も無い事");
+
+  // 2 枠光って 3 枠消える、を予算いっぱい繰り返す = 一度も止まっていない生成中。
+  const cycle = [gen, gen, gap, gap, gap];
+  let i = 0;
+  const list = paneLine("%1", "2.1.220", "/dev/ttys001", "/Users/Shared/dev/roundtrip") + "\n";
+  const run = (args) =>
+    args[0] === "capture-pane" ? cycle[i++ % cycle.length] : args[0] === "list-panes" ? list : "";
+  const t = { calls: [], run, runStrict: run };
+  const inj = new TmuxInjector({ tmux: t, interruptBudgetMs: 300, sleep: async () => {} });
+  const r = await inj.interrupt("%1");
+  assert.equal(r.stopped, "unverified", "戻ってくる空白を「止まった」と読んだ");
+  assert.equal(r.reason, "still-in-flight");
+  assert.equal(r.pressed, true, "押す事自体は拒まない(Tom 裁定)");
+  // ★陽性対照。同じ仕掛けで**本当に止まったら** verified になる事を、同じ検査の中で見る。
+  //   これが無いと「常に unverified を返す」実装でも上の assert は通る。
+  let j = 0;
+  const stopping = [gen, gen, gap, gap, gap, gap, gap, screen("edith-interrupted")];
+  const run2 = (args) =>
+    args[0] === "capture-pane"
+      ? stopping[Math.min(j++, stopping.length - 1)]
+      : args[0] === "list-panes"
+        ? list
+        : "";
+  const inj2 = new TmuxInjector({ tmux: { calls: [], run: run2, runStrict: run2 }, interruptBudgetMs: 300, sleep: async () => {} });
+  const r2 = await inj2.interrupt("%1");
+  assert.equal(r2.stopped, "verified", "同じ間隔の空白を挟んでも、印が増えたら止まりと言う事");
+});
+
+test("★★★押した直後がたまたま空白でも「止める対象が無かった」と言わない", async () => {
+  // ★上の W11 と**対称の嘘**。W11 が「動いているのに止めたと言う」なら、こちらは
+  //   「動いているのに止める対象が無かったと言う」。電話には
+  //   「止める対象はありませんでした」と出て、その裏で Claude は喋り続ける。
+  //   `++idle >= PRE_FRAMES` の枠跨ぎがこれを防いでいるが、2026-08-03 時点で
+  //   **この枝には変異が1つも無かった**(W11 が素通りしたのを追って気付いた)。
+  //   同時に W13 を追加してある。
+  const gen = screen("edith-generating-dot-frame");
+  const gap = screen("generating-spinner-hidden");
+  const list = paneLine("%1", "2.1.220", "/dev/ttys001", "/Users/Shared/dev/roundtrip") + "\n";
+  // 押す前も押した直後も空白 → その後に印が出る = 生成中の入り口を空白で踏んだ場合。
+  const cycle = [gap, gap, gap, gen, gen, gap, gap, gap];
+  let i = 0;
+  const run = (args) =>
+    args[0] === "capture-pane" ? cycle[i++ % cycle.length] : args[0] === "list-panes" ? list : "";
+  const inj = new TmuxInjector({ tmux: { calls: [], run, runStrict: run }, interruptBudgetMs: 300, sleep: async () => {} });
+  const r = await inj.interrupt("%1");
+  assert.notEqual(r.reason, "not-in-flight", "動いているのに「止める対象が無かった」と報告した");
+  assert.equal(r.stopped, "unverified", "確かめられていないなら確かめられていないと言う");
 });
 
 test("★★陰性対照: 元から止まっているなら、同じ「印が無い」を止まりと読まない", async () => {

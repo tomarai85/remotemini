@@ -540,6 +540,12 @@ MUT = [
  ("W12 自力で終わったのを「止めた」と数える(already-done を verified に潰す)", INJ,
   "      if (doneMarksIn(t) > done0) return \"already-done\";",
   "      // mutated: 完了行を見ない"),
+ # ★W13 = W11 と**対称の嘘**の的。2026-08-03、W11 が素通りしたのを追って
+ #   「消失側(quiet)には的が在るのに、未 armed 側(idle)には1つも無い」と分かった。
+ #   こちらが壊れると電話に「止める対象はありませんでした」と出たまま Claude が喋り続ける。
+ ("W13 押した直後の1枚が空白なら「止める対象が無かった」と言う(生成の入り口を踏む)", INJ,
+  "      if (!armed) return ++idle >= PRE_FRAMES ? \"idle\" : null;",
+  "      if (!armed) return \"idle\";"),
  # ★W7-W9 も継ぎ目(W6 と同じ狙い、H2 側)。`worker.mjs` の単体検査は**計画(plan)**まで
  #   しか見られない —— 実際に `--fork-session` を渡すのも、頭の読み書きを繋ぐのも
  #   `server.mjs` で、そこは import した瞬間に listen するので単体から呼べない。
