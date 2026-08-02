@@ -17,6 +17,10 @@ import { dirname, join } from "node:path";
 import {
   TmuxInjector,
   classifyScreen,
+  inFlightHintIn,
+  interruptMarksIn,
+  doneMarksIn,
+  PRE_FRAMES,
   findComposer,
   menuAt,
   composerText,
@@ -623,9 +627,179 @@ test("キュー API は存在しない(復活したら設計が退行してい�
 test("割り込みは Escape。C-c は使わない", async () => {
   const t = fakeTmux(screen("generating"));
   const inj = new TmuxInjector({ tmux: t });
-  assert.equal(await inj.interrupt("%1"), true);
+  const r = await inj.interrupt("%1");
+  assert.equal(r.pressed, true);
   assert.deepEqual(sends(t)[0], ["send-keys", "-t", "%1", "Escape"]);
   assert.ok(!JSON.stringify(t.calls).includes("C-c"), "C-c は緊急専用で通常経路に出さない");
+});
+
+// ---- 生成中の印(footer の `esc to interrupt`) ----
+// 出典: 2026-08-03 edith 実測。それまでこの層は「この文字列はこのビルドに存在しない(240/0)」
+// を前提に BUSY を捨てていたが、**在り得ない場所を数えた 0** だった(`IN_FLIGHT_HINT` の注記)。
+// ここの fixture 4枚は edith 実機 120x40 の生 capture(メールのみ伏せ字)。
+test("★印は生成中の画面に在り、待機・停止直後には無い(両方向)", () => {
+  // 伸ばす方向
+  assert.equal(inFlightHintIn(screen("edith-generating-footer")), true, "生成中(スピナーも写っている枚)");
+  assert.equal(
+    inFlightHintIn(screen("edith-generating-spinner-hidden")),
+    true,
+    "★生成中でスピナーが写っていない枚 = 現行の材料が効かないのに印は効く、が本命",
+  );
+  // 壊す方向
+  assert.equal(inFlightHintIn(screen("edith-idle-footer")), false, "待機中");
+  assert.equal(inFlightHintIn(screen("edith-after-escape")), false, "Escape の直後");
+});
+
+test("★印は footer だけで数える(応答本文に同じ語が出ても生成中にしない)", () => {
+  // 待機中の画面の**本文側**にこの語が現れた形。全画面で当てる実装はこれを生成中と読む。
+  const idle = screen("edith-idle-footer");
+  const lines = idle.split("\n");
+  const at = lines.findIndex((l) => l.trim() !== "");
+  lines[at] = "  そこで esc to interrupt と表示されると書いてありました";
+  assert.equal(inFlightHintIn(lines.join("\n")), false, "本文の中の語を footer と読んでいる");
+  // 陰性対照: 同じ語を footer に置けば当たる(= 上の false が「語が読めない」せいでない事)
+  const last = lines.map((l, i) => [l, i]).filter(([l]) => l.trim() !== "").at(-1)[1];
+  lines[last] = "  ⏸ manual mode on · esc to interrupt · ← for agents";
+  assert.equal(inFlightHintIn(lines.join("\n")), true, "footer に置いても当たらない = 検査が壊れている");
+});
+
+// ★2026-08-03、この検査は**主張ごと引っくり返した**。元は「この 1 枚はスピナーが
+// 写っていないので footer の印だけで立つ」= 出荷中の規則を正しいと置いた上で、
+// 取りこぼしの原因を「行が無い」側に帰していた。実際にはこの fixture には
+// `· Twisting…` が写っている。旧規則 `/[✻✽✢✶✳][^\n]*…/` が `·`(U+00B7)を
+// 持っていなかっただけ = **原因は画面でなく規則の穴**。fixture は最初からこの反証を
+// 抱えていて、それを見る検査が無かった。
+test("★スピナーは 5 コマ循環。`·` のコマを持たない規則はこの 1 枚を取りこぼす", () => {
+  const hidden = screen("edith-generating-spinner-hidden");
+  const c = classifyScreen(hidden);
+  assert.equal(c.activity, "observed", "生成中なのに observed にならない");
+  assert.equal(c.activityFrom, "hint+spinner", "`·` のコマを進行行として読めていない");
+  // 陽性対照: この枚に写っている進行行は確かに `·` のコマである
+  const lines = hidden.split("\n").filter((l) => /^[ \t]*·[ \t]+\S+…/.test(l));
+  assert.equal(lines.length, 1, `\`·\` の進行行が 1 本ある前提が崩れた: ${lines.length} 本`);
+  // 陰性対照: `·` を落とした旧規則ではこの行が読めない(= 差は `·` だけだと示す)
+  assert.equal(/[✻✽✢✶✳][^\n]*…/.test(lines[0]), false, "旧規則でも当たる = 差は `·` ではない");
+  const both = classifyScreen(screen("edith-generating-footer"));
+  assert.equal(both.activityFrom, "hint+spinner");
+  const idle = classifyScreen(screen("edith-idle-footer"));
+  assert.equal(idle.activity, "unknown");
+  assert.equal(idle.activityFrom, null, "観測していない時に材料の名が残っている");
+});
+
+// ---- 割り込みは「押した」と「止まった」を分ける ----
+// 2026-08-03 まで、Escape を送れたら必ず true を返していた。電話には「止めました(Escape)。」
+// と出るので、**止まっていない時も止まったと読める文**が出ていた。
+test("★止まった所を見たら verified", async () => {
+  const t = fakeTmux([
+    screen("edith-generating-spinner-hidden"), // 押す前 = 生成中
+    screen("edith-generating-spinner-hidden"), // まだ消えていない
+    screen("edith-after-escape"), // 消えた
+  ]);
+  const inj = new TmuxInjector({ tmux: t, interruptBudgetMs: 200, sleep: async () => {} });
+  const r = await inj.interrupt("%1");
+  assert.deepEqual(
+    { pressed: r.pressed, stopped: r.stopped, reason: r.reason },
+    { pressed: true, stopped: "verified", reason: null },
+  );
+});
+
+test("★★印が消えなければ unverified(押した事を止まった事にしない)", async () => {
+  // 画面が1枚しか無い = 何度撮っても生成中のまま
+  const t = fakeTmux(screen("edith-generating-spinner-hidden"));
+  const inj = new TmuxInjector({ tmux: t, interruptBudgetMs: 60, sleep: async () => {} });
+  const r = await inj.interrupt("%1");
+  assert.equal(r.pressed, true, "Escape は押しているはず");
+  assert.equal(r.stopped, "unverified", "止まっていないのに verified を名乗った");
+  assert.equal(r.reason, "still-in-flight");
+});
+
+// ---- ★止まりは2通りある(2026-08-03、edith 実機 v2.1.220 で両方を撮った) ----
+// ① 出力が出た後に Escape → `⎿  Interrupted · What should Claude do instead?` が 172-176ms で出る
+// ② 出力が1文字も出ていない内に Escape → **番ごと巻き戻る**。印は出ない。
+// ② を知らずに①の印だけを根拠にすると、②を「止まっていない」と報告する。
+// ②は電話から一番押されやすい形(動き出したのを見て即座に止める)なので、取りこぼす所が悪い。
+test("★積極的な印を数える。本文に同じ語を書いても数に入らない", () => {
+  const t = screen("edith-interrupted");
+  assert.equal(interruptMarksIn(t), 1, "実機の割り込み画面で印が読めていない");
+  // 陰性対照: 同じ語を**本文として**置いても増えない(行頭の `⎿` に錨を打ってある)
+  const faked = t.replace(/^(.*Interrupted.*)$/m, "  そこに Interrupted と表示されると書いてありました");
+  assert.equal(interruptMarksIn(faked), 0, "本文の語を印として数えている");
+  assert.equal(interruptMarksIn(screen("edith-interrupt-rewound")), 0, "巻き戻りの画面に印は無いはず");
+});
+
+test("★完了行を数える。進行中の行と起動時の release notes を数えない", () => {
+  assert.equal(doneMarksIn(screen("edith-finished")), 1, "`✻ Cooked for 19s` が読めていない");
+  // 陰性対照 1: 進行中(`…` 付き)は完了ではない
+  assert.equal(doneMarksIn(screen("edith-generating-dot-frame")), 0, "進行行を完了と読んでいる");
+  // 陰性対照 2: 起動画面には `Added …` が常に居る。`…` を**画面全体**で見ると
+  //   完了行が永久に読めなくなる(実際に計器で2回踏んだ)。行ごとに見ている事を固定する。
+  assert.ok(screen("edith-finished").includes("…"), "前提: この画面のどこかに `…` が在る事");
+});
+
+test("★①出力の後に止めた = 印が増えたら verified(消失を待たずに即断できる)", async () => {
+  const t = fakeTmux([screen("edith-generating-dot-frame"), screen("edith-interrupted")]);
+  const inj = new TmuxInjector({ tmux: t, interruptBudgetMs: 3000, sleep: async () => {} });
+  const r = await inj.interrupt("%1");
+  assert.deepEqual(
+    { stopped: r.stopped, reason: r.reason },
+    { stopped: "verified", reason: null },
+  );
+  // 印は消失より速い(実測 172ms 対 QUIET_FRAMES 40 枠)。待ちに落ちていない事を固定する。
+  assert.ok(t.captures() <= 3, `印が在るのに待っている: ${t.captures()}枚`);
+});
+
+test("★②出力の前に止めた = 印は出ない。消えて戻らない事で verified", async () => {
+  const t = fakeTmux([screen("edith-generating-dot-frame"), screen("edith-interrupt-rewound")]);
+  const inj = new TmuxInjector({ tmux: t, interruptBudgetMs: 3000, sleep: async () => {} });
+  const r = await inj.interrupt("%1");
+  assert.equal(interruptMarksIn(screen("edith-interrupt-rewound")), 0, "前提: この止まり方に印は無い事");
+  assert.equal(r.stopped, "verified", "印が出ない止まり方を「止まっていない」と報告した");
+});
+
+test("★★陰性対照: 元から止まっているなら、同じ「印が無い」を止まりと読まない", async () => {
+  // ②と**同じ画面**を押す前から出す = 動いている所を一度も見ていない。
+  // ここが verified になるなら、上の②は「止まったから」ではなく「印が無いから」通っている。
+  const t = fakeTmux(screen("edith-interrupt-rewound"));
+  const inj = new TmuxInjector({ tmux: t, interruptBudgetMs: 3000, sleep: async () => {} });
+  const r = await inj.interrupt("%1");
+  assert.equal(r.stopped, null, "何も止めていないのに止めたと言った");
+  assert.equal(r.reason, "not-in-flight");
+});
+
+test("★押した時には自力で終わっていた = already-done(こちらの手柄にしない)", async () => {
+  const t = fakeTmux([screen("edith-generating-dot-frame"), screen("edith-finished")]);
+  const inj = new TmuxInjector({ tmux: t, interruptBudgetMs: 3000, sleep: async () => {} });
+  const r = await inj.interrupt("%1");
+  assert.deepEqual(
+    { stopped: r.stopped, reason: r.reason },
+    { stopped: "already-done", reason: "finished-first" },
+  );
+});
+
+test("★★陰性対照: 前の番の `Interrupted` が画面に残っていても、今の止まりと読まない", async () => {
+  // 「在るか」で見ると通ってしまう画面。**増えたか**で見ている事を固定する。
+  const t = fakeTmux(screen("edith-interrupted"));
+  const inj = new TmuxInjector({ tmux: t, interruptBudgetMs: 3000, sleep: async () => {} });
+  const r = await inj.interrupt("%1");
+  assert.equal(interruptMarksIn(screen("edith-interrupted")), 1, "前提: 押す前から印が1本在る事");
+  assert.equal(r.stopped, null, "過去の割り込みの記録を今の結果として読んだ");
+});
+
+test("★押す前から印が無ければ stopped:null(「止めた」と言わない)", async () => {
+  const t = fakeTmux(screen("edith-idle-footer"));
+  const inj = new TmuxInjector({ tmux: t, interruptBudgetMs: 60, sleep: async () => {} });
+  const r = await inj.interrupt("%1");
+  assert.equal(r.pressed, true, "Tom 裁定「いつでも干渉できれば」= 押す事自体は拒まない");
+  assert.equal(r.stopped, null, "止める対象を観測していないのに結論を出している");
+  assert.equal(r.reason, "not-in-flight");
+  // ★2026-08-03 に上限を 1 枚から `PRE_FRAMES + 1` 枚へ緩めた(押す前 1 + 押した後 24)。
+  // 1 枚で決めていたのが元の実装で、実測ではスピナーは生成中でも 300-450ms 消える
+  // (edith 実機 4 本)。1 枚で外す確率が約 2 割あり、外した時の結末は
+  // **止めたのに「対象が無い」と報告する**事。枠を跨いで見るのがその修正。
+  // 上限そのものは残す: 一度この上限を外した時、止まっているペインに 3 秒 = 約 39 万枚
+  // 撮り続ける実装になった(検査が捕まえた)。
+  const cap = PRE_FRAMES + 1;
+  assert.ok(t.captures() <= cap, `撮り過ぎ: ${t.captures()}枚 > ${cap}`);
 });
 
 // ---- ペイン特定 ----
@@ -769,7 +943,15 @@ test("★★現物の不変量を固定する(変異の「未到達」注記が�
   assert.deepEqual(indented, ["composer-rule-in-body.txt"], "字下げされた罫線は本文の中のそれだけ");
   // 観測された値そのものを固定する。新しい機械が別の形を出したらここが赤くなり、
   // 窓 8 が今も余裕を持っているかを人が見直す事になる(黙って通り過ぎない)。
-  assert.deepEqual([...gaps].sort(), [1, 2], `閉じ罫線の下の行数は 1(edith)と 2(MBP)だけ`);
+  // ★2026-08-03 に 3 を足した。`edith-interrupted` / `edith-interrupt-rewound` の 2 枚が
+  //   3 行で、増えている 1 行は Claude Code の物ではなく **tmux 自身の警告**
+  //   (`tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf …`)。
+  //   ペインの中に出るので画面の一部として撮れる。tmux.conf 次第で出たり出なかったりする
+  //   = **機械ではなくセッション設定に依る差**。窓 8 の余裕はまだ 5 行ある。
+  //   `inFlightHintIn` の窓は下から3行なので、この警告が出ている時は footer の印が
+  //   1行分押し出されうる。rc-claude では印そのものが出ない(statusLine が消す)ので
+  //   現場の判定には効かないが、素の claude では効く。
+  assert.deepEqual([...gaps].sort(), [1, 2, 3], `閉じ罫線の下の行数は 1〜3(下の注記参照)`);
 });
 
 test("★★上限の告知は state と独立に出る(= 送れるのに答えが返らない、が有りうる)", () => {

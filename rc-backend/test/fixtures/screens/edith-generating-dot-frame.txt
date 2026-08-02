@@ -1,0 +1,40 @@
+rc-claude
+/Users/edith/.openclaw/completions/openclaw.zsh:3829: command not found: compdef
+edith@Edith Projects % rc-claude
+╭─── Claude Code v2.1.220 ─────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                        │
+│               Welcome back client-a!               │ Run /init to create a CLAUDE.md file with instructions for Cla… │
+│                                                    │ ─────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                                      │
+│                      ▝▜█████▛▘                     │ Bug fixes and reliability improvements                          │
+│                        ▘▘ ▝▝                       │ Added Claude Opus 5 (`claude-opus-5`), now the default Opus mo… │
+│ Sonnet 5 · Claude Max · redacted@example.invalid's  │ Added `sandbox.network.strictAllowlist` setting to deny non-al… │
+│ Organization                                       │ /release-notes for more                                         │
+│                     ~/Projects                     │                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ⚠ 1 MCP server needs authentication · run /mcp
+
+❯ 秒という単位の歴史を 1200 字程度の平文で書いて。箇条書きにしないで。
+
+· Skedaddling…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Sonnet 5 | /Users/edith/Projects [rc %68]                                                           ● high · /effort
+  ⏸ manual mode on · ← for agents
+
+
+
+
+
+
+
+
+
+
+
+
+
+

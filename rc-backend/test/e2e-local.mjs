@@ -29,6 +29,15 @@ const SID_AMBIG  = "77777777-7777-7777-7777-777777777777"; // 同 cwd に claude
 const SID_GEN    = "88888888-8888-8888-8888-888888888888"; // 生成中(★8/01 の設計では送れる)
 const SID_DEAF   = "99999999-0000-0000-0000-000000000009"; // 本文を送っても画面が動かないペイン
 const SID_RACE   = "99999999-0000-0000-0000-00000000000a"; // 本文の直後に選択画面が割り込むペイン
+// ★割り込みの継ぎ目(2026-08-03 追加)。この2本は**対**で意味を持つ。
+//   単体テストでは `interrupt()` の三値を撃ってあるが、それは注入器の中だけの話で、
+//   「電話が受け取る JSON まで実測が届くか」は別の問題。実際 8/02 まで、e2e の割り込み
+//   検査は `route`/`pane`/キーしか見ておらず、**押した事だけ**を確かめていた。
+//   OK   = Escape で印が消えるペイン   -> stopped:"verified"
+//   STUCK= Escape を受けても印が残る    -> stopped:"unverified"(押したが止まっていない)
+//   2本とも同じ画面から始まるので、判定を分けているのは**Escape 後の画面だけ**になる。
+const SID_INTR_OK    = "99999999-0000-0000-0000-00000000000b"; // 割り込みで実際に止まる
+const SID_INTR_STUCK = "99999999-0000-0000-0000-00000000000c"; // 割り込んでも止まらない
 const CWD_READY  = "/Users/Shared/dev/ready";
 const CWD_CHOICE = "/Users/Shared/dev/choice";
 const CWD_SHELL  = "/private/tmp";
@@ -36,6 +45,8 @@ const CWD_AMBIG  = "/Users/Shared/dev/ambig";
 const CWD_GEN    = "/Users/Shared/dev/busy";
 const CWD_DEAF   = "/Users/Shared/dev/deaf";
 const CWD_RACE   = "/Users/Shared/dev/race";
+const CWD_INTR_OK    = "/Users/Shared/dev/intr-ok";
+const CWD_INTR_STUCK = "/Users/Shared/dev/intr-stuck";
 // 登録簿(session_id -> pane)の検証用。**全部同じ cwd に置く** — 登録が無ければ
 // 特定不能になる状況を作り、登録があれば1つに定まることを同じ場に並べて見せるため。
 const SID_REG_A    = "aaaaaaaa-0000-0000-0000-00000000000a"; // 登録あり -> %20
@@ -93,6 +104,8 @@ fixture(SID_AMBIG, CWD_AMBIG, "特定不能");
 fixture(SID_GEN, CWD_GEN, "生成中");
 fixture(SID_DEAF, CWD_DEAF, "画面が動かない");
 fixture(SID_RACE, CWD_RACE, "選択画面が割り込む");
+fixture(SID_INTR_OK, CWD_INTR_OK, "割り込むと止まる");
+fixture(SID_INTR_STUCK, CWD_INTR_STUCK, "割り込んでも止まらない");
 for (const sid of [SID_REG_A, SID_REG_B, SID_REG_C, SID_STALE]) fixture(sid, CWD_REG, `登録${sid.slice(-1)}`);
 fixture(SID_UNREG, CWD_UNREG, "未登録");
 fixture(SID_LIMIT, CWD_LIMIT, "上限に当たっている");
@@ -119,6 +132,8 @@ const PANES = [
   `%22${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys022${PANE_SEP}${CWD_OTHER}`, // 居場所不一致の検証用
   `%23${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys023${PANE_SEP}${CWD_FRESH}`, // 未発言の会話が居るペイン(jsonl は無い)
   `%24${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys024${PANE_SEP}${CWD_UNREG}`, // 未登録の会話の cwd に居る唯一の claude
+  `%25${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys025${PANE_SEP}${CWD_INTR_OK}`,    // 割り込みで印が消える
+  `%26${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys026${PANE_SEP}${CWD_INTR_STUCK}`, // 割り込んでも印が残る
 ].join("\n") + "\n";
 // ★2026-08-01: 画面はもう手で書かない。使い捨てセッションから撮った生の capture-pane 出力
 // (test/fixtures/screens/)をそのまま使う。前の版はここに手書きの画面を置いていて、
@@ -153,6 +168,12 @@ const SCREENS = {
   "%22": shot("idle-boot"),
   "%23": shot("idle-boot"),
   "%24": shot("idle-boot"),
+  // ★割り込みの対(2026-08-03)。**2枚とも同じ画面**から始める。edith の実機で撮った、
+  //   「生成中だがスピナーが写っていない」枚 = 旧来の材料(スピナー)では BUSY と分からず、
+  //   footer の `esc to interrupt` だけが生成中だと言っている状態。ここを起点にすると、
+  //   割り込みの判定が**新しい材料を本当に読んでいるか**が e2e で分かる。
+  "%25": shot("edith-generating-spinner-hidden"),
+  "%26": shot("edith-generating-spinner-hidden"),
 };
 writeFileSync(join(SB, "tmux-panes.txt"), PANES);
 for (const [pane, text] of Object.entries(SCREENS)) {
@@ -160,6 +181,14 @@ for (const [pane, text] of Object.entries(SCREENS)) {
 }
 // %17 が本文受信後に化ける先(偽 tmux が読む)
 writeFileSync(join(SB, "screen-choice.txt"), shot("choice-model-menu"));
+// ★止まり方は**2通りある**(2026-08-03、edith v2.1.220 で両方撮った)。偽 tmux では
+//   ペインごとに片方ずつ再現する。ここを1通りにすると、電話から最も多い②が「止まって
+//   いない」と報告される回帰を e2e が拾えない。
+//   ① 本文が出た**後**に押した場合 = `⎿  Interrupted · …` が 172ms で出る。%25 がこれ。
+//   ② 本文が1文字も出ていない内に押した場合 = **番ごと巻き戻る**。入力欄にプロンプトが
+//      戻り、`Interrupted` は出ない。%15 がこれ。判定は「印が消えて戻らない」側で通る。
+writeFileSync(join(SB, "screen-after-escape.txt"), shot("edith-interrupted"));
+writeFileSync(join(SB, "screen-rewound.txt"), shot("edith-interrupt-rewound"));
 
 // 注入経路(§10)の会話は**登録済み**にしておく。cwd 一致だけでは注入しない設計に
 // なったため(reason=unregistered)、画面判定 CHOICE/BUSY/READY を測るには先に
@@ -188,7 +217,8 @@ function putRegistry(sid, pane, offsetSec = 0) {
   REG_BEAT.set(p, offsetSec);
   beatOnce();
 }
-for (const [sid, pane] of [[SID_READY, "%10"], [SID_CHOICE, "%11"], [SID_GEN, "%15"], [SID_DEAF, "%16"], [SID_RACE, "%17"], [SID_LIMIT, "%18"]]) {
+for (const [sid, pane] of [[SID_READY, "%10"], [SID_CHOICE, "%11"], [SID_GEN, "%15"], [SID_DEAF, "%16"], [SID_RACE, "%17"], [SID_LIMIT, "%18"],
+                           [SID_INTR_OK, "%25"], [SID_INTR_STUCK, "%26"]]) {
   putRegistry(sid, pane);
 }
 const SENT_LOG = join(SB, "tmux-sent.log");
@@ -229,6 +259,13 @@ elif args and args[0] == "send-keys":
     # %17 は本文を受け取った直後に選択画面へ化ける = 分類と Enter の間の競合の再現。
     if pane == "%17" and "-l" in args:
         open(p, "w").write(open(os.path.join(SB, "screen-choice.txt")).read())
+    # ★Escape の効き目を画面で表す(2026-08-03)。%25 は①(印が出る)、%15 は②(巻き戻る)、
+    #   %26 は**わざと化けない** = Escape を受け取っても生成中のまま。3本の違いは
+    #   ここだけで、他は同じ。だから割り込みの判定が定数でない事がこの3行で決まる。
+    if pane == "%25" and args[-1] == "Escape":
+        open(p, "w").write(open(os.path.join(SB, "screen-after-escape.txt")).read())
+    if pane == "%15" and args[-1] == "Escape":
+        open(p, "w").write(open(os.path.join(SB, "screen-rewound.txt")).read())
 sys.exit(0)
 `);
 chmodSync(fakeTmux, 0o755);
@@ -305,6 +342,13 @@ const sv = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
     //   遅れで窓を跨ぐ。6000ms にすると跨げなくなる(下の 12並列で実測)。
     RC_E2E_ECHO_BUDGET_MS: "6000",
     RC_E2E_MAX_WAITERS: String(MAX_WAITERS),
+    // ★割り込みの予算。**縮められない**理由がある(2026-08-03 に 400ms から戻した)。
+    //   止まりの②(巻き戻り)は積極的な印を残さないので、判定は「印が消えて QUIET_FRAMES
+    //   (40枚)連続で戻らない」で通る。1枚 = 偽 tmux の python 起動 ~20ms + poll 25ms ≈ 45ms
+    //   なので 40枚 ≈ 1.8s、未 armed で諦める PRE_FRAMES(24枚) ≈ 1.1s。400ms ではどちらも
+    //   予算切れになり、②と idle が両方 unverified に落ちて**判定が画面を読まなくなる**。
+    //   4000ms = 1.8s の倍以上。丸ごと待つのは「止まらないペイン」(%26)の1本だけ。
+    RC_E2E_INTERRUPT_BUDGET_MS: "4000",
     RC_E2E_FORK_ID: H2_FORK_ID,
     // ★`RC_E2E_FORCE_PORT` は**対照専用の栓**。本番経路では絶対に立てない。
     //   これが在るのは、環境死の関門(下)を**本物の bind 失敗**で駆動できる様にする為。
@@ -723,6 +767,50 @@ try {
   check("interrupt は Escape 1回だけ", jIntr.route === "tmux" && intrKeys.length === 1 && intrKeys[0].at(-1) === "Escape",
     JSON.stringify(intrKeys));
   check("C-c は一度も出ていない", !JSON.stringify(sentKeys()).includes("C-c"));
+
+  // 10-f2. ★★押した ≠ 止まった。ここまでの 10-f が確かめていたのは「Escape という
+  //   キーが1回出た」までで、**生成が実際に止まったか**は電話に届いていなかった
+  //   (8/02 まで `interrupted` は押した事実に縛られていて、常に true だった)。
+  //   4本を並べて撃つ。4本の違いは Escape 後の画面だけなので、judgment が画面を
+  //   読んでいなければ4本とも同じ値になる = 定数では緑にできない形にしてある。
+  //   ①印が出る / ②巻き戻る / 止まらない / そもそも走っていない、の4通り。
+  const jIntrOk = await (await fetch(`${B}/api/sessions/${SID_INTR_OK}/interrupt`, { method: "POST", headers: H })).json();
+  check("★★止まった①: `Interrupted` の印が増えたら interrupted=true / stopped=verified",
+    jIntrOk.interrupted === true && jIntrOk.stopped === "verified" && jIntrOk.route === "tmux",
+    JSON.stringify(jIntrOk));
+
+  const jIntrStuck = await (await fetch(`${B}/api/sessions/${SID_INTR_STUCK}/interrupt`, { method: "POST", headers: H })).json();
+  check("★★止まらなかった: 印が残ったら interrupted=false / stopped=unverified",
+    jIntrStuck.interrupted === false && jIntrStuck.stopped === "unverified" && jIntrStuck.reason === "still-in-flight",
+    JSON.stringify(jIntrStuck));
+
+  // ★★止まり②(巻き戻り)。10-f で撃った %15 がこれ。積極的な印は**出ない**ので、
+  //   ここが緑になるのは判定が「印が消えて戻らない」側を持っている時だけ。
+  //   8/02 まではこの画面を「生成中の印が無いペイン」と読んで not-in-flight を期待して
+  //   いた — その期待自体が、スピナーの 5 コマ中 1 コマ(`·`)を取りこぼす規則の産物だった。
+  check("★★止まった②: 印が出なくても、消えて戻らなければ stopped=verified",
+    jIntr.interrupted === true && jIntr.stopped === "verified", JSON.stringify(jIntr));
+
+  // そもそも走っていないペイン(入力欄で待っているだけ)。押しはするが、止める対象を
+  // 観測していない事を明示する。ここが verified になったら判定は画面を読んでいない。
+  const jIntrIdle = await (await fetch(`${B}/api/sessions/${SID_READY}/interrupt`, { method: "POST", headers: H })).json();
+  check("走っていなければ stopped=null / reason=not-in-flight(押しはする)",
+    jIntrIdle.interrupted === false && jIntrIdle.stopped === null && jIntrIdle.reason === "not-in-flight",
+    JSON.stringify(jIntrIdle));
+
+  // ★何枚見て決めたのかを**必ず出す**。①以外は枚数を数えて決める判定なので、予算に
+  //   対する余白が痩せると、判定が変わる前に「遅くなった」として先に見える。
+  console.log(`      [割り込みの所要 ms] ①印=${jIntrOk.waitedMs} ②巻戻=${jIntr.waitedMs} `
+    + `止まらず=${jIntrStuck.waitedMs} 未走行=${jIntrIdle.waitedMs} / 予算=4000`);
+  check("★②と未走行は予算の 2/3 以内で決まっている(余白が痩せたら判定が変わる前に落ちる)",
+    jIntr.waitedMs < 2666 && jIntrIdle.waitedMs < 2666,
+    `②=${jIntr.waitedMs} 未走行=${jIntrIdle.waitedMs}`);
+
+  // ★対照の対照: 「止まった」ペインは Escape を**1回だけ**受けている。
+  //   確かめが再送になっていたら、割り込みが二重に効く事になる。
+  const okKeys = sentKeys().filter((c) => c.includes("%25"));
+  check("止まったペインへ出たキーは Escape 1回だけ",
+    okKeys.length === 1 && okKeys[0].at(-1) === "Escape", JSON.stringify(okKeys));
 
   // 10-g. 一覧に経路と画面状態が出る
   const list2 = await (await fetch(`${B}/api/sessions`, { headers: H })).json();

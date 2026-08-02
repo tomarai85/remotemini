@@ -239,9 +239,17 @@ const tmuxRunner = makeTmuxRunner({
 //   これで測る性質は変わらない。
 const ECHO_BUDGET_PLUG = Number(process.env.RC_E2E_ECHO_BUDGET_MS || 0);
 const MAX_WAITERS_PLUG = Number(process.env.RC_E2E_MAX_WAITERS || 0);
+// ★3本目の栓(2026-08-03)。用途は上の2本と違って**速さだけ**で、測る性質は変えない。
+//   割り込みの「まだ止まっていない」を e2e で撃つには、印が消えないペインに対して
+//   `interruptBudgetMs`(既定 3000ms)を丸ごと待たされる。偽 tmux の画面は同期で
+//   書き換わるので、止まった側は予算に関係なく即座に確定する。つまりこの値を縮めても
+//   **緑になる条件は一切緩まない**(縮めて壊れるのは「止まった」の側だけで、そちらは
+//   1枚目の capture で確定する)。本番では立てない = 既定の 3000ms のまま。
+const INTERRUPT_BUDGET_PLUG = Number(process.env.RC_E2E_INTERRUPT_BUDGET_MS || 0);
 const injector = new TmuxInjector({
   tmux: tmuxRunner,
   ...(ECHO_BUDGET_PLUG > 0 ? { echoBudgetMs: ECHO_BUDGET_PLUG } : {}),
+  ...(INTERRUPT_BUDGET_PLUG > 0 ? { interruptBudgetMs: INTERRUPT_BUDGET_PLUG } : {}),
   ...(MAX_WAITERS_PLUG > 0 ? { mutex: makeKeyedMutex({ defaultMaxWaiters: MAX_WAITERS_PLUG }) } : {}),
 });
 const registry = new PaneRegistry({ dir: join(KEY_DIR, "panes") });
@@ -828,16 +836,31 @@ const server = createServer(async (req, res) => {
       if (r.pane) {
         // Escape のみ。C-c は送らない。**送信と同じ鍵**を取るので、送信の途中には割り込まない
         // (割り込むと送信側が「入力欄が空 = 届いた」と誤認する。inject.mjs の interrupt を参照)。
-        const stopped = await injector.interrupt(r.pane);
-        if (!stopped) {
-          // ★false を 200 で返さない。押したのに止めていない事を「止めた」と報告する形になる。
+        const out = await injector.interrupt(r.pane);
+        if (!out.pressed) {
+          // ★押していない事を 200 で返さない。「止めた」と報告する形になる。
           return json(res, 409, {
             error:
               "このペインは今ほかの送信を処理中で、順番待ちも一杯です。**まだ止めていません**。もう一度お試しください。",
-            interrupted: false, route: "tmux", pane: r.pane, reason: "pane-busy",
+            interrupted: false, route: "tmux", pane: r.pane, reason: out.reason,
           });
         }
-        return json(res, 200, { interrupted: true, route: "tmux", pane: r.pane });
+        // ★2026-08-03、`interrupted: true` を**押した事**でなく**止まった事**に結び直した。
+        //   旧版は Escape を送れたら必ず `true` を返していた。電話には
+        //   `view.mjs` が「止めました(Escape)。」と出すので、止まっていないのに
+        //   止まったと読める文が出ていた。ここが分かれるのは4通り(inject.mjs の interrupt 参照):
+        //     verified     … 止まったのを見た。実機の止まり方は2つあり、どちらでもここに来る:
+        //                    ① `⎿ Interrupted` が増える(出力が出た後に押した時)
+        //                    ② 進行の印が消えて戻らない(出力前に押すと**番ごと巻き戻る**)
+        //     already-done … 押した時には自力で終わっていた(完了行が増えた)= 止めていない
+        //     unverified   … 動いていたが期限内に止まりを観測できない = **まだ止まっていない**
+        //     null         … 止める対象を観測できていない
+        //   `interrupted` は verified の時だけ true。残り3つは false + `stopped` で理由が出る。
+        return json(res, 200, {
+          interrupted: out.stopped === "verified",
+          stopped: out.stopped, reason: out.reason, waitedMs: out.waited,
+          route: "tmux", pane: r.pane,
+        });
       }
       const had = manager.interrupt(sessionId);
       return json(res, 200, { interrupted: had, route: "worker" });

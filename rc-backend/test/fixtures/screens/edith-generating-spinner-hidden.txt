@@ -1,0 +1,40 @@
+/Users/edith/.local/bin/claude
+/Users/edith/.openclaw/completions/openclaw.zsh:3829: command not found: compdef
+edith@Edith Projects % /Users/edith/.local/bin/claude
+╭─── Claude Code v2.1.220 ─────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                        │
+│               Welcome back client-a!               │ Run /init to create a CLAUDE.md file with instructions for Cla… │
+│                                                    │ ─────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                                      │
+│                      ▝▜█████▛▘                     │ Bug fixes and reliability improvements                          │
+│                        ▘▘ ▝▝                       │ Added Claude Opus 5 (`claude-opus-5`), now the default Opus mo… │
+│ Sonnet 5 · Claude Max · redacted@example.invalid's  │ Added `sandbox.network.strictAllowlist` setting to deny non-al… │
+│ Organization                                       │ /release-notes for more                                         │
+│                     ~/Projects                     │                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ⚠ 1 MCP server needs authentication · run /mcp
+
+❯ Write about 600 words on the history of the ampere as a unit of current. Plain prose, no lists.
+
+· Twisting…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · esc to interrupt · ← for agents                                                  ● high · /effort
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

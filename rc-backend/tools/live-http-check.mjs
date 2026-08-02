@@ -41,7 +41,7 @@ import { request as httpRequest } from "node:http";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TmuxInjector, makeTmuxRunner, classifyScreen, limitNoticeIn, tmuxChildEnv } from "../src/inject.mjs";
+import { TmuxInjector, makeTmuxRunner, classifyScreen, limitNoticeIn, inFlightHintIn, tmuxChildEnv } from "../src/inject.mjs";
 
 const HOME = homedir();
 const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -576,8 +576,92 @@ async function main() {
     }
 
     // --- 8. 割り込み -----------------------------------------------------------
-    const intr = await api(opt.port, key, "POST", `/api/sessions/${sessionId}/interrupt`);
-    check("interrupt が通る", intr.status === 200 && intr.json?.interrupted === true, `status=${intr.status} route=${intr.json?.route}`);
+    // ★2026-08-03 に中身を入れ替えた。前の版は `interrupted === true` を見て
+    //   「interrupt が通る」と札を付けていたが、当時の `interrupted` は**押した事実**に
+    //   縛られていて常に true だった = 何も測っていない検査が緑を出していた。
+    //   今は「押した」と「止まった」が別の値になったので、**止める対象を自分で作って**
+    //   から撃つ。作れない状況(--no-send)では作れないと言って形だけ見る。
+    if (!opt.send) {
+      const intr = await api(opt.port, key, "POST", `/api/sessions/${sessionId}/interrupt`);
+      const legal = intr.json?.stopped === null || intr.json?.stopped === "verified" || intr.json?.stopped === "unverified";
+      check(
+        "interrupt が三値の契約で返る(--no-send のため止める対象は作っていない)",
+        intr.status === 200 && legal && intr.json?.interrupted === (intr.json?.stopped === "verified"),
+        `status=${intr.status} stopped=${intr.json?.stopped} interrupted=${intr.json?.interrupted}`,
+      );
+    } else {
+      // 長めの本文を投げて、**生成中の印が実際に画面に出るまで待つ**。ここで待たずに
+      // 撃つと、答え終わった後のペインを叩いて not-in-flight が返るだけになる。
+      const longProbe = "秒という単位の歴史を 500 字程度の平文で。箇条書きにしないで。";
+      const fired = await api(opt.port, key, "POST", `/api/sessions/${sessionId}/messages`, { text: longProbe });
+      // ★待つ材料を 2026-08-03 に**差し替えた**。初版は footer の `esc to interrupt` が
+      //   出るまで待っていたが、この語は `rc-claude`(= statusLine を足す起動ラッパ)を
+      //   通すと **0/76 枚**しか出ない(素の `claude` なら 39/75。DESIGN §2.9-X の二腕対照)。
+      //   edith のペインは常に `rc-claude` 側なので、初版はこの実機で**構造的に必ず**
+      //   「生成中を作れなかった」へ落ちる = 割り込みを一度も測らないまま赤を出す計器だった。
+      //   今は判定本体と同じ材料(`classifyScreen().activity`)で待つ。
+      // ★内訳は残す。主語の無い赤を作らない為:
+      //   `anywhere` = 画面のどこかに `esc to interrupt` が在った回数(素の端末なら増える)、
+      //   `footer` = 末尾3行に在った回数、`spinner` = スピナーで観測できた回数。
+      //   spinner だけ増えるのが edith の正常。全部 0 なら生成そのものが起きていない。
+      let anywhere = 0;
+      let footer = 0;
+      let spinner = 0;
+      let lastShot = "";
+      const inflight = await waitFor(async () => {
+        const t = injector.capture(pane);
+        lastShot = t;
+        if (/esc to interrupt/.test(t)) anywhere++;
+        if (inFlightHintIn(t)) footer++;
+        const from = classifyScreen(t).activityFrom;
+        if (from && from !== "hint") spinner++;
+        return classifyScreen(t).activity === "observed" ? true : null;
+      }, 15000);
+      if (!inflight.ok) {
+        writeFileSync(join(outDir, "08-no-inflight.txt"), lastShot);
+        note(
+          "★印が出なかった時の内訳",
+          `スピナーで見えた回数=${spinner} / 画面のどこかに esc to interrupt=${anywhere} / 末尾3行=${footer} / 送信=${fired.status} ${fired.json?.delivered} / 画面=${join(outDir, "08-no-inflight.txt")}`,
+        );
+        for (const l of lastShot.trimEnd().split("\n").filter((x) => x.trim()).slice(-6)) {
+          console.log(`    | ${l.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "<mail>")}`);
+        }
+      }
+      if (!inflight.ok) {
+        // ★ここを一律 NG にしない。生成が始まらない理由は2つあって、読み手の次の手が違う:
+        //   (a) 上限に当たっている = 相手が答えられない -> 待つ(出口 3)。割り込みは**測れていない**。
+        //   (b) それ以外 = 送ったのに動いていない -> 直す(出口 1)。
+        //   8/02 にこの計器自身が (a) を緑で通した前科があるので、赤で通すのも同じ間違い。
+        if (limitNoticeIn(injector.capture(pane))) {
+          limitedReply = true;
+          note("★割り込みは測れていない", "上限の告知が出ていて生成が始まらない(壊れているのではない)");
+        } else {
+          check(
+            "★割り込みの前に生成中の状態を作れた",
+            false,
+            `送信 status=${fired.status} / 15 秒待っても activity=observed にならなかった`,
+          );
+        }
+      } else {
+        note("生成中になるまで", `${inflight.waited}ms(送信 status=${fired.status})`);
+        const intr = await api(opt.port, key, "POST", `/api/sessions/${sessionId}/interrupt`);
+        check(
+          "★★interrupt が効く(押しただけでなく、生成が止まったのを画面で確認)",
+          intr.status === 200 && intr.json?.interrupted === true && intr.json?.stopped === "verified",
+          `status=${intr.status} stopped=${intr.json?.stopped} waitedMs=${intr.json?.waitedMs}`,
+        );
+        note("止まったと分かるまで", `${intr.json?.waitedMs}ms`);
+
+        // ★陰性対照。止めた直後にもう一度撃つ。同じ経路・同じペインで**違う値**が返る事が、
+        //   上の verified が定数でない事の証明になる(止める対象がもう居ない)。
+        const again = await api(opt.port, key, "POST", `/api/sessions/${sessionId}/interrupt`);
+        check(
+          "★陰性対照: 止まった後の再割り込みは not-in-flight(verified を返し続けない)",
+          again.status === 200 && again.json?.stopped === null && again.json?.reason === "not-in-flight",
+          `status=${again.status} stopped=${again.json?.stopped} reason=${again.json?.reason}`,
+        );
+      }
+    }
 
     // --- 9. 知らない相手には触らない ------------------------------------------
     const unknown = await api(opt.port, key, "GET", `/api/sessions/00000000-0000-0000-0000-000000000000/status`);

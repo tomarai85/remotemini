@@ -148,6 +148,49 @@ test("★割り込み: 200 で本文が読めなかったら「対象が無か�
   assert.doesNotMatch(r.text, /対象がありません/, "観測していない事を断定しない");
 });
 
+// 2026-08-03: 「押した」と「止まった」が別の値になったので、電話の文もそこで分かれる。
+// ★分ける理由は表示の綺麗さではない。tmux 経路では **Escape を押しても止まらない事が
+//   実際に起きる**(印が残る)。そこで「止めました」と書くと、Tom は止まったと思って
+//   画面を見ない = 誤報が一番高くつく方向に倒れる。だから unverified は必ず**確かめて
+//   くれ**と言う。3つの値が3つとも違う文になる事を、ここで固定する。
+test("★割り込み: stopped の四値がそれぞれ別の文になる(verified/already-done/unverified/対象なし)", () => {
+  const ok = interruptResult(200, { interrupted: true, stopped: "verified" });
+  assert.equal(ok.kind, "ok");
+  assert.match(ok.text, /止めました/);
+  assert.match(ok.text, /確認/, "何をもって止まったと言っているかを書く");
+
+  const un = interruptResult(200, { interrupted: false, stopped: "unverified", reason: "still-in-flight" });
+  assert.equal(un.kind, "warn", "押せてはいるので error ではない");
+  assert.match(un.text, /まだ止まって/, "止まったと読める文にしない");
+  assert.match(un.text, /画面を見て/, "Tom に次の一手を示す");
+
+  const none = interruptResult(200, { interrupted: false, stopped: null, reason: "not-in-flight" });
+  assert.equal(none.kind, "warn");
+  assert.match(none.text, /見当たりません/);
+
+  // ★2026-08-03 追加。押した時には自力で終わっていた場合。画面の見え方は
+  //   「止まった」と同じ(スピナーが消える)ので、`verified` と同じ文にすると
+  //   **止めていないのに止めたと言う**事になる。
+  const done = interruptResult(200, { interrupted: false, stopped: "already-done", reason: "finished-first" });
+  assert.equal(done.kind, "ok", "止まっている事に変わりはないので警告にしない");
+  assert.doesNotMatch(done.text, /止めました/, "止めていないのに「止めました」と書いている");
+  assert.match(done.text, /終わって/, "何が起きたのかを書く");
+
+  // 4つとも別の文である事(どれか2つが同じなら、電話は区別を捨てている)
+  const texts = new Set([ok.text, un.text, none.text, done.text]);
+  assert.equal(texts.size, 4, `四値が別の文になっていない: ${[...texts].join(" / ")}`);
+});
+
+// ワーカー経路は tmux を持たないので画面を撮れない = `stopped` を名乗れない。
+// そこは今まで通りの二択に落ちる。★ここを消すと、tmux 用の新しい分岐が
+// ワーカー経路の応答を **stopped 無し = 対象なし** と読んで嘘をつく。
+test("★割り込み: stopped を名乗らない応答(ワーカー経路)は旧来の二択に落ちる", () => {
+  const w = interruptResult(200, { interrupted: true, route: "worker" });
+  assert.equal(w.kind, "ok");
+  assert.match(w.text, /止めました/);
+  assert.doesNotMatch(w.text, /見当たりません/);
+});
+
 test("割り込み: 409 はサーバの文、401 は鍵、5xx はサーバ側の失敗", () => {
   assert.equal(interruptResult(409, { error: "宛先を確定できません。" }).text, "宛先を確定できません。");
   assert.equal(interruptResult(409, { error: "宛先を確定できません。" }).kind, "refused");

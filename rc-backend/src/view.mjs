@@ -121,6 +121,25 @@ export function interruptResult(status, body) {
     if (body == null) {
       return { kind: "warn", text: "止めたかどうか確認できませんでした。画面を見て確かめてください。" };
     }
+    // ★2026-08-03、tmux 経路は3通りに分かれるようになった(`server.mjs` の interrupt 参照)。
+    //   それまでは Escape を送れた事が必ず「止めました(Escape)。」になっていて、
+    //   **止まっていない時も同じ文が出ていた**。押した事と止まった事は別なので、別の文にする。
+    //   worker 経路は `stopped` を載せない(止める対象の有無は真偽値で確定している)ので、
+    //   その場合だけ従来の2択に落ちる。
+    if (Object.prototype.hasOwnProperty.call(b, "stopped")) {
+      if (b.stopped === "verified") return { kind: "ok", text: "止めました(生成が止まったのを確認)。" };
+      // ★2026-08-03 追加。Escape を押した時には番が自力で終わっていた場合。
+      //   画面の見え方は「止まった」と同じ(スピナーが消える)ので、これを verified に
+      //   混ぜると**止めていないのに止めたと言う**。完了行が増えた事で区別が付く。
+      if (b.stopped === "already-done") {
+        return { kind: "ok", text: "押した時には終わっていました(止めるものは残っていません)。" };
+      }
+      if (b.stopped === "unverified") {
+        return { kind: "warn", text: "Escape は押しましたが、まだ止まっていません。画面を見て確かめてください。" };
+      }
+      // stopped == null = 押す前から生成の印が無かった。押した事だけが確かなので、そう書く。
+      return { kind: "warn", text: "止める対象が見当たりませんでした(Escape は押しました)。" };
+    }
     return b.interrupted
       ? { kind: "ok", text: "止めました(Escape)。" }
       : { kind: "warn", text: "止める対象がありませんでした。" };

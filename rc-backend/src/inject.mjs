@@ -9,6 +9,14 @@
 // 使い捨てセッションで 0.25 秒刻みに 240 枚の画面を撮って分かったこと:
 //   M1 `esc to interrupt` はこのビルドの画面に存在しない(240/0)。唯一の BUSY 材料が
 //      これだったので、BUSY は一度も発火しておらず、キュー経路は死んでいた。
+//      ★★**M1 は 2026-08-03 に実測で覆った。この行は誤りの記録として残す**。
+//      実物は footer に在り、生成中 62/62・終了後 0/15。240/0 が出た訳は2つとも
+//      「在り得ない場所を数えた」: (a) 否定した対象が旧・手書き画面の**合成行**
+//      `✻ Baking… (… esc to interrupt)` で、実物はスピナー行でなく footer に出る。
+//      (b) 数えた fixture は別機体の 50 行画面で footer 領域を含んでいない。
+//      → 詳細と対照は `IN_FLIGHT_HINT` の注記。この誤りが波及した先は下の 1/2 で、
+//      **1(自前キュー撤去)と 2(SENDABLE)は再検討が要る**。ただし今回直したのは
+//      割り込みの観測だけで、送信可否の判定は動かしていない(別の決定として分ける)。
 //   M3 進行中スピナーは 6.5 秒の生成中に 8/26 サンプルしか見えない(31%)。残りは同じ行を
 //      tmux のヒント文が占拠する。→ **画面から「生成中」を遮断条件にはできない**。
 //   M4 生成中も入力欄の `❯` は出たまま。「プロンプトが見える = 待機中」も成り立たない。
@@ -61,11 +69,110 @@ const OPTION_ROW = /^\s*(?:[❯>›→▶]\s*)?\d+\.\s+\S/;
 const CHOICE_PHRASE =
   /(Enter to confirm|What do you want to do\?|Do you want to (proceed|continue)|weekly limit|Do you trust)/i;
 /**
- * 進行中スピナー。**表示専用**。M3 の通り 31% しか見えないので、これが無いことは
- * 待機中の証拠にならない。送信可否には一切使わない。
+ * 進行中スピナー。**表示専用**。これが無いことは待機中の証拠にならない(M3)ので、
+ * 送信可否には一切使わない。
  * 進行中 `✳ Fluttering… (3s · thinking)` / 完了 `✻ Cogitated for 10s`(`…` が無い)。
+ *
+ * ★2026-08-03 改訂。旧規則は `/[✻✽✢✶✳][^\n]*…/` で、edith 実機(v2.1.220)の
+ * 生成中を撮ると 31% しか立たなかった。DESIGN の M3 はこれを「tmux のヒント文が
+ * 行を占拠している」と診断していたが、**規則を一切当てずに進行行を字面で撮り直したら
+ * 診断ごと違っていた**(`tools/spinner-glyph-probe.mjs`)。スピナーは 5 コマの循環で、
+ *     ✢ U+2722 → ✻ U+273B → ✽ U+273D → ✶ U+2736 → · U+00B7 → 繰り返し
+ * 旧規則は最後の `·` を持っていない = **5 コマに 1 コマ構造的に盲**だった。
+ * 行の欠落ではなく、こちらの規則の穴。
+ *
+ * `·` を足すと本文中の中黒に当たるので、行頭に錨を打って進行行の形に限る
+ * (起動時の `│ Sonnet 5 · Claude Max · … │ Added …` が実際に誤爆する)。
+ * 錨と `\S+…` の組で「行頭の記号 + 一語 + 三点」= 進行行の形だけを見る。
  */
-const IN_FLIGHT = /[✻✽✢✶✳][^\n]*…/;
+const IN_FLIGHT = /^[^\S\r\n]*[✻✽✢✶✳·][^\S\r\n]+\S+…/m;
+/**
+ * ★生成中の**積極的な印**。footer(画面最下の非空行)に出る `esc to interrupt`。
+ *
+ * ★2026-08-03、実機の対照で足した。それまでこのファイルは冒頭 M1 で
+ * 「`esc to interrupt` はこのビルドの画面に存在しない(240/0)」と書き、それを唯一の根拠に
+ * BUSY を概念ごと捨てていた。**その 240/0 は在り得ない場所を数えた 0 だった**:
+ *   - 出所は `test/e2e-local.mjs:125` の旧・手書き画面 `✻ Baking… (… esc to interrupt)`。
+ *     測定はこの**合成行**を正しく否定した。実物はスピナー行ではなく footer に出るので、
+ *     「この行は無い」から「この文字列は無い」への一般化が誤りだった。
+ *   - 数えた側の fixture(`generating*.txt` 3枚)は**別機体の 50 行画面**で、footer が
+ *     `⏵⏵ bypass permissions on … · ← 1 agent` / モデル行 `Haiku 4.5`。edith は
+ *     `⏸ manual mode on …`。しかも 3 枚とも footer 領域を含んでいない(`manual mode on` が 0 件)。
+ *     = 家で撮った画面で現場の判定を決めていた。
+ *
+ * 実測(edith 120x40 / v2.1.220 / 200ms 刻み、`scratchpad/inflight-marker-control.mjs`):
+ *   伸ばす方向 生成中 62 フレーム(12.4秒)に **62/62 (100%)**、欠落の最長連続 0ms
+ *   壊す方向   自然終了の後 15 フレームに **0/15 (0%)**
+ *   対して現行の材料(スピナー)は同じ区間で 8/62 (13%)、**欠落が 10.8 秒連続**した。
+ * Escape → 印が消えるまでは **120ms**(`scratchpad/edith-fixture-capture.mjs`)。
+ *
+ * footer は実機で3態を取る(現物 = `fixtures/screens/edith-*.txt` 4枚):
+ *   生成中   `⏸ manual mode on · esc to interrupt · ← for agents`
+ *   待機     `⏸ manual mode on · ? for shortcuts · ← for agents`
+ *   Escape後 `⏸ manual mode on`
+ * この語が出るのは生成中だけ = 排他的なので、積極的な印として使える。
+ *
+ * ★**画面の末尾3行に限る**。全画面で当てると、応答本文に `esc to interrupt` と
+ * 書かれただけで「生成中」になる(モデルはこの語をいくらでも書ける)。footer は
+ * 定義上いちばん下なので、範囲を絞る事に情報の損は無い。
+ * ★壊れる条件: 文言も配置も Claude Code 側の物なので、ビルド更新で変わりうる。
+ * 変わればこの関数は黙って false を返す = 「止まったと言えない」側に落ちる(fail-closed)。
+ */
+const IN_FLIGHT_HINT = /esc to interrupt/;
+const FOOTER_LINES = 3;
+
+/**
+ * 生成中の印が footer に見えているか。
+ * @param {string} text 画面
+ * @returns {boolean} true = 生成中(積極的)。**false は「生成中でない」ではなく
+ *   「生成中と言えない」**。この非対称はこの層の他の判定と同じ。
+ */
+export function inFlightHintIn(text) {
+  const lines = String(text || "").split("\n").filter((l) => l.trim() !== "");
+  return lines.slice(-FOOTER_LINES).some((l) => IN_FLIGHT_HINT.test(l));
+}
+
+/**
+ * 割り込みが効いた**積極的な印**。`⎿  Interrupted · What should Claude do instead?`
+ *
+ * ★行頭の `⎿`(U+23BF)に錨を打つ。Claude Code が結果行を描く時だけ置く記号なので、
+ * 本文に "Interrupted" と書かれても数に入らない。`esc to interrupt` を footer 3 行に
+ * 限ったのと同じ罠避け(本文は何でも書けるので、本文と区別できる形に限る)。
+ *
+ * **本数を返す**のは、割り込みの前後で**増えたか**を見る為。画面には前の番の
+ * `Interrupted` が残っている事があり、「在るか」で見ると過去の割り込みを今の結果と
+ * 読んでしまう(= このプロジェクトが何度も踏んだ「記録が在る事を、事象が起きた事と読む」)。
+ *
+ * @param {string} text 画面
+ * @returns {number} 印の本数
+ */
+// 空白は `[ \t]` では取れない。実物の区切りは `U+0020 U+00A0`(改行なし空白)で、
+// 端末の見た目からは区別が付かない。**字面でなく符号位置を測ってから書く**事。
+// (2026-08-03、この規則を見た目から書いて実機 fixture に当たらず捕まった)
+const SP = "[^\\S\\r\\n]";
+const INTERRUPT_MARK = new RegExp(`^${SP}*\u23BF${SP}+Interrupted\\b`);
+export function interruptMarksIn(text) {
+  return String(text || "").split("\n").filter((l) => INTERRUPT_MARK.test(l)).length;
+}
+
+/**
+ * 番が**自力で終わった**印。`✻ Cooked for 19s` のような完了行。
+ *
+ * 割り込みの判定に要る理由: Escape を押した瞬間に生成が自力で終わっていた場合、
+ * スピナーは消えるし `Interrupted` も出ない。これを「止めた」と言うと嘘になる。
+ * 完了行が増えていれば「押す前に終わっていた」と正しく名乗れる。
+ *
+ * 動詞は非 ASCII を含む(`Sautéed`)ので `\w+` では取れない。`…` を持つ行は
+ * 進行中なので除く — ただし**行ごとに**判定する。画面全体で `…` を見ると、
+ * 起動時の release notes(`Added …`)が常に居るので永久に当たらない検査になる。
+ *
+ * @param {string} text 画面
+ * @returns {number} 完了行の本数
+ */
+const DONE_MARK = new RegExp(`^${SP}*[✻✽✢✶✳·]${SP}+\\S+ for \\d+s\\b`);
+export function doneMarksIn(text) {
+  return String(text || "").split("\n").filter((l) => DONE_MARK.test(l) && !l.includes("…")).length;
+}
 /**
  * 「この機械は今、答えられない」の告知。**送信可否には使わない**(下の理由)。
  *
@@ -244,22 +351,37 @@ export function menuAt(text) {
 /**
  * 画面から「今このペインに何をしてよいか」を決める。純関数。
  *
- * @returns {{state:"SENDABLE"|"CHOICE"|"UNKNOWN", activity:"observed"|"unknown", composer:number, limited:boolean}}
- *   state    送信可否。**SENDABLE 以外は送らない**(fail-closed)
- *   activity 生成中を**観測できたか**。observed でないことは待機中を意味しない(M3)
- *   composer composer の行番号(-1 = 無い)
- *   limited  上限の告知が見えているか。**state とは独立**(送れるが答えは返らない、が有りうる)
+ * @returns {{state:"SENDABLE"|"CHOICE"|"UNKNOWN", activity:"observed"|"unknown",
+ *   activityFrom:("hint"|"spinner"|"hint+spinner"|null), composer:number, limited:boolean}}
+ *   state        送信可否。**SENDABLE 以外は送らない**(fail-closed)
+ *   activity     生成中を**観測できたか**。observed でないことは待機中を意味しない(M3)
+ *   activityFrom activity を立てた材料の名。observed でない時は null。
+ *                「何で測ったか」を答えの横に置く為で、判定には使わない
+ *   composer     composer の行番号(-1 = 無い)
+ *   limited      上限の告知が見えているか。**state とは独立**(送れるが答えは返らない、が有りうる)
  */
 export function classifyScreen(text) {
   const s = typeof text === "string" ? text : "";
-  const activity = IN_FLIGHT.test(s) ? "observed" : "unknown";
+  // ★2026-08-03、材料を2つにした。それまではスピナーだけで、しかもその規則が
+  //   5コマ中1コマ(`·`)を持っていなかった = 取りこぼしの主因は画面ではなく規則。
+  //   `·` を足して被覆は 31% → 61-82%(DESIGN §2.9-X)。
+  // ★footer の印(`esc to interrupt`)は**電話の経路では出ない**。同日中に二腕対照で確定:
+  //   素の `claude` = 39/75 枚に出るが、`rc-claude`(statusLine を足す起動ラッパ)= **0/76**。
+  //   電話が触るのは常に後者。だから `byHint` は実質**素の端末で人が開いた時だけ**効く保険で、
+  //   これを当てにした判定を書くと電話では黙って死ぬ(この夜、実際に計器を1つそう書いた)。
+  //   足すだけなので取りこぼしは増えない。`unknown` が待機を意味しない事(M3)はそのまま。
+  const bySpinner = IN_FLIGHT.test(s);
+  const byHint = inFlightHintIn(s);
+  const activity = bySpinner || byHint ? "observed" : "unknown";
+  // 何で観測したかを答えの横に置く(「主語の無い緑」を作らない為)。
+  const activityFrom = byHint && bySpinner ? "hint+spinner" : byHint ? "hint" : bySpinner ? "spinner" : null;
   const limited = limitNoticeIn(s);
-  if (s.trim() === "") return { state: "UNKNOWN", activity, composer: -1, limited };
+  if (s.trim() === "") return { state: "UNKNOWN", activity, activityFrom, composer: -1, limited };
   // メニューを最優先。ここを取りこぼすと Enter が課金や承認になる。
-  if (menuAt(s)) return { state: "CHOICE", activity, composer: -1, limited };
+  if (menuAt(s)) return { state: "CHOICE", activity, activityFrom, composer: -1, limited };
   const composer = findComposer(s);
-  if (composer < 0) return { state: "UNKNOWN", activity, composer: -1, limited };
-  return { state: "SENDABLE", activity, composer, limited };
+  if (composer < 0) return { state: "UNKNOWN", activity, activityFrom, composer: -1, limited };
+  return { state: "SENDABLE", activity, activityFrom, composer, limited };
 }
 
 /**
@@ -503,6 +625,40 @@ function countOf(haystack, needle) {
  */
 const ECHO_BUDGET_MS = 1500;
 const ECHO_POLL_MS = 25;
+/**
+ * 割り込みの印が消えるのを待つ上限。実測 120ms(edith 実機、Escape → footer から
+ * `esc to interrupt` が消えるまで)の約 25 倍。
+ *
+ * 送信の予算(1500ms)と別にしてある理由: 待ち切れなかった時の結末が違う。送信は
+ * 「送らない」= 安全側に落ちるので短くてよい。割り込みは既に Escape を**押してある**ので、
+ * 待ち切れなかった時に落ちる先は `unverified`(= 「押したがまだ止まっていない」)。
+ * これは嘘ではないが、電話の Tom に無駄な不安を出す。実測の 25 倍まで見て、それでも
+ * 消えないなら本当に何か起きているので、そう出す方が正しい。
+ */
+const INTERRUPT_BUDGET_MS = 3000;
+/**
+ * 押す前に「本当に動いているか」を見る枠数。**1枚では決めない**。
+ *
+ * 実測(edith / rc-claude / 120x40 / 150ms 刻み、4 本): 生成中にスピナーが写る枠は
+ * 61-82%。写らない枠は散っているのではなく**短い切れ目**で、生成が始まった後に
+ * 連続して消える最長は 2-3 枠 = 300-450ms。つまり 1 枚撮って外す確率は約 2 割ある一方、
+ * 450ms 以上見れば必ず当たる。ここを 1 枚で決めていたのが旧実装で、外した時の結末は
+ * 「押したが、止める対象が無かった」= **止めたのに止めていないと報告する**。
+ *
+ * 枠数で持つのは検査で決定的に回す為(偽 tmux は即時反映なので待ち時間ゼロで抜ける)。
+ * 実時間の目安は `ECHO_POLL_MS`(25ms)+ 撮影 ≈ 34ms/枠 なので 24 枠 ≈ 800ms。
+ * 実測の切れ目(450ms)の約 1.8 倍。動いていれば普通は 1 枠目で当たるので、
+ * この上限を払うのは本当に止まっているペインだけ。
+ */
+export const PRE_FRAMES = 24;
+/**
+ * 「消えて戻らない」と言う為に必要な、印の無い連続枠数。
+ *
+ * 同じ実測から: 生成中の切れ目の最長が 3 枠 ≈ 450ms。よってそれを**十分に超えて**
+ * 消え続けた時だけ止まったと言う。40 枠 ≈ 1350ms = 実測切れ目の約 3 倍。
+ * 短くすると「切れ目」を「停止」と読む。長くすると `INTERRUPT_BUDGET_MS` に食い込む。
+ */
+const QUIET_FRAMES = 40;
 
 export class TmuxInjector {
   /**
@@ -514,6 +670,8 @@ export class TmuxInjector {
    *   `runStrict` の無い注入は**構築時に落とす**。飲む `run` から投げる版は作れないので、
    *   ここで代用を合成すると「一覧が空 = ペインが無い」という嘘が復活する(M84)。
    * @param {number} [opts.echoBudgetMs] 画面反映を待つ上限
+   * @param {number} [opts.interruptBudgetMs] 割り込みの印が消えるのを待つ上限
+   *   (既定 = `INTERRUPT_BUDGET_MS`。送信と別なのはその注記の通り)
    * @param {(ms:number)=>Promise<void>} [opts.sleep] 待ちの注入
    * @param {{run:Function}} [opts.mutex] ペイン鍵の直列化(既定 = この注入器専用に1本作る)。
    *   差し替えられるのは検査の為だけ。**共有しない**: 鍵は「同じ物理キーボード」を守るので、
@@ -521,7 +679,13 @@ export class TmuxInjector {
    *   今の構成では `server.mjs` が注入器を1本しか作らないのでこれで足りる(実測: `new TmuxInjector` は
    *   `server.mjs:209` の1箇所。`tools/live-*.mjs` は別プロセスの点検道具)。
    */
-  constructor({ tmux, echoBudgetMs = ECHO_BUDGET_MS, sleep, mutex } = {}) {
+  constructor({
+    tmux,
+    echoBudgetMs = ECHO_BUDGET_MS,
+    interruptBudgetMs = INTERRUPT_BUDGET_MS,
+    sleep,
+    mutex,
+  } = {}) {
     if (!tmux || typeof tmux.run !== "function") {
       throw new Error("TmuxInjector: tmux runner injection required");
     }
@@ -536,6 +700,7 @@ export class TmuxInjector {
     }
     this.tmux = tmux;
     this.echoBudgetMs = echoBudgetMs;
+    this.interruptBudgetMs = interruptBudgetMs;
     this.sleep = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.mutex = mutex || makeKeyedMutex();
   }
@@ -560,15 +725,19 @@ export class TmuxInjector {
    *
    * @param {string} pane
    * @param {(text:string)=>(string|null)} decide 確定したら理由の札を返す。未確定は null
+   * @param {object} [opts]
+   * @param {number} [opts.budgetMs] 待ちの上限(既定 = `echoBudgetMs`)。割り込みだけ
+   *   別の値を使う(`INTERRUPT_BUDGET_MS` の注記参照)。
    * @returns {Promise<{tag:(string|null), text:string, waited:number}>} tag=null は時間切れ
    */
-  async pollScreen(pane, decide) {
+  async pollScreen(pane, decide, { budgetMs } = {}) {
+    const limit = budgetMs ?? this.echoBudgetMs;
     const t0 = Date.now();
     for (;;) {
       const text = this.capture(pane);
       const tag = decide(text);
       if (tag) return { tag, text, waited: Date.now() - t0 };
-      if (Date.now() - t0 >= this.echoBudgetMs) return { tag: null, text, waited: Date.now() - t0 };
+      if (Date.now() - t0 >= limit) return { tag: null, text, waited: Date.now() - t0 };
       await this.sleep(ECHO_POLL_MS);
     }
   }
@@ -697,23 +866,103 @@ export class TmuxInjector {
    *   その間に起きるのは「本文が送られてから止まる」= 筋の通る結末。
    *   逆に割り込みを先に通すと、上の嘘が出る。
    *
-   * @returns {Promise<boolean>} false = **まだ止めていない**(鍵が取れなかった)。
-   *   ここで true を返すと「押したのに止まらない」を「止めた」と報告する事になる。
+   * ★2026-08-03、**押した事を止まった事として報告していた**のを直した。
+   *   旧版は Escape を送って裸の `true` を返すだけで、止まったかを一度も見ていない。
+   *   `send()` が同じファイルの中で `delivered:"verified"|"unverified"` を分けているのに、
+   *   割り込みだけが観測抜きで成功を名乗っていた = この案件で最も繰り返している型
+   *   (狭い観測を、それが支えていない結論に貼る)。
+   *
+   *   直せなかった理由は道具が無かった事: 唯一の材料だったスピナーは生成中でも
+   *   13% しか写らず(実測、欠落が 10.8 秒連続)、消えた事が停止の証拠にならない。
+   *   footer の `esc to interrupt` が 100%/0% で効くと分かったので、初めて測れる。
+   *
+   * @returns {Promise<{pressed:boolean, stopped:("verified"|"already-done"|"unverified"|null),
+   *   reason:(string|null), waited:(number|null)}>}
+   *   `pressed:false`            鍵が取れず Escape を**送っていない**
+   *   `stopped:"verified"`       止まったのを見た(印が増えた / 進行の印が消えて戻らない)
+   *   `stopped:"already-done"`   押す前に番が自力で終わっていた = 完了行が増えた。
+   *                              止めていないので「止めた」とは言わない
+   *   `stopped:"unverified"`     動いていたのに期限内に止まりを観測できなかった
+   *   `stopped:null`             止める対象を観測できていない。
+   *                              **これを「止めた」と言わない**のがこの改訂の要点。
    */
   async interrupt(pane, { signal } = {}) {
     try {
-      return await this.mutex.run(
-        pane,
-        () => {
-          this.tmux.run(["send-keys", "-t", pane, "Escape"]);
-          return true;
-        },
-        { signal },
-      );
+      return await this.mutex.run(pane, () => this.#interruptExclusive(pane), { signal });
     } catch (e) {
-      if (e?.code === MUTEX_BUSY || e?.code === MUTEX_ABORTED) return false;
+      if (e?.code === MUTEX_BUSY) {
+        return { pressed: false, stopped: null, reason: "pane-busy", waited: null };
+      }
+      if (e?.code === MUTEX_ABORTED) {
+        return { pressed: false, stopped: null, reason: "pane-wait-timeout", waited: null };
+      }
       throw e;
     }
+  }
+
+  /** 鍵の中でだけ走る本体。**直接呼ばない**。 */
+  async #interruptExclusive(pane) {
+    // 押す前に**1枚だけ**撮って数える。数えるのは「増えたか」を見る為で、「在るか」で
+    // 見ると前の番に残った `Interrupted` を今の結果と読む(= このプロジェクトが繰り返し
+    // 踏んだ「記録が在る事を、事象が起きた事と読む」)。
+    //
+    // ここを**1枚に留める**のは Escape を遅らせない為。一度は押す前に何枚も見る実装に
+    // したが、それは 2 つ壊した: ① Tom 裁定「いつでも干渉できれば」に対して打鍵が
+    // 800ms 遅れる ② 鍵の陰性対照が「鍵」ではなく「待ち時間」で順序が決まる検査に化けた
+    // (実際に化けて、鍵を外しても順序が変わらなくなった)。動いていたかの取りこぼしは
+    // **押した後の枠で拾い直す**(下の armed)ので、遅らせる必要が無い。
+    const pre = this.capture(pane);
+    const marks0 = interruptMarksIn(pre);
+    const done0 = doneMarksIn(pre);
+    const preInFlight = classifyScreen(pre).activity === "observed";
+
+    this.tmux.run(["send-keys", "-t", pane, "Escape"]);
+
+    // ★止まりは2通りある(2026-08-03、edith 実機で両方を撮った)。
+    //   ① 出力が出た後に押す → `⎿ Interrupted · What should Claude do instead?` が
+    //      172-176ms で出る。出力は画面に残る。
+    //   ② 出力が1文字も出ていない内に押す → **番ごと巻き戻る**。プロンプトは入力欄に
+    //      戻り、画面から番が消える。`Interrupted` は**出ない**。
+    // 印だけを根拠にすると ② を「止まっていない」と報告する。② は電話から一番押されやすい
+    // (動き出したのを見て即座に止める)ので、取りこぼす所が悪い。よって
+    // 「印が増える」か「進行の印が消えて戻らない」のどちらでも止まりと言う。
+    //
+    // 消失側を使えるのは**動いているのを一度でも観測できた時だけ**(armed)。元から
+    // 止まっているペインでは印が最初から無いので、消失を根拠にすると何も止めていないのに
+    // 「止めた」になる。押した後の枠で armed が立つのは正しい: Escape でスピナーが
+    // 消えるまで実測 172ms 掛かるので、本物の割り込みでは押した直後の枠にまだ写っている。
+    let armed = preInFlight;
+    let quiet = 0;
+    let idle = 0;
+    const decide = (t) => {
+      if (interruptMarksIn(t) > marks0) return "stopped";
+      if (doneMarksIn(t) > done0) return "already-done";
+      if (classifyScreen(t).activity === "observed") {
+        armed = true;
+        quiet = 0;
+        return null;
+      }
+      // まだ一度も動いている所を見ていない。スピナーは生成中でも 300-450ms 消えるので
+      // 1 枚で「止まっている」とは言えない。`PRE_FRAMES` 枚(≈800ms)見て何も出なければ
+      // 止める対象は無かったと名乗る。
+      if (!armed) return ++idle >= PRE_FRAMES ? "idle" : null;
+      return ++quiet >= QUIET_FRAMES ? "stopped" : null;
+    };
+    const seen = await this.pollScreen(pane, decide, { budgetMs: this.interruptBudgetMs });
+
+    if (seen.tag === "stopped") {
+      return { pressed: true, stopped: "verified", reason: null, waited: seen.waited };
+    }
+    if (seen.tag === "already-done") {
+      // Escape は送ってあるが、止めたのはこちらではない。そう名乗る。
+      return { pressed: true, stopped: "already-done", reason: "finished-first", waited: seen.waited };
+    }
+    if (seen.tag === "idle") {
+      // Escape は送る(Tom 裁定「いつでも干渉できれば」= 押す事自体は拒まない)。
+      // しかし観測できた事は「押した」だけなので、そう名乗る。
+      return { pressed: true, stopped: null, reason: "not-in-flight", waited: seen.waited };
+    }
+    return { pressed: true, stopped: "unverified", reason: "still-in-flight", waited: seen.waited };
   }
 
   /**

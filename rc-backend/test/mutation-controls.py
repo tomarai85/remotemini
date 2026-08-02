@@ -40,7 +40,7 @@ HLT = "src/health.mjs"
 
 MUT = [
  ("M1 メニュー判定を外す(CHOICE を返さない)", INJ,
-  'if (menuAt(s)) return { state: "CHOICE", activity, composer: -1, limited };',
+  'if (menuAt(s)) return { state: "CHOICE", activity, activityFrom, composer: -1, limited };',
   '// mutated: menuAt 無効'),
  ("M2 入力欄の開き罫線の条件を外す(裸の ❯ を入力欄と認める)", INJ,
   'return BOX_RULE.test(lines[head - 1] ?? "") ? { head, close } : null;',
@@ -64,8 +64,8 @@ MUT = [
   "選択肢に化ける経路は構造的に消えた。箱より下に残るのはモデル名と権限モードの2行だけで"
   "番号行を含まない。緩めても CHOICE が増える側(fail-closed)にしか倒れない。実機18枚で差0枚(18枚目を足した 8/01 に測り直し)"),
  ("M7 生成中を送信の遮断条件に戻す(旧設計への退行)", INJ,
-  'if (menuAt(s)) return { state: "CHOICE", activity, composer: -1, limited };',
-  'if (activity === "observed") return { state: "UNKNOWN", activity, composer: -1 };\n  if (menuAt(s)) return { state: "CHOICE", activity, composer: -1, limited };'),
+  'if (menuAt(s)) return { state: "CHOICE", activity, activityFrom, composer: -1, limited };',
+  'if (activity === "observed") return { state: "UNKNOWN", activity, activityFrom, composer: -1 };\n  if (menuAt(s)) return { state: "CHOICE", activity, activityFrom, composer: -1, limited };'),
  ("M8 scrollback を読む(-S を付ける)", INJ,
   'return this.tmux.run(["capture-pane", "-t", pane, "-p"]);',
   'return this.tmux.run(["capture-pane", "-t", pane, "-p", "-S", "-200"]);'),
@@ -78,7 +78,7 @@ MUT = [
  # M11 = 2026-08-01 に実機で実際に踏んだ欠陥そのもの。画面の描き直しを待たず1枚だけ撮る実装に戻す。
  # 偽 tmux は即時反映なのでこれを検出できる検査は「遅れて載る画面」を持つ物だけ。
  ("M11 画面の反映を待たない(1枚撮って諦める = 実機で毎回不達)", INJ,
-  'if (Date.now() - t0 >= this.echoBudgetMs) return { tag: null, text, waited: Date.now() - t0 };',
+  'if (Date.now() - t0 >= limit) return { tag: null, text, waited: Date.now() - t0 };',
   'return { tag: null, text, waited: Date.now() - t0 };'),
  # M12-M16 = 2026-08-01 に実測から見つけた「登録が古い」経路の守り。
  # 観測: ~/.rc-backend/panes/ の 10 件が全部 %0 を名乗っていた(tmux サーバは未起動)。
@@ -514,26 +514,32 @@ MUT = [
  ("W3 断ったのに送ったと名乗る(`sent:true` / `delivered:\"verified\"`)", INJ,
   '      return { sent: false, state: "BUSY", delivered: null, reason: "pane-busy" };',
   '      return { sent: true, state: "BUSY", delivered: "verified", reason: null };'),
- ("W4 止めていないのに「止めた」と返す", INJ,
-  "      if (e?.code === MUTEX_BUSY || e?.code === MUTEX_ABORTED) return false;",
-  "      if (e?.code === MUTEX_BUSY || e?.code === MUTEX_ABORTED) return true;"),
+ # ★W4/W5/W6 は 2026-08-03 に的を付け替えた。割り込みの返り値が真偽値から4値
+ #   (verified / already-done / unverified / null)へ変わり、探し文が本文に当たらなく
+ #   なった為。**欠陥は同じ** —— 断ったのに「止めた」と名乗る / 鍵を通らない / 継ぎ目で化ける。
+ ("W4 止めていないのに「止めた」と返す(鍵が満杯なのに verified を名乗る)", INJ,
+  '        return { pressed: false, stopped: null, reason: "pane-busy", waited: null };',
+  '        return { pressed: true, stopped: "verified", reason: null, waited: null };'),
  ("W5 割り込みを鍵の外へ出す(Escape が本文と Enter の間に落ちる)", INJ,
-  """      return await this.mutex.run(
-        pane,
-        () => {
-          this.tmux.run(["send-keys", "-t", pane, "Escape"]);
-          return true;
-        },
-        { signal },
-      );""",
-  """      this.tmux.run(["send-keys", "-t", pane, "Escape"]);
-      return true;"""),
+  "      return await this.mutex.run(pane, () => this.#interruptExclusive(pane), { signal });",
+  "      return await this.#interruptExclusive(pane);"),
  # ★W6 は**継ぎ目**を撃つ(M78 と同じ狙い)。注入器が false を返しても、サーバが
  #   200 で「止めた」と返せば、電話には「止めた」と出る。両端が緑でも間で落ちる。
  #   素通りで返ってきたら、それは**継ぎ目に検査が無い**という答え。
  ("W6 断られた割り込みを 200 で返す(まだ止めていないのに電話へ「止めた」が出る)", SRV,
-  "        if (!stopped) {",
+  "        if (!out.pressed) {",
   "        if (false) {"),
+ # ★W10-W12 = 2026-08-03 に作り直した判定そのものの的。ここを的にしないと、
+ #   「止まりを観測した」の中身が誰にも見張られない状態で残る(この file の趣旨)。
+ ("W10 印を**増分**でなく存在で見る(前の番に残った `Interrupted` を今の結果と読む)", INJ,
+  "      if (interruptMarksIn(t) > marks0) return \"stopped\";",
+  "      if (interruptMarksIn(t) > 0) return \"stopped\";"),
+ ("W11 印が1枚消えただけで「止まった」と言う(生成中の 2-3 枠の空白を止まりと読む)", INJ,
+  "      return ++quiet >= QUIET_FRAMES ? \"stopped\" : null;",
+  "      return \"stopped\";"),
+ ("W12 自力で終わったのを「止めた」と数える(already-done を verified に潰す)", INJ,
+  "      if (doneMarksIn(t) > done0) return \"already-done\";",
+  "      // mutated: 完了行を見ない"),
  # ★W7-W9 も継ぎ目(W6 と同じ狙い、H2 側)。`worker.mjs` の単体検査は**計画(plan)**まで
  #   しか見られない —— 実際に `--fork-session` を渡すのも、頭の読み書きを繋ぐのも
  #   `server.mjs` で、そこは import した瞬間に listen するので単体から呼べない。
@@ -989,7 +995,8 @@ def run_child(cmd, cwd, label):
             pass
         _CHILD_PGIDS.discard(pgid)
     if timed_out:
-        die(f"{label}: {CHILD_TIMEOUT_S} 秒を超えた(実測は 0.7〜35 秒)。\n"
+        die(f"{label}: {CHILD_TIMEOUT_S} 秒を超えた(実測は 0.7〜52 秒。e2e は 2026-08-03 に\n"
+            f"割り込みの予算を 4000ms へ戻した分だけ伸びた = 35→52 秒)。\n"
             f"これは**測定の失敗**であって「変異を検出した」ではないので、"
             f"検出に丸めずここで止める。\n"
             f"--- stdout 末尾 ---\n" + "\n".join(out.splitlines()[-8:]) +

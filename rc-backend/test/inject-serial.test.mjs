@@ -105,8 +105,16 @@ test("★陰性対照: 鍵を外すと同じ検査が赤になる(= 上の緑は
   assert.deepEqual(typedBefore, ["AAA", "BBB"], "前提: Enter の前に2本分の本文が入力欄へ入る事");
 });
 
+// ★2026-08-03、この対の土台を `idle-boot` から**生成中の画面**へ変えた。
+// 割り込みは押す前に「本当に動いているか」を枠を跨いで見る(`PRE_FRAMES`)ので、
+// 止まっている画面を土台にすると、鍵を外しても Escape が 800ms 後ろに回る =
+// **陰性対照が鍵ではなく待ち時間を見る**検査に化けていた(実際に化けていて、
+// 鍵を外しても順序が変わらず落ちた)。動いている画面なら 1 枚目で抜けるので、
+// 順序を決めるのは鍵だけになる。止める対象が在る = 割り込みの現実の形でもある。
+const busy = screen("edith-generating-spinner-hidden");
+
 test("★割り込みは送信の途中に入らない(Escape が Enter の前に落ちない)", async () => {
-  const t = livePane(base);
+  const t = livePane(busy);
   const inj = new TmuxInjector({ tmux: t });
 
   // 送信を始めてから(= 最初の await で止まっている所へ)割り込む。
@@ -115,7 +123,9 @@ test("★割り込みは送信の途中に入らない(Escape が Enter の前�
   const [r, stopped] = await Promise.all([sending, stopping]);
 
   assert.equal(r.sent, true, `送信が割り込みに潰された(reason=${r.reason})`);
-  assert.equal(stopped, true, "割り込みが実行されていない");
+  // ここで見たいのは**打鍵の順**なので「Escape を押した(pressed)」まで確かめれば足りる。
+  // 止まったか自体の検査は `inject.test.mjs` の四値の組で行う。
+  assert.equal(stopped.pressed, true, `割り込みが実行されていない: ${JSON.stringify(stopped)}`);
   assert.deepEqual(
     keys(t, "%1"),
     ["打:AAA", "Enter", "Escape"],
@@ -124,7 +134,7 @@ test("★割り込みは送信の途中に入らない(Escape が Enter の前�
 });
 
 test("★陰性対照: 鍵を外すと割り込みが送信の途中に落ちる", async () => {
-  const t = livePane(base);
+  const t = livePane(busy);
   const inj = new TmuxInjector({ tmux: t, mutex: NO_LOCK, echoBudgetMs: 60 });
 
   const sending = inj.send("%1", "AAA");
@@ -190,7 +200,9 @@ test("送信中の割り込みが断られたら false(「止めた」と言わ�
   const stopped = await inj.interrupt("%1");
   await Promise.all(sends);
 
-  assert.equal(stopped, false, "止めていないのに true を返した");
+  assert.equal(stopped.pressed, false, `Escape を送っていないはず: ${JSON.stringify(stopped)}`);
+  assert.equal(stopped.stopped, null, "押してもいないのに止まったと名乗っている");
+  assert.equal(stopped.reason, "pane-busy");
   assert.ok(
     !t.calls.some((c) => c[0] === "send-keys" && c[3] === "Escape"),
     "断ったのに Escape を送っている",
