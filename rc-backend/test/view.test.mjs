@@ -79,6 +79,25 @@ test("送信 202 verified の時だけ入力欄を空にする", () => {
   assert.equal(sendResult(202, { route: "worker" }).keepText, false);
 });
 
+// 2026-08-02: `const b = body || {}` が「本文を読めなかった」を「鍵の無い読めた本文」に
+// 潰していた。202 の本文にしか `delivered` は無いので、読めていないなら私は確認していない。
+// 既存の 6 本の 202 検査は全部**整った本文**を渡していて、この入口だけが一度も測られて
+// いなかった(枝ではなく入口が抜けていた)。
+test("★送信 202 で本文が読めなかったら「送った」と名乗らない", () => {
+  const r = sendResult(202, null);
+  assert.equal(r.kind, "warn");
+  assert.equal(r.keepText, true, "確認できていないのに打った本文を捨てない");
+  assert.match(r.text, /読めません/);
+  assert.doesNotMatch(r.text, /^送った/);
+});
+
+test("★読める本文に delivered が無いのは今まで通り ok(worker 経路は正当に持たない)", () => {
+  // server.mjs:790 の `{accepted, route:"worker", seq}` には delivered が無い。
+  // 変えるのは `null` だけ = 修正の範囲がここより広がっていない事の対照。
+  assert.equal(sendResult(202, { route: "worker" }).kind, "ok");
+  assert.equal(sendResult(202, {}).kind, "ok");
+});
+
 test("ワーカー経路の 202 も「送った」", () => {
   const r = sendResult(202, { accepted: true, route: "worker", seq: 3 });
   assert.equal(r.kind, "ok");
@@ -117,6 +136,16 @@ test("★割り込み: 200 + interrupted で「止めました」、interrupted:
   const none = interruptResult(200, { interrupted: false });
   assert.equal(none.kind, "warn", "止める対象が無いのは正常な結果。error に丸めない");
   assert.match(none.text, /対象がありません/);
+});
+
+// 2026-08-02: 同じ `|| {}` の病気。「止める対象が無かった」は**観測した結果**なので、
+// 本文が読めていない時に既定値として出してはいけない。workPhrase の注記
+// (「観測できなかった」を「静か」と書かない)と同じ誤りを1行でやっていた。
+test("★割り込み: 200 で本文が読めなかったら「対象が無かった」と断定しない", () => {
+  const r = interruptResult(200, null);
+  assert.equal(r.kind, "warn");
+  assert.match(r.text, /確認できません/);
+  assert.doesNotMatch(r.text, /対象がありません/, "観測していない事を断定しない");
 });
 
 test("割り込み: 409 はサーバの文、401 は鍵、5xx はサーバ側の失敗", () => {

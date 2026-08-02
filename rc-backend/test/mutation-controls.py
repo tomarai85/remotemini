@@ -34,6 +34,7 @@ BLK = "src/blocked.mjs"
 MTX = "src/mutex.mjs"
 HDS = "src/heads.mjs"
 APP = "src/app.html"
+WRK = "src/worker.mjs"
 
 MUT = [
  ("M1 メニュー判定を外す(CHOICE を返さない)", INJ,
@@ -335,12 +336,16 @@ MUT = [
  # 残っていた5つの判断を view.mjs へ出した分、(c) 常設(launchd)に載せる為の起動/停止。
  # ★(c) の2本は**電話からは見えない**性質(起動できない・降りるのに20秒)なので、
  #   e2e 側にしか的が無い。単体が通ったままなのは想定通り。
+ # ★2026-08-02: P1 で「本文が読めない」枝を足した時、この2件の目印が**2箇所に当たる**ように
+ #   なった(新しい枝が同じ文面と同じ `keepText: true,` を持つ為)。目印を `${note}` を含む
+ #   未確認枝だけの形に絞って一意に戻す。文面をわざと違える方向は採らない — 人に出す助言は
+ #   どちらの枝でも同じ(本文は残した / 送り直すと二重に入る)であるべきなので。
  ("M60 未確認の送信で入力欄を空にする(届いたか分からない本文を黙って捨てる)", VIE,
-  '        keepText: true,\n      };',
-  '        keepText: false,\n      };'),
+  '        text: `${note}本文は残してあります。送り直すと二重に入ることがあります。`,\n        keepText: true,',
+  '        text: `${note}本文は残してあります。送り直すと二重に入ることがあります。`,\n        keepText: false,'),
  ("M61 二重注入の注意を落とす(送り直しが二重に入る事を人に伝えない)", VIE,
-  '本文は残してあります。送り直すと二重に入ることがあります。',
-  '本文は残してあります。'),
+  '`${note}本文は残してあります。送り直すと二重に入ることがあります。`',
+  '`${note}本文は残してあります。`'),
  ("M62 「止める対象が無い」を失敗に丸める(静かな会話への Escape が赤く出る)", VIE,
   ': { kind: "warn", text: "止める対象がありませんでした。" };',
   ': { kind: "error", text: "止める対象がありませんでした。" };'),
@@ -543,13 +548,112 @@ MUT = [
     write: (ancestor, head) => writeBranchHead(HEADS_DIR, ancestor, head),
   },""",
   "  "),
+
+ # --- 電話の面 (P) = 「失敗を成功の顔をした値に化かす」型の再発防止 --------------
+ # 2026-08-02 に5件見つけた。全部同じ病気: `|| {}` / `|| []` / `.catch(() => ({}))` が
+ # 「読めなかった」を「読めた」側へ倒す。M/W と分けたのは読む場所が違うから
+ # (M = 部品の中身 / W = 繋ぎ目 / P = 電話に**何が見えるか**)。
+ # ★P4-P8 は静的検査が的。DOM の検査台が無いので「書いてある事」しか測れていない。
+ #   その限界は app-html.test.mjs の冒頭注記と同じ理由でここにも書いておく。
+ ("P1 送信 202 で読めない本文を `{}` に潰す(確認していないのに「送った」と名乗る)", VIE,
+  """    if (body == null) {
+      return {
+        kind: "warn",
+        text: "送りましたが、サーバの返事を読めませんでした。本文は残してあります。送り直すと二重に入ることがあります。",
+        keepText: true,
+      };
+    }""",
+  "    void body;"),
+ ("P9 読めない本文でも入力欄を空にする(打った文が黙って消える)", VIE,
+  '        text: "送りましたが、サーバの返事を読めませんでした。本文は残してあります。送り直すと二重に入ることがあります。",\n        keepText: true,',
+  '        text: "送りましたが、サーバの返事を読めませんでした。本文は残してあります。送り直すと二重に入ることがあります。",\n        keepText: false,'),
+ ("P2 その守りを広げすぎる(delivered の無い正当な worker 応答まで warn にする)", VIE,
+  "    if (body == null) {\n      return {\n        kind: \"warn\",",
+  "    if (!b.delivered) {\n      return {\n        kind: \"warn\","),
+ ("P3 割り込み 200 で読めない本文を「対象が無かった」と断定する", VIE,
+  '      return { kind: "warn", text: "止めたかどうか確認できませんでした。画面を見て確かめてください。" };',
+  '      return { kind: "warn", text: "止める対象がありませんでした。" };'),
+ ("P4 読めなかった応答を `{}` に捏造して判定層へ渡す(送信・割り込みの両方)", APP,
+  ["    const body = await r.json().catch(() => null);\n    const v = sendResult(r.status, body);",
+   "    const body = await r.json().catch(() => null); // ★send() と同じ。読めない事を値にしない"],
+  ["    const body = await r.json().catch(() => ({}));\n    const v = sendResult(r.status, body);",
+   "    const body = await r.json().catch(() => ({}));"]),
+ ("P5 前面へ戻った時の張り直しを外す(帯が証拠なく「つながっています」と出し続ける)", APP,
+  'document.addEventListener("visibilitychange", onForeground);',
+  "void onForeground;"),
+ ("P6 履歴の失敗経路で描き直さない(「以前を読む」が二度と押せなくなる)", APP,
+  """      notice("error", `履歴を取れませんでした(${e.message})`);
+      // ★描き直す。「以前を読む」は押した時に自分を disabled にするので、失敗したまま
+      //   描き直さないと**二度と押せない**(renderConv がボタンを毎回作り直す設計に依存)。
+      renderConv();""",
+  '      notice("error", `履歴を取れませんでした(${e.message})`);'),
+ ("P7 形の違う一覧を「会話がありません。」という断定に化かす", APP,
+  ['    if (!Array.isArray(data.sessions)) throw new Error("一覧の形が読めません");',
+   "  const rows = data.sessions.map((s) => sessionRow(s, now));"],
+  ["    void data;",
+   "  const rows = (data.sessions || []).map((s) => sessionRow(s, now));"]),
+ ("P8 形の違う履歴を空の履歴として飲む", APP,
+  ['    if (!Array.isArray(d.history)) throw new Error("履歴の形が読めません");',
+   "    conv.history = d.history;"],
+  ["    void d;",
+   "    conv.history = d.history || [];"]),
+
+ # --- 子プロセスの生き死に (X) = H2「1つの転写に書き手が2人」を守る層 -------------
+ # ★★この族は **復元** である。原本は 2026-08-02 16:43 開始の 119 件走行の中にしか存在せず、
+ #   走行中(16:55)に台本が上書きされて disk からも 12 commit 全部からも消えた。走行ログに
+ #   残った題名だけが手掛かり = **同じ的を書き直したという保証は無い**。走行時は X1〜X9 が
+ #   あり X2-X7/X9 の7件が検出された。X1/X8 は当時**素通り**し、その素通りを根拠に
+ #   `entry.retired` 旗そのものが削除された(`src/worker.mjs:230-233` と `:274-275` に
+ #   その経緯が書いてある) = X1/X8 は失われたのではなく**意図的に退役**した。だから復元は7件。
+ #   復元の意味は「同じ判定を再現する」ではなく「この7つの守りが今も殺されるかを測り直す」。
+ #
+ # なぜ worker.mjs に的が要るか: この module だけが**本物の Claude プロセスを起こして殺す**。
+ # ここが緩むと1つの転写に2人が書く(H2)。単体試験は前からあったが、その試験の**強さ**は
+ # この復元まで一度も測られていなかった(M/W/P の的が1つも刺さっていなかった)。
+ ("X2 遅い名乗りを撥ねない(死んだ子が新しい子の頭を上書きする)", WRK,
+  "    if (this.workers.get(sessionId) !== entry) return; // 死んだ/差し替わった後の遅い名乗り",
+  "    // 撥ねない"),
+ ("X3 世代を見ずに頭を書く(古い世代の子が現世代の頭を奪う)", WRK,
+  "    if (entry.gen !== this.gens.get(sessionId)) return; // 世代が進んでいる",
+  "    // 世代を見ない"),
+ ("X4 未確認の先代が居ても分岐しない(まだ生きている子と同じ転写へ二重に書く)", WRK,
+  "return { fork: !head || undead, resumeId: head || sessionId };",
+  "return { fork: !head, resumeId: head || sessionId };"),
+ ("X5 死を確認しても印を外さない(以後ずっと分岐し続ける = 会話が毎回切れる)", WRK,
+  "      set.delete(entry);",
+  "      void entry;"),
+ ("X6 猶予後の SIGKILL を撃たない(SIGTERM を無視した子が残り続ける)", WRK,
+  """    entry.killTimer = this.setTimer(() => {
+      entry.killTimer = null;
+      try {
+        entry.proc.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }, this.killGraceMs);""",
+  "    entry.killTimer = null;"),
+ ("X7 再開先に頭でなく元の id を渡す(枝の続きでなく根から喋り直す)", WRK,
+  "return { fork: !head || undead, resumeId: head || sessionId };",
+  "return { fork: !head || undead, resumeId: sessionId };"),
+ ("X9 退役の記録を積まず上書きする(2人目を退役させた瞬間に1人目を見失う)", WRK,
+  """    let set = this.dying.get(sessionId);
+    if (!set) { set = new Set(); this.dying.set(sessionId, set); }
+    set.add(entry);""",
+  """    const set = new Set();
+    this.dying.set(sessionId, set);
+    set.add(entry);"""),
 ]
 
 # ★変異の番号は一意でなければならない(2026-08-02 追加。実際に M69-M73 を重複させた)。
 # 重複しても走行は正しいが、**報告と `--only` がどちらの変異の事か言えなくなる**。
 # 「対象行が無い」で片方が空振りしても、もう片方が検出なら人は番号で見分けられない。
 # 番号は人が結果を追う為の同一性なので、機械で見張る。台本の起動段で落とす(測る前に止める)。
-_named = [(re.match(r"[MW]\d+(?=[ (])", m[0]), m[0]) for m in MUT]
+# ★接頭辞の集合は「読む場所」の一覧そのもの: M = 部品の中身 / W = 繋ぎ目 /
+#   X = H2(1つの転写に書き手が2人)を守る層 / P = 電話に何が見えるか。
+#   2026-08-02: ここが `[MW]` だった為、走行中のメモリにしか無かった X 系を書き戻そうとすると
+#   台本自身が起動段で落ちる状態だった = **この検査が X の復元を機械的に禁じていた**。
+#   新しい族を足す時はここも足す。足し忘れると「番号で始まっていない」で止まる(fail-closed)。
+_named = [(re.match(r"[MWXP]\d+(?=[ (])", m[0]), m[0]) for m in MUT]
 _unnamed = [t for mo, t in _named if not mo]
 if _unnamed:
     sys.exit("★台本を止める: 番号で始まっていない変異がある: " + " / ".join(_unnamed[:3]))

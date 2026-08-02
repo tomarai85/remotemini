@@ -182,13 +182,16 @@ async function loadList() {
     const r = await api("/api/sessions");
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     data = await r.json();
+    // ★形が違う 200 を「0件」にしない(2026-08-02)。`|| []` は「取れなかった」を
+    //   「会話がありません。」という**断定**へ化けさせる。無いのと読めないのは別。
+    if (!Array.isArray(data.sessions)) throw new Error("一覧の形が読めません");
   } catch (e) {
     if (String(e.message) === "unauthorized") return;
     body.replaceChildren(el("div", "center", `一覧を取れませんでした(${e.message})`));
     return;
   }
   const now = Date.now();
-  const rows = (data.sessions || []).map((s) => sessionRow(s, now));
+  const rows = data.sessions.map((s) => sessionRow(s, now));
   body.replaceChildren(
     ...(rows.length ? rows : [el("div", "center", "会話がありません。")]),
     // ★何本見て何本開いたかをそのまま出す。速さを主張する側が計器を持つ(§2.12)。
@@ -256,13 +259,20 @@ async function loadHistory(myGen, limit) {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
     if (!conv || conv.gen !== myGen) return;
-    conv.history = d.history || [];
+    // ★loadList と同じ理由。形が違う 200 を空の履歴として飲まない(2026-08-02)。
+    if (!Array.isArray(d.history)) throw new Error("履歴の形が読めません");
+    conv.history = d.history;
     conv.truncated = !!d.truncated;
     conv.historyLoaded = true;
     renderConv();
   } catch (e) {
     if (String(e.message) === "unauthorized") return;
-    if (conv && conv.gen === myGen) notice("error", `履歴を取れませんでした(${e.message})`);
+    if (conv && conv.gen === myGen) {
+      notice("error", `履歴を取れませんでした(${e.message})`);
+      // ★描き直す。「以前を読む」は押した時に自分を disabled にするので、失敗したまま
+      //   描き直さないと**二度と押せない**(renderConv がボタンを毎回作り直す設計に依存)。
+      renderConv();
+    }
   }
 }
 
@@ -317,6 +327,8 @@ async function streamLoop(myGen) {
   while (conv && conv.gen === myGen) {
     const ac = new AbortController();
     conv.abort = ac;
+    conv.refresh = false; // ★前面復帰による意図的な張り直しか(下の onForeground が立てる)
+    conv.reading = false; // ★今この瞬間、開いた流れを読んでいるか
     let openedAt = 0;
     try {
       const r = await fetch(`/api/sessions/${encodeURIComponent(conv.id)}/stream`, {
@@ -327,6 +339,7 @@ async function streamLoop(myGen) {
       if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
       openedAt = Date.now();
       band("live", stateText(conv && conv.gen === myGen ? conv.state : null, "つながっています"));
+      conv.reading = true;
       const parser = createSseParser();
       const reader = r.body.getReader();
       const dec = new TextDecoder();
@@ -337,7 +350,16 @@ async function streamLoop(myGen) {
         for (const ev of parser.push(dec.decode(value, { stream: true }))) onEvent(ev, myGen);
       }
     } catch (e) {
-      if (ac.signal.aborted) return; // 自分で閉じた
+      if (ac.signal.aborted) {
+        // 自分で閉じた。ただし**前面復帰による張り直し**だけは続行する。
+        // ★根拠は iOS の内部挙動ではない(それは私が観測していない)。背面に居た後、
+        //   この流れが生きている証拠を私は何も持っていないのに、帯は「つながっています」と
+        //   断定し続ける。証拠の無い断定こそこの系が禁じているもの。張り直せば証拠が出る。
+        if (!conv || conv.gen !== myGen || !conv.refresh) return;
+        conv.refresh = false;
+        band("off", "前面に戻ったのでつなぎ直しています。");
+        continue; // ★待たずに張り直す(backoff は「切れた」時のもので、これは切れていない)
+      }
     }
     if (!conv || conv.gen !== myGen) return;
     attempt = nextAttempt(attempt, openedAt, Date.now()); // ★判定は view.mjs
@@ -403,7 +425,9 @@ async function send() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text }),
     });
-    const body = await r.json().catch(() => ({}));
+    // ★読めなかった時に空の本文を捏造しない(2026-08-02)。`{}` は「読めたが鍵が無い」と
+    //   区別が付かず、判定層がそれを「確認できた」側へ倒していた。`null` = 読めなかった。
+    const body = await r.json().catch(() => null);
     const v = sendResult(r.status, body);
     notice(v.kind, v.text);
     if (!v.keepText) ta.value = ""; // ★判定は view.mjs。ここに条件を書かない
@@ -418,7 +442,7 @@ async function interrupt() {
   if (!conv) return;
   try {
     const r = await api(`/api/sessions/${encodeURIComponent(conv.id)}/interrupt`, { method: "POST" });
-    const body = await r.json().catch(() => ({}));
+    const body = await r.json().catch(() => null); // ★send() と同じ。読めない事を値にしない
     const v = interruptResult(r.status, body); // ★判定は view.mjs。send() と同じ形
     notice(v.kind, v.text);
   } catch (e) {
@@ -457,6 +481,19 @@ $("conv-input").addEventListener("input", (e) => {
   e.target.style.height = "auto";
   e.target.style.height = `${Math.min(e.target.scrollHeight, window.innerHeight * 0.4)}px`;
 });
+
+// ★前面へ戻った時、読んでいる最中の流れを一度畳んで張り直す(2026-08-02)。
+//   sleepOrWake の listener は「切れて待っている間」だけの話で、**開いたまま黙った**
+//   流れには誰も触っていなかった。帯が「つながっています」と出したままになるのは、
+//   観測していない事を断定する事に等しい。張り直せば、その断定に証拠が付く。
+function onForeground() {
+  if (document.visibilityState !== "visible") return;
+  if (!conv || !conv.reading) return;              // 待ち中は sleepOrWake の担当
+  if (!conv.abort || conv.abort.signal.aborted) return;
+  conv.refresh = true;                              // ★catch 側にこれが意図的だと伝える
+  conv.abort.abort();
+}
+document.addEventListener("visibilitychange", onForeground);
 
 if (key) { show("s-list"); loadList(); } else { show("s-key"); }
 </script>

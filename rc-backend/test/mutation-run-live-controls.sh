@@ -15,7 +15,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIVE="$ROOT/tools/mutation-run-live.sh"
-PAT='[Pp]ython[0-9.]* +[^ ]*mutation-controls\.py'
+PAT='[Pp]ython[0-9.]*( +-[^ ]+)* +[^ ]*mutation-controls\.py'
 
 pass=0; fail=0
 ok() { pass=$((pass+1)); echo "PASS  $1"; }
@@ -57,6 +57,16 @@ python3 "$SB/test/mutation-controls.py" >/dev/null 2>&1 &
 R=$!; pids+=("$R"); sleep 0.6
 if matched "$R"; then ok "本物の走行は捕まえる(守りが効いている)"
 else ng "本物の走行は捕まえる" "★守りが空振り — 走行中でも配備できてしまう"; fi
+
+# --- 3b) 真陽性: **旗付き**の形。2026-08-02 夜に実際に漏れた形そのもの ---
+#   `python3 -u <台本>`。(3) が旗なしの形だけを囮にしていた為、`[^ ]*` が `-u` を跨げない
+#   という穴が**対照が全部緑のまま**残っていた。私はその穴に落ちて走行中に2本目を起動し、
+#   配備の門(`deploy-to-edith.sh`)も同じ判定なので黙って開いていた。
+#   ★教訓の形: 偽陽性の対照だけ増やしても偽陰性は見えない。**門は両向きに撃つ**。
+python3 -u "$SB/test/mutation-controls.py" >/dev/null 2>&1 &
+RU=$!; pids+=("$RU"); sleep 0.6
+if matched "$RU"; then ok "旗付き(python3 -u …)の走行も捕まえる"
+else ng "旗付き(python3 -u …)の走行も捕まえる" "★偽陰性 — 走行中なのに「動いていない」と答える"; fi
 
 # --- 4) 判定スクリプトの exit がその集合と一致する事 ---
 bash "$LIVE"; live_rc=$?

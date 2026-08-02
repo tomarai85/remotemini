@@ -55,6 +55,19 @@ export function mergeHistory(history, live) {
 export function sendResult(status, body) {
   const b = body || {};
   if (status === 202) {
+    // ★本文が読めなかった(`body == null`)時に「送った」と名乗らない(2026-08-02 追加)。
+    //   202 の意味は「受け取った」までで、取り込まれたかは**本文の `delivered` にしか無い**。
+    //   その本文が読めていないなら、私は確認していない。`{}` に潰すと「確認できた」側へ倒れる。
+    //   `frames.mjs:86-95` が同じ状況で ok:false を返すのと同じ判断 — 読めない事は値ではない。
+    //   ★`{}` は対象外。`server.mjs:790`(worker 経路)は `delivered` を正当に持たないので、
+    //     「鍵が無い読める本文」は今まで通り ok のままにする。変えるのは `null` だけ。
+    if (body == null) {
+      return {
+        kind: "warn",
+        text: "送りましたが、サーバの返事を読めませんでした。本文は残してあります。送り直すと二重に入ることがあります。",
+        keepText: true,
+      };
+    }
     if (b.delivered === "unverified") {
       const note = b.note || "送りましたが、取り込まれた事を確認できませんでした。";
       return {
@@ -100,6 +113,14 @@ export function sendResult(status, body) {
 export function interruptResult(status, body) {
   const b = body || {};
   if (status === 200) {
+    // ★本文が読めなかった時に「対象が無かった」と断定しない(2026-08-02 追加)。
+    //   「止める対象が無かった」は**観測した結果**であって、既定値ではない。
+    //   `server.mjs:808/811/814` の 200 は必ず `interrupted` を載せるので、それが読めていない
+    //   のは「無かった」ではなく「分からない」。下の workPhrase の注記(観測できなかったを
+    //   静かと書かない)と同じ誤りを、こちらは `|| {}` の1行でやっていた。
+    if (body == null) {
+      return { kind: "warn", text: "止めたかどうか確認できませんでした。画面を見て確かめてください。" };
+    }
     return b.interrupted
       ? { kind: "ok", text: "止めました(Escape)。" }
       : { kind: "warn", text: "止める対象がありませんでした。" };

@@ -102,6 +102,50 @@ test("★★export されているのに import せず使っている名前が�
   }
 });
 
+// ---- 2026-08-02 に見つけた「失敗を成功の顔をした値に化かす」型の再発防止 ----
+// ★これらは静的検査どまり。この repo に DOM の検査台は無く、`phone-window-controls.sh`
+//   は tmux 側しか駆動できない。#1(前面復帰の張り直し)の本当の証明には実機の iPhone が
+//   要る = 下の3本は「書いてある事」を測るのであって「動く事」は測っていない。
+//   その差を埋めたと主張しない為に、ここに明記して残す。
+test("★読めなかった応答を `{}` に捏造していない(catch の既定値)", () => {
+  // `.catch(() => ({}))` は「読めた本文に鍵が無い」と区別が付かない。判定層の
+  // `body || {}` と組むと、確認していない事を「確認できた」側へ倒す。
+  assert.doesNotMatch(SCRIPT, /\.catch\(\s*\(\)\s*=>\s*\(\{\s*\}\)\s*\)/,
+    "応答が読めなかった時に空の本文を作っている(null を渡して判定層に決めさせる)");
+  const nulls = SCRIPT.match(/\.catch\(\s*\(\)\s*=>\s*null\s*\)/g) || [];
+  assert.equal(nulls.length, 2, "send() と interrupt() の2箇所が null を渡している");
+});
+
+test("★前面へ戻った時に流れを張り直す配線が居る(帯の断定に証拠を付ける)", () => {
+  // sleepOrWake の listener は「切れて待っている間」だけの担当。開いたまま黙った流れは
+  // 誰も触っていなかったのに、帯は「つながっています」と出したままだった。
+  assert.match(SCRIPT, /function\s+onForeground\s*\(/, "onForeground が定義されていない");
+  assert.match(SCRIPT, /document\.addEventListener\("visibilitychange",\s*onForeground\)/,
+    "onForeground が visibilitychange に繋がっていない");
+  assert.match(SCRIPT, /conv\.refresh\s*=\s*true/, "張り直しが意図的である印を立てていない");
+  // 印が無いと catch の `aborted` 分岐が閉じたのか張り直しなのか区別できず、黙って死ぬ。
+  assert.match(SCRIPT, /if\s*\(!conv\s*\|\|\s*conv\.gen\s*!==\s*myGen\s*\|\|\s*!conv\.refresh\)\s*return;/,
+    "catch 側が refresh を見ていない(自分で閉じた時に張り直してしまう / 逆に張り直せない)");
+});
+
+test("★履歴の取得に失敗したら描き直す(「以前を読む」が二度と押せなくならない)", () => {
+  // renderConv がボタンを毎回作り直す設計なので、押した時の `more.disabled = true` は
+  // 描き直しでしか戻らない。失敗経路で描き直さないと、その1回で押せなくなる。
+  const m = SCRIPT.match(/async function loadHistory[\s\S]*?\n}\n/);
+  assert.ok(m, "loadHistory を切り出せない(検査自身が壊れている)");
+  const cat = m[0].slice(m[0].indexOf("} catch"));
+  assert.match(cat, /renderConv\(\)/, "loadHistory の失敗経路が renderConv() を呼んでいない");
+});
+
+test("★形の違う 200 を「0件」という断定にしない(一覧・履歴)", () => {
+  assert.match(SCRIPT, /if\s*\(!Array\.isArray\(data\.sessions\)\)\s*throw/,
+    "一覧が配列でない 200 を「会話がありません。」に化かしている");
+  assert.match(SCRIPT, /if\s*\(!Array\.isArray\(d\.history\)\)\s*throw/,
+    "履歴が配列でない 200 を空の履歴として飲んでいる");
+  assert.doesNotMatch(SCRIPT, /data\.sessions\s*\|\|\s*\[\]/, "`|| []` が戻っている");
+  assert.doesNotMatch(SCRIPT, /d\.history\s*\|\|\s*\[\]/, "`|| []` が戻っている");
+});
+
 test("★判断を HTML 側に書き戻していない(移した関数名が定義として復活していない)", () => {
   // 「引き剥がした」を主張し続けられる様にする関門。同名の関数を app.html に
   // 定義し直すと import は死に文になり、検査は view.mjs の方を測り続ける =
