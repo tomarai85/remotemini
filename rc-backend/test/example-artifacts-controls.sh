@@ -93,6 +93,79 @@ else
     ng "B 設定の見本" "$CONF か $OBS が無い"
 fi
 
+# ══ C) 設計文書が指す repo 内の path が、実在する ═══════════════════════
+# 見本と同じ族: **読む為の物は実行されないので、壊れていても誰も気付かない**。
+# 手順書が改名で置き去りにされると、次に据える人が**据える瞬間に初めて**気付く。
+#   実測 2026-08-02: DESIGN.md + HANDOFF に repo 相対の参照が 162件・不在 0件。
+#   同日に1件、`tools/rc-pane-register.sh` と裸で書いてあったが基準が `~/.claude` の方
+#   だった物を見つけて絶対の形へ直した(この検査は `~` 始まりを対象外にする)。
+DOC_DIR="${RC_EXAMPLE_DOC_DIR:-$(cd "$ROOT/.." && pwd)}"
+c_out="$(RC_C_ROOT="$ROOT" RC_C_DOCS="$DOC_DIR" python3 - <<'PY' 2>&1
+import re, os, sys
+repo=os.environ["RC_C_ROOT"]; docs_dir=os.environ["RC_C_DOCS"]
+docs=["DESIGN.md","HANDOFF-NEXT-SESSION.md"]
+# 逆引用符で囲まれた repo 相対 path だけを見る。`~/…` や `/…` は別の木なので対象外。
+pat=re.compile(r'`((?:src|test|tools)/[A-Za-z0-9_./*-]+)`')
+found=0; missing=[]
+for d in docs:
+    p=os.path.join(docs_dir,d)
+    if not os.path.exists(p): print(f"NODOC {d}"); sys.exit(0)
+    for ln,l in enumerate(open(p,encoding="utf8"),1):
+        for m in pat.finditer(l):
+            q=m.group(1)
+            if "*" in q or q.endswith("/"): continue   # glob 形は実在を問えない
+            if os.path.exists(os.path.join(repo,q)): found+=1
+            else: missing.append(f"{d}:{ln} {q}")
+print(f"FOUND {found}")
+for x in missing[:8]: print(f"MISS {x}")
+print(f"NMISS {len(missing)}")
+PY
+)"
+if printf '%s' "$c_out" | grep -q '^NODOC'; then
+    ng "C0 設計文書の発見" "$(printf '%s' "$c_out" | grep '^NODOC') — 置き場所が変わった"
+else
+    c_found="$(printf '%s' "$c_out" | sed -n 's/^FOUND //p')"
+    c_miss="$(printf '%s' "$c_out" | sed -n 's/^NMISS //p')"
+    if [ "${c_found:-0}" -ge 20 ] 2>/dev/null; then
+        ok "C0 設計文書から repo 相対の参照を ${c_found}件 取り出せた"
+    else
+        ng "C0 参照の取り出し" "取れたのは ${c_found:-空}件 — 正規表現か書式が変わった。下の照合は当てにならない"
+    fi
+    if [ "${c_miss:-1}" = "0" ]; then
+        ok "C1 設計文書の指す path が全部実在する"
+    else
+        ng "C1 実在しない参照 ${c_miss}件" "$(printf '%s' "$c_out" | grep '^MISS' | sed 's/^MISS //' | tr '\n' ' ')"
+    fi
+fi
+
+# ══ D) plist の Label が、file 名とも手順書とも一致する ═══════════════════
+# `launchctl kickstart <label>` は**存在しない label を静かに何もしない**形で受ける事が在る。
+# file を改名して Label を直し忘れる(逆も)と、手順書どおり叩いても何も起きない。
+#   ここで「文書に出てくる com.* を全部 plist と突き合わせる」形にはしない —— edith には
+#   私の物でない job(`com.edith.gateway` 等)が居て、それを欠陥として数えるのは嘘になる。
+#   問えるのは**この repo が持つ plist について**の一致だけ。
+for f in "${plists[@]:-}"; do
+    [ -e "$f" ] || continue
+    b="$(basename "$f")"
+    stem="${b%.example}"; stem="${stem%.plist}"
+    label="$(grep -A1 '<key>Label</key>' "$f" | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p' | head -1)"
+    if [ -z "$label" ]; then
+        ng "D1 $b の Label" "Label キーが読めない"
+    elif [ "$label" = "$stem" ]; then
+        ok "D1 $b の Label が file 名と一致($label)"
+    else
+        ng "D1 $b の Label" "Label=$label / file 名=$stem — 改名の片側だけが直っている"
+    fi
+    # 手順書に一度も出てこない plist = 据え方が書かれていない。
+    if [ -n "$label" ] && [ -f "$DOC_DIR/DESIGN.md" ]; then
+        if grep -qF "$label" "$DOC_DIR/DESIGN.md" "$DOC_DIR/HANDOFF-NEXT-SESSION.md" 2>/dev/null; then
+            ok "D2 $label が手順書に出てくる"
+        else
+            ng "D2 $label" "設計文書のどこにも出てこない — 据え方が書かれていない plist"
+        fi
+    fi
+done
+
 echo ""
 echo "EXAMPLE-ARTIFACTS-CONTROLS: pass=$pass fail=$fail"
 exit $(( fail > 0 ))

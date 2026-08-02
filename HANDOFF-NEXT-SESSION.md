@@ -665,8 +665,12 @@ queued messages` と同一だと「取り込まれた」と「残っている」
 `Do you want to proceed?` という英語表現に依存していない。
 
 **edith 側に配ってある物**(`~/.claude` リポジトリに commit 済・edith へは `~/.claude-sync/` 経由):
-- `tools/rc-pane-register.sh`(`7a2140e7`)= statusLine として動く最小の登録スクリプト
-- `tools/rc-claude`(`52347f09`)= `--settings` で↑を足して `exec claude` するラッパ
+- `~/.claude/tools/rc-pane-register.sh`(`7a2140e7`)= statusLine として動く最小の登録スクリプト
+- `~/.claude/tools/rc-claude`(`52347f09`)= `--settings` で↑を足して `exec claude` するラッパ
+
+  ★この2本は **rc-backend の `tools/` には無い**。上で `tools/…` と裸で書いていたが、
+  基準は `~/.claude` の方(edith では `~/.claude-sync/tools/`)。読んだ人が
+  `rc-backend/tools/` を見に行って無いと言う形だったので、絶対の形に直した(8/02)。
 
 **なぜラッパか**: edith の `~/.claude/settings.json` に `statusLine` キーが**無い**(継ぎ目が無い)。
 `settings.local.json` は user レベルでは呼ばれず、プロジェクト直下の `.claude/settings.json` は
