@@ -546,6 +546,57 @@ MUT = [
  ("W13 押した直後の1枚が空白なら「止める対象が無かった」と言う(生成の入り口を踏む)", INJ,
   "      if (!armed) return ++idle >= PRE_FRAMES ? \"idle\" : null;",
   "      if (!armed) return \"idle\";"),
+ # ★W15-W18 / W24-W26 = 死因を電話へ届ける経路(§2.21 / §3-W)。ここが壊れると電話には
+ #   `worker exited code=1` だけが出て**理由が消える** —— 「読めなかった」ではなく
+ #   「最初から読んでいない」側の倒れ方(§2.16 の production 版)。
+ #   W16/W24 は**漏れ**の的。素通りしたら、伏字は在るのに効いていない。
+ ("W15 stderr を捨てる(= 直す前の姿。死因が電話に一度も出ない)", WRK,
+  "    proc.stderr?.on?.(\"data\", (chunk) => pushStderr(entry, chunk));",
+  "    proc.stderr?.on?.(\"data\", noop);"),
+ ("W16 伏字を通さずそのまま添える(account= の実メールが電話へ)", WRK,
+  "  pushRedacted(entry, redact(rawLine));",
+  "  pushRedacted(entry, rawLine);"),
+ ("W17 溜める側の上限を外す(喋り続ける子で無限に伸びる)", WRK,
+  "  while (entry.stderrTail.length > 1 && total > TAIL_KEEP_BYTES) {",
+  "  while (false) {"),
+ # ★W18 = §2.21-a で見つけた順序の罠。`onDeath` は先に `workers.delete` を呼ぶので、
+ #   Map 経由で読むと**必ず空の尾**が出る。「理由なしで着く」が直った様に見えて直らない。
+ ("W18 尾を閉包でなく workers Map から読む(delete 済みなので必ず空)", WRK,
+  "          stderr: flushStderr(entry),",
+  "          stderr: flushStderr(this.workers.get(sessionId) || { stderrTail: [], errBuf: \"\" }),"),
+ ("W24 切ってから伏せる(切れたメールの左半分が網を抜ける)", WRK,
+  "    pushRedacted(entry, red.slice(0, TAIL_LINE_MAX));",
+  "    pushRedacted(entry, redact(entry.errBuf.slice(0, TAIL_LINE_MAX)));"),
+ ("W25 出す側の上限を外す(1件の失敗で電話へ 4KB 流す)", WRK,
+  "  const out = entry.stderrTail.slice(-TAIL_EMIT_LINES);",
+  "  const out = entry.stderrTail.slice();"),
+ # ★的に**閉じ括弧まで**入れてある。8 空白の行だけでは 10 空白の行(= W18 と同じ site B)の
+ #   部分文字列になって**2件に当たる**(`--dry` が `NG(2件)` で出した。2026-08-03)。
+ #   site A は `      });`(6 空白)で閉じ、site B は `        });`(8 空白)で閉じる。
+ ("W26 異常終了側にだけ死因を付ける(spawn 失敗は理由なしのまま電話へ)", WRK,
+  "        stderr: flushStderr(entry),\n      });",
+  "        // mutated: 片方だけ\n      });"),
+ # --- W19-W23: 会話の**居場所**(DESIGN §2.22 / §3-V)。検出は `test/server-cwd.test.mjs`
+ #   の静的検査 —— `server.mjs` は import すると listen するので単体から呼べない。
+ ("W19 会話の居場所を spawn に渡さない($HOME で開く)", SRV,
+  "cwd: plan.cwd });",
+  "cwd: HOME });"),
+ ("W20 場所が無い会話を既定値へ落とす(断るべき所で通す)", SRV,
+  "cwd: plan.cwd });",
+  "cwd: plan.cwd || HOME });"),
+ ("W22 起こす直前の同期確認を外す(検査と spawn の間に消えた dir で 202 を返す)", SRV,
+  "\n    realpathSync(plan.cwd);\n",
+  "\n    // mutated: 同期の確認を外す\n"),
+ ("W21 未信頼でも断らずに送る(電話から答えられない確認画面を作る)", SRV,
+  '      if (verdict !== "ok") {\n        return json(res, 409, {\n          accepted: false, route: "worker", reason: verdict,\n          error: WORKER_REFUSAL[verdict],\n        });\n      }\n',
+  "      // mutated: 断らない\n"),
+ # ★**書く形の変異は作らない**。木に一瞬でも信頼一覧へ書く文を置きたくない
+ #   (Tom の裁定「自動化に安全確認を押させない」の的は、書く手段が**在る事**そのもの)。
+ #   同じ的は「server が Claude Code の一覧を自前で読み直す」形で当てる —— 読むだけで、
+ #   `test/server-cwd.test.mjs` の `hasTrustDialogAccepted` 検査には同じく引っ掛かる。
+ ("W23 信頼を server が自前で判定する(正本を Claude Code から奪う)", SRV,
+  "      const verdict = cwdVerdict(wcwd);",
+  '      const verdict = wcwd.includes("hasTrustDialogAccepted") ? "ok" : cwdVerdict(wcwd);'),
  # ★W7-W9 も継ぎ目(W6 と同じ狙い、H2 側)。`worker.mjs` の単体検査は**計画(plan)**まで
  #   しか見られない —— 実際に `--fork-session` を渡すのも、頭の読み書きを繋ぐのも
  #   `server.mjs` で、そこは import した瞬間に listen するので単体から呼べない。
@@ -631,8 +682,8 @@ MUT = [
   "    if (entry.gen !== this.gens.get(sessionId)) return; // 世代が進んでいる",
   "    // 世代を見ない"),
  ("X4 未確認の先代が居ても分岐しない(まだ生きている子と同じ転写へ二重に書く)", WRK,
-  "return { fork: !head || undead, resumeId: head || sessionId };",
-  "return { fork: !head, resumeId: head || sessionId };"),
+  "return { fork: !head || undead, resumeId: head || sessionId, cwd };",
+  "return { fork: !head, resumeId: head || sessionId, cwd };"),
  ("X5 死を確認しても印を外さない(以後ずっと分岐し続ける = 会話が毎回切れる)", WRK,
   "      set.delete(entry);",
   "      void entry;"),
@@ -647,8 +698,8 @@ MUT = [
     }, this.killGraceMs);""",
   "    entry.killTimer = null;"),
  ("X7 再開先に頭でなく元の id を渡す(枝の続きでなく根から喋り直す)", WRK,
-  "return { fork: !head || undead, resumeId: head || sessionId };",
-  "return { fork: !head || undead, resumeId: sessionId };"),
+  "return { fork: !head || undead, resumeId: head || sessionId, cwd };",
+  "return { fork: !head || undead, resumeId: sessionId, cwd };"),
  ("X9 退役の記録を積まず上書きする(2人目を退役させた瞬間に1人目を見失う)", WRK,
   """    let set = this.dying.get(sessionId);
     if (!set) { set = new Set(); this.dying.set(sessionId, set); }
@@ -923,10 +974,31 @@ def _select(word):
         return [m for m in MUT if re.match(rf"{word}(?=[ (])", m[0])], f"番号 {word}"
     return [m for m in MUT if word in m[0]], f"題名に「{word}」を含む"
 
+# ★カンマ区切りで複数選べる(2026-08-03)。きっかけ: §3-V の変異 W19-W23 が題名に共通語を
+#   持たず、5回に分けると対照2枚の約2分を5回払う上、報告が5枚に割れて「§3-V を1回で測った」
+#   と読めなくなる。選択の意味は1語の時と同じ(族/番号/部分一致)で、和を取るだけ。
+#   順序は MUT の並び順に戻す —— 打った順で並べると、報告の並びが打鍵の癖に依存する。
+def _select_many(word):
+    if "," not in word:
+        return _select(word)
+    picked, hows = [], []
+    for w in [x.strip() for x in word.split(",") if x.strip()]:
+        got, how = _select(w)
+        if not got:
+            die(f"--only の「{w}」に当たる変異が無い(名前を確かめる)")
+        hows.append(how)
+        picked.extend(got)
+    seen, uniq = set(), []
+    for m in MUT:
+        if id(m) in {id(x) for x in picked} and id(m) not in seen:
+            seen.add(id(m))
+            uniq.append(m)
+    return uniq, " + ".join(hows)
+
 if ONLY is None:
     MUT_RUN = MUT
 else:
-    MUT_RUN, _how = _select(ONLY)
+    MUT_RUN, _how = _select_many(ONLY)
     if not MUT_RUN:
         die(f"--only {ONLY} に当たる変異が無い(名前を確かめる)")
     print(f"★--only {ONLY}({_how}): {len(MUT_RUN)}/{len(MUT)} 件だけ回す = **全件の緑ではない**\n")

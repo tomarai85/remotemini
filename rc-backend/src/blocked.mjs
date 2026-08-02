@@ -54,6 +54,17 @@ export function paneFaultReason(e) {
   return e?.code === "TMUX_UNAVAILABLE" ? "tmux-unavailable" : "panes-unreadable";
 }
 
+/**
+ * 会話の居場所(cwd)を理由にワーカーを起こさなかった時、電話に出す文。
+ * ★鍵は `src/trust.mjs` の `CWD_REFUSALS` と**同じ全域**を覆う(test/trust.mjs が押さえる)。
+ *   `ok` の文は**置かない** —— 通した時の文が在ると、断りと通過が同じ表に混ざる。
+ */
+export const WORKER_REFUSAL = {
+  cwd_unknown: "この会話の作業場所が記録に無いので、机の外からは起こせません。一度机で開くと記録されます。",
+  cwd_missing: "この会話の作業場所(フォルダ)が今は見つかりません。移動か削除をされていないか確認してください。",
+  cwd_untrusted: "この作業場所はまだ Claude Code に信頼されていません。机で一度 claude を起動して確認画面に答えてください(電話からは答えません)。",
+};
+
 /** 決められなかった理由のうち、ワーカー経路にも落としてはいけないもの。 */
 export const UNDECIDABLE = new Set([
   "ambiguous",

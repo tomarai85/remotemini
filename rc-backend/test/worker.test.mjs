@@ -340,3 +340,158 @@ test("H2-11: 頭の登録簿を注入していなくても従来どおり動く(
   assert.equal(spawned.length, 1);
   assert.doesNotThrow(() => spawned[0].emitLine({ type: "system", session_id: NEW }));
 });
+
+// ---------------------------------------------------------------------------
+// 死因を電話へ届ける(DESIGN §2.21 / §2.21-a)。
+//
+// 直す前: `proc.stderr` は捨てられていて、電話に出るのは `worker exited code=1` だけ。
+// claude-work が理由を書いていても**最初から読んでいない** = §2.16 の production 側の同型。
+//
+// 上限は §2.21-a の値: 溜める側 4KB / 出す側 10行 か 1KB の小さい方。
+// ---------------------------------------------------------------------------
+
+/** stderr へ1行流す。改行込み。 */
+const err = (p, s) => p.stderr.emit("data", Buffer.from(s + "\n"));
+/** 直近の worker_error を取る。 */
+const lastError = (mgr, id) =>
+  mgr.eventsSince(id, 0).map((e) => e.data).filter((d) => d.type === "worker_error").at(-1);
+
+test("死因の尻尾が worker_error に載る(異常終了)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "hi");
+  err(spawned[0], "Error: --resume 11111111 が解決できませんでした");
+  spawned[0].exit(1);
+  const ev = lastError(mgr, "s1");
+  assert.ok(ev, "worker_error が出ていない");
+  assert.deepEqual(ev.stderr, ["Error: --resume 11111111 が解決できませんでした"]);
+});
+
+test("★spawn 失敗側にも載る(変異 W26 = 片方だけに付ける)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "hi");
+  err(spawned[0], "spawn claude-work ENOENT");
+  spawned[0].emit("error", new Error("spawn claude-work ENOENT"));
+  const ev = lastError(mgr, "s1");
+  assert.ok(Array.isArray(ev.stderr), "spawn 失敗側に尻尾が無い");
+  assert.deepEqual(ev.stderr, ["spawn claude-work ENOENT"]);
+});
+
+test("★尾は閉包の entry から読む(変異 W18 = workers Map 経由 → delete 済みで必ず空)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "hi");
+  err(spawned[0], "理由の行");
+  spawned[0].exit(1);
+  // この時点で workers からは既に消えている。それでも尾は出る。
+  assert.equal(mgr.workers.get("s1"), undefined, "前提が崩れた(まだ Map に居る)");
+  assert.deepEqual(lastError(mgr, "s1").stderr, ["理由の行"]);
+});
+
+test("★何も言わずに死んだ時も欄は出す(空配列。欄が無い事と区別が付かなくなる)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "hi");
+  spawned[0].exit(1);
+  assert.deepEqual(lastError(mgr, "s1").stderr, [], "空でも欄ごと落としてはいけない");
+});
+
+test("★出すのは末尾10行まで(変異 W25 = 出す側の上限を外す)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "hi");
+  for (let i = 0; i < 40; i++) err(spawned[0], `行${i}`);
+  spawned[0].exit(1);
+  const tail = lastError(mgr, "s1").stderr;
+  assert.equal(tail.length, 10);
+  assert.equal(tail[9], "行39", "**新しい方**を残す(古い方を残すと死因が落ちる)");
+  assert.equal(tail[0], "行30");
+});
+
+test("★溜める側は 4KB で頭から捨てる(変異 W17 = 上限を外す)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "hi");
+  const line = "a".repeat(200);
+  for (let i = 0; i < 200; i++) err(spawned[0], line); // 40KB 流す
+  // ★**死ぬ前に**内部を見る。死ねば Map から消えて溜める側は覗けなくなり、出口(1KB)しか
+  //   測れない —— それでは「4KB で捨てている」を測った事にならない(出口が隠してしまう)。
+  const held = mgr.workers.get("s1").stderrTail;
+  const bytes = held.reduce((n, s) => n + s.length + 1, 0);
+  assert.ok(bytes <= 4096, `溜め込んだ: ${bytes}B`);
+  assert.ok(bytes > 3000, `捨て過ぎ(上限まで持っていない): ${bytes}B`);
+  assert.equal(held.at(-1), line, "**新しい方**を残す");
+  spawned[0].exit(1);
+  const tail = lastError(mgr, "s1").stderr;
+  assert.ok(tail.join("\n").length <= 1024, `出す側が 1KB を超えた: ${tail.join("\n").length}`);
+});
+
+test("★秘密は伏せてから積む(変異 W16 = 網を通さない)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "hi");
+  err(spawned[0], "account=mail-redacted@example.invalid");
+  spawned[0].exit(1);
+  const tail = lastError(mgr, "s1").stderr;
+  assert.ok(!tail[0].includes("client-a.team"), `生のまま積まれた: ${tail[0]}`);
+  assert.ok(tail[0].includes("<mail>"));
+});
+
+test("★伏せてから切る。切ってから伏せると左半分が抜ける(変異 W24)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "hi");
+  // 切る位置(1024)の直前にメールを置く。切ってから伏せると `secret-use` で切れて網を抜ける。
+  spawned[0].stderr.emit("data", Buffer.from("x".repeat(1014) + "secret-user@example.com" + "y".repeat(80)));
+  spawned[0].exit(1);
+  const joined = lastError(mgr, "s1").stderr.join("\n");
+  assert.ok(!joined.includes("secret-us"), `切れた左半分が残った: ${joined.slice(-80)}`);
+  assert.ok(joined.includes("<mail>"));
+});
+
+test("改行を1度も出さない子でも溜め込まない(切って積む)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "hi");
+  spawned[0].stderr.emit("data", Buffer.from("z".repeat(2600))); // 改行なし
+  // ★**死ぬ前に**見る。出す側の 1KB が「2本に切った」事実を1本へ畳んでしまうので、
+  //   死んだ後に `tail.length >= 2` を測ると必ず落ちる —— 4KB の検査で一度直した
+  //   「出口が入口を隠す」を、同じ夜にもう一度書いた(今夜の型 #11)。
+  const held = mgr.workers.get("s1").stderrTail;
+  assert.ok(held.length >= 2, `改行が来るまで待ち続けている: ${held.length} 本`);
+  assert.ok(held.every((l) => l.length <= 1024), "切らずに1本で抱えている");
+  spawned[0].exit(1);
+  const tail = lastError(mgr, "s1").stderr;
+  assert.ok(tail.length >= 1, "全部落とした");
+  assert.ok(tail.join("\n").length <= 1024);
+});
+
+test("★死ぬ間際の改行なしの一行を落とさない(一番読みたい行がそこに在る)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "hi");
+  spawned[0].stderr.emit("data", Buffer.from("Fatal: 転写ファイルが見つかりません")); // 改行なし
+  spawned[0].exit(1);
+  assert.deepEqual(lastError(mgr, "s1").stderr, ["Fatal: 転写ファイルが見つかりません"]);
+});
+
+test("stderr の断片(改行を跨ぐ chunk)を組み立てる", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "hi");
+  spawned[0].stderr.emit("data", Buffer.from("前半"));
+  spawned[0].stderr.emit("data", Buffer.from("後半\n"));
+  spawned[0].exit(1);
+  assert.deepEqual(lastError(mgr, "s1").stderr, ["前半後半"]);
+});
+
+test("再 spawn で前の子の尾が混ざらない", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "hi");
+  err(spawned[0], "1人目の理由");
+  spawned[0].exit(1);
+  mgr.send("s1", "もう一度");
+  err(spawned[1], "2人目の理由");
+  spawned[1].exit(1);
+  assert.deepEqual(lastError(mgr, "s1").stderr, ["2人目の理由"]);
+});
+
+test("正常終了(code=0)には死因を付けない", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "hi");
+  err(spawned[0], "ただの警告");
+  spawned[0].exit(0);
+  const evs = mgr.eventsSince("s1", 0).map((e) => e.data);
+  assert.ok(evs.some((d) => d.type === "worker_closed"));
+  assert.ok(!evs.some((d) => d.type === "worker_error"));
+});

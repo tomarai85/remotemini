@@ -12,8 +12,72 @@
 //     こちらは1本の書き手なので順序を自分で保証する)
 //   - idle timeout は sweep() で発火(タイマーはサーバ層が回す。テスト容易性のため)
 import { EventRing } from "./ring.mjs";
+import { redact } from "./redact.mjs";
 
 const noop = () => {};
+
+/** 溜める側の上限。総量に依らず記憶は一定(変異 W17 = 外す)。 */
+const TAIL_KEEP_BYTES = 4096;
+/** 出す側の上限(§2.21-a)。電話へ流す量を抑える(変異 W25 = 外す)。 */
+const TAIL_EMIT_LINES = 10;
+const TAIL_EMIT_BYTES = 1024;
+/** 改行を1度も出さない子を切る位置。 */
+const TAIL_LINE_MAX = 1024;
+
+/** 伏せ**済み**の1行を積む。溜める側の上限はここ1箇所。 */
+function pushRedacted(entry, line) {
+  entry.stderrTail.push(line);
+  let total = entry.stderrTail.reduce((n, s) => n + s.length + 1, 0);
+  while (entry.stderrTail.length > 1 && total > TAIL_KEEP_BYTES) {
+    total -= entry.stderrTail.shift().length + 1;
+  }
+}
+
+/**
+ * ★**伏せてから切る**。網は形の**全体**を要求する(メールなら `@ドメイン.tld` まで)ので、
+ *   先に切ると `client-a.team@gm` のように**左半分だけが残って網を抜ける**(= 変異 W24)。
+ */
+function pushTailLine(entry, rawLine) {
+  pushRedacted(entry, redact(rawLine));
+}
+
+/** stderr は行の途中で切れて届く。stdout 側と同じ緩衝を持つ。 */
+function pushStderr(entry, chunk) {
+  entry.errBuf += chunk.toString("utf8");
+  let idx;
+  while ((idx = entry.errBuf.indexOf("\n")) !== -1) {
+    const line = entry.errBuf.slice(0, idx).trim();
+    entry.errBuf = entry.errBuf.slice(idx + 1);
+    if (line) pushTailLine(entry, line);
+  }
+  // 改行を1度も出さない子でも溜め込まない。**捨てずに切って積む**(捨てると
+  // 「読めなかった」が「言わなかった」に化ける)。
+  // ★ここでも順序は**伏せてから切る**。`redact` は冪等(`<mail>` は再び当たらない)。
+  while (entry.errBuf.length > TAIL_LINE_MAX) {
+    const red = redact(entry.errBuf);
+    pushRedacted(entry, red.slice(0, TAIL_LINE_MAX));
+    entry.errBuf = red.slice(TAIL_LINE_MAX);
+  }
+}
+
+/**
+ * 電話へ出す形。**閉包の `entry` から読む**。
+ *
+ * ★罠: `onDeath` は `this.workers.delete(sessionId)` を**先に**呼ぶ。
+ *   `this.workers.get(sessionId)` から読む書き方は**必ず空になる**(= 変異 W18)。
+ * ★死ぬ間際の一行は**改行が付かない**事が多い(そこが一番読みたい行)。先に流し込む。
+ */
+function flushStderr(entry) {
+  if (entry.errBuf) {
+    pushTailLine(entry, entry.errBuf);
+    entry.errBuf = "";
+  }
+  const out = entry.stderrTail.slice(-TAIL_EMIT_LINES);
+  while (out.length > 1 && out.reduce((n, s) => n + s.length + 1, 0) > TAIL_EMIT_BYTES) out.shift();
+  // 1行しか残っていないのに長い時は、**空にせず**切る(全部落とす方が悪い)。
+  if (out.length === 1 && out[0].length > TAIL_EMIT_BYTES) out[0] = out[0].slice(0, TAIL_EMIT_BYTES);
+  return out;
+}
 
 export class WorkerManager {
   /**
@@ -99,10 +163,12 @@ export class WorkerManager {
    * user turn を送る。ワーカーが無ければ spawn。busy なら queue。
    * 戻り値: 受理時点の seq(user_sent イベント)。
    */
-  send(sessionId, text, { onEvent } = {}) {
+  send(sessionId, text, { onEvent, cwd } = {}) {
     let e = this.workers.get(sessionId);
     if (!e) {
-      e = this._start(sessionId);
+      // ★cwd の既定値をここで作らない。作った瞬間に「渡し忘れ」が観測できなくなる
+      //   (`_openPlan` の第2引数を argv に写し忘れた H2 と同じ型)。
+      e = this._start(sessionId, cwd);
     }
     if (onEvent) e.onEvent = onEvent;
     if (e.state === "busy") {
@@ -135,14 +201,16 @@ export class WorkerManager {
    * 電話を数秒待たせる。分岐すれば待ち時間ゼロで、起きる事は「枝が1本増える」だけ
    * (§2.17 が既に**名前の問題**と値付けした側)。§2.18-6 と同じ倒れ方。
    */
-  _openPlan(sessionId) {
+  _openPlan(sessionId, cwd) {
     const head = this.heads ? this.heads.read(sessionId) : "";
     const undead = this._hasUndead(sessionId);
-    return { fork: !head || undead, resumeId: head || sessionId };
+    return { fork: !head || undead, resumeId: head || sessionId, cwd };
   }
 
-  _start(sessionId) {
-    const plan = this._openPlan(sessionId);
+  _start(sessionId, cwd) {
+    const plan = this._openPlan(sessionId, cwd);
+    // ★`_spawn` が**同期で**投げたら、そのまま外へ出す。`this.workers.set` はこの下に在るので
+    //   半端な entry は残らず、次の送信は素の初回として扱われる。握り潰して 202 を返さない。
     const proc = this._spawn(sessionId, plan);
     const gen = (this.gens.get(sessionId) || 0) + 1;
     this.gens.set(sessionId, gen);
@@ -158,6 +226,8 @@ export class WorkerManager {
       forked: plan.fork,
       headWritten: false,
       killTimer: null,
+      stderrTail: [],
+      errBuf: "",
     };
     this.workers.set(sessionId, entry);
 
@@ -187,9 +257,17 @@ export class WorkerManager {
         }
       }
     });
-    proc.stderr?.on?.("data", noop); // claude-work の account= 行など。捨てるが購読はする(バッファ詰まり防止)
+    // claude-work の account= 行や `--resume` の失敗理由がここに来る。**捨てない**。
+    // 購読自体はバッファ詰まり防止として元から必要だったので、捨て先を尻尾に変えただけ。
+    proc.stderr?.on?.("data", (chunk) => pushStderr(entry, chunk));
     proc.on("error", (err) => {
-      this._emit(sessionId, { type: "worker_error", error: String(err?.message || err) });
+      this._emit(sessionId, {
+        type: "worker_error",
+        error: redact(String(err?.message || err)),
+        // ★空でも欄ごと落とさない。欄が無い事と「何も言わずに死んだ」事は、
+        //   電話から区別が付かない(§2.16 を production 側でもう一度)。
+        stderr: flushStderr(entry),
+      });
       this.workers.delete(sessionId);
     });
     // ★`exit` と `close` の両方を購読する。**死んだ事の合図は `exit`**(DESIGN §2.18-10(2)):
@@ -208,6 +286,7 @@ export class WorkerManager {
         this._emit(sessionId, {
           type: "worker_error",
           error: `worker exited code=${code} signal=${signal || "none"}`,
+          stderr: flushStderr(entry),
         });
       } else {
         this._emit(sessionId, { type: "worker_closed" });

@@ -17,8 +17,17 @@ import { readHead, writeHead } from "../src/heads.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SB = mkdtempSync(join(tmpdir(), "rc-e2e-"));
-const PROJ = join(SB, "projects", "-Users-Shared-dev-roundtrip");
+const PROJ = join(SB, "projects", "-rc-e2e-work");
 mkdirSync(PROJ, { recursive: true });
+// ★§3-V: ワーカー経路は「会話の居場所が Claude Code に信頼済みか」を見る(src/trust.mjs)。
+//   本物の `~/.claude.json` は**読ませない** —— 環境で結果が変わる検査は検査ではない。
+//   受理される筈の cwd は**実在する砂場の dir**にする。前は `/Users/Shared/dev/roundtrip`
+//   という**この機械に在るとは限らない**文字列で、在っても信頼一覧には無かった
+//   (2026-08-03: §3-V を当てた直後、これだけで e2e が 12 件落ちた)。
+const CWD_WORK    = join(SB, "work");     // 一覧に在る       → 受理
+const CWD_NOTRUST = join(SB, "notrust");  // 実在するが一覧に無い → 409 cwd_untrusted
+const CWD_GONE    = join(SB, "gone");     // 一覧に在るが dir が無い → 409 cwd_missing
+const TRUST_FILE  = join(SB, "trust.json");
 const SID1 = "11111111-1111-1111-1111-111111111111";
 // 注入経路の fixture。cwd は SID1(/Users/Shared/dev/roundtrip)と必ず別にする —
 // 同じにすると既存のワーカー経路テストが注入経路に化けて、何を測ったか分からなくなる。
@@ -40,7 +49,7 @@ const SID_INTR_OK    = "99999999-0000-0000-0000-00000000000b"; // 割り込み�
 const SID_INTR_STUCK = "99999999-0000-0000-0000-00000000000c"; // 割り込んでも止まらない
 const CWD_READY  = "/Users/Shared/dev/ready";
 const CWD_CHOICE = "/Users/Shared/dev/choice";
-const CWD_SHELL  = "/private/tmp";
+const CWD_SHELL  = join(SB, "shell"); // ★ワーカーへ落ちた後**受理される**必要が在る(一覧に載せる)
 const CWD_AMBIG  = "/Users/Shared/dev/ambig";
 const CWD_GEN    = "/Users/Shared/dev/busy";
 const CWD_DEAF   = "/Users/Shared/dev/deaf";
@@ -82,21 +91,26 @@ const H2_FORK_ID  = "cccccccc-0000-0000-0000-0000000000ff"; // 偽ワーカー�
 const MAX_WAITERS = 1;
 
 writeFileSync(join(PROJ, `${SID1}.jsonl`), [
-  JSON.stringify({ entrypoint: "cli", cwd: "/Users/Shared/dev/roundtrip", type: "user", message: { role: "user", content: "最初の質問" } }),
+  JSON.stringify({ entrypoint: "cli", cwd: CWD_WORK, type: "user", message: { role: "user", content: "最初の質問" } }),
   JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "最初の答え" }, { type: "tool_use", name: "Bash", input: {} }] } }),
   JSON.stringify({ type: "ai-title", aiTitle: "検証用の会話" }),
   JSON.stringify({ type: "last-prompt", lastPrompt: "最初の質問" }),
 ].join("\n"));
 writeFileSync(join(PROJ, "22222222-2222-2222-2222-222222222222.jsonl"),
   JSON.stringify({ entrypoint: "sdk-cli", cwd: "/x", type: "user", message: { content: "noise" } }));
+const FIXTURED = new Set();
 function fixture(sid, cwd, title) {
+  // ★同じ id を二度書かない。黙って上書きすると、**先に書いた会話の設定が消えた事**が
+  //   どこにも出ず、無関係な検査が落ちて原因が id の衝突だと分からなくなる(2026-08-03 に実演)。
+  if (FIXTURED.has(sid)) throw new Error(`fixture の id が衝突している: ${sid}(${title})`);
+  FIXTURED.add(sid);
   writeFileSync(join(PROJ, `${sid}.jsonl`), [
     JSON.stringify({ entrypoint: "cli", cwd, type: "user", message: { role: "user", content: "q" } }),
     JSON.stringify({ type: "ai-title", aiTitle: title }),
   ].join("\n"));
 }
-fixture(SID_H2_NEW, "/Users/Shared/dev/roundtrip", "H2 頭なし");
-fixture(SID_H2_HEAD, "/Users/Shared/dev/roundtrip", "H2 頭あり");
+fixture(SID_H2_NEW, CWD_WORK, "H2 頭なし");
+fixture(SID_H2_HEAD, CWD_WORK, "H2 頭あり");
 fixture(SID_READY, CWD_READY, "注入READY");
 fixture(SID_CHOICE, CWD_CHOICE, "注入CHOICE");
 fixture(SID_SHELL, CWD_SHELL, "シェルのみ");
@@ -117,6 +131,22 @@ fixture(SID_MISMATCH, CWD_REG, "居場所不一致"); // 会話は CWD_REG。登
 //   → 対話 claude の command は "2.1.220"(バージョン文字列)、素のシェルは "zsh"
 // ★区切りは本体から取る(PANE_SEP)。ここに文字列を写すと、本体が区切りを変えた時に
 //   この偽物だけが古い区切りを喋り続け、e2e は緑のまま本番だけ壊れる(2026-08-02 の型)。
+// ★§3-V の受理側/拒否側を**実在**で作り分ける。`CWD_GONE` は一覧にだけ載せて dir は作らない
+//   —— 「一覧に在る」と「今そこに在る」が別物である事を e2e で押さえる為(変異 W22 の的)。
+// ★番号は**実物を数えてから**取る。最初 ...21/...22 を当てて `SID_H2_HEAD`(:85)と衝突し、
+//   H2 の転写を未信頼の cwd で上書きして H2 の検査2本を落とした(2026-08-03)。
+const SID_NOTRUST  = "aaaaaaaa-0000-0000-0000-000000000030";
+const SID_CWD_GONE = "aaaaaaaa-0000-0000-0000-000000000031";
+for (const d of [CWD_WORK, CWD_SHELL, CWD_NOTRUST]) mkdirSync(d, { recursive: true });
+writeFileSync(TRUST_FILE, JSON.stringify({ projects: {
+  [CWD_WORK]:  { hasTrustDialogAccepted: true },
+  [CWD_SHELL]: { hasTrustDialogAccepted: true },
+  [CWD_GONE]:  { hasTrustDialogAccepted: true },   // 承諾はしたが dir はもう無い
+  [join(SB, "declined")]: { hasTrustDialogAccepted: false }, // 項は在るが false(通してはいけない)
+} }));
+fixture(SID_NOTRUST, CWD_NOTRUST, "信頼されていない場所");
+fixture(SID_CWD_GONE, CWD_GONE, "消えた場所");
+
 const PANES = [
   `%10${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys010${PANE_SEP}${CWD_READY}`,
   `%11${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys011${PANE_SEP}${CWD_CHOICE}`,
@@ -337,6 +367,7 @@ const sv = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
     RC_FLEET_ACCOUNT: fakeAcct,
     RC_KEY_DIR: join(SB, "keys"),
     RC_E2E_ARGV_LOG: ARGV_LOG,
+    RC_PHONE_TRUST_FILE: TRUST_FILE,
     // ★echo 待ちの予算を広げる栓(server.mjs 側に理由を書いた)。11-g2 が測る
     //   「鍵が満杯」の窓がこの値ぶんしか続かないので、既定 1500ms だと検査側の
     //   遅れで窓を跨ぐ。6000ms にすると跨げなくなる(下の 12並列で実測)。
@@ -688,8 +719,25 @@ try {
   // 10-c. ★陽性対照: cwd は合うが素の zsh しか居ない → 注入せずワーカー経路へ
   const beforeShell = sentKeys().length;
   const jShell = await (await send(SID_SHELL, "シェルに打ち込まれてはいけない")).json();
-  check("★zsh だけの cwd -> 注入しない(ワーカー経路)", jShell.route === "worker", JSON.stringify(jShell));
+  // ★`route` だけを見てはいけない —— 409 の断りの本文にも `route: "worker"` が載る。
+  //   §3-V を入れた直後、この検査は**拒否されたまま緑**だった(2026-08-03、自分で作った偽の緑)。
+  //   「ワーカーへ落ちた」は route と**受理**の両方が揃って初めて言える。
+  check("★zsh だけの cwd -> 注入せずワーカーで**受理**される",
+    jShell.route === "worker" && jShell.accepted === true, JSON.stringify(jShell));
   check("★zsh ペインへは send-keys が0件", sentKeys().length === beforeShell);
+
+  // 10-c-2. ★§3-V: 未信頼 / 消えた居場所では**子を起こす前に**断る。
+  //   起こしてから断ると、電話が答えられない信頼確認の画面を1枚作ってから謝る事になる。
+  const beforeTrust = sentKeys().length;
+  const jNoTrust = await (await send(SID_NOTRUST, "未信頼の場所へは起こさない")).json();
+  check("★未信頼の cwd -> 409 で断る(accepted:false)",
+    jNoTrust.accepted === false && jNoTrust.reason === "cwd_untrusted", JSON.stringify(jNoTrust));
+  check("★断りに人が読める文が付く(理由コードだけを電話に出さない)",
+    typeof jNoTrust.error === "string" && jNoTrust.error.length >= 10, JSON.stringify(jNoTrust));
+  const jGone = await (await send(SID_CWD_GONE, "消えた場所へは起こさない")).json();
+  check("★一覧に在っても dir が無ければ 409 cwd_missing(「在る」と「今そこに在る」は別)",
+    jGone.accepted === false && jGone.reason === "cwd_missing", JSON.stringify(jGone));
+  check("★§3-V の断りでも send-keys は0件", sentKeys().length === beforeTrust);
 
   // 10-d. ★陽性対照: 同 cwd に claude が2つ → どちらにも送らずワーカーにも落とさない
   const beforeAmbig = sentKeys().length;
@@ -1197,7 +1245,7 @@ try {
     const dup = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
       env: { ...process.env, RC_PROJECTS_DIR: join(SB, "projects"), RC_CLAUDE_WORK: fakeWork,
              RC_FLEET_ACCOUNT: fakeAcct, RC_KEY_DIR: join(SB, "keys"), RC_PORT: String(PORT),
-             RC_TMUX_BIN: fakeTmux },
+             RC_PHONE_TRUST_FILE: TRUST_FILE, RC_TMUX_BIN: fakeTmux },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let dupLog = "";

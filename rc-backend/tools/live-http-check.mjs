@@ -133,6 +133,11 @@ function api(port, key, method, path, body) {
       },
     );
     req.on("error", reject);
+    // ★期限が無いと、吊った時に waitFor の予算そのものが効かない(waitFor は fn を
+    //   await するので、fn が永遠に待つと輪が回らない)。§2.20-a L2。
+    req.setTimeout(30_000, () => {
+      req.destroy(new Error(`応答が 30 秒返らない: ${method} ${path}`));
+    });
     if (payload) req.write(payload);
     req.end();
   });
@@ -161,6 +166,8 @@ export function replyRoute({ assistantMessages = 0, rereadGaps = 0, replyInHisto
 }
 
 function openStream(port, key, sessionId) {
+  /** 握り潰さずに溜める。0 件である事自体も検査の detail に出す(§2.20-a L3)。 */
+  const errors = [];
   const events = [];
   const t0 = Date.now();
   const req = httpRequest(
@@ -173,18 +180,33 @@ function openStream(port, key, sessionId) {
     },
     (res) => {
       res.setEncoding("utf8");
+      // ★枠は TCP のチャンク境界を跨ぐ。チャンクごとに split すると跨いだ枠が消える
+      //   (2026-08-03 §2.20-a L1)。緩衝は **この閉包の中**に置く — 外に出すと
+      //   開き直した時に前の残骸が混ざる。
+      let buf = "";
       res.on("data", (chunk) => {
-        for (const raw of chunk.split("\n\n")) {
-          const line = raw.trim();
+        buf += chunk;
+        let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const line = buf.slice(0, i).trim();
+          buf = buf.slice(i + 2);
           if (!line) continue;
           events.push({ atMs: Date.now() - t0, raw: line, ping: line.startsWith(": ping") });
         }
       });
     },
   );
-  req.on("error", () => {});
+  // ★60 秒。server は 25 秒ごとに `: ping` を書く(src/server.mjs:879-885)ので、
+  //   60 秒の無音は「暇」ではなく**死**。api() と同じ 30 秒にすると余裕が 5 秒しか
+  //   無く偽陽性になる。§2.20-a L2。
+  req.setTimeout(60_000, () => {
+    errors.push("60 秒 無音(25 秒ごとの ping すら来ない = 繋がっているつもりで死んでいる)");
+    req.destroy();
+  });
+  // ★飲まない。飲んだ理由は検査の detail に出す(§2.20-a L3)。
+  req.on("error", (e) => errors.push(String(e?.message || e)));
   req.end();
-  return { events, close: () => req.destroy(), status: () => events };
+  return { events, errors, close: () => req.destroy(), status: () => events };
 }
 
 async function waitFor(fn, budgetMs, everyMs = 400) {
@@ -197,10 +219,19 @@ async function waitFor(fn, budgetMs, everyMs = 400) {
   }
 }
 
+/**
+ * 飲んだ理由を溜める。**握り潰しを 0 にするのが目的ではない**(§2.20-a-ii)。
+ * 出すのは「読めなかった」が「無い」に化ける口だけ。残り 8 箇所は飲むのが正しい。
+ */
+const swallowed = [];
+const swallow = (where, e) => swallowed.push(`${where}: ${String(e?.message || e)}`);
+
 const readPanes = () => {
   try {
     return readdirSync(PANE_DIR).filter((f) => f.endsWith(".json"));
-  } catch {
+  } catch (e) {
+    // 読めない dir を「登録が1件も無い」に化かさない。
+    swallow("ペイン登録簿の dir", e);
     return [];
   }
 };
@@ -269,7 +300,9 @@ async function main() {
   const viaSettings = (() => {
     try {
       return !!JSON.parse(readFileSync(join(HOME, ".claude", "settings.json"), "utf8")).statusLine;
-    } catch {
+    } catch (e) {
+      // 読めない設定を「登録の仕組みが無い」と画面に出さない(直下の console.error)。
+      swallow("~/.claude/settings.json", e);
       return false;
     }
   })();
@@ -514,7 +547,9 @@ async function main() {
         const m = /^data: (.*)$/m.exec(e.raw);
         try {
           return JSON.parse(m[1]);
-        } catch {
+        } catch (err) {
+          // 解けない枠を「assistant の本文が来ていない」に化かさない。
+          swallow("SSE の枠(本文の判定)", err);
           return null;
         }
       };
@@ -563,7 +598,10 @@ async function main() {
         const m = /data: (.*)$/m.exec(e.raw);
         try {
           return JSON.parse(m[1]);
-        } catch {
+        } catch (err) {
+          // ★`{}` は null ですらない**捏造**(変異 P4 と同じ形)。数え方は変えないが、
+          //   捏造した事は必ず名乗る。
+          swallow("SSE の枠(画面イベント/`{}` に化けた)", err);
           return {};
         }
       });
@@ -677,6 +715,10 @@ async function main() {
     } catch {
       /* ignore */
     }
+    // ★`finally` に置く = 途中で落ちた回でも出る。**「無し」も必ず出す** — 欄が出ない事と
+    //   「読めなかった物が無い」事は、読み手から区別が付かない(§2.16 を報告側でもう一度)。
+    for (const s of stream?.errors || []) swallowed.push(`SSE の接続: ${s}`);
+    note("読めなかった物", swallowed.length ? swallowed.join(" / ") : "無し");
     if (server) {
       server.kill("SIGTERM");
       await sleep(700);

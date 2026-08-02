@@ -8,7 +8,7 @@
 // 設計の出典: ~/Infra/mobile-work/DESIGN.md(D3/D4)+ .harness/spec.md。
 // 参照パターン: edith-claude-http.mjs の bearer / EPIPE / fail-closed 起動(コピーでなく型)。
 import { createServer } from "node:http";
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync, chmodSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync, chmodSync, realpathSync } from "node:fs";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
@@ -25,7 +25,9 @@ import { PaneRegistry, resolveSessionPane, registryOnlySessions } from "./regist
 //   手が滑って裸で呼んでも**静かに通る**位置に居る(HTTP 応答のつもりが枝の頭を書く)。
 import { readHead as readBranchHead, writeHead as writeBranchHead } from "./heads.mjs";
 import { psSnapshot } from "./procs.mjs";
-import { paneFaultReason, UNDECIDABLE, blockedMessage, blockedBody } from "./blocked.mjs";
+import { paneFaultReason, UNDECIDABLE, blockedMessage, blockedBody, WORKER_REFUSAL } from "./blocked.mjs";
+import { cwdVerdict } from "./trust.mjs";
+import { redact } from "./redact.mjs";
 
 const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
@@ -392,15 +394,23 @@ const manager = new WorkerManager({
     read: (ancestor) => readBranchHead(HEADS_DIR, ancestor),
     write: (ancestor, head) => writeBranchHead(HEADS_DIR, ancestor, head),
   },
-  spawn: (sessionId, plan) =>
-    nodeSpawn(CLAUDE_WORK, [
+  spawn: (sessionId, plan) => {
+    // ★検査(route 側)と spawn の間で dir が消える競合。ここで**同期に**確かめて投げると
+    //   `manager.send()` が同期で失敗し、電話には 202 でなく 409 が返る。非同期の
+    //   `proc.on("error")` に任せると「受け付けた」と答えた**後**に死ぬ(= 変異 W22)。
+    realpathSync(plan.cwd);
+    // ★`|| HOME` を**書かない**(= 変異 W20)。書くと「会話の居場所で開く」という当てが
+    //   無音で消え、$HOME で開いた子が別の場所を作業場所だと思い込む。
+    //   cwd を持たない会話は route 側が 409 `cwd_unknown` で既に断っている。
+    return nodeSpawn(CLAUDE_WORK, [
       "-p",
       ...(plan.fork ? ["--fork-session"] : []),
       "--resume", plan.resumeId,
       "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",
-    ], { stdio: ["pipe", "pipe", "pipe"], cwd: HOME }),
+    ], { stdio: ["pipe", "pipe", "pipe"], cwd: plan.cwd });
+  },
 });
 setInterval(() => manager.sweep(), 30_000).unref();
 // 注入キューは撤去した(2026-08-01 実測)。生成中に送っても Claude Code 自身がキューして
@@ -821,9 +831,36 @@ const server = createServer(async (req, res) => {
       }
 
       // 机で開かれていない会話 = ワーカー経路(-p --resume)
-      const seq = manager.send(sessionId, text, {
-        onEvent: (s, d) => pushToSubscribers(sessionId, s, d),
-      });
+      // ★**子を起こす前に**断る(= 変異 W21/W22 の的)。未信頼の場所で先に spawn すると、
+      //   信頼確認の画面を1枚作ってから謝る事になる —— そして電話はそれに答えられない。
+      const wcwd = sessionCwd();
+      const verdict = cwdVerdict(wcwd);
+      if (verdict !== "ok") {
+        return json(res, 409, {
+          accepted: false, route: "worker", reason: verdict,
+          error: WORKER_REFUSAL[verdict],
+        });
+      }
+      let seq;
+      try {
+        seq = manager.send(sessionId, text, {
+          onEvent: (s, d) => pushToSubscribers(sessionId, s, d),
+          cwd: wcwd,
+        });
+      } catch (e) {
+        // 検査と spawn の間で dir が消えた(競合)。**202 を返してから死ぬより 409**。
+        if (e?.code === "ENOENT") {
+          return json(res, 409, {
+            accepted: false, route: "worker", reason: "cwd_missing",
+            error: WORKER_REFUSAL.cwd_missing,
+          });
+        }
+        // それ以外は握り潰さない。理由は伏せてから出す(src/redact.mjs)。
+        return json(res, 500, {
+          accepted: false, route: "worker", reason: "spawn_failed",
+          error: redact(String(e?.message || e)),
+        });
+      }
       return json(res, 202, { accepted: true, route: "worker", seq });
     }
 
