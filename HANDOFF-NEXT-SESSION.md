@@ -1,8 +1,11 @@
 # 次セッション厳密ハンドオフ — RC 模倣バックエンド(移動中スマホ作業)
 
 **起動合図**: 「移動中作業のプロジェクトの続き」
-**最終更新**: 2026-08-02 16:5x(H2 = 転写の書き手を1人にする配線まで実装・検査済み、**未 commit / 未配備**。
-edith は `deployed_rev=22e957e` で稼働中・4層一致 = **手元の木より古い**)
+**最終更新**: 2026-08-02 19:0x(H2 の配線を含む `9c8b57f` を **edith へ配備済み**。
+edith は `deployed_rev=9c8b57f-dirty` / pid **98271** / `node_ppid=1` で稼働・4層一致。
+`-dirty` の中身は**未 commit の evidence JSON 2件だけ**で `src/` `test/` は `9c8b57f` と同一
+= 実行コードは commit から再現できる。edith 上の e2e は **129 pass / 0 fail**。
+観測 artifact = `.harness/evidence-2026-08-02/verify-rc-backend-observe-20260802-185039.json`)
 **★H2 の経緯は DESIGN §2.18-10 の (5)(6) を読む**。(5) = 変異が検査2件を偽物と暴いた話、
 (6) = 自分で書いた e2e が 1/10 で揺れた話とその根治(待ち時間で直さない)。
 **★このファイルで最初に読む所**: §1-C。**前回までの BUSY/キューの設計は撤回済み**で、
@@ -223,8 +226,9 @@ echo 39-43ms / clear 38-42ms。8/01 の MBP と同じ台本・同じ結果。
 > | 本体 | `rc-backend/tools/check-mutation-targets.sh` |
 > | 走行中かの判定 | `rc-backend/tools/mutation-run-live.sh`(**3箇所の複製をここへ集約**、8/02 17:0x) |
 > | 対照(検査用) | `rc-backend/test/mutation-target-controls.sh`(緑にも赤にもなる事を確かめる3枚) |
-> | 対照(判定用) | `rc-backend/test/mutation-run-live-controls.sh`(偽陽性2枚 + **真陽性1枚** + 整合1枚) |
-> | 対照をまとめて回す | `rc-backend/tools/run-controls.sh`(**対照6本の唯一の呼び口**) |
+> | 対照(判定用) | `rc-backend/test/mutation-run-live-controls.sh`(偽陽性2枚 + **真陽性2枚**(旗つき含む) + 整合1枚) |
+> | 対照(配備の汚れ判定) | `rc-backend/test/deploy-dirt-controls.sh`(**本物の git repo を作る**方式・10枚。本体 = `tools/deploy-dirt.sh`) |
+> | 対照をまとめて回す | `rc-backend/tools/run-controls.sh`(**対照7本の唯一の呼び口**。頭に「対照を新しく書く時の2行」在り) |
 >
 > 止める範囲は `rc-backend/{src,test,tools}/` を触る commit だけ(書類の commit は素通し)。
 > ★`tools` は 8/02 17:06 に追加 —— 的が指すのは `src/` の13ファイルだけなので的のズレには

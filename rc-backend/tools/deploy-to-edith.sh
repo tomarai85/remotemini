@@ -52,10 +52,33 @@ fi
 #   数字が動いた原因を、WORKLOG に残っていた pid の時刻から推理する羽目になった。
 #   `.git` は送らない(正しい)ので、版は**別の物として刻む**しかない。
 #   汚れた木からの配備は隠さない: dirty を値に出す(嘘の版を刻む位が、版が無いより悪い)。
+#   ★2026-08-02: `-dirty` は正しかったが**読めなかった**。刻印は判定だけを出して観測を伏せる
+#   ので、「動いている物は commit から再現できるか」に答えるのに4手かかった(git status →
+#   rsync の除外表 → .gitignore の有無 → edith 側の実物)。実際の汚れは**未 commit の
+#   evidence JSON 2件だけ**で src/ test/ は 9c8b57f と同一だった = 順序の問題(検査を回すと
+#   未追跡の artifact が出来る → それを commit する前に配備した)。
+#   だから旗を消すのではなく、**何が汚れているかを配備時に出す**。judgement より observation。
+#   判定そのものは `tools/deploy-dirt.sh` に居る(対照が本物の repo で同じ経路を通せる様に)。
 SRC_REV="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
-if [ -n "$(git -C "$SRC" status --porcelain 2>/dev/null)" ]; then
-    SRC_REV="${SRC_REV}-dirty"
-fi
+# ★`set -e` の下では `X="$(cmd)"` は cmd の終了状態をそのまま取るので、**非零を返すのが
+#   正常**なこの判定では代入した瞬間に台本が死ぬ(2026-08-02 に実際に死んだ。しかも
+#   `| head` を通していたので終了状態が握り潰され、**無言で何も出さない**形で現れた)。
+#   だから `|| dirt_rc=$?` で明示的に受ける。
+dirt_rc=0
+DIRT="$(bash "$(dirname "${BASH_SOURCE[0]}")/deploy-dirt.sh" "$SRC")" || dirt_rc=$?
+case "$dirt_rc" in
+  0) : ;;  # 綺麗 = 何も言わない
+  3) SRC_REV="${SRC_REV}-unknown-dirt"
+     echo "★木の汚れを git で判定できない。刻む版 = ${SRC_REV}" ;;
+  *) SRC_REV="${SRC_REV}-dirty"
+     echo "★汚れた木から配備する。刻む版 = ${SRC_REV}"
+     printf '%s\n' "$DIRT" | sed 's/^/    /'
+     if [ "$dirt_rc" -eq 2 ]; then
+         echo "    ⚠ src/ か test/ が未 commit = 配備される**実行コードが commit から再現できない**。"
+     else
+         echo "    (src/ test/ は無傷 = 実行コードは ${SRC_REV%-dirty} と同一。汚れは付随物のみ)"
+     fi ;;
+esac
 
 # 送らない物: git の中身と、e2e が作る作業場(そもそもここには無い筈だが保険)。
 # ★`--delete` を使うので、除外に入れた物は宛先に在っても消されない = 意図的。
