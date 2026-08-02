@@ -18,12 +18,33 @@ const noop = () => {};
 export class WorkerManager {
   /**
    * @param {object} opts
-   * @param {(sessionId: string) => ChildProcessLike} opts.spawn 実 spawn は server 層が注入
+   * @param {(sessionId: string, plan: {fork: boolean, resumeId: string}) => ChildProcessLike} opts.spawn
+   *   実 spawn は server 層が注入。★**第2引数を必ず argv に写す事**(H2 = DESIGN §2.18-10):
+   *   `plan.fork` なら `--fork-session` を付け、`--resume` には `sessionId` ではなく
+   *   `plan.resumeId` を渡す。ここを取り違えると**単体は全部緑のまま**転写ファイルの
+   *   書き手が2人になる(継ぎ目なので単体からは原理的に見えない。対照 = 変異 W7/W8)。
+   * @param {{read: (ancestor: string) => string, write: (ancestor: string, head: string) => void}} [opts.heads]
+   *   枝の頭の登録簿。★`read` は**投げない事**が契約(読めない/壊れている時は空文字)。
+   *   空 = 「頭が無い」= もう一度 fork = 安全側に倒れる。出荷の `heads.mjs` の `readHead` が
+   *   その形で、対照は `test/heads.test.mjs` の3件(登録なし / dir ごと無い / 中身が壊れている)。
+   *   未注入(null)なら H2 の機能ごと切れて毎回 fork する = これも安全側。
    * @param {number} [opts.idleMs] ready のままこの時間で kill(既定 10 分)
    * @param {() => number} [opts.now] テスト用時計
    * @param {number} [opts.ringCapacity]
+   * @param {number} [opts.killGraceMs] SIGTERM から SIGKILL までの猶予(既定 5 秒)
+   * @param {typeof setTimeout} [opts.setTimer] テスト用タイマー
+   * @param {typeof clearTimeout} [opts.clearTimer] 同上
    */
-  constructor({ spawn, idleMs = 10 * 60 * 1000, now = Date.now, ringCapacity = 512 }) {
+  constructor({
+    spawn,
+    idleMs = 10 * 60 * 1000,
+    now = Date.now,
+    ringCapacity = 512,
+    heads = null,
+    killGraceMs = 5000,
+    setTimer = setTimeout,
+    clearTimer = clearTimeout,
+  }) {
     if (typeof spawn !== "function") throw new Error("WorkerManager: spawn injection required");
     this._spawn = spawn;
     this.idleMs = idleMs;
@@ -31,6 +52,19 @@ export class WorkerManager {
     this.ringCapacity = ringCapacity;
     this.workers = new Map(); // sessionId -> entry
     this.rings = new Map();   // sessionId -> EventRing(ワーカーより長生き)
+    // H2(DESIGN §2.18-4〜6, §2.18-10)。注入なので unit では本物のファイルを触らない。
+    this.heads = heads;                 // { read(ancestor)->string, write(ancestor, head) }
+    this.killGraceMs = killGraceMs;     // SIGTERM から SIGKILL までの猶予
+    this.setTimer = setTimer;
+    this.clearTimer = clearTimer;
+    // sessionId -> Set<entry>(SIGTERM 済みで**死が未確認**の先代たち)。
+    // ★1件だけ覚える形(Map)は穴が在る(2026-08-02、差分を読み直して見つけた):
+    //   e1 を退役 → e2 を fork → e2 も退役(この時 e1 の印が上書きされる)→ e2 の exit で
+    //   印が空になる。ここで e1 がまだ生きていて、かつ **e2 の頭の書き込みが失敗していた**
+    //   場合、頭は e1 の枝のままなので、次の子が **生きている e1 と同じファイル**へ resume する
+    //   = H2 そのもの。全員を覚えれば「1人でも未確認なら分岐する」が素直に言える。
+    this.dying = new Map();
+    this.gens = new Map();    // sessionId -> 世代番号(単調増加)
   }
 
   _ring(sessionId) {
@@ -89,8 +123,29 @@ export class WorkerManager {
     return this._emit(sessionId, { type: "user_sent", text });
   }
 
+  /**
+   * この会話をどう開くか。**待たない**のが要点(DESIGN §2.18-10(2))。
+   *
+   *   頭が無い          → 祖先から fork(初回)
+   *   頭が有る          → その枝の先端へ resume
+   *   ★先代の死が未確認 → 頭が有っても**もう一度 fork**
+   *
+   * 3番目が肝。SIGTERM を撃っただけの先代はまだ書いているかもしれず、その枝へ resume すると
+   * 同じ転写ファイルに書き手が2人になる = H2 そのもの。死ぬまで待つ選択もあるが、それは
+   * 電話を数秒待たせる。分岐すれば待ち時間ゼロで、起きる事は「枝が1本増える」だけ
+   * (§2.17 が既に**名前の問題**と値付けした側)。§2.18-6 と同じ倒れ方。
+   */
+  _openPlan(sessionId) {
+    const head = this.heads ? this.heads.read(sessionId) : "";
+    const undead = this._hasUndead(sessionId);
+    return { fork: !head || undead, resumeId: head || sessionId };
+  }
+
   _start(sessionId) {
-    const proc = this._spawn(sessionId);
+    const plan = this._openPlan(sessionId);
+    const proc = this._spawn(sessionId, plan);
+    const gen = (this.gens.get(sessionId) || 0) + 1;
+    this.gens.set(sessionId, gen);
     const entry = {
       proc,
       state: "ready",
@@ -98,6 +153,11 @@ export class WorkerManager {
       lastActive: this.now(),
       onEvent: noop,
       buf: "",
+      gen,
+      dead: false,
+      forked: plan.fork,
+      headWritten: false,
+      killTimer: null,
     };
     this.workers.set(sessionId, entry);
 
@@ -114,6 +174,7 @@ export class WorkerManager {
         } catch {
           continue; // NDJSON でない行(verbose の混入等)は流さない
         }
+        this._commitHead(sessionId, entry, ev);
         this._emit(sessionId, ev);
         if (ev.type === "result") {
           entry.lastActive = this.now();
@@ -131,10 +192,17 @@ export class WorkerManager {
       this._emit(sessionId, { type: "worker_error", error: String(err?.message || err) });
       this.workers.delete(sessionId);
     });
-    proc.on("close", (code, signal) => {
-      // interrupt(kill)による close は interrupt() 側で後始末済み。ここに来た時に
-      // まだ Map に居る = 予期しない終了。
-      if (!this.workers.has(sessionId)) return;
+    // ★`exit` と `close` の両方を購読する。**死んだ事の合図は `exit`**(DESIGN §2.18-10(2)):
+    //   `close` は stdio が全部閉じるまで来ないので、孫がパイプを持っていると永久に来ない。
+    //   両方来るのが普通なので `entry.dead` で1回に畳む。
+    const onDeath = (code, signal) => {
+      if (entry.dead) return;
+      entry.dead = true;
+      this._confirmDeath(sessionId, entry);
+      // interrupt(kill)による終了は interrupt() 側で後始末済み。まだ Map に**この entry が**
+      // 居る = 予期しない終了。同一性で見る(名前で見ると、既に別の子に差し替わった後の
+      // 遅い close が新しい子を消してしまう)。
+      if (this.workers.get(sessionId) !== entry) return;
       this.workers.delete(sessionId);
       if (code !== 0) {
         this._emit(sessionId, {
@@ -144,20 +212,92 @@ export class WorkerManager {
       } else {
         this._emit(sessionId, { type: "worker_closed" });
       }
-    });
+    };
+    proc.on("exit", onDeath);
+    proc.on("close", onDeath);
     return entry;
+  }
+
+  /**
+   * fork した子が名乗った新しいセッション ID を頭として記録する。
+   *
+   * ★守りは**二重**(同一性 + 世代)。それぞれが**単独で捕まえる場面**を持つ:
+   *   - 同一性のみ = 子が死んだ後、まだ次を spawn していない間に届いた名乗り
+   *     (世代は進んでいないので世代照合では捕まらない)
+   *   - 世代のみ   = 「頭の書き込みが同期である」という**呼ぶ側から見えない前提**が崩れた時。
+   *     §2.18-9(`execFileSync` だから鍵の行列が空だった)と同じ形の依存なので外に出す
+   *
+   * ★かつて3つ目に `entry.retired` を見ていたが、**外した**(2026-08-02、変異 X1/X8 が
+   *   素通りして分かった)。`_retire` は必ず `workers` から外すので、退役した entry は
+   *   同一性の検査で必ず捕まる = `retired` が判定を分ける場面が1つも無い。
+   *   冗長(§2.18-8 の M102 型 = 両方が実際に効く)ではなく、**一度も効かない**守りだった。
+   */
+  _commitHead(sessionId, entry, ev) {
+    if (!this.heads || !entry.forked || entry.headWritten) return;
+    const newId = typeof ev?.session_id === "string" ? ev.session_id : "";
+    if (!newId || newId === sessionId) return;
+    if (this.workers.get(sessionId) !== entry) return; // 死んだ/差し替わった後の遅い名乗り
+    if (entry.gen !== this.gens.get(sessionId)) return; // 世代が進んでいる
+    entry.headWritten = true;
+    try {
+      this.heads.write(sessionId, newId);
+    } catch {
+      // 書けなければ頭は無いまま = 次回は fork。倒れる向きが安全側なので送信は落とさない。
+      entry.headWritten = false;
+    }
+  }
+
+  /** 死を確認した。猶予タイマーを止め、「先代がまだ生きているかも」の印を外す。 */
+  _confirmDeath(sessionId, entry) {
+    if (entry.killTimer) {
+      this.clearTimer(entry.killTimer);
+      entry.killTimer = null;
+    }
+    const set = this.dying.get(sessionId);
+    if (set) {
+      set.delete(entry);
+      if (set.size === 0) this.dying.delete(sessionId);
+    }
+  }
+
+  /** 未確認の先代が1人でも居るか。1人でも居れば分岐する(§2.18-10(2))。 */
+  _hasUndead(sessionId) {
+    const set = this.dying.get(sessionId);
+    return Boolean(set && set.size > 0);
+  }
+
+  /**
+   * 退役させて SIGTERM を撃つ。**死ぬのを待たない**。
+   * 猶予を過ぎたら SIGKILL を撃つが、それは送信経路の外の話。
+   */
+  _retire(sessionId, entry) {
+    // ★`workers` から外す事**そのもの**が退役の印(別に旗を持たない)。
+    //   旗を持っていた時、それを読む場面が1つも無い事に変異 X1/X8 の素通りで気づいた。
+    if (this.workers.get(sessionId) === entry) this.workers.delete(sessionId);
+    let set = this.dying.get(sessionId);
+    if (!set) { set = new Set(); this.dying.set(sessionId, set); }
+    set.add(entry);
+    try {
+      entry.proc.kill("SIGTERM");
+    } catch {
+      /* already gone */
+    }
+    entry.killTimer = this.setTimer(() => {
+      entry.killTimer = null;
+      try {
+        entry.proc.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }, this.killGraceMs);
+    if (entry.killTimer && typeof entry.killTimer.unref === "function") entry.killTimer.unref();
   }
 
   /** 割り込み = kill。--resume 再開は実測で無傷(MULTITURN-OK 検証)。 */
   interrupt(sessionId) {
     const e = this.workers.get(sessionId);
     if (!e) return false;
-    this.workers.delete(sessionId); // close ハンドラの「予期しない終了」判定より先に外す
-    try {
-      e.proc.kill("SIGTERM");
-    } catch {
-      /* already gone */
-    }
+    this._retire(sessionId, e);
     this._emit(sessionId, { type: "worker_interrupted" });
     return true;
   }
@@ -167,12 +307,7 @@ export class WorkerManager {
     const t = this.now();
     for (const [sid, e] of this.workers) {
       if (e.state === "ready" && t - e.lastActive > this.idleMs) {
-        this.workers.delete(sid);
-        try {
-          e.proc.kill("SIGTERM");
-        } catch {
-          /* already gone */
-        }
+        this._retire(sid, e);
         this._emit(sid, { type: "worker_idle_closed" });
       }
     }
@@ -180,13 +315,6 @@ export class WorkerManager {
 
   /** シャットダウン(サーバ終了時)。 */
   shutdown() {
-    for (const [sid, e] of this.workers) {
-      this.workers.delete(sid);
-      try {
-        e.proc.kill("SIGTERM");
-      } catch {
-        /* already gone */
-      }
-    }
+    for (const [sid, e] of [...this.workers]) this._retire(sid, e);
   }
 }

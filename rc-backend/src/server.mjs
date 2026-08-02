@@ -19,7 +19,11 @@ import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
 import { WorkerManager } from "./worker.mjs";
 import { TmuxInjector, looksLikeClaudePane, makeTmuxRunner } from "./inject.mjs";
+import { makeKeyedMutex } from "./mutex.mjs";
 import { PaneRegistry, resolveSessionPane, registryOnlySessions } from "./registry.mjs";
+// ★別名で入れる。素の `writeHead` はこのファイルで 3 回使う `res.writeHead` と紛らわしく、
+//   手が滑って裸で呼んでも**静かに通る**位置に居る(HTTP 応答のつもりが枝の頭を書く)。
+import { readHead as readBranchHead, writeHead as writeBranchHead } from "./heads.mjs";
 import { psSnapshot } from "./procs.mjs";
 import { paneFaultReason, UNDECIDABLE, blockedMessage, blockedBody } from "./blocked.mjs";
 
@@ -206,7 +210,25 @@ const tmuxRunner = makeTmuxRunner({
   exec: execFileSync,
   socketsPresent: tmuxSocketsPresent,
 });
-const injector = new TmuxInjector({ tmux: tmuxRunner });
+// ★下の2つは**対照専用の栓**。本番では立てない(既定 = 実測由来の値のまま)。
+//   測りたい状態は「送信の鍵が満杯」で、それを外から作るには
+//   **容量+1 本の要求が、鍵を持っている1本が降りるより前に届く**必要がある。
+//   この2つは、その不等式の左右をそれぞれ動かす:
+//     `RC_E2E_ECHO_BUDGET_MS` = 右辺(満杯が続く時間)を伸ばす。既定は inject.mjs の 1500ms。
+//     `RC_E2E_MAX_WAITERS`    = 左辺(必要な本数)を減らす。既定は mutex.mjs の 4。
+//   経緯(2026-08-02 実測): 予算だけ広げた版は静かな机では緑になったが、12並列では
+//   **12回中12回**「満杯を作れない」で赤。要求6本の到着ばらつきが 6s の窓を超えていた
+//   (`execFileSync` で event loop ごと止まるので、負荷が乗るほど到着が散る)。予算を
+//   さらに伸ばすと今度は 10-e2(耳の無いペインへの送信)が予算ぶん待たされて遅くなる。
+//   だから**本数の方を減らす**。満杯の時の振る舞いに容量の数値は関係しないので、
+//   これで測る性質は変わらない。
+const ECHO_BUDGET_PLUG = Number(process.env.RC_E2E_ECHO_BUDGET_MS || 0);
+const MAX_WAITERS_PLUG = Number(process.env.RC_E2E_MAX_WAITERS || 0);
+const injector = new TmuxInjector({
+  tmux: tmuxRunner,
+  ...(ECHO_BUDGET_PLUG > 0 ? { echoBudgetMs: ECHO_BUDGET_PLUG } : {}),
+  ...(MAX_WAITERS_PLUG > 0 ? { mutex: makeKeyedMutex({ defaultMaxWaiters: MAX_WAITERS_PLUG }) } : {}),
+});
 const registry = new PaneRegistry({ dir: join(KEY_DIR, "panes") });
 
 /**
@@ -334,11 +356,24 @@ function registryCtx(entries) {
 //   実行するまで誰も掴めなかった。判断は listen しない層に置き、domain を検査で押さえる。
 
 // ---- ワーカー ---------------------------------------------------------------
+// ★転写の枝の頭を置く場所。`panes/` を使い回さない(`heads.mjs` が明示的に禁じている:
+//   別の物を同じ dir に混ぜると、片方の掃除がもう片方を巻き込む)。
+const HEADS_DIR = join(KEY_DIR, "heads");
+mkdirSync(HEADS_DIR, { recursive: true, mode: 0o700 });
+
 const manager = new WorkerManager({
-  spawn: (sessionId) =>
+  // H2(DESIGN §2.18-4〜6, §2.18-10): 既定の `--resume` は**元の ID を再利用する**ので、
+  // 机の TUI が同じ会話を開いていると同じ転写 JSONL へ2人が書く。初回は fork して
+  // 自分の枝を持ち、その枝の先端をここに記録して2通目以降はそこへ resume する。
+  heads: {
+    read: (ancestor) => readBranchHead(HEADS_DIR, ancestor),
+    write: (ancestor, head) => writeBranchHead(HEADS_DIR, ancestor, head),
+  },
+  spawn: (sessionId, plan) =>
     nodeSpawn(CLAUDE_WORK, [
       "-p",
-      "--resume", sessionId,
+      ...(plan.fork ? ["--fork-session"] : []),
+      "--resume", plan.resumeId,
       "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",

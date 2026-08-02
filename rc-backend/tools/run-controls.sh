@@ -1,0 +1,69 @@
+#!/bin/bash
+# 手元で回す**対照**を全部まとめて回す。
+#
+# なぜ要るか(2026-08-02): 対照が6本在るのに、それを**まとめて回す物が無かった**。
+#   実測した参照元:
+#     env-death-controls.sh      → tools/verify-on-edith.sh が呼ぶ(edith 上)
+#     phone-window-controls.sh   → 同上
+#     pii-controls.sh            → 書類に名前が在るだけ
+#     verify-script-controls.sh  → 書類に名前が在るだけ
+#     mutation-target-controls.sh→ 書類に名前が在るだけ(pre-commit が回すのは**検査**であって対照ではない)
+#     mutation-run-live-controls.sh → **参照 0 件**
+#   対照は「検査が壊れていないか」を見る物なので、**誰も回さない対照は対照ではない**。
+#   検査そのものが常に緑を返す病気(DESIGN §2.18-10)を見つける唯一の目がこれなので、
+#   置き場所を1つに決めて、書類からはここを指す。
+#
+# edith 上でしか意味が無い2本(実 tmux / 実 launchd 相当)は既定では回さない。
+#   `--all` を付けると回す(edith 上での `verify-on-edith.sh` 経由が本来の道)。
+#
+# 終了コードの扱い: 0=緑 / 1=赤 / **2=測っていない**(変異の走行中など)。
+#   2 を緑に丸めない —— 「測れなかった」を「異常なし」と読み替えるのが一番危ない。
+set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT" || exit 1
+
+ALL=0
+[ "${1:-}" = "--all" ] && ALL=1
+
+LOCAL_CTLS=(
+    test/mutation-run-live-controls.sh
+    test/mutation-target-controls.sh
+    test/pii-controls.sh
+    test/verify-script-controls.sh
+)
+EDITH_CTLS=(
+    test/env-death-controls.sh
+    test/phone-window-controls.sh
+)
+
+list=("${LOCAL_CTLS[@]}")
+[ "$ALL" -eq 1 ] && list+=("${EDITH_CTLS[@]}")
+
+green=0; red=0; unmeasured=0
+declare -a red_names=() unm_names=()
+
+for c in "${list[@]}"; do
+    if [ ! -f "$c" ]; then
+        echo "MISSING  $c  ← 書類が指しているのに無い"
+        red=$((red+1)); red_names+=("$c(不在)")
+        continue
+    fi
+    t0=$(date +%s)
+    out="$(bash "$c" 2>&1)"; rc=$?
+    t1=$(date +%s)
+    last="$(echo "$out" | tail -1)"
+    case "$rc" in
+        0) green=$((green+1));      printf 'GREEN  %-34s %3ds  %s\n' "$(basename "$c")" "$((t1-t0))" "$last" ;;
+        2) unmeasured=$((unmeasured+1)); unm_names+=("$(basename "$c")")
+           printf 'UNMEA  %-34s %3ds  %s\n' "$(basename "$c")" "$((t1-t0))" "$last" ;;
+        *) red=$((red+1)); red_names+=("$(basename "$c")")
+           printf 'RED    %-34s %3ds  %s\n' "$(basename "$c")" "$((t1-t0))" "$last"
+           echo "$out" | sed 's/^/         /' | tail -12 ;;
+    esac
+done
+
+echo ""
+echo "RUN-CONTROLS: green=$green red=$red 未測定=$unmeasured  (対象 ${#list[@]}本$([ "$ALL" -eq 1 ] || echo '、edith専用2本は除外'))"
+[ "$red" -gt 0 ] && echo "  赤: ${red_names[*]}"
+[ "$unmeasured" -gt 0 ] && echo "  未測定(緑ではない): ${unm_names[*]} ← 条件が揃ってから回し直す事"
+exit $(( red > 0 ))

@@ -527,6 +527,22 @@ MUT = [
  ("W6 断られた割り込みを 200 で返す(まだ止めていないのに電話へ「止めた」が出る)", SRV,
   "        if (!stopped) {",
   "        if (false) {"),
+ # ★W7-W9 も継ぎ目(W6 と同じ狙い、H2 側)。`worker.mjs` の単体検査は**計画(plan)**まで
+ #   しか見られない —— 実際に `--fork-session` を渡すのも、頭の読み書きを繋ぐのも
+ #   `server.mjs` で、そこは import した瞬間に listen するので単体から呼べない。
+ #   つまり**単体が満点でも配線が抜けていれば H2 は成立しない**。e2e 8-b がその唯一の目。
+ ("W7 計画が fork でも `--fork-session` を渡さない(元の転写へ2人目が書く)", SRV,
+  '      ...(plan.fork ? ["--fork-session"] : []),',
+  "      "),
+ ("W8 頭を無視して祖先へ resume する(枝の先端を捨てる)", SRV,
+  '      "--resume", plan.resumeId,',
+  '      "--resume", sessionId,'),
+ ("W9 頭の読み書きを繋がない(毎回 fork し続け、枝が increment しない)", SRV,
+  """  heads: {
+    read: (ancestor) => readBranchHead(HEADS_DIR, ancestor),
+    write: (ancestor, head) => writeBranchHead(HEADS_DIR, ancestor, head),
+  },""",
+  "  "),
 ]
 
 # ★変異の番号は一意でなければならない(2026-08-02 追加。実際に M69-M73 を重複させた)。

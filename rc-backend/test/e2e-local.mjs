@@ -13,6 +13,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSseParser, decodeEvent } from "../src/frames.mjs";
 import { PANE_SEP } from "../src/inject.mjs";
+import { readHead, writeHead } from "../src/heads.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SB = mkdtempSync(join(tmpdir(), "rc-e2e-"));
@@ -59,6 +60,15 @@ const CWD_UNREG = "/Users/Shared/dev/unreg";
 const SID_FRESH = "aaaaaaaa-0000-0000-0000-00000000000f"; // 登録あり・ペイン %23 が生きている
 const SID_GONE  = "aaaaaaaa-0000-0000-0000-000000000010"; // 登録あり・そのペインはもう無い
 const CWD_FRESH = "/Users/Shared/dev/fresh";
+// H2(DESIGN §2.18-10)の継ぎ目用。頭が**未登録**の会話と、**登録済み**の会話。
+const SID_H2_NEW  = "aaaaaaaa-0000-0000-0000-000000000020"; // 頭なし -> fork する筈
+const SID_H2_HEAD = "aaaaaaaa-0000-0000-0000-000000000021"; // 頭あり -> その先端へ resume
+const H2_HEAD_ID  = "bbbbbbbb-0000-0000-0000-000000000021"; // 上の枝の先端
+const H2_FORK_ID  = "cccccccc-0000-0000-0000-0000000000ff"; // 偽ワーカーが名乗る新 ID
+// 鍵の待ち上限。既定(4)のままだと満杯を作るのに6本の要求を**ほぼ同時に**届ける必要があり、
+// 負荷が乗ると到着が散って作れない(実測と理由は server.mjs の栓に書いた)。ここを小さくすると
+// 必要な本数が減るだけで、測る性質(満杯の時の割り込み)は変わらない。
+const MAX_WAITERS = 1;
 
 writeFileSync(join(PROJ, `${SID1}.jsonl`), [
   JSON.stringify({ entrypoint: "cli", cwd: "/Users/Shared/dev/roundtrip", type: "user", message: { role: "user", content: "最初の質問" } }),
@@ -74,6 +84,8 @@ function fixture(sid, cwd, title) {
     JSON.stringify({ type: "ai-title", aiTitle: title }),
   ].join("\n"));
 }
+fixture(SID_H2_NEW, "/Users/Shared/dev/roundtrip", "H2 頭なし");
+fixture(SID_H2_HEAD, "/Users/Shared/dev/roundtrip", "H2 頭あり");
 fixture(SID_READY, CWD_READY, "注入READY");
 fixture(SID_CHOICE, CWD_CHOICE, "注入CHOICE");
 fixture(SID_SHELL, CWD_SHELL, "シェルのみ");
@@ -226,12 +238,32 @@ function sentKeys() {
   return readFileSync(SENT_LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
 }
 
+const ARGV_LOG = join(SB, "worker-argv.log");
+function workerArgv() {
+  if (!existsSync(ARGV_LOG)) return [];
+  return readFileSync(ARGV_LOG, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+}
+// ★頭は**出荷する writeHead で**書く。手で JSON を組むと、書式が変わった時に
+//   検査だけが古い形で通り続ける(継ぎ目の検査が継ぎ目を跨がなくなる)。
+mkdirSync(join(SB, "keys", "heads"), { recursive: true, mode: 0o700 });
+writeHead(join(SB, "keys", "heads"), SID_H2_HEAD, H2_HEAD_ID);
+
 const fakeWork = join(SB, "fake-claude-work");
 // RC_E2E_WORKER_DELAY_MS = 応答を意図的に遅らせる栓。既定 0。
 // これは対照実験用: 遅延を入れても緑のままなら「待ち方」が直っている証拠になる。
 writeFileSync(fakeWork, `#!/usr/bin/env python3
 import sys, json, os, time
 DELAY=float(os.environ.get("RC_E2E_WORKER_DELAY_MS","0"))/1000.0
+# ★argv を丸ごと残す。継ぎ目(サーバが組む argv)を測る唯一の窓。
+LOG=os.environ.get("RC_E2E_ARGV_LOG")
+if LOG:
+    with open(LOG,"a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")
+# 本物の claude は起動直後に system/init で自分のセッション ID を名乗る。
+# --fork-session なら**新しい ID**、そうでなければ --resume した ID をそのまま名乗る。
+argv=sys.argv[1:]
+resumed=argv[argv.index("--resume")+1] if "--resume" in argv else ""
+mine=os.environ.get("RC_E2E_FORK_ID","f0000000-0000-4000-8000-000000000001") if "--fork-session" in argv else resumed
+print(json.dumps({"type":"system","subtype":"init","session_id":mine}),flush=True)
 for line in sys.stdin:
     line=line.strip()
     if not line: continue
@@ -267,6 +299,13 @@ const sv = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
     RC_CLAUDE_WORK: fakeWork,
     RC_FLEET_ACCOUNT: fakeAcct,
     RC_KEY_DIR: join(SB, "keys"),
+    RC_E2E_ARGV_LOG: ARGV_LOG,
+    // ★echo 待ちの予算を広げる栓(server.mjs 側に理由を書いた)。11-g2 が測る
+    //   「鍵が満杯」の窓がこの値ぶんしか続かないので、既定 1500ms だと検査側の
+    //   遅れで窓を跨ぐ。6000ms にすると跨げなくなる(下の 12並列で実測)。
+    RC_E2E_ECHO_BUDGET_MS: "6000",
+    RC_E2E_MAX_WAITERS: String(MAX_WAITERS),
+    RC_E2E_FORK_ID: H2_FORK_ID,
     // ★`RC_E2E_FORCE_PORT` は**対照専用の栓**。本番経路では絶対に立てない。
     //   これが在るのは、環境死の関門(下)を**本物の bind 失敗**で駆動できる様にする為。
     //   手で書いた文字列で関門を試すと、私が想像した出力しか試せない
@@ -453,6 +492,40 @@ try {
   check("interrupt returns true", intr.interrupted === true);
   const st2 = await (await fetch(`${B}/api/sessions/${SID1}/status`, { headers: H })).json();
   check("worker gone after interrupt", st2.worker === "none", JSON.stringify(st2));
+
+  // 8-b. ★H2 の継ぎ目 — サーバが組む argv と頭の登録簿(DESIGN §2.18-10)
+  //      単体は `plan` を注入で受け取るので、**サーバが plan を argv に写す所**は
+  //      原理的に届かない。W6 と同じ形の穴なので e2e 側で撃つ。
+  {
+    const send = async (sid) => {
+      const r = await fetch(`${B}/api/sessions/${sid}/messages`, {
+        method: "POST", headers: { ...H, "content-type": "application/json" },
+        body: JSON.stringify({ text: "h2" }),
+      });
+      return r.status;
+    };
+    check("H2: 頭なしの会話へ送れる", await send(SID_H2_NEW) === 202);
+    const forkArgv = await waitFor(() => workerArgv().find((a) => a.includes(SID_H2_NEW)));
+    check("★H2: 頭が無い初回は --fork-session 付きで祖先を resume する",
+      Boolean(forkArgv) && forkArgv.includes("--fork-session") &&
+      forkArgv[forkArgv.indexOf("--resume") + 1] === SID_H2_NEW,
+      JSON.stringify(forkArgv));
+
+    // 子が名乗った新 ID が頭として**ディスクに**残るか。出荷する readHead で読む。
+    const head = await waitFor(() => {
+      const h = readHead(join(SB, "keys", "heads"), SID_H2_NEW);
+      return h === H2_FORK_ID ? h : false;
+    });
+    check("★H2: fork した子が名乗った ID が頭として保存される(次回はここへ resume)",
+      head === H2_FORK_ID, String(head));
+
+    check("H2: 頭ありの会話へ送れる", await send(SID_H2_HEAD) === 202);
+    const resumeArgv = await waitFor(() => workerArgv().find((a) => a.includes(H2_HEAD_ID)));
+    check("★H2: 頭が有れば fork せず、その枝の先端へ resume する",
+      Boolean(resumeArgv) && !resumeArgv.includes("--fork-session") &&
+      !resumeArgv.includes(SID_H2_HEAD),
+      JSON.stringify(resumeArgv));
+  }
 
   // 9. 異常系: bad body / unknown session
   const bad = await fetch(`${B}/api/sessions/${SID1}/messages`, {
@@ -682,25 +755,66 @@ try {
   //   鍵が **await をまたいで** 握られる場所は1つだけ: pollScreen の `await sleep(25)`。
   //   だから本文が入力欄に載らないペイン(%16 = SID_DEAF)へ送る。そこは echo が来ないまま
   //   ECHO_BUDGET_MS(1500ms)ぶん poll し続けるので、その間に他の要求が鍵へ並べる。
+  //   ★満杯は**待ち時間で作らず、断られた事実で確かめる**(2026-08-02、3度作り替えた末の形)。
+  //   経過を残す = 同じ道をもう一度掘らない為:
+  //     1版 `sleep(500)` 固定 -> 10回に1回赤。満杯は高々 echo 予算ぶんしか続かないので、
+  //        検査プロセス自身が遅れると行列が捌けた後に撃ってしまう。
+  //     2版 retry + 「6本目の送信で満杯を確認 -> その後に割り込む」-> 12回中8回赤。
+  //        確認した時の満杯と、割り込みが見る満杯が別物。
+  //     3版 証人と割り込みを Promise.all で同時に投げる -> 6回中3回赤。
+  //        **証人自身が最後の待ち枠を埋める**ので、証人は待ち行列に入って(6秒後に)
+  //        composer-mismatch で返り、代わりに一番遅く着いた送信が pane-busy を持って行く。
+  //        実測 (RC_E2E_DEBUG_BUSY): `#4 409/pane-busy @649ms` / `証人 409/composer-mismatch @24455ms`。
+  //   4版 = ここ。**専用の証人を立てない**。容量(1本が保持 + maxWaiters=4)より1本多く投げ、
+  //   「どれか1本が 409 pane-busy で返った」= その瞬間に満杯だった、という**観測**を前提にする。
+  //   その直後に割り込みを撃てば、同じ満杯に当たる —— 断られた送信は `mutex.mjs:140` の
+  //   `q.length >= maxWaiters` で **enqueue の前に** 弾かれるので行列を1つも消費せず、
+  //   保持中の1本が echo 予算(RC_E2E_ECHO_BUDGET_MS)を使い切るまで満杯は崩れないから。
+  //   ★循環していない: 割り込みが常に 200 を返す変異でも「どれかが pane-busy」は成立するので
+  //   前提は緑のまま、下の本題だけが赤くなる(= W6 型の変異は捕まる)。逆に満杯が作れなければ
+  //   前提の検査が赤になる。
   const S16 = join(SB, "screen-16.txt");
   const screen16 = readFileSync(S16, "utf8");
-  const beforeBusy = sentKeys().length;
-  const busySends = Array.from({ length: 5 }, (_, i) => send(SID_DEAF, `混雑${i}`));
-  await sleep(500); // 1本が鍵を持ち、残り4本が上限(maxWaiters=4)まで並ぶ
+  const drain = async (sends) => {
+    // 画面を選択肢に化けさせると送信は即断られるので、行列が予算ぶん待たずに降りる。
+    writeFileSync(S16, readFileSync(join(SB, "screen-choice.txt"), "utf8"));
+    await Promise.all(sends.map((p) => p.then((r) => r.text()).catch(() => null)));
+    writeFileSync(S16, screen16); // 後続の検査に影響させない
+  };
+  const CAP = 1 + MAX_WAITERS; // 1本が保持 + 待ち上限
+  let beforeBusy = 0;
+  let jFull = null;
+  let rBusy = null;
+  let jBusy = null;
+  let tries = 0;
+  for (; tries < 3 && !jFull; tries++) {
+    beforeBusy = sentKeys().length;
+    const busySends = Array.from({ length: CAP + 1 }, (_, i) => send(SID_DEAF, `混雑${i}`));
+    // どれか1本が pane-busy で断られた瞬間 = 満杯が観測できた瞬間。
+    const seen = new Promise((resolve) => {
+      for (const p of busySends) {
+        p.then((r) => r.clone().json().catch(() => ({})))
+          .then((j) => { if (j?.reason === "pane-busy") resolve(j); })
+          .catch(() => {});
+      }
+    });
+    jFull = await Promise.race([seen, sleep(4000).then(() => null)]);
+    if (jFull) {
+      // 満杯はまだ崩れていない(保持中の1本が予算を使い切るまで空きは出ない)。
+      rBusy = await fetch(`${B}/api/sessions/${SID_DEAF}/interrupt`, { method: "POST", headers: H });
+      jBusy = await rBusy.json();
+    }
+    if (process.env.RC_E2E_DEBUG_BUSY) {
+      console.log(`  [busy try ${tries}] full=${JSON.stringify(jFull)} intr=${rBusy?.status} keys=${sentKeys().length - beforeBusy}`);
+    }
+    await drain(busySends);
+  }
   // 前提そのものを測る。ここが赤なら、下の 409 は「鍵が満杯だったから」ではない。
-  const rFull = await send(SID_DEAF, "満杯の確認");
-  const jFull = await rFull.json();
-  check("前提: 鍵が満杯(6本目の送信は 409 pane-busy = 積まない)",
-    rFull.status === 409 && jFull.reason === "pane-busy", `${rFull.status} ${JSON.stringify(jFull)}`);
-  const rBusy = await fetch(`${B}/api/sessions/${SID_DEAF}/interrupt`, { method: "POST", headers: H });
-  const jBusy = await rBusy.json();
-  // 判定は済んだ。行列を 1500ms x5 待たない為に画面を選択肢に化けさせて全員を早く降ろす。
-  writeFileSync(S16, readFileSync(join(SB, "screen-choice.txt"), "utf8"));
-  await Promise.all(busySends.map((p) => p.then((r) => r.text())));
-  writeFileSync(S16, screen16); // 後続の検査に影響させない
-  check("★interrupt: 鍵が満杯の時は 409(200 で「止めた」と名乗らない)", rBusy.status === 409, String(rBusy.status));
+  check("前提: 鍵が満杯(容量を超えた送信は 409 pane-busy = 積まない)",
+    jFull !== null, `${tries}回作ろうとして満杯を観測できず`);
+  check("★interrupt: 鍵が満杯の時は 409(200 で「止めた」と名乗らない)", rBusy?.status === 409, String(rBusy?.status));
   check("★interrupt: 理由は pane-busy / interrupted:false",
-    jBusy.reason === "pane-busy" && jBusy.interrupted === false, JSON.stringify(jBusy));
+    jBusy?.reason === "pane-busy" && jBusy?.interrupted === false, JSON.stringify(jBusy));
   check("★interrupt: 断ったのだから Escape は1本も出ていない",
     !sentKeys().slice(beforeBusy).some((k) => k.at(-1) === "Escape"),
     JSON.stringify(sentKeys().slice(beforeBusy).filter((k) => k.at(-1) === "Escape")));
