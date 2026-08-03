@@ -78,9 +78,17 @@ fi
 FULL="$(git ls-files --full-name -- "$GUARDED" 2>/dev/null | head -1)"
 [ -n "$FULL" ] || { echo "git が追跡していない: $GUARDED" >&2; exit 2; }
 
+# ★`git show <rev>:<path>` の path は repo の root からだが、**`--` の後ろの pathspec は
+#   cwd からの相対**。`--full-name` は root からの形を返すので、この道具を
+#   `rc-backend/` の中から回すと `rc-backend/rc-backend/tools/…` を探しに行って**必ず空**を返す。
+#   その結果 `履歴が引けない` で exit 2 = **14/14 が未測定**、この道具は
+#   一度も証明した事が無かった(2026-08-03 実測。DESIGN §2.31-e の `find -newermt` と同じ型 =
+#   「在ると思っていた守りが最初から死んでいた」)。`:/` を付けて root 基準に固定する。
+PSPEC=":/$FULL"
+
 if [ -z "$REV" ]; then
     # その file を最後に変えた commit の親 = 「直す直前」。
-    last="$(git log -1 --format=%H -- "$FULL" 2>/dev/null)"
+    last="$(git log -1 --format=%H -- "$PSPEC" 2>/dev/null)"
     [ -n "$last" ] || { echo "履歴が引けない: $FULL" >&2; exit 2; }
     REV="${last}^"
 fi
@@ -113,9 +121,11 @@ echo "   守り: $FULL   継ぎ目: \$$SEAM   旧版: $REV"
 #   既定の rev は「その file を最後に変えた commit の親」なので、その commit が
 #   改名・整形・コメントだけなら旧版に欠陥は**入っていない**。その時に出る「緑のまま」は
 #   対照の欠陥ではなく **rev の選び方**の話。名前を出さないと、この2つが見分けられない。
-subj="$(git log -1 --format='%h %s' "${REV}..HEAD" -- "$FULL" 2>/dev/null | /usr/bin/tail -1)"
+#   ★ここも `--` の後ろ = pathspec なので `$PSPEC`(root 基準)。`$FULL` を素で渡すと
+#     cwd 相対に解釈されて黙って空を返し、この2行が**無言で消える**。
+subj="$(git log -1 --format='%h %s' "${REV}..HEAD" -- "$PSPEC" 2>/dev/null | /usr/bin/tail -1)"
 [ -n "$subj" ] && echo "   比べる差分を入れた commit: $subj"
-echo "   その commit の $FULL への差分: $(git diff --shortstat "$REV" HEAD -- "$FULL" 2>/dev/null | /usr/bin/sed 's/^ *//')"
+echo "   その commit の $FULL への差分: $(git diff --shortstat "$REV" HEAD -- "$PSPEC" 2>/dev/null | /usr/bin/sed 's/^ *//')"
 
 # ── ① 今の版では緑でなければならない ────────────────────────────────────
 bash "$CTL" > "$OUT0" 2>&1; rc0=$?
@@ -168,7 +178,13 @@ if [ "$flipped" -eq 0 ] && [ "$held" -eq 0 ]; then
     /usr/bin/tail -6 "$OUT1" | /usr/bin/sed 's/^/       /'
     echo ""
     echo "PROVE: 未測定(旧版で赤くはなったが、倒れた行を名指しできない)"
-    echo "  対照側の出力を `NG <名前>` / `OK <名前>` の形に揃えるか、この道具の型を足す事。"
+    # ★この行は**単引用**でなければならない。二重引用の中の backtick は
+    #   コマンド置換として走る = `NG <名前>` を実行しに行き、`syntax error near
+    #   unexpected token 'newline'` を吐いて助言が消える。しかもここは
+    #   「③が読めない」時にしか通らない枝なので、緑の間は誰も見ない
+    #   (check-no-pii.sh の種類3の助言文を単引用にしてあるのと同じ理由。
+    #    向こうは `hostname -s` が走って Tom の実名が出る所だった)。
+    echo '  対照側の出力を `NG <名前>` / `OK <名前>` の形に揃えるか、この道具の型を足す事。'
     exit 2
 fi
 echo "  ③ 旧版で倒れた assertion = ${flipped} 枚 / 倒れなかった = ${held} 枚"

@@ -7252,3 +7252,96 @@ M1 は `choice` を `undefined` にする変異。e2e 側は `stPerm.choice?.kin
 
 素の e2e は 203/203 で緑のまま = 検出力は落としていない。
 `mutation-blind/20260803-233039-M1.txt` は途中版の写し(1箇所では足りない証拠)として残す。
+
+## 2026-08-03 23:58 — 対照が効いているかを測る道具が、**一度も何も測っていなかった**(0/0/14)
+
+`tools/prove-all-controls.sh` を素直に回したら **効いている 0 / 効いていない 0 / 測れていない 14**。
+14 本全部が `履歴が引けない` で rc=2。つまりこの道具は据えてから今まで、
+**一本も証明していない**。DESIGN §2.31 の三番目「在ると思っていた守りが最初から死んでいた」
+と同じ形で、今回はそれが**守りを測る道具**の側に居た。
+
+### 欠陥1 = pathspec の基準がずれていた(本体)
+
+実測:
+
+| 引き方 | cwd | 返り |
+|---|---|---|
+| `git ls-files --full-name -- tools/verify-log.sh` | `rc-backend` | `rc-backend/tools/verify-log.sh` |
+| `git log -1 --format=%H -- "rc-backend/tools/verify-log.sh"` | `rc-backend` | **0 バイト** |
+| `git log -1 --format=%H -- ":/rc-backend/tools/verify-log.sh"` | `rc-backend` | 41 バイト |
+
+`--full-name` は **repo の root 基準**の経路を返す。`--` の後ろの pathspec は **cwd 基準**。
+この道具は `rc-backend/` に `cd` してから走るので、素で渡すと
+`rc-backend/rc-backend/tools/…` を探しに行って必ず空 → `履歴が引けない` → exit 2。
+`git show <rev>:<path>` の方は元から root 基準なので**そこだけ正しかった**のが厄介で、
+「経路の作りは合っている」様に見えていた。
+
+直し = `PSPEC=":/$FULL"` を一度作り、`git log` / `git diff` の pathspec 3 箇所を全部それに。
+`git show "${REV}:${FULL}"` は触らない(rev:path は元から root 基準)。
+
+### 欠陥2 = 直した事で初めて見えた。**stdin を食う対照が、後ろの 8 本を消していた**
+
+pathspec を直して回すと、今度は 14 本のうち **6 本で打ち切られた**。
+prove-all の loop は `<<< "$MAP"` = **stdin から読む**。中で回す対照が stdin を読む物
+(`gui-run-controls.sh` の `ssh` は黙って読み切る)を含むと、**残りの行ごと食われて loop が終わる**。
+まとめには 6 本しか出ず、消えた 8 本は**一覧にすら出ない**。
+「黙って落とさない」を売りにしている道具の、売り物そのものの欠陥。
+
+★これは欠陥1 が生きている間は**発現しなかった**。旧版は対照を回す前に必ず exit 2 していたので、
+誰も stdin を食わなかった。**死んだ計器は自分の下流の欠陥も隠す。**
+計器を生き返らせたら、その次の層も未検査だと思って掛かる事。
+
+直し = `bash tools/prove-control.sh … </dev/null`。
+
+### 欠陥3 = 二重引用の中の backtick で、助言の文が消えていた
+
+`prove-control.sh` の「③が読めない」枝の助言行が
+`echo "  対照側の出力を \`NG <名前>\` / … の形に揃えるか"` と二重引用だった為、
+backtick がコマンド置換として走り `syntax error near unexpected token 'newline'` を吐いて
+**助言が丸ごと消えていた**。この枝は 未測定 の時にしか通らないので、緑の間は誰も見ない。
+`check-no-pii.sh` の種類3 の助言文を単引用にしてあるのと同じ理由
+(向こうは `hostname -s` が走って Tom の実名が出る所だった)。単引用に。
+
+### 対照を足した(15/15)
+
+`test/prove-control-controls.sh` に P8c / P9 / P9b / P10 / P10b / P10c。
+
+**なぜ P1-P8 が全部緑のまま欠陥1 を見逃したか**: 砂場が守り file を **repo の root 直下**に
+置いていて、そこでは「root 基準 == cwd 基準」が偶然成り立っていた。
+= **砂場の形が本物と違った**。だから P9 は「入れ子の砂場」(repo の root の一つ下に
+`tools/` と `test/` を置く)でしか意味を持たない。
+
+| 対照 | 見る物 | 陰性対照 |
+|---|---|---|
+| P8c | 助言の文が消えていない | `syntax error` が出ていない事を直接見る |
+| P9 | root 直下に無い守りでも履歴が引ける | P9b = `PSPEC="$FULL"` に戻すと `履歴が引けない` で rc=2 |
+| P10/P10b | stdin を食う対照の**後ろ**も一覧に出る | P10c = `</dev/null` を外すと後ろの `z-controls.sh` が消える |
+
+陰性対照は `sed` で**写しを作って**当てる(本物の道具は書き換えない)。
+差し替えが当たったかを `grep` で確かめてから走らせる = 空振りしたら NG を出す。
+
+### 結果
+
+**0/0/14 → 効いている 3 / 効いていない 3 / 測れていない 9**(対象は 15 本。
+`prove-all-controls.sh` 自身の継ぎ目を P10 で足したので 1 本増えた)。
+
+- 効いている: `deploy-to-edith-controls.sh` / `pii-controls.sh` / **`prove-control-controls.sh`**
+- ★`prove-control-controls.sh` は**自分自身を証明した**。旧版の `prove-control.sh` を差すと
+  **P8 と P9 だけが倒れた** = 今日直した2つの欠陥に正確に対応している。
+  「直したら、直す前の版で対照が赤になるか個別に見る」(run-controls 規則2)が、
+  道具の側で自動で回った初めての例。
+- 効いていない 3 本(`deploy-to-edith-behavior` / `rsync-exclude` / `run-controls-controls`)は
+  **まだ欠陥と呼ばない**。既定の rev は「その file を最後に変えた commit の親」なので、
+  その commit が整形・改名だけなら緑は正しい。第4引数で rev を名指しして測り直す仕事が残る。
+- 測れていない 9 本の内訳: **8 本が `旧版が取れない`** = その file を最後に変えた commit が
+  **生まれた commit** で、比べる前の版が存在しない(道具の欠陥ではない。若い file の宿命)。
+  残り 1 本(`gui-run`)は下記。
+
+### 付随: edith に自分で残した残骸を消した
+
+`gui-run-controls.sh` が `① 今の版で緑でない` で未測定になった。中身は
+`G4b 残骸 (dir/job の数が [1/0/])`。実測すると `edith:/tmp/rcprobe.2LuFQN`(23:49 作成、
+`sub/deeper` の空 dir 3つ・file 0)。**23:47 の打ち切られた走行が、片付けの穴が在る旧版を
+差し込んだ時に残した物** = 私の残骸。`rmdir` で深い順に畳んで**不在を確認**(0件)。
+その後 `gui-run-controls.sh` を素で回して **9/9 緑・走行後も edith 残骸 0件**。
+= あの `基準が緑でない` は道具でも edith でもなく、**私が置いた物**が原因だった。

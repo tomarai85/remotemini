@@ -96,7 +96,14 @@ while IFS=$'\t' read -r ctl seam rel; do
     fi
 
     echo ""
-    bash tools/prove-control.sh "$ctl" "$seam" "$rel"
+    # ★`</dev/null` を落とさない。この loop の入力は `<<< "$MAP"` = **stdin**。
+    #   中で回す対照が stdin を読む物(`ssh` は黙って読み切る)を含むと、
+    #   **残りの行ごと食われて loop が途中で終わる**。2026-08-03 実測: 14 本のうち
+    #   gui-run(ssh を使う)まで走った所で打ち切られ、以降 8 本が**一覧にすら出ずに消えた**。
+    #   この道具は「黙って落とさない」事が売りなので、これは売り物そのものの欠陥だった。
+    #   (旧版では prove-control が対照を回す前に必ず exit 2 していたので発現しなかった。
+    #    = pathspec を直して初めて見えた、直した事で露出した二次の欠陥)
+    bash tools/prove-control.sh "$ctl" "$seam" "$rel" </dev/null
     rc=$?
     case "$rc" in
         0) pass=$((pass+1));      PASSED+=("$(/usr/bin/basename "$ctl") → $rel") ;;
