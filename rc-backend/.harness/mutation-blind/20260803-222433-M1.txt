@@ -1,0 +1,55 @@
+M1 メニュー判定を外す(CHOICE を返さない)
+
+=== e2e ===
+$ exit=1
+--- stdout 末尾 ---
+PASS  ★scrollback を読んでいない(capture-pane に -S を付けない)
+FAIL  ★CHOICE 画面 -> 409(陽性対照)  status=409 {"error":"入力欄が見つかりません(起動中・別画面・ペイン消滅のいずれか)。安全側に倒して送信しませんでした。","route":"tmux","pane":"%11","screen":"UNKNOWN","reason":"unknown"}
+PASS  ★CHOICE 画面へは send-keys が0件
+PASS  ★zsh だけの cwd -> 注入せずワーカーで**受理**される
+PASS  ★zsh ペインへは send-keys が0件
+PASS  ★§3-V: 別の会話は**別の**居場所で開く(cwd は会話ごとの値)
+PASS  ★未信頼の cwd -> 409 で断る(accepted:false)
+PASS  ★断りに人が読める文が付く(理由コードだけを電話に出さない)
+PASS  ★一覧に在っても dir が無ければ 409 cwd_missing(「在る」と「今そこに在る」は別)
+PASS  ★§3-V の断りでも send-keys は0件
+PASS  ★特定不能 -> 409 blocked
+PASS  ★特定不能で send-keys が0件
+PASS  ★生成中 -> 202 で実際に送る
+PASS  ★生成中でも本文と Enter が出る
+PASS  キューは存在しない(queued を返さない)
+PASS  status は送信可否と進行中を別項目で返す
+PASS  ★上限が status の応答に載る(継ぎ目 = server.mjs の screenOf)
+PASS  ★その時も送信可否は SENDABLE(上限を遮断条件にしていない)
+PASS  ★陰性対照: 上限でないセッションの status は limited=false
+PASS  ★上限が一覧の live にも載る(一覧と個別で別経路を通る)
+PASS  ★陰性対照: 一覧の他の行は live.limited=false
+PASS  ★本文が載らなければ 409 composer-mismatch
+PASS  ★その時 Enter は一度も出ていない
+PASS  ★本文の直後に選択画面 -> 409 modal-appeared
+PASS  ★★その時 Enter は一度も出ていない(押せば承認/課金になる)
+PASS  interrupt は Escape 1回だけ
+PASS  C-c は一度も出ていない
+PASS  ★★止まった①: `Interrupted` の印が増えたら interrupted=true / stopped=verified
+PASS  ★★止まらなかった: 印が残ったら interrupted=false / stopped=unverified
+PASS  ★★止まった②: 印が出なくても、消えて戻らなければ stopped=verified
+PASS  走っていなければ stopped=null / reason=not-in-flight(押しはする)
+      [割り込みの所要 ms] ①印=17 ②巻戻=1719 止まらず=4014 未走行=1027 / 予算=4000
+PASS  ★②と未走行は予算の 2/3 以内で決まっている(余白が痩せたら判定が変わる前に落ちる)
+PASS  止まったペインへ出たキーは Escape 1回だけ
+PASS  一覧: 入力欄のあるペインは tmux/SENDABLE
+FAIL  ★一覧: 選択待ちは CHOICE のまま(電話に出す前に潰さない)  {"route":"tmux","pane":"%11","screen":"UNKNOWN","activity":"unknown","limited":false}
+PASS  一覧: 特定不能は blocked
+PASS  一覧: 開いていない会話は worker
+FAIL  ★選択待ちの画面には、電話が答えるのに要る材料が全部載る  
+FAIL  ★★許可確認は CHOICE として出るが、打てる鍵がゼロで出る  
+--- stderr 末尾 ---
+file:///private/var/folders/yn/5m6bw9z92y94qmcy4tsnxdlw0000gn/T/mut-sp04m5tj/rc/test/e2e-local.mjs:983
+  const rPerm = await choose(SID_PERM, { key: "1", digest: stPerm.choice.digest });
+                                                                         ^
+
+TypeError: Cannot read properties of undefined (reading 'digest')
+    at file:///private/var/folders/yn/5m6bw9z92y94qmcy4tsnxdlw0000gn/T/mut-sp04m5tj/rc/test/e2e-local.mjs:983:74
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+
+Node.js v22.14.0

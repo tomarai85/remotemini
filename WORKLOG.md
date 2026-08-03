@@ -7093,3 +7093,121 @@ machinery で、自分の doctrine「machinery は自律ループ内から編集
 触らない。machinery lane への持ち込み案件として記録する。
 反証条件: 変異走行が終わってから `bash tools/run-controls.sh` が 0 を返し、survival 再走で
 alive=6 になれば此の診断は正しい。ならなければ本当の退行 —— 走行終了後に実際に確かめる。
+
+## 2026-08-03 23:07 — 上の診断は**外れ**。dead は退行でも未測定でもなく、**計器が出した偽の赤**
+
+★上の 22:09 の項に自分で書いた反証条件を、そのまま実行して自分の診断を落とした。
+
+```
+予測: run-controls が 0 を返せば survival は alive=6
+実測: bash tools/run-controls.sh -> exit 0 (green=25 red=0 未測定=0)
+      survival -> checked=6 alive=4 dead=1 unknown=1
+```
+
+alive が 5 から 4 に**減った**。診断は外れ。順に潰した。
+
+### (1) `3s-instrument` は「未測定」ではなく**原理的に確かめられない** task だった
+
+旧 verifier = `npm test`(6s) + `node test/e2e-local.mjs`(60s) + `bash tools/run-controls.sh`
+(250-300s)。ゲートの上限は `min(max(verify_timeout_s, 5), 300)` = **300s が硬い天井**
+(`~/.claude/tools/loop-replan-gate.sh:194-253`)。合計は構造的に天井を超える。
+つまり此の task は**どう回しても timeout=UNKNOWN しか返さない**。22:09 に見た dead も
+「未測定を丸めた」のではなく、単に測定が完走しない task を測ろうとしていただけ。
+
+差し替えた: `node --test test/live-http-swallow.test.mjs test/live-payload.test.mjs
+test/live-tools-send-guard.test.mjs`(33 件・1 秒)。**緩めていない**。旧検査は task の主張
+(live-http-check.mjs の欠陥 3 件が塞がり陰性対照で赤が出る)より**広いだけで鋭くない**。
+repo 全体の広さは pre-commit の commit-suite-gate(536 件)と staged-controls-gate が
+毎コミット担う = survival より強い場所に既に在る。理由は `verify_note` に残した。
+
+### (2) `choice-reply` の赤は**偽**。同一走行の陰性対照で確定した
+
+`choice-reply` と `3u-logging` は verify 文字列が同一で、`verify_sha` も同一
+(`d6a7ec5f23cc4def`)。**同じ走行で、片方が alive・片方が dead**。
+判定が木の関数でない事は此の一点で確定する —— 再現は要らない。
+単体で回すと `npm test` 536/536・`node test/e2e-local.mjs` 203/203、どちらも緑。
+差し替え後の再走で `alive=6 dead=0 unknown=0`。
+
+機序の候補を3つ立てて、3つとも落とした:
+- ポート衝突 -> 否定。e2e は `RC_PORT=0` の一時ポートを取り、起動 log から番号を読む
+  (`test/e2e-local.mjs:457-522`、506 行に「EADDRINUSE は原理的にほぼ起きない」と書いてある)。
+- `npm test` の同時走行 -> 否定。2 本同時に回して両方 536/536・rc=0。
+- 機械の負荷 -> 否定。`run-controls.sh` を裏で回しながら e2e を走らせて 203/203・66s。
+
+**機序は未確定のまま**。1 回の赤に対し以後 4 回緑。`method_calibrate_test_runtime_before_
+blaming_code.md` の「N 連続緑で直ったと見なすな」に従い、**解決とは書かない**。
+
+### (3) 直す場所は機序ではない。**計器が証拠を捨てている**方だった
+
+3 つ潰して分かったのは、赤が**何も残さない**事。survival は
+`subprocess.run(..., capture_output=True)` で捕まえた出力を**一度も読まない**。
+だから「なぜ赤か」を後から一言も言えず、仮説を立てて潰すしか手が無かった。
+
+★根は「機序が分からない」ではなく「**計器が証拠を捨てる**」。此処が直す場所。
+`method_calibrate_test_runtime_before_blaming_code.md` の
+「**ケースを行き来する flake は、1 つの共有計測器が壊れている合図**」の通り、
+赤は `3s-instrument` -> `choice-reply` と走行間で**移動**していた。個別機序を追ったのが誤り。
+
+据えた物:
+- `tools/verify-log.sh` = 検査を回して stdout / stderr / 終了コードを
+  `/tmp/rc-verify-logs/<id>.log` に**追記**する薄い包み。repo は汚さない。
+  終了コードは素と一字一句同じ(此処が崩れたら包みが判定を書き換える)。
+- `test/verify-log-controls.sh`(19 項)= 自力型。V1-V3 が終了コード同一(1 に丸めない)、
+  V4 が `&&` 連鎖、V5-V11 が証拠の残存と追記、V13 が repo を汚さない、V14 が誤用を緑にしない。
+  陰性 N1 = 握り潰す版は失敗を 0 で返す(**この repo は `mutation-verdict.sh assert` で
+  同じ病気を既に踏んでいる**)、N2 = stderr を捨てる版、N3 = 上書きする版。
+- `tools/run-controls.sh` の LOCAL_CTLS に登録(25 本目)。
+
+**また自分の注記に自分で当たった。1 つの file で 2 種類、初回 19 項中 8 項が赤**:
+- 包みが log に書く `--- cmd: <回したコマンド>` の行に**検査語がそのまま載る**ので、素で
+  数えると出力を 1 件も捕まえていなくても当たる(V6/V7/V10/V11/N2b)。
+  `deploy-to-edith-controls.sh:45` に**自分で書いた**罠と同じ型。`cnt_out()` で
+  `--- cmd: ` 行を落としてから数える形に直した。
+- `grep -c` は一致 0 でも `0` を印字して**終了 1** を返す。`|| echo 0` を足すと
+  `0\n0` が出て期待値と一致しない(V13/N3)。file の有無で分岐する `cnt()` に直した。
+- N2a の空振り防止が `2>/dev/null` を素で数えて別行 3 件に当たっていた。
+  狙った行の性質(本走行の行から `2>&1` が消えている)に直した =
+  「**空振り防止は差分でなく狙った性質で書く**」の再適用。
+
+**8 件全部が「測る対象」でなく「測る道具」の欠陥**。今日 2 度目。
+
+### 直っていない事(持ち越し)
+
+- `survival` に **exit 2(未測定)の袋が無い**(`_ok = (r.returncode == 0)` の二値)。
+  loop machinery なので此のループ内からは触らない = machinery lane 案件。
+- `choice-reply` の赤の機序は未確定。次に出たら `/tmp/rc-verify-logs/choice-reply.log` を読む。
+- 変異走行の log(`mutation-full-45e0c8b.log:401`)の但し書き = 検出 1 件が要約行を読めないまま
+  落ちており、変異を捕まえたのか検査が死んだのか区別できていない。未解決。
+
+## 2026-08-03 23:15 — 包みが**初回の走行で元を取った**。そして上の「偽の赤」の断定を弱める
+
+包みを据えた直後の survival: `checked=6 alive=3 dead=3`。赤が 3 本。
+**今度は理由が読めた** —— 仮説を立てる必要が無かった:
+
+```
+/tmp/rc-verify-logs/choice-reply.log
+  not ok 285 - ★注釈が行番号で他所を引いていない(1件でも戻れば赤)
+  actual: ['test/verify-log-controls.sh: deploy-to-edith-controls.sh:45']
+  # pass 535 / # fail 1  ->  --- exit=1  (2 回。survival の 3 秒後の再走)
+```
+
+犯人は私。**「行番号で引くな」と書いてある repo の検査に、その罠を説明する注釈で
+行番号を書いて当たった**。`deploy-to-edith-controls.sh:45` -> 同 file の `ncode()` の上の
+「自分の注記に自分で当たる」という**中身の目印**へ張り替えて解消(no-linerefs 5/5、対照 19/19)。
+
+dead=3 の内訳は `npm test` を回す 3 本(`3u-logging` / `choice-reply` / `stale-linerefs`)で、
+**全部同じ 1 件の失敗**。包みが無ければ、また「3 本死んだ、理由不明」で仮説狩りに戻っていた。
+
+### ★上の 23:07 の項の断定を弱める(自己訂正)
+
+23:07 に「`choice-reply` の赤は**偽**」と書いた。今日の実測で、**この 2 本は本物の赤も出す**事が
+分かった —— しかも repo 全体の `npm test` を回すので、**走行中に木が変われば判定が変わる**。
+survival は task を順に回すので、`3u-logging` の検査と `choice-reply` の検査の間に木が変われば
+**同一走行で片方だけ赤**は起こり得る。私はそれを「木の関数でない」証拠として使ったが、
+「**その瞬間の木**の関数ではある」を排除できていない。
+
+残る確かな事 / 落とす事:
+- 確か: 単体で回すと緑(536/536・203/203)。差し替え後の再走で alive=6。
+- 落とす: 「偽の赤」という**断定**。正しくは「原因未特定の赤が 1 回、以後の緑では再現せず」。
+- 反証条件(新): 次に同種の赤が出た時、`/tmp/rc-verify-logs/<id>.log` に
+  **no-linerefs 以外**の失敗が出れば別因。何も出ず終了コードだけ非ゼロなら計器側。
