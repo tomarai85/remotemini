@@ -47,6 +47,12 @@ const SID_RACE   = "99999999-0000-0000-0000-00000000000a"; // 本文の直後に
 //   2本とも同じ画面から始まるので、判定を分けているのは**Escape 後の画面だけ**になる。
 const SID_INTR_OK    = "99999999-0000-0000-0000-00000000000b"; // 割り込みで実際に止まる
 const SID_INTR_STUCK = "99999999-0000-0000-0000-00000000000c"; // 割り込んでも止まらない
+// ★選択メニューへの打鍵(§2.29)の対。**電話が受け取る JSON まで**実測を届かせる為に居る。
+//   BENIGN = `/model` の選択(実機)         -> 打鍵が飛ぶ
+//   PERM   = Bash の許可確認(実機)         -> 409、send-keys は 0 件
+//   単体では両方通っているが、e2e に無いと「サーバ側で digest を埋めてしまう」等の
+//   HTTP 層だけの緩みが素通りする。実際 8/02 の割り込みが同じ形で緩んでいた。
+const SID_PERM = "99999999-0000-0000-0000-00000000000d"; // 許可確認が出ている(打ってはいけない)
 const CWD_READY  = "/Users/Shared/dev/ready";
 const CWD_CHOICE = "/Users/Shared/dev/choice";
 const CWD_SHELL  = join(SB, "shell"); // ★ワーカーへ落ちた後**受理される**必要が在る(一覧に載せる)
@@ -56,6 +62,7 @@ const CWD_DEAF   = "/Users/Shared/dev/deaf";
 const CWD_RACE   = "/Users/Shared/dev/race";
 const CWD_INTR_OK    = "/Users/Shared/dev/intr-ok";
 const CWD_INTR_STUCK = "/Users/Shared/dev/intr-stuck";
+const CWD_PERM       = "/Users/Shared/dev/perm";
 // 登録簿(session_id -> pane)の検証用。**全部同じ cwd に置く** — 登録が無ければ
 // 特定不能になる状況を作り、登録があれば1つに定まることを同じ場に並べて見せるため。
 const SID_REG_A    = "aaaaaaaa-0000-0000-0000-00000000000a"; // 登録あり -> %20
@@ -120,6 +127,7 @@ fixture(SID_DEAF, CWD_DEAF, "画面が動かない");
 fixture(SID_RACE, CWD_RACE, "選択画面が割り込む");
 fixture(SID_INTR_OK, CWD_INTR_OK, "割り込むと止まる");
 fixture(SID_INTR_STUCK, CWD_INTR_STUCK, "割り込んでも止まらない");
+fixture(SID_PERM, CWD_PERM, "許可確認が出ている");
 for (const sid of [SID_REG_A, SID_REG_B, SID_REG_C, SID_STALE]) fixture(sid, CWD_REG, `登録${sid.slice(-1)}`);
 fixture(SID_UNREG, CWD_UNREG, "未登録");
 fixture(SID_LIMIT, CWD_LIMIT, "上限に当たっている");
@@ -164,6 +172,7 @@ const PANES = [
   `%24${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys024${PANE_SEP}${CWD_UNREG}`, // 未登録の会話の cwd に居る唯一の claude
   `%25${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys025${PANE_SEP}${CWD_INTR_OK}`,    // 割り込みで印が消える
   `%26${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys026${PANE_SEP}${CWD_INTR_STUCK}`, // 割り込んでも印が残る
+  `%27${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys027${PANE_SEP}${CWD_PERM}`,       // 許可確認が出ている
 ].join("\n") + "\n";
 // ★2026-08-01: 画面はもう手で書かない。使い捨てセッションから撮った生の capture-pane 出力
 // (test/fixtures/screens/)をそのまま使う。前の版はここに手書きの画面を置いていて、
@@ -204,6 +213,10 @@ const SCREENS = {
   //   割り込みの判定が**新しい材料を本当に読んでいるか**が e2e で分かる。
   "%25": shot("edith-generating-spinner-hidden"),
   "%26": shot("edith-generating-spinner-hidden"),
+  // ★実機の許可確認(edith 2026-08-03)。**電話から1文字も打ってはいけない**画面。
+  //   `%11` の `/model` と並べて置いてあるのが要点 — どちらも同じ CHOICE で、
+  //   分ける材料は許可一覧に載っているかだけ。片方だけ通る事を e2e で見せる。
+  "%27": shot("choice-permission-bash"),
 };
 writeFileSync(join(SB, "tmux-panes.txt"), PANES);
 for (const [pane, text] of Object.entries(SCREENS)) {
@@ -248,14 +261,14 @@ function putRegistry(sid, pane, offsetSec = 0) {
   beatOnce();
 }
 for (const [sid, pane] of [[SID_READY, "%10"], [SID_CHOICE, "%11"], [SID_GEN, "%15"], [SID_DEAF, "%16"], [SID_RACE, "%17"], [SID_LIMIT, "%18"],
-                           [SID_INTR_OK, "%25"], [SID_INTR_STUCK, "%26"]]) {
+                           [SID_INTR_OK, "%25"], [SID_INTR_STUCK, "%26"], [SID_PERM, "%27"]]) {
   putRegistry(sid, pane);
 }
 const SENT_LOG = join(SB, "tmux-sent.log");
 writeFileSync(SENT_LOG, "");
 const fakeTmux = join(SB, "fake-tmux");
 writeFileSync(fakeTmux, `#!/usr/bin/env python3
-import sys, os, json
+import sys, os, json, re
 SB = ${JSON.stringify(SB)}
 args = sys.argv[1:]
 if args and args[0] == "list-panes":
@@ -277,7 +290,12 @@ elif args and args[0] == "send-keys":
         lines = open(p).read().split("\\n")
         idx = None
         for i in range(len(lines) - 1, -1, -1):
-            if lines[i].lstrip().startswith("\\u276f"):
+            t = lines[i].lstrip()
+            # \u276f は入力欄の頭にも**選択カーソル**にも使われる。区別せずに書き換えると、
+            # 選択メニューのカーソル行が "\u276f 2" に化けてメニューが別物になり、
+            # 「打鍵が効いたか」の判定が偽 tmux の副作用で緑になる(2026-08-03 に踏んだ)。
+            # 入力欄だけを動かす = 選択肢の行(\u276f N. ...)は触らない。
+            if t.startswith("\\u276f") and not re.match(r"\\u276f\\s*\\d+\\.\\s", t):
                 idx = i
                 break
         if idx is not None:
@@ -938,6 +956,85 @@ try {
     byId[SID_CHOICE]?.screen === "CHOICE", JSON.stringify(byId[SID_CHOICE]));
   check("一覧: 特定不能は blocked", byId[SID_AMBIG]?.route === "blocked", JSON.stringify(byId[SID_AMBIG]));
   check("一覧: 開いていない会話は worker", byId[SID1]?.route === "worker", JSON.stringify(byId[SID1]));
+
+  // ---- 10-h. 選択メニューへの打鍵(§2.29) ------------------------------------
+  // 出典: DESIGN D4 + Tom 裁定「自動化に安全確認を押させない」。
+  // 単体は test/choice.test.mjs。**此処で測るのは HTTP 層だけの緩み** —
+  // 指紋をサーバが埋めていないか、拒否が本当に打鍵0で終わるか、電話が撮り直さずに
+  // やり直せるか。8/02 の割り込みは単体が緑のまま HTTP 層で緩んでいた。
+  const choose = (sid, body) =>
+    fetch(`${B}/api/sessions/${sid}/choice`, {
+      method: "POST", headers: { ...H, "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+  const stChoice = await (await fetch(`${B}/api/sessions/${SID_CHOICE}/status`, { headers: H })).json();
+  check("★選択待ちの画面には、電話が答えるのに要る材料が全部載る",
+    stChoice.choice?.kind === "benign" && stChoice.choice.matcher === "select-model@2" &&
+    stChoice.choice.options?.length === 5 && stChoice.choice.keys?.includes("digit") &&
+    typeof stChoice.choice.digest === "string" && stChoice.choice.digest.length === 16,
+    JSON.stringify(stChoice.choice));
+
+  const stPerm = await (await fetch(`${B}/api/sessions/${SID_PERM}/status`, { headers: H })).json();
+  check("★★許可確認は CHOICE として出るが、打てる鍵がゼロで出る",
+    stPerm.screen === "CHOICE" && stPerm.choice?.kind === "hard-stop" &&
+    stPerm.choice.keys.length === 0 && stPerm.choice.matcher === null,
+    JSON.stringify(stPerm.choice));
+
+  const beforePerm = sentKeys().length;
+  const rPerm = await choose(SID_PERM, { key: "1", digest: stPerm.choice.digest });
+  const jPerm = await rPerm.json();
+  check("★★許可確認へ打鍵 -> 409、承認は起きない",
+    rPerm.status === 409 && jPerm.reason === "choice-hard-stop", JSON.stringify(jPerm));
+  check("★★許可確認へ出た send-keys は0件", sentKeys().length === beforePerm,
+    JSON.stringify(sentKeys().slice(beforePerm)));
+
+  // 指紋を持たない要求は 400。サーバが今の画面から埋めてしまうと検査が消える
+  // (「電話が見た画面」と「サーバが見た画面」が同じである保証が無くなる)。
+  const beforeNoDig = sentKeys().length;
+  const rNoDig = await choose(SID_CHOICE, { key: "1" });
+  check("★指紋なしの打鍵は 400(サーバが埋めない)", rNoDig.status === 400, String(rNoDig.status));
+  const rBadKey = await choose(SID_CHOICE, { key: "y", digest: stChoice.choice.digest });
+  check("受け付けない鍵は 400", rBadKey.status === 400, String(rBadKey.status));
+  check("400 の間 send-keys は0件", sentKeys().length === beforeNoDig);
+
+  const rOldDig = await choose(SID_CHOICE, { key: "1", digest: "0000000000000000" });
+  const jOldDig = await rOldDig.json();
+  check("★古い指紋は 409 で、今の指紋を返す(電話が撮り直さずにやり直せる)",
+    rOldDig.status === 409 && jOldDig.reason === "digest-mismatch" && jOldDig.digest === stChoice.choice.digest,
+    JSON.stringify(jOldDig));
+  check("古い指紋でも send-keys は0件", sentKeys().length === beforeNoDig);
+
+  // 5択へ `7`。指紋も鍵の種別も正しいのに**その選択肢が無い** = 未定義の打鍵(2026-08-03)。
+  const rNoOpt = await choose(SID_CHOICE, { key: "7", digest: stChoice.choice.digest });
+  const jNoOpt = await rNoOpt.json();
+  check("★無い番号は 409 で断る(5択へ 7 を流さない)",
+    rNoOpt.status === 409 && jNoOpt.reason === "choice-no-such-option", JSON.stringify(jNoOpt));
+  check("無い番号でも send-keys は0件", sentKeys().length === beforeNoDig);
+
+  // ★本題: 良性メニューには実際に届く。%11 の画面は動かないので applied は unverified
+  //   ——「送った」と「効いた」を分けて返している事も同時に測れる。
+  const rOk = await choose(SID_CHOICE, { key: "2", digest: stChoice.choice.digest });
+  const jOk = await rOk.json();
+  const okChoiceKeys = sentKeys().slice(beforeNoDig).filter((c) => c.includes("%11"));
+  check("★良性メニューへは打鍵が1回だけ届く(literal で 2)",
+    rOk.status === 200 && jOk.accepted === true && jOk.route === "tmux" &&
+    okChoiceKeys.length === 1 && okChoiceKeys[0].at(-1) === "2" && okChoiceKeys[0].includes("-l"),
+    JSON.stringify({ jOk, okChoiceKeys }));
+  check("★画面が動かない回は applied=unverified(送信を効果と読まない)",
+    jOk.applied === "unverified", JSON.stringify(jOk));
+  check("★着地した画面も返る(applied だけでは**どこへ**動いたかが落ちる)",
+    jOk.after?.screen === "CHOICE" && jOk.after.choice === "benign", JSON.stringify(jOk.after));
+  check("unverified には撃ち直しを止める但し書きが付く",
+    typeof jOk.note === "string" && jOk.note.includes("撃ち直さないでください"), JSON.stringify(jOk.note));
+
+  // ★同じ指紋への2発目。電話が `unverified` を「失敗」と読んで撃ち直す形を、
+  //   HTTP 層でも断る事の検査(単体は choice.test.mjs、此処は口が緩んでいない事)。
+  const beforeRetry = sentKeys().length;
+  const rRetry = await choose(SID_CHOICE, { key: "2", digest: stChoice.choice.digest });
+  const jRetry = await rRetry.json();
+  check("★★同じ指紋への2発目は 409(1発目が次の画面へ流れない)",
+    rRetry.status === 409 && jRetry.reason === "choice-already-sent", JSON.stringify(jRetry));
+  check("2発目で send-keys は増えない", sentKeys().length === beforeRetry,
+    JSON.stringify(sentKeys().slice(beforeRetry)));
 
   // ---- 11. 登録簿(session_id -> pane)経路 -----------------------------------
   // 出典: DESIGN §2.10。cwd 一致では会話を特定できない(同 cwd に数十〜数百の会話)。

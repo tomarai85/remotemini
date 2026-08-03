@@ -37,6 +37,7 @@ APP = "src/app.html"
 WRK = "src/worker.mjs"
 RNG = "src/ring.mjs"
 HLT = "src/health.mjs"
+CHO = "src/choice.mjs"
 
 MUT = [
  ("M1 メニュー判定を外す(CHOICE を返さない)", INJ,
@@ -422,9 +423,12 @@ MUT = [
  # 誰も撃っていなかった。両端が緑でも、間で落ちれば人には届かない。
  # ★この変異が「素通り」で返ってきたら、それは**継ぎ目に検査が無い**という答えで、
  #   その時は e2e に `live.limited` の assert を足す。台本に答えを出させる為に置く。
+ # ★2026-08-03: 的を付け替えた。`screenOf` が選択メニューの中身も載せる様になり
+ #   (`choice`)、一度で撮った1枚から組む形へ変わった為、探し文が本文に当たらなくなった。
+ #   **欠陥は同じ** —— 分類器が見えている `limited` が電話へ渡らない。
  ("M78 サーバの応答から limited を落とす(分類器は見えているのに電話へ渡らない)", SRV,
-  '    return { screen: s.state, activity: s.activity, limited: s.limited };',
-  '    return { screen: s.state, activity: s.activity };'),
+  '    const base = { screen: s.state, activity: s.activity, limited: s.limited };',
+  '    const base = { screen: s.state, activity: s.activity };'),
 # ================= H1 の鍵まわり (2026-08-02 追加) =========================
 # ここから下は「同じ物理キーボードを2人で叩かない」を守る層。写し(git archive HEAD の
 # 複製)の上で先に測ってから入れた。写しでの結果 = 22件すべて検出 / 素通り 0。
@@ -501,6 +505,99 @@ MUT = [
    "  if (`${ancestor}.json` !== name) return null;"],
   ['const isHeadFile = (name) => !name.startsWith(".");',
    "  void name;"]),
+
+ # --- 選択メニューへの打鍵 (C) = 良性と同定できた画面にしか打たない層 -------------
+ # 出典: DESIGN D4 + Tom 裁定「自動化に安全確認を押させない」。守りの形は**許可一覧**で、
+ # 「危険と書いてあるから断る」ではなく「良性と証明できないから断る」。だから的の中心は
+ # C1 = 許可一覧を拒否一覧へ退化させる変異。ここが素通りしたら、設計が裏返っても誰も
+ # 気づかないという報告になる。方針(policy)と繋ぎ目(wiring)を W と分けずに C に纏めたのは、
+ # 壊れた時に読む場所が `choice.mjs` とその1本の呼び出し元しか無いから。
+ # ★C1 は 2026-08-03 に的を付け替えた。判定の順序を hard-stop 先へ変えた時に本文が
+ #   動いた為で、**撃つ欠陥は同じ**(許可一覧を素通りさせて「危険と書いていない=良性」にする)。
+ ("C1 ★許可一覧を拒否一覧へ退化させる(危険な語が無ければ良性と認める)", CHO,
+  '  const matcher = MATCHERS.find((x) => x.test(menu)) || null;',
+  '  const matcher = MATCHERS[0]; // mutated: 許可一覧を素通り(何でも良性)'),
+ ("C2 hard-stop の網を空にする(断る理由の欄が死ぬ)", CHO,
+  r'  /(Do you want to (proceed|continue)|Do you trust|requires confirmation|\/permissions to update rules|[Bb]ypass permissions|weekly limit)/;',
+  '  /$^/;'),
+ ("C3 入力欄が描かれた画面でも良性と認める(menuAt の唯一の材料が壊れても進む)", CHO,
+  '  if (!menu.composerAbsent) return { kind: "unrecognized", matcher: null, menu };',
+  '  // mutated: 入力欄の有無を見ない'),
+ ("C4 番号行1つでメニューを成立させる(自分の本文1行が選択肢に化ける)", CHO,
+  '  if (opts.length < 2) return null; // 単独の番号行はメニューと呼ばない(inject.mjs と同じ判断)',
+  '  if (opts.length < 1) return null;'),
+ ("C5 履歴側の番号行を除外しない(こだまをメニューとして読む)", CHO,
+  '    if (composerClose >= 0 && i <= composerClose) continue;',
+  '    // mutated: 履歴を除外しない'),
+ ("C6 数字を literal で送らない(tmux が繰り返し回数と読みうる綴りへ戻す)", CHO,
+  '  if (/^[1-9]$/.test(key)) return ["send-keys", "-t", pane, "-l", "--", key];',
+  '  if (/^[1-9]$/.test(key)) return ["send-keys", "-t", pane, key];'),
+ ("C7 ★注入器が分類器を通らない(方針が正しくても打ってしまう繋ぎ目)", INJ,
+  ['    if (c.kind !== "benign") {',
+   '      return refuse("CHOICE", c.kind === "hard-stop" ? "choice-hard-stop" : "choice-unrecognized", now);',
+   '    if (!c.matcher.keys.includes(keyKind(key))) {',
+   '      return refuse("CHOICE", "choice-key-not-allowed", now);'],
+  ['    if (false) {',
+   '      void c;',
+   '    if (false) {',
+   '      void keyKind(key);']),
+ ("C8 指紋の突き合わせを外す(見た画面と押す画面が別でも通る)", INJ,
+  '    if (expectDigest !== now) return refuse("CHOICE", "digest-mismatch", now);',
+  '    // mutated: 指紋を見ない'),
+ # 2026-08-03 に的を付け替え: 同じ if が「二度打ち止めの消し所①」を抱えてブロックになった。
+ # 撃っている欠陥(画面状態を見ずに打つ)は変えていない。
+ ("C9 選択待ちでない画面への打鍵を止めない", INJ,
+  '    if (s0.state !== "CHOICE") {',
+  '    if (false) {'),
+ ("C10 Escape の後の静穏を外す(次の打鍵が Alt シーケンスに読まれうる)", INJ,
+  '    if (key === "escape") await this.sleep(ESC_SETTLE_MS);',
+  '    // mutated: Escape の後に間を置かない'),
+ # ★C11 も 2026-08-03 に的を付け替えた(`applied` が3値になり探し文が当たらなくなった)。
+ #   欠陥は同じ + 一段重い: 決め打つと**許可確認へ着地した回まで**成功として返る。
+ ("C11 打鍵を「効いた」と決め打つ(送信を効果と読む)", INJ,
+  '      landKind === "hard-stop" ? "moved-to-hard-stop" : after.tag ? "verified" : "unverified";',
+  '      "verified";'),
+ ("C12 打鍵が鍵を通らない(2人が同じメニューを見て両方押す)", INJ,
+  '      return await this.mutex.run(pane, () => this.#chooseExclusive(pane, key, digest), { signal });',
+  '      return await this.#chooseExclusive(pane, key, digest);'),
+ ("C13 指紋なしの打鍵を 400 で止めない", SRV,
+  '      if (!digest) {',
+  '      if (false) {'),
+
+ # --- C14-C18 = 2026-08-03 の締め直し(Codex 指摘)を守る的 ---------------------
+ # 5件とも「誤りの向きが承認側になる」形へ戻す変異。C1-C13 と違って**新しい欠陥**ではなく、
+ # 一度直した欠陥が戻った時に赤が出るかを測る(直した事を検査が知らなければ、また戻る)。
+ ("C14 ★hard-stop を許可一覧の後ろへ戻す(両方に当たる画面が良性へ倒れる)", CHO,
+  '  if (HARD_STOP.test(hay)) return { kind: "hard-stop", matcher: null, menu };',
+  '  { const m0 = MATCHERS.find((x) => x.test(menu)); if (m0) return { kind: "benign", matcher: m0, menu }; }\n'
+  '  if (HARD_STOP.test(hay)) return { kind: "hard-stop", matcher: null, menu };'),
+ ("C15 ★matcher を字面2つだけの v1 へ戻す(選択肢の形を見ない)", CHO,
+  ['      m.options.length >= 3 &&',
+   '      m.options.every((o, i) => o.n === i + 1),'],
+  ['      true &&',
+   '      true,']),
+ ("C16 存在しない番号でも打つ(5択へ 7 を流す)", INJ,
+  '    if (keyKind(key) === "digit" && !optionFor(c.menu, key)) {',
+  '    if (false) {'),
+ ("C17 ★同じ指紋へ何度でも打つ(撃ち直しが次の画面へ流れる)", INJ,
+  '    if (this.#choiceSent.get(pane) === now) return refuse("CHOICE", "choice-already-sent", now);',
+  '    // mutated: 二度打ちを止めない'),
+ ("C18 着地した画面をサーバが伏せる(「動いた」しか電話に届かない)", SRV,
+  '        ...(out.after ? { after: out.after } : {}),',
+  '        // mutated: どこへ動いたかを返さない'),
+
+ # --- 二度打ち止めの**解除条件**(2026-08-03。条件付きの守りは両側に対照が要る) -------
+ # 止めは「結果が分からない間だけ」効く。緩める向き(C19)と締め過ぎる向き(C20/C21)は
+ # 別の壊れ方なので、片側だけの変異では「常に解除」も「常に保持」も緑のまま通る。
+ ("C19 ★動きを見ずに二度打ち止めを解除する(撃ち直しが次の画面へ流れる)", INJ,
+  '    if (after.tag) this.#choiceSent.delete(pane);',
+  '    this.#choiceSent.delete(pane);'),
+ ("C20 二度打ち止めを一度も解除しない(同じ形のメニューへ生涯1回しか打てない)", INJ,
+  '    if (after.tag) this.#choiceSent.delete(pane);',
+  '    // mutated: 動いても解除しない'),
+ ("C21 メニューを離れたのを見ても解除しない(消し所①が死ぬ)", INJ,
+  '      this.#choiceSent.delete(pane);',
+  '      // mutated: 離れたのを見ても解除しない'),
 
  # --- 配線 (W) = `inject.mjs` / `server.mjs` が鍵を**実際に通っている**か -------
  # 鍵単体(M88-M94)が完璧でも、注入器がそれを通らなければ何も守られない。
@@ -865,7 +962,8 @@ MUT = [
 #   選び方に2重に書かれていて、`--only` 側は `[MWXPR]` のまま = H/V を族として選べず、
 #   題名の部分一致に黙って落ちていた(`--only V` が題名に大文字 V を含む物まで拾う)。
 #   上の「新しい族を足す時はここも足す」が守れなかったのは、足す場所が2つあったから。
-FAM = "MWXPRHV"
+#   C = 選択メニューへの打鍵の層(良性と同定できた画面にしか打たない = 許可一覧)。
+FAM = "MWXPRHVC"
 
 # ★番号の後ろの1文字(`P12b`)を許す(2026-08-03)。`b` は「**同じ場所を別の壊し方で撃つ**」
 #   という既にある書き方で、DESIGN §2.18-4b の検査 4b と対を成す。別番号(P16)へ逃がすと

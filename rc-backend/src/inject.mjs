@@ -59,14 +59,23 @@
  */
 
 import { makeKeyedMutex, MUTEX_BUSY, MUTEX_ABORTED } from "./mutex.mjs";
+// メニュー行の語彙は `choice.mjs` が正本。**ここに写しを置かない**(§2.28 の型)。
+// 依存は一方向 = inject.mjs → choice.mjs。逆向き(choice.mjs から composerBox を引く)は
+// 循環になるので、choice.mjs 側は入力欄の位置を**引数で受け取る**形にしてある。
+import {
+  OPTION_ROW,
+  SELECT_CURSOR,
+  classifyChoice,
+  digestOf,
+  keyArgs,
+  keyKind,
+  optionFor,
+  ESC_SETTLE_MS,
+} from "./choice.mjs";
 
 const BOX_RULE = /^─{8,}\s*$/;
 /** composer の行。`❯` で始まる(空でも `Press up to edit queued messages` でも同じ)。 */
 const COMPOSER_HEAD = /^\s*❯/;
-/** 選択カーソル。実装差を吸収するため複数の字体を許す(Codex 指摘④)。 */
-const SELECT_CURSOR = /^\s*[❯>›→▶]\s*\d+\.\s+\S/;
-/** 番号付き選択肢の行(カーソルの有無を問わない)。 */
-const OPTION_ROW = /^\s*(?:[❯>›→▶]\s*)?\d+\.\s+\S/;
 /**
  * 承認・課金・信頼などの強い文言。**単独では CHOICE にしない**(下の menuAt 参照)。
  * 応答本文にこの語が出ることは普通に起きるため。
@@ -285,6 +294,42 @@ export function composerBox(text) {
 export function findComposer(text) {
   const box = composerBox(text);
   return box ? box.head : -1;
+}
+
+/**
+ * 入力欄の箱の**終わり**の行(-1 = 入力欄なし)。`choice.mjs` へ渡す為だけに在る。
+ *
+ * これを引数で渡す事で choice.mjs は inject.mjs を import せずに済み、依存が
+ * 一方向に保たれる(§2.28 の「写しを置かない」と、循環の回避を同時に満たす形)。
+ */
+export function composerCloseOf(text) {
+  return composerBox(text)?.close ?? -1;
+}
+
+/**
+ * 画面が良性の選択メニューなら、電話に出す形にして返す。そうでなければ理由だけ。
+ *
+ * `state` が CHOICE の時だけ意味を持つ。電話はここで得た `digest` を打鍵に添えるので、
+ * **見た物と押す物が同じである事**がこの1本で担保される。
+ *
+ * @returns {{kind:string, matcher:(string|null), head:string[], options:object[],
+ *   cursor:number, footer:string, keys:string[], digest:(string|null)}|null}
+ */
+export function choiceViewOf(pane, text) {
+  const c = classifyChoice(text, composerCloseOf(text));
+  if (c.kind === "not-menu") return null;
+  const m = c.menu;
+  return {
+    kind: c.kind,
+    matcher: c.matcher ? `${c.matcher.name}@${c.matcher.version}` : null,
+    head: m.head,
+    options: m.options,
+    cursor: m.cursor,
+    footer: m.footer,
+    // 良性でなければ**打てる鍵は無い**。電話側は空配列を見て操作を描かない。
+    keys: c.kind === "benign" ? c.matcher.keys : [],
+    digest: digestOf(pane, c),
+  };
 }
 
 /**
@@ -711,6 +756,28 @@ export class TmuxInjector {
   }
 
   /**
+   * ペイン -> **最後に打鍵を送った指紋**。同じ指紋へ二度打たない為だけに持つ。
+   * ペインごとに1つしか持たないので際限なく増えない。
+   *
+   * ★止めが効くのは「**結果が分からない**」間だけ(2026-08-03、自分の diff を読み直して修正)。
+   *   初版は `set` しか持たず `delete` がどこにも無く、その事を「消す係が要らない」と
+   *   書いていた。**それは嘘で**、同じ形のメニューへは**ペインごとに生涯1回**しか
+   *   打てなくなっていた(別の指紋を打って上書きするまで永久に `choice-already-sent`)。
+   *   `select-model` はカーソル位置が指紋に入るので選び直すと指紋が変わり、偶然当たり
+   *   にくいだけ。カーソルが動かないメニューが1つ増えれば、その形は二度と答えられない。
+   *
+   *   止めの目的は「撃ち直した1発目が入力待ちに溜まったまま2発目が**次の画面**へ流れる」
+   *   事の防止。**画面が動いたのを観測した**時点でその目的は果たされているので、消す。
+   *   消し所は下の `#chooseExclusive` の2箇所で、**どちらも観測に基づく**
+   *   (メニューに居ないと分かった時 / 打鍵で画面が動いた時)。
+   *   `unverified`(動いていない)の時だけ持ち続ける = そこが止めの本体。
+   *
+   *   ★覆る条件: 実機で「消した直後に同じ指紋のメニューが出て、溜まっていた1発目と
+   *   2発目が両方着弾した」が**1回でも観測されたら**、この解除をやめて時間ベースへ倒す。
+   */
+  #choiceSent = new Map();
+
+  /**
    * 鍵が取れなかった時の返し。**送っていない / 押していない**を必ず名乗る。
    * `send()` の返り値の形をそのまま保つ(呼ぶ側に新しい分岐を増やさない為)。
    */
@@ -968,6 +1035,127 @@ export class TmuxInjector {
       return { pressed: true, stopped: null, reason: "not-in-flight", waited: seen.waited };
     }
     return { pressed: true, stopped: "unverified", reason: "still-in-flight", waited: seen.waited };
+  }
+
+  /**
+   * 選択メニューへ1打鍵。**良性と同定できたメニューにしか送らない**。
+   *
+   * 守りの形は `choice.mjs` の冒頭に全文がある。要点は
+   * 「危険な画面を列挙して弾く」のではなく「安全な画面を列挙して**それ以外を弾く**」事。
+   * 前者は未観測の文言で fail-open するので、Tom 裁定「自動化に安全確認を押させない」を
+   * 守れない。
+   *
+   * 指紋(`digest`)を要求するのは**画面が入れ替わった後に打たない**為。電話が一覧を見て
+   * 押すまでの間に、そのメニューが消えて別のメニューが出る事は普通に起きる。指紋が
+   * 一致しなければ「そのメニューはもう無い」と答えて、押さない。
+   *
+   * ★`Escape` の後に静穏を置く(`ESC_SETTLE_MS`)。端末は `Esc` + 次の1文字を
+   *   **Alt シーケンス**として読む事があり、鍵は「重ならない」を保証するだけで
+   *   「間が空く」は保証しない(Codex 2026-08-03 の指摘 A)。鍵の**中**で待つので、
+   *   次の要求はこの静穏が明けてからしか打てない。
+   *
+   * @param {string} pane
+   * @param {string} key `1`-`9` / `enter` / `escape`
+   * @param {object} opts
+   * @param {string} opts.digest 電話が見た時の指紋。**必須**
+   * @param {AbortSignal} [opts.signal] 順番待ちの間だけ効く期限
+   * @returns {Promise<{sent:boolean, state:string,
+   *   applied:("verified"|"unverified"|"moved-to-hard-stop"|null),
+   *   reason:(string|null), digest:(string|null), waited:(number|null),
+   *   after?:{screen:string, choice:(string|null)}}>}
+   *   `applied:"verified"`           打った後に画面が動いたのを見た(メニューが消えた / 別の指紋になった)
+   *   `applied:"unverified"`         打ったが期限内に画面が動かなかった。★**結果不明であって
+   *                                  「届かなかった」ではない**。電話に撃ち直させない事
+   *                                  (`server.mjs` の `NOTE_AFTER_CHOICE` が文面で、
+   *                                   同じ指紋への二度打ちは下の `#choiceSent` が機械で断る)
+   *   `applied:"moved-to-hard-stop"` 打った後の画面が許可・信頼の確認だった(2026-08-03 追加)。
+   *                                  「動いた」を「上手くいった」と読まない為の別名で、
+   *                                  ここを `verified` に含めると**一番知らせたい着地が
+   *                                  成功として報告される**
+   *   `after` は打鍵後に着地した画面。`applied` だけでは「動いた」しか言えず、
+   *   **どこへ動いたか**が落ちるので別に返す(打っていない時は付かない)。
+   */
+  async choice(pane, key, { digest, signal } = {}) {
+    try {
+      return await this.mutex.run(pane, () => this.#chooseExclusive(pane, key, digest), { signal });
+    } catch (e) {
+      if (e?.code === MUTEX_BUSY) {
+        return { sent: false, state: "BUSY", applied: null, reason: "pane-busy", digest: null, waited: null };
+      }
+      if (e?.code === MUTEX_ABORTED) {
+        return { sent: false, state: "BUSY", applied: null, reason: "pane-wait-timeout", digest: null, waited: null };
+      }
+      throw e;
+    }
+  }
+
+  /** 鍵の中でだけ走る本体。**直接呼ばない**。 */
+  async #chooseExclusive(pane, key, expectDigest) {
+    const refuse = (state, reason, d = null) => ({
+      sent: false, state, applied: null, reason, digest: d, waited: null,
+    });
+    const before = this.capture(pane);
+    const s0 = classifyScreen(before);
+    if (s0.state !== "CHOICE") {
+      // 消し所①: このペインはもうメニューに居ない = 前の打鍵の結果は分かっている。
+      this.#choiceSent.delete(pane);
+      return refuse(s0.state, "not-choice");
+    }
+
+    const c = classifyChoice(before, composerCloseOf(before));
+    const now = digestOf(pane, c);
+    if (c.kind !== "benign") {
+      // hard-stop と unrecognized を分けるのは**断り方の親切さ**の為だけ。
+      // 守りはどちらも同じ(打たない)ので、hard-stop の網に穴が在っても守りは緩まない。
+      return refuse("CHOICE", c.kind === "hard-stop" ? "choice-hard-stop" : "choice-unrecognized", now);
+    }
+    if (!c.matcher.keys.includes(keyKind(key))) {
+      return refuse("CHOICE", "choice-key-not-allowed", now);
+    }
+    // 数字は**その選択肢が実在する時だけ**打つ(2026-08-03、Codex 指摘)。5択へ `7` は未定義。
+    if (keyKind(key) === "digit" && !optionFor(c.menu, key)) {
+      return refuse("CHOICE", "choice-no-such-option", now);
+    }
+    if (expectDigest !== now) return refuse("CHOICE", "digest-mismatch", now);
+    // ★同じ指紋へ二度打たない(2026-08-03、Codex 指摘)。`unverified` を見た電話が撃ち直すと、
+    //   1発目が入力待ちに溜まったまま2発目が**次の画面**へ流れ得る —— 次が許可確認なら、
+    //   裁定が名指しで禁じた事が起きる。「画面が動いていない」は「届いていない」ではない。
+    //   指紋は画面が変われば変わるので、正しく動いた後の再操作はこれに掛からない。
+    if (this.#choiceSent.get(pane) === now) return refuse("CHOICE", "choice-already-sent", now);
+
+    // ★記録は `tmux.run` の**前**(2026-08-03)。後だと `tmux.run` が投げた時に指紋が
+    //   残らず、撃ち直しが通ってしまう —— 例外路にだけ二度打ちの穴が開いていた。
+    //   「結果が分からない時は断る側」なら、記録するのは**打とうとした時点**。
+    this.#choiceSent.set(pane, now);
+    this.tmux.run(keyArgs(pane, key));
+    if (key === "escape") await this.sleep(ESC_SETTLE_MS);
+
+    // 打った後に画面が動いたか。**同じ指紋のままなら動いていない**と名乗る
+    // (「送った」を「効いた」と読まない = この層で繰り返し踏んでいる型)。
+    const after = await this.pollScreen(pane, (t) => {
+      if (classifyScreen(t).state !== "CHOICE") return "left";
+      return digestOf(pane, classifyChoice(t, composerCloseOf(t))) !== now ? "changed" : null;
+    });
+    // ★「動いた」を「上手くいった」と読まない(2026-08-03、Codex 指摘)。打った直後に
+    //   許可確認が出た画面も「指紋が変わった」を満たすので、v1 はそれを `verified` と
+    //   名乗っていた —— **一番知らせるべき着地が成功として報告される**形だった。
+    const land = classifyScreen(after.text);
+    const landKind =
+      land.state === "CHOICE" ? classifyChoice(after.text, composerCloseOf(after.text)).kind : null;
+    const applied =
+      landKind === "hard-stop" ? "moved-to-hard-stop" : after.tag ? "verified" : "unverified";
+    // 消し所②: 打鍵で画面が動いた(`left` / `changed`)= 結果は分かっている。
+    // 動いていない時(`unverified`)だけ持ち続ける —— そこが止めの本体。
+    if (after.tag) this.#choiceSent.delete(pane);
+    return {
+      sent: true,
+      state: "CHOICE",
+      applied,
+      reason: null,
+      digest: now,
+      waited: after.waited,
+      after: { screen: land.state, choice: landKind },
+    };
   }
 
   /**

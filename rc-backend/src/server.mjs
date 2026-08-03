@@ -18,7 +18,14 @@ import { JsonlTail, resumeDecision } from "./tail.mjs";
 import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
 import { WorkerManager } from "./worker.mjs";
-import { TmuxInjector, looksLikeClaudePane, makeTmuxRunner } from "./inject.mjs";
+import {
+  TmuxInjector,
+  looksLikeClaudePane,
+  makeTmuxRunner,
+  classifyScreen,
+  choiceViewOf,
+} from "./inject.mjs";
+import { CHOICE_KEYS } from "./choice.mjs";
 import { makeKeyedMutex } from "./mutex.mjs";
 import { PaneRegistry, resolveSessionPane, registryOnlySessions } from "./registry.mjs";
 // ★別名で入れる。素の `writeHead` はこのファイルで 3 回使う `res.writeHead` と紛らわしく、
@@ -342,11 +349,17 @@ function psRunner(args) {
  */
 function screenOf(pane) {
   try {
-    const s = injector.state(pane);
+    // 画面は**1回だけ**撮る。状態と選択肢で撮り直すと、その2枚の間に画面が変わり得る
+    // = 電話には「この選択肢」と出しておきながら指紋は別の画面の物、という食い違いが作れる。
+    const text = injector.capture(pane);
+    const s = classifyScreen(text);
     // limited は state と独立に出す(送れるのに答えが返らない、が実在する)。
     // 電話から見た時「返事が来ない」と「上限に当たっている」は取る行動が全く違うので、
     // 理由の見える化そのものが機能。2026-08-02 edith 実測が出所。
-    return { screen: s.state, activity: s.activity, limited: s.limited };
+    const base = { screen: s.state, activity: s.activity, limited: s.limited };
+    // 選択待ちの時だけ、メニューの中身と指紋を添える。電話はこの指紋を打鍵に添えて返すので、
+    // **見た物と押す物が同じ**事がこの1本で担保される(`POST …/choice` の digest)。
+    return s.state === "CHOICE" ? { ...base, choice: choiceViewOf(pane, text) } : base;
   } catch {
     return { screen: "UNKNOWN", activity: "unknown", limited: false }; // ペイン消滅など。fail-closed
   }
@@ -368,6 +381,50 @@ const SEND_REFUSAL = {
     "このペインは今ほかの送信を処理中で、順番待ちも一杯です。**何も送っていません**。少し待ってからお試しください。",
   "pane-wait-timeout":
     "順番待ちの間に時間切れになりました。**何も送っていません**。もう一度お試しください。",
+};
+
+/**
+ * 選択メニューへの打鍵を断った理由 -> 電話に出す文。injector.choice() の reason と 1:1。
+ *
+ * ★`choice-hard-stop` と `choice-unrecognized` は**文面が違うだけで守りは同じ**(打たない)。
+ *   分けているのは Tom が外出先で取る行動が違うから: 前者は「机まで戻るか、後回しにする」、
+ *   後者は「見た事の無い画面が出ている」= 撮って持ち帰る対象。
+ *   ★守りが前者の網の完全性に依存しない事が要点(`choice.mjs` 冒頭)。網に穴が在れば
+ *   その画面は後者に落ちる = やはり打たない。
+ */
+const CHOICE_REFUSAL = {
+  "not-choice": "この画面は選択待ちではありません。打鍵していません。",
+  "choice-hard-stop":
+    "これは許可・信頼の確認画面です。**電話からは答えません**(自動化に安全確認を押させない、という決め事)。机で確認してください。",
+  "choice-unrecognized":
+    "見覚えのない選択画面です。安全と確認できた画面にしか打鍵しないので、何も送っていません。画面を確認してください。",
+  "choice-key-not-allowed": "この画面ではそのキーを受け付けていません。何も送っていません。",
+  "choice-no-such-option": "その番号の選択肢がこの画面にありません。何も送っていません。",
+  "choice-already-sent":
+    "この選択画面へは既に一度打鍵しました。画面が動いていないだけで、**届いていない訳ではありません**。撃ち直すと次の画面に流れる恐れがあるので送っていません。画面を取り直してください。",
+  "digest-mismatch":
+    "表示していた選択画面と今の画面が違います(別のメニューに変わったか、消えました)。**何も送っていません**。画面を取り直してください。",
+  "pane-busy":
+    "このペインは今ほかの操作を処理中で、順番待ちも一杯です。**何も送っていません**。少し待ってからお試しください。",
+  "pane-wait-timeout":
+    "順番待ちの間に時間切れになりました。**何も送っていません**。もう一度お試しください。",
+  unknown: "選択画面へ打鍵できませんでした。何も送っていません。",
+};
+
+/**
+ * 打鍵した**後**に電話へ出す但し書き。
+ *
+ * ★`unverified` を「失敗したから撃ち直せ」と読ませない事が要点(2026-08-03、Codex 指摘)。
+ *   画面が動かないのは「届いていない」ではなく「まだ描き直されていない」でもあり得る。
+ *   撃ち直すと1発目が入力待ちに溜まったまま2発目が**次の画面**へ流れる。次が許可確認なら、
+ *   裁定が名指しで禁じた事が起きる。だから文言は「結果不明・撃ち直さない」で固定する
+ *   (注入器の側でも同じ指紋への二度打ちは `choice-already-sent` で断る = 二重の守り)。
+ */
+const NOTE_AFTER_CHOICE = {
+  unverified:
+    "打鍵は送りました。画面が変わったのは確認できていません(**届かなかったとは限りません**)。同じ画面へ撃ち直さないでください。画面が実際に変わるまで、このメニューへは鍵を受け付けません(断られるのが意図した動きです)。画面を取り直して、変わったかどうかを見てください。",
+  "moved-to-hard-stop":
+    "★打鍵の後、画面が**許可・信頼の確認**に変わりました。電話からは答えません。机で確認してください。",
 };
 
 /**
@@ -623,6 +680,9 @@ function screenBody(f, pane) {
     route: "tmux",
     pane,
     screen: s.screen,
+    // 選択待ちの中身は**変化の検出にも効く**: 別のメニューに変われば指紋が変わり、
+    // `lastScreen` の比較が動いて電話に新しい画面が流れる。
+    ...(s.choice ? { choice: s.choice } : {}),
     work: f.work.some(Boolean) ? "observed" : "quiet",
     // ★窓は「溜まった枚数ぶん」。固定値だと購読直後に**4倍の窓を主張する**(1枚しか
     //   撮っていないのに 5.6 秒見たと言う)。画面はこの数字をそのまま「N秒 動く印なし」と
@@ -997,6 +1057,60 @@ const server = createServer(async (req, res) => {
       }
       const had = manager.interrupt(sessionId);
       return json(res, 200, { interrupted: had, route: "worker" });
+    }
+
+    if (action === "choice" && req.method === "POST") {
+      let body;
+      try {
+        body = JSON.parse(await readBody(req));
+      } catch (e) {
+        markResult(res, { reason: "bad-body" }); // 語彙は定数で(本文の断片をログに流さない)
+        return json(res, 400, { error: `bad body: ${e.message}` });
+      }
+      const key = typeof body.key === "string" ? body.key.trim().toLowerCase() : "";
+      if (!CHOICE_KEYS.includes(key)) {
+        return json(res, 400, { error: `key must be one of: ${CHOICE_KEYS.join(", ")}` });
+      }
+      // ★指紋は**必須**。省略を「今の画面でよい」と読むと、電話が一覧を見てから押すまでの
+      //   間にメニューが入れ替わった時に、見ていない選択肢を押す事になる。省略時に
+      //   サーバが今の指紋を埋める形は、この検査を丸ごと無効にするので採らない。
+      const digest = typeof body.digest === "string" ? body.digest.trim() : "";
+      if (!digest) {
+        return json(res, 400, {
+          error: "digest required(画面と一緒に返した choice.digest をそのまま添えてください)",
+        });
+      }
+
+      const r = resolvePane();
+      if (UNDECIDABLE.has(r.reason)) {
+        return json(res, 409, { error: blockedMessage(r), ...blockedBody(r) });
+      }
+      if (!r.pane) {
+        // ワーカー経路(別プロセスの `claude -p`)に選択画面は存在しない。
+        return json(res, 409, {
+          error: "この会話は机で開かれていません。選択画面はありません。",
+          route: "worker", reason: "not-tmux",
+        });
+      }
+      const out = await injector.choice(r.pane, key, { digest });
+      if (!out.sent) {
+        return json(res, 409, {
+          error: CHOICE_REFUSAL[out.reason] || CHOICE_REFUSAL.unknown,
+          route: "tmux", pane: r.pane, screen: out.state, reason: out.reason,
+          // 断った時こそ**今の指紋**を返す。電話は画面を撮り直さずに、次の要求で
+          // これを添えれば済む(食い違いが解けたのに押せない、を作らない)。
+          ...(out.digest ? { digest: out.digest } : {}),
+        });
+      }
+      return json(res, 200, {
+        accepted: true, route: "tmux", pane: r.pane, key,
+        // applied は**画面が動いたか**。「送った」を「効いた」と読まない
+        // (割り込みの `stopped` と同じ規律)。
+        applied: out.applied, waitedMs: out.waited,
+        // 着地した画面。★`applied` だけでは「動いた」しか言えず、**どこへ動いたか**が落ちる。
+        ...(out.after ? { after: out.after } : {}),
+        ...(NOTE_AFTER_CHOICE[out.applied] ? { note: NOTE_AFTER_CHOICE[out.applied] } : {}),
+      });
     }
 
     if (action === "stream" && req.method === "GET") {
