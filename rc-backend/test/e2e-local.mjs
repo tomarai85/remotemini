@@ -970,7 +970,7 @@ try {
   check("★選択待ちの画面には、電話が答えるのに要る材料が全部載る",
     stChoice.choice?.kind === "benign" && stChoice.choice.matcher === "select-model@2" &&
     stChoice.choice.options?.length === 5 && stChoice.choice.keys?.includes("digit") &&
-    typeof stChoice.choice.digest === "string" && stChoice.choice.digest.length === 16,
+    typeof stChoice.choice?.digest === "string" && stChoice.choice?.digest.length === 16,
     JSON.stringify(stChoice.choice));
 
   const stPerm = await (await fetch(`${B}/api/sessions/${SID_PERM}/status`, { headers: H })).json();
@@ -980,7 +980,15 @@ try {
     JSON.stringify(stPerm.choice));
 
   const beforePerm = sentKeys().length;
-  const rPerm = await choose(SID_PERM, { key: "1", digest: stPerm.choice.digest });
+  // ★`?.` を落とさない。上の check が既に `stPerm.choice?.kind` で守っているのに此処だけ
+  //   素で読んでいた所為で、`choice` が undefined になる変異(§M の M1 = メニュー判定を外す)で
+  //   **e2e が TypeError で落ち、要約行(`E2E: pass=… fail=…`)を印字せずに死んでいた**。
+  //   赤は出るが**読めない赤**になる = 変異を捕まえたのか検査が死んだのか区別できない
+  //   (2026-08-03 の変異走行 197体で、実際に1件だけ此の形で判定不能になった)。
+  //   `?.` にすると digest 無しの要求として 400 が返り、下の check が**読める赤**を出す。
+  //   ★守る場所は「引数の位置で読む所」全部。`&&` の鎖の中は先頭の `?.` が短絡で守るが、
+  //   引数は評価されてしまう(`stChoice.choice?.digest` も同じ理由で全部 `?.` にした)。
+  const rPerm = await choose(SID_PERM, { key: "1", digest: stPerm.choice?.digest });
   const jPerm = await rPerm.json();
   check("★★許可確認へ打鍵 -> 409、承認は起きない",
     rPerm.status === 409 && jPerm.reason === "choice-hard-stop", JSON.stringify(jPerm));
@@ -992,19 +1000,19 @@ try {
   const beforeNoDig = sentKeys().length;
   const rNoDig = await choose(SID_CHOICE, { key: "1" });
   check("★指紋なしの打鍵は 400(サーバが埋めない)", rNoDig.status === 400, String(rNoDig.status));
-  const rBadKey = await choose(SID_CHOICE, { key: "y", digest: stChoice.choice.digest });
+  const rBadKey = await choose(SID_CHOICE, { key: "y", digest: stChoice.choice?.digest });
   check("受け付けない鍵は 400", rBadKey.status === 400, String(rBadKey.status));
   check("400 の間 send-keys は0件", sentKeys().length === beforeNoDig);
 
   const rOldDig = await choose(SID_CHOICE, { key: "1", digest: "0000000000000000" });
   const jOldDig = await rOldDig.json();
   check("★古い指紋は 409 で、今の指紋を返す(電話が撮り直さずにやり直せる)",
-    rOldDig.status === 409 && jOldDig.reason === "digest-mismatch" && jOldDig.digest === stChoice.choice.digest,
+    rOldDig.status === 409 && jOldDig.reason === "digest-mismatch" && jOldDig.digest === stChoice.choice?.digest,
     JSON.stringify(jOldDig));
   check("古い指紋でも send-keys は0件", sentKeys().length === beforeNoDig);
 
   // 5択へ `7`。指紋も鍵の種別も正しいのに**その選択肢が無い** = 未定義の打鍵(2026-08-03)。
-  const rNoOpt = await choose(SID_CHOICE, { key: "7", digest: stChoice.choice.digest });
+  const rNoOpt = await choose(SID_CHOICE, { key: "7", digest: stChoice.choice?.digest });
   const jNoOpt = await rNoOpt.json();
   check("★無い番号は 409 で断る(5択へ 7 を流さない)",
     rNoOpt.status === 409 && jNoOpt.reason === "choice-no-such-option", JSON.stringify(jNoOpt));
@@ -1012,7 +1020,7 @@ try {
 
   // ★本題: 良性メニューには実際に届く。%11 の画面は動かないので applied は unverified
   //   ——「送った」と「効いた」を分けて返している事も同時に測れる。
-  const rOk = await choose(SID_CHOICE, { key: "2", digest: stChoice.choice.digest });
+  const rOk = await choose(SID_CHOICE, { key: "2", digest: stChoice.choice?.digest });
   const jOk = await rOk.json();
   const okChoiceKeys = sentKeys().slice(beforeNoDig).filter((c) => c.includes("%11"));
   check("★良性メニューへは打鍵が1回だけ届く(literal で 2)",
@@ -1029,7 +1037,7 @@ try {
   // ★同じ指紋への2発目。電話が `unverified` を「失敗」と読んで撃ち直す形を、
   //   HTTP 層でも断る事の検査(単体は choice.test.mjs、此処は口が緩んでいない事)。
   const beforeRetry = sentKeys().length;
-  const rRetry = await choose(SID_CHOICE, { key: "2", digest: stChoice.choice.digest });
+  const rRetry = await choose(SID_CHOICE, { key: "2", digest: stChoice.choice?.digest });
   const jRetry = await rRetry.json();
   check("★★同じ指紋への2発目は 409(1発目が次の画面へ流れない)",
     rRetry.status === 409 && jRetry.reason === "choice-already-sent", JSON.stringify(jRetry));
