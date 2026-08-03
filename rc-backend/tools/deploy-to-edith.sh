@@ -140,7 +140,20 @@ say "0. 配備の錠を取る(= 二重配備を構造的に不可能にする)"
 #      これは並走が 2 本で止まらず 3 本目まで入れる、という意味。
 #   → 錠に持ち主の札(`$LOCK/owner`)を入れ、**自分の札が入っている時だけ**外す。
 #     取り直しは札を書いてから読み直して、競り負けた側が降りる。
-OWNER="deploy-$(hostname -s 2>/dev/null || echo unknown)-$$-$(date +%s)"
+#
+# ★★★2026-08-03 追記(**火を噴く前に見つけた欠陥**)。初版は札に `hostname -s` を
+#   そのまま入れていた。この機械の短い hostname には **Tom の実名が入っている**(実測)。
+#   札は ① edith に書かれ ② 配備の標準出力に出る。そして配備の出力は
+#   `.harness/evidence-*/` に証拠として**commit する**物なので、そのままだと実名が repo に入る。
+#   → 名前ではなく **hostname の digest の頭 8 文字**を使う。機械ごとの一意性と
+#     「どの機械が持っているか」の判別は残り、名前は出ない。
+#     照合が要る時は、その機械で同じ式を叩けば同じ 8 文字が出る(= 復元でなく突き合わせ)。
+#   ★`hostname` が空でも `shasum` は空文字の hash を返して**成功する**ので、
+#     digest を取る前に空を潰す。潰さないと全機械が同じ札になる = 一意性が静かに消える。
+_h="$(hostname -s 2>/dev/null || true)"
+[ -n "$_h" ] || _h="unknown-host"
+OWNER="deploy-$(printf '%s' "$_h" | /usr/bin/shasum | /usr/bin/cut -c1-8)-$$-$(date +%s)"
+unset _h
 release_lock() {
     # 自分の札でない錠は**絶対に触らない**。触る実装が上の ② そのものだった。
     ssh "$EDITH" "test \"\$(cat '$LOCK/owner' 2>/dev/null)\" = '$OWNER' || exit 0

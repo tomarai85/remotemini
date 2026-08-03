@@ -58,6 +58,25 @@ PAT_MACH='(100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}|[
 
 PAT_ANY="($PAT_MAIL|$PAT_MACH)"
 
+# --- 種類3: この機械の名前 -------------------------------------------------
+# 2026-08-03 追加。`tools/deploy-to-edith.sh` の錠の札が `deploy-$(hostname -s)-…` で、
+# その札は edith に書かれた上に**配備の標準出力に出る**。配備の出力は
+# `.harness/evidence-*/` へ証拠として commit する物なので、そのまま実名が repo に入る所だった。
+# 火を噴く前に見つけたが、**この検査は捕まえられなかった**(種類1と2しか無い)。
+# 「見つけた欠陥を直す」だけで終わると、同じ型の次の1件をまた人力で見つける事になる。
+#
+# ★パターンを**この file に書けない**。書いた時点で repo が実名を持つ = 検査自体が漏洩になる。
+#   (この repo で既に一度踏んだ型: 秘密を守る検査が、失敗の文でその秘密を出した)
+#   → 走行時に `hostname -s` から取る。repo には一度も保存されない。
+# ★一致した時も**一致した文字列を出さない**。出すのは file 名と件数だけ。
+# ★短い hostname は検査しない。`Mac` の様な語で全 file が赤になると、**検査ごと無視される**
+#   様になる —— 直せない赤を混ぜないのは種類2の絶対パスを外したのと同じ判断。
+#   ただし黙って飛ばさない。飛ばした事は緑の文言に出す(緑が何を保証していないかの一部)。
+HOST_SELF="$(hostname -s 2>/dev/null || true)"
+HOST_MIN=6
+host_checked=0
+if [ "${#HOST_SELF}" -ge "$HOST_MIN" ]; then host_checked=1; fi
+
 # ファイル単位でなく**一致した文字列単位**で除外する。ファイル単位で外すと、
 # 同じファイルに本物と伏字が混ざった時に本物ごと見逃す。
 #
@@ -103,6 +122,18 @@ scan_tree() {
   done < <(git ls-files -z)
   printf '#SCANNED\t%s\n' "$n"
 }
+# scan_tree_fixed <そのままの文字列> -> 一致した **file 名だけ**を行で出す。
+# 種類3 用に別関数にしてあるのは、`scan_tree` が一致文字列そのものを出すから。
+# ここでは出せない(それが守っている物なので)。件数の計器は同じ形で持つ。
+scan_tree_fixed() {
+  local s=$1 f n=0
+  while IFS= read -r -d '' f; do
+    n=$((n+1))
+    [ -f "$f" ] || continue
+    grep -qIiF -e "$s" "$f" 2>/dev/null && printf '%s\n' "$f"
+  done < <(git ls-files -z)
+  printf '#SCANNED\t%s\n' "$n"
+}
 # 件数の突き合わせ。0 件で緑を出すのが今夜10件目の事故だったので、**数を見ずに信用しない**。
 # ★切り分けを関数にしない。`f() { X=...; }` を `$(f)` で呼ぶとサブシェルになり、
 #   代入は親に戻らない(`set -u` で unbound variable になって初めて気付いた。これも今夜の型)。
@@ -112,13 +143,27 @@ n_mail=$(printf '%s\n' "$raw_mail" | sed -n 's/^#SCANNED	//p')
 n_mach=$(printf '%s\n' "$raw_mach" | sed -n 's/^#SCANNED	//p')
 hits_mail=$(printf '%s\n' "$raw_mail" | sed '/^#SCANNED/d' | sed '/^$/d')
 hits_mach=$(printf '%s\n' "$raw_mach" | sed '/^#SCANNED/d' | sed '/^$/d')
-if [ "$n_mail" != "$tracked_n" ] || [ "$n_mach" != "$tracked_n" ]; then
+hits_host=""; hits_hostpath=""
+n_host="$tracked_n"     # 検査しない時は突き合わせを素通しさせる(下の判定を汚さない為)
+if [ "$host_checked" -eq 1 ]; then
+  raw_host=$(scan_tree_fixed "$HOST_SELF")
+  n_host=$(printf '%s\n' "$raw_host" | sed -n 's/^#SCANNED	//p')
+  hits_host=$(printf '%s\n' "$raw_host" | sed '/^#SCANNED/d' | sed '/^$/d')
+  # ★**経路名そのもの**も見る。git が運ぶのは中身だけではない —— 経路も push される。
+  #   これは対照 C20 が見つけた穴で、追加した時の私の実装は「中身に一致した file の
+  #   経路を伏せて出す」までしかやっておらず、`<機械名>-backup.md` の様に**中身が綺麗で
+  #   名前だけ汚れている**形を丸ごと緑にしていた(実測: PASS 20 / FAIL 1)。
+  #   種類1/2 に同じ事をしないのは、メールや IP が file 名に入る形を見た事が無いから。
+  #   見た事が無い物に検査を足すと誤検出だけが増える。踏んだ型にだけ足す。
+  hits_hostpath=$(printf '%s\n' "$tracked_list" | grep -iF -e "$HOST_SELF" || true)
+fi
+if [ "$n_mail" != "$tracked_n" ] || [ "$n_mach" != "$tracked_n" ] || [ "$n_host" != "$tracked_n" ]; then
   echo "PII 検査: **判定不能** — 作業ツリー段が全ファイルを読めていない。" >&2
   # ★`${}` を省かない。`$n_mach。` の様に変数の直後へ日本語を書くと、bash は
   #   後続のバイトまで変数名として読み、`unbound variable` で落ちる(`set -u`)。
   #   そうなると **判定不能(2) が exit 1 = 赤 に化ける**。この行はエラー経路にしか
   #   無いので、2026-08-01 に逆対照で作業ツリー段を殺すまで一度も実行されていなかった。
-  echo "  追跡 ${tracked_n} 件に対し、実際に読んだのは 種類1=${n_mail} / 種類2=${n_mach}。" >&2
+  echo "  追跡 ${tracked_n} 件に対し、実際に読んだのは 種類1=${n_mail} / 種類2=${n_mach} / 種類3=${n_host}。" >&2
   echo "  0 件なら NUL 区切りが壊れている(コマンド置換に通すと bash が NUL を捨てる)。" >&2
   exit 2
 fi
@@ -169,8 +214,40 @@ hist_of() {
 hist_mail=$(hist_of "$PAT_MAIL" "$SAFE_MAIL")
 hist_mach=$(hist_of "$PAT_MACH" -)
 
-if [ -z "$hits_mail$hits_mach$hist_mail$hist_mach" ]; then
-  echo "PII 検査: 作業ツリー・履歴とも 個人のメールアドレス / tailnet の名前 なし"
+# 種類3 の履歴。ここも**一致文字列は持ち回らない**ので `hist_of` は使えない。
+# `-l` にして「どの rev のどの file か」だけを取る。
+# ★`$revs` を quote しない。単語分割が要る(この file は bash で走る。zsh では分割されず、
+#   122 個の SHA が1つの引数になって `unable to resolve revision` = exit 128 になる —— 実測)。
+hist_host=""; hist_host_ex=""; hist_hostpath=""   # ★`set -u` の下では宣言を省けない(分岐の中でしか入らない)
+if [ -n "$revs" ] && [ "$host_checked" -eq 1 ]; then
+  hhout=$(git grep -IilF -e "$HOST_SELF" $revs -- 2>/dev/null); hhrc=$?
+  if [ "$hhrc" -gt 1 ]; then
+    echo "PII 検査: **判定不能** — 履歴の走査(種類3)に失敗した(git grep exit=${hhrc})。" >&2
+    exit 2
+  fi
+  if [ "$hhrc" -eq 0 ]; then
+    hist_host=$(printf '%s\n' "$hhout" | grep -c . )
+    hist_host_ex=$(printf '%s\n' "$hhout" | head -1)
+  fi
+  # 履歴側の経路名。`git log --name-only` は**削除された経路も**出す = 一度 commit して
+  # 後で改名した file を拾う。作業ツリーだけ見る検査がここを必ず見逃すのは種類1と同じ形。
+  hpout=$(git log --all --pretty=format: --name-only 2>/dev/null | sort -u); hprc=$?
+  if [ "$hprc" -ne 0 ]; then
+    echo "PII 検査: **判定不能** — 履歴の経路一覧の取得に失敗した(git log exit=${hprc})。" >&2
+    exit 2
+  fi
+  hist_hostpath=$(printf '%s\n' "$hpout" | grep -icF -e "$HOST_SELF" || true)
+  [ "$hist_hostpath" = "0" ] && hist_hostpath=""
+fi
+
+if [ -z "$hits_mail$hits_mach$hist_mail$hist_mach$hits_host$hist_host$hits_hostpath$hist_hostpath" ]; then
+  echo "PII 検査: 作業ツリー・履歴とも 個人のメールアドレス / tailnet の名前 / この機械の名前 なし"
+  if [ "$host_checked" -eq 1 ]; then
+    echo "  (種類3 = この機械の hostname を走行時に取って照合。${tracked_n} 件 + 履歴を見た)"
+  else
+    echo "  ★種類3 は**見ていない** — hostname が ${HOST_MIN} 文字未満で、短すぎる語は誤検出源になる。"
+    echo "    この機械で走らせた緑は、機械の名前については何も言っていない。"
+  fi
   echo "  (この緑が保証しないもの: ローカルの絶対パス・機械の中の構成・文書の中身。公開の可否は別途)"
   exit 0
 fi
@@ -193,6 +270,36 @@ report() {
 }
 report "種類1: 個人のメールアドレス" "$hits_mail" "$hist_mail"
 report "種類2: 機械の入口の名前(tailnet IP / MagicDNS)" "$hits_mach" "$hist_mach"
+
+# 種類3 は専用の出力。**一致した文字列を出さない**のがこの節の要点なので、
+# `report` を使い回さない(使い回すと守っている物を失敗の文で出してしまう)。
+if [ -n "$hits_host$hist_host$hits_hostpath$hist_hostpath" ]; then
+  echo "" >&2; echo "== 種類3: この機械の名前(実名を含む) ==" >&2
+  echo "  ★何が一致したかは**出さない**。それがここで守っている物なので。" >&2
+  # ★**経路名の中に名前が入っている**場合がある(`~/Desktop/<機械名>-backup/…` 等)。
+  #   「一致文字列は出さない」と言いながら file 名で出したら守れていない。伏せてから出す。
+  if [ -n "$hits_host" ]; then
+    echo "-- 作業ツリー(まだ安く直せる) --" >&2
+    printf '%s\n' "$hits_host" | while IFS= read -r f; do echo "  ${f//$HOST_SELF/<この機械の名前>}" >&2; done
+  fi
+  if [ -n "$hits_hostpath" ]; then
+    echo "-- 作業ツリー: **経路名そのもの**(中身が綺麗でも push で運ばれる) --" >&2
+    printf '%s\n' "$hits_hostpath" | while IFS= read -r f; do echo "  ${f//$HOST_SELF/<この機械の名前>}" >&2; done
+  fi
+  if [ -n "$hist_host" ]; then
+    echo "-- 履歴(push が運ぶのはこちら) --" >&2
+    echo "  ${hist_host} 箇所 (例 ${hist_host_ex//$HOST_SELF/<この機械の名前>})" >&2
+  fi
+  if [ -n "$hist_hostpath" ]; then
+    echo "-- 履歴: 経路名(改名・削除しても履歴には残る) --" >&2
+    echo "  ${hist_hostpath} 経路" >&2
+  fi
+  # ★この2行は**単引用符**でなければならない。二重引用符の中に backtick を書くと
+  #   bash がコマンド置換として実行し、**この機械の実名をそのまま出力する**。
+  #   守っている物を、直し方の説明文で漏らす所だった(下書きで実際にそう書いた)。
+  echo '  直し方: hostname -s を出力へ通している所を探す。札や識別子として要るなら' >&2
+  echo '          名前ではなく digest(例 hostname -s | shasum | cut -c1-8)を使う。' >&2
+fi
 
 if [ -z "$(git remote)" ]; then
   echo "" >&2

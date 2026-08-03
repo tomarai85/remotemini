@@ -194,5 +194,52 @@ d=$(mk c16); printf 'x rc-fixture-usr@example.com\n' > "$d/f.md"
 git -C "$d" add -A; git -C "$d" commit -qm c; stub_lsz_empty "$d"
 out=$(run_stub "$d"); chk "C16 追跡はあるのに1件も読めていない -> 判定不能(件数を出して落ちる)" 2 $? "実際に読んだのは" "とも 個人のメール" "$out"
 
+# ---- 種類3: この機械の名前 ----------------------------------------------
+# 2026-08-03 追加。`tools/deploy-to-edith.sh` の錠の札が `deploy-$(hostname -s)-…` で、
+# この機械の短い hostname には実名が入っている。札は配備の標準出力に出て、その出力は
+# 証拠として commit する物なので、実名が repo に入る所だった。**検査は捕まえられなかった**。
+#
+# ★照合する値をこの台本に書けない(書けば追跡ファイルが実名を持つ = 検査が自分の対照を赤にする)。
+#   検査と同じく走行時に取る。上の REAL_MAIL 等を組み立てで書いているのと同じ理由。
+HOST_SELF="$(hostname -s 2>/dev/null || true)"
+if [ "${#HOST_SELF}" -lt 6 ]; then
+  # ★飛ばした事を**黙らせない**。「対照が0件で緑」を緑と読ませない。
+  echo "SKIP C17-C20 この機械の hostname が 6 文字未満 = 種類3 の対照は走らせられない"
+else
+
+# C17 ★本題。追跡ファイルに hostname がある -> 赤で、種類3 として名指しし、
+#     **しかも一致した文字列(= 実名)を出力に出さない**。
+#     最後の1つがこの対照の要。`report()` を使い回す実装は前2つを満たしたまま
+#     ここで落ちる —— 守っている物を失敗の文で出すのが、この repo で既に踏んだ型。
+d=$(mk c17); printf 'lock owner = deploy-%s-1234\n' "$HOST_SELF" > "$d/f.md"
+git -C "$d" add -A; git -C "$d" commit -qm c
+out=$(run "$d"); chk "C17 hostname が木にある -> 赤・種類3 として報告・実名は出さない" 1 $? \
+  "種類3: この機械の名前" "$HOST_SELF" "$out"
+
+# C18 緑の対照。hostname が無い木で種類3 の節を出さない。
+#     「常に節が出る」実装は C17 だけなら通ってしまう。
+d=$(mk c18); printf 'user rc-fixture-usr@example.com\nbind 127.0.0.1\n' > "$d/f.md"
+git -C "$d" add -A; git -C "$d" commit -qm c
+out=$(run "$d"); chk "C18 hostname が無い -> 種類3 の節は出ない(綺麗な物を赤と言わない)" 0 $? \
+  "この機械の名前 なし" "== 種類3" "$out"
+
+# C19 履歴だけに残る形。種類1/2 は履歴を見るのに種類3 だけ作業ツリー止まり、では片肺
+#     (C13 が種類2 について見ているのと同じ穴)。push が運ぶのは履歴の方。
+d=$(mk c19); printf 'lock owner = deploy-%s-1234\n' "$HOST_SELF" > "$d/f.md"
+git -C "$d" add -A; git -C "$d" commit -qm c1
+printf 'lock owner = (伏せた)\n' > "$d/f.md"; git -C "$d" add -A; git -C "$d" commit -qm c2
+out=$(run "$d"); chk "C19 履歴だけに hostname -> 赤(履歴として報告)・実名は出さない" 1 $? \
+  "履歴(push が運ぶのはこちら)" "$HOST_SELF" "$out"
+
+# C20 ★**経路名の中に**名前がある形。中身は綺麗でも file 名で漏れる。
+#     「一致文字列は出さない」を file 名の側で破る実装を落とす為の対照で、
+#     C17 は素通しする(C17 の fixture の経路には名前が無い)。
+d=$(mk c20); printf 'nothing sensitive here\n' > "$d/${HOST_SELF}-backup.md"
+git -C "$d" add -A; git -C "$d" commit -qm c
+out=$(run "$d"); chk "C20 経路名に hostname -> 名指しするが、経路も伏せて出す" 1 $? \
+  "<この機械の名前>" "$HOST_SELF" "$out"
+
+fi
+
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]
