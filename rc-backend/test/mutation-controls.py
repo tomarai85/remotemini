@@ -673,6 +673,51 @@ MUT = [
   '      this.#choiceSent.delete(pane);',
   '      // mutated: 離れたのを見ても解除しない'),
 
+ # --- 電話の操作面 (2026-08-04) ------------------------------------------------
+ # ここまでの C は「打鍵を受けた後に守る」層。C22 以降は**押す物を出すか**の層で、
+ # 壊れた時の向きが違う: サーバは断り続けるので事故にはならないが、
+ # 「押せる顔をして必ず失敗するボタン」や「見ていない選択が通る道」が電話に出る。
+ # ★C22 は特別 —— これだけは**サーバの照合を通ってしまう**唯一の道(閉包を外すと
+ #   古いボタンが新しい指紋を送るので `digest-mismatch` が起きない)。
+ ("C22 ★指紋を押した時に読み直す(表示は古いまま、見ていない選択がサーバの照合を通る)", APP,
+  "      sendChoice(b.key, digest);",
+  "      sendChoice(b.key, choiceView(state).digest);"),
+ # ★C23 に注記(5要素目)を書いて回したら「注記を外せる」と報告された = 到達する。
+ #   注記の枠は「測った上で素通りが正しい」の意味なので外した。書きたかった内容は
+ #   素通りの理由ではなく**この門の格**の話なので、こちらに置く:
+ #   電話の伏せは**安全境界ではない**。二重打鍵を止めているのはサーバ側の
+ #   `#choiceSent` とペイン鍵(C17/C19/W1)で、此処が緩んでも打鍵は二度届かない。
+ #   伏せの役目は「必ず失敗する操作を人に見せない」= 雑音除け。
+ #   だから此処が落ちた時に直すのは UI であって、サーバの守りを疑う合図ではない。
+ ("C23 押下時にその描画のボタンを伏せない(二度押しが `choice-already-sent` の雑音になる)", APP,
+  "      for (const x of made) x.disabled = true; // fetch より**前**に、同期で伏せる\n",
+  ""),
+ ("C24 打鍵ボタンの type を submit のままにする(将来 form に包まれた時、入力欄の Enter が撃つ)", APP,
+  '    btn.type = "button";',
+  '    btn.title = "";'),
+ ("C25 1-9 の固定キーパッドを出す(5択の画面に、断られると分かっているボタンが4個並ぶ)", VIE,
+  """    for (const o of options) {
+      if (!Number.isInteger(o.n) || o.n < 1 || o.n > 9) continue;
+      buttons.push({ key: String(o.n), label: `${o.n}. ${o.label}` });
+    }""",
+  """    for (let n = 1; n <= 9; n++) {
+      const o = options.find((x) => x.n === n) || { n, label: "" };
+      buttons.push({ key: String(n), label: `${o.n}. ${o.label}` });
+    }"""),
+ ("C26 ★keys が空でも操作を出す(サーバの許可一覧を電話が自前に上書きする)", VIE,
+  """  if (keys.length === 0) {
+    return { ...base, reason: CHOICE_BLOCKED[c.kind] || CHOICE_BLOCKED["unrecognized"] };
+  }""",
+  """  if (keys.length === 0 && c.kind === "not-a-real-kind") {
+    return { ...base, reason: CHOICE_BLOCKED["unrecognized"] };
+  }"""),
+ ("C27 指紋の無い画面でも操作を出す(押した瞬間に必ず 400 になるボタン)", VIE,
+  '  if (!digest) return { ...base, reason: CHOICE_BLOCKED["not-menu"] };\n',
+  ""),
+ ("C28 ★applied の値域を潰す(画面が動いていないのに「押しました」と出る)", VIE,
+  '    if (b.applied === "verified") return { kind: "ok", text: "押しました(画面が変わったのを確認)。" };',
+  '    if (b.applied !== "nope") return { kind: "ok", text: "押しました(画面が変わったのを確認)。" };'),
+
  # --- 配線 (W) = `inject.mjs` / `server.mjs` が鍵を**実際に通っている**か -------
  # 鍵単体(M88-M94)が完璧でも、注入器がそれを通らなければ何も守られない。
  # M と分けたのは、壊れた時に読む場所が違うから(M = 鍵の中身 / W = 繋ぎ目)。
@@ -863,11 +908,16 @@ MUT = [
  ("P3 割り込み 200 で読めない本文を「対象が無かった」と断定する", VIE,
   '      return { kind: "warn", text: "止めたかどうか確認できませんでした。画面を見て確かめてください。" };',
   '      return { kind: "warn", text: "止める対象がありませんでした。" };'),
- ("P4 読めなかった応答を `{}` に捏造して判定層へ渡す(送信・割り込みの両方)", APP,
+ # ★2026-08-04: 打鍵の口(`sendChoice`)が3本目になった時、割り込み側の find が**2箇所に当たる**
+ #   ようになって的の照合が NG を出した(コメント行まで写しだったため)。曖昧な的は
+ #   「どこを壊したか」を言えないので、各行を**次の行の判定関数名**で一意に留め直した。
+ ("P4 読めなかった応答を `{}` に捏造して判定層へ渡す(送信・割り込み・打鍵の3箇所)", APP,
   ["    const body = await r.json().catch(() => null);\n    const v = sendResult(r.status, body);",
-   "    const body = await r.json().catch(() => null); // ★send() と同じ。読めない事を値にしない"],
+   "    const body = await r.json().catch(() => null); // ★send() と同じ。読めない事を値にしない\n    const v = interruptResult(r.status, body);",
+   "    const body = await r.json().catch(() => null); // ★send() と同じ。読めない事を値にしない\n    const v = choiceResult(r.status, body);"],
   ["    const body = await r.json().catch(() => ({}));\n    const v = sendResult(r.status, body);",
-   "    const body = await r.json().catch(() => ({}));"]),
+   "    const body = await r.json().catch(() => ({}));\n    const v = interruptResult(r.status, body);",
+   "    const body = await r.json().catch(() => ({}));\n    const v = choiceResult(r.status, body);"]),
  ("P5 前面へ戻った時の張り直しを外す(帯が証拠なく「つながっています」と出し続ける)", APP,
   'document.addEventListener("visibilitychange", onForeground);',
   "void onForeground;"),

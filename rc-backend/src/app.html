@@ -102,6 +102,13 @@
   .notice.warn { border-color: #4a3f22; }
   .notice.refused { border-color: #4a2c28; }
   .notice.error { border-color: #4a2c28; }
+  /* 選択待ちの操作面。composer の真上に置く = 「今この会話に必要な操作」が親指の届く所に並ぶ */
+  #conv-choice:empty { display: none; }
+  #conv-choice { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 10px 2px; }
+  .choice-head { font-size: 13px; color: var(--dim); padding: 0 4px 8px; white-space: pre-wrap; }
+  /* 縦に積む。横並びだと選択肢の本文(「Opus 5 …」)が省略され、**押す物の名前が読めなくなる** */
+  .choice-keys { display: flex; flex-direction: column; gap: 8px; padding-bottom: 8px; }
+  .choice-keys button { text-align: left; }
   .muted { color: var(--dim); }
   /* 古い値である事は**色でも**言う。文だけだと一覧の下端に埋もれる */
   .muted.stale { color: var(--warn); }
@@ -140,6 +147,8 @@
   <div id="conv-band" class="band"><span class="dot"></span><span id="conv-band-text">つないでいます…</span></div>
   <div id="conv-body" class="body"></div>
   <div id="conv-notice"></div>
+  <!-- 選択待ちの操作面。中身は renderChoicePanel が毎回作り直す(空 = 選択待ちでない) -->
+  <div id="conv-choice"></div>
   <div class="composer">
     <textarea id="conv-input" rows="1" placeholder="打ち込む" autocapitalize="sentences"></textarea>
     <button id="conv-send" class="primary">送る</button>
@@ -155,8 +164,8 @@ import { backoffMs } from "/frames.mjs";
 // ★判断は view.mjs 側にしか置かない。ここに書いた条件は単体検査にも変異検査にも
 //   掴めない = 間違っても緑のままになる(2026-08-02 に5箇所まとめて出した)。
 import {
-  freshness, gapNotice, interruptResult, mergeHistory, nextAttempt, nextHistoryLimit,
-  readablePoll, relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,
+  choiceResult, choiceView, freshness, gapNotice, interruptResult, mergeHistory, nextAttempt,
+  nextHistoryLimit, readablePoll, relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,
 } from "/view.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -291,6 +300,7 @@ async function openConv(s) {
   $("conv-title").textContent = conv.title;
   $("conv-body").replaceChildren(el("div", "center", "読み込んでいます…"));
   $("conv-notice").replaceChildren();
+  renderChoicePanel(conv.state); // ★前の会話の操作面を残さない(一覧の `live` は文字列なので普通は空になる)
   band("", stateText(conv.state, "つないでいます…"));
   show("s-conv");
   // ★購読を**先に**開く。履歴を先に撮ると、その隙間に書かれた発言がどちらにも入らない。
@@ -504,7 +514,12 @@ function applyPoll(d, myGen) {
       added = true;
     }
   }
-  if (d.screen) conv.state = d.screen; // 以後の撃ち直しでも同じ状態を出せる(帯が接続の話に戻らない)
+  if (d.screen) {
+    conv.state = d.screen; // 以後の撃ち直しでも同じ状態を出せる(帯が接続の話に戻らない)
+    // ★画面が変わった時にだけ来る(サーバは同じ本文を再送しない)= 操作面を描き直す唯一の口。
+    //   押した後に伏せたボタンが戻るのも此処 —— **別の画面になった事**が復帰の条件。
+    renderChoicePanel(conv.state);
+  }
   if (added || reread) renderConv();
   if (reread) loadHistory(myGen); // 投げっぱなし。此処を await しない事が栞の正しさの条件
 }
@@ -544,6 +559,75 @@ async function interrupt() {
     notice(v.kind, v.text);
   } catch (e) {
     if (String(e.message) !== "unauthorized") notice("error", `止められませんでした(${e.message})`);
+  }
+}
+
+// ---- 選択待ちの操作(2026-08-04)---------------------------------------------
+//
+// 判断は全て `choiceView` (view.mjs)。ここは**節点を並べるだけ**。
+//
+// ★押した直後に同じ描画のボタンを全部 disabled にする。理由は2つ在って、片方は嘘なので
+//   分けて書く:
+//   (1) 本当の理由 = 雑音を出さない。二度押しはサーバが `choice-already-sent` で
+//       断る(`inject.mjs` `#choiceSent`)ので、押せたままだと**必ず失敗する操作**を
+//       人に見せる事になる。
+//   (2) Codex (2026-08-04) は「同時押しで2発目が次の画面 = 許可確認へ流れ得るので UI で
+//       止めよ」と言った。**その前提はこの実装には当たらない**: `injector.choice` は
+//       ペイン鍵(`mutex.run(pane, …)`)で直列化し、鍵の**中**で画面を撮り直して
+//       分類・指紋照合してから `tmux.run` する。指紋は打った時点で消費される。
+//       Codex には file を読ませていないので、一般論として正しく、この木では既に閉じている。
+//       つまりこの disabled は**安全境界ではない** —— 境界はサーバ側に在る。
+//       ここで「UI が守っている」と書くと、次に触る人がサーバ側の守りを外しかねない。
+//
+// ★復帰は「次の描画」でだけ起きる = 画面が実際に変わった時だけ(`applyPoll` の `d.screen`)。
+//   押した後に画面が動かない(`unverified`)場合、操作面は伏せたままになる。それが正しい:
+//   同じ指紋への二度打ちはサーバが断るので、押せる顔で出す物が無い。
+function renderChoicePanel(state) {
+  const box = $("conv-choice");
+  const v = choiceView(state);
+  if (!v.show) { box.replaceChildren(); return; }
+  const nodes = [];
+  if (v.head.length) nodes.push(el("div", "choice-head", v.head.join("\n")));
+  if (v.reason) nodes.push(el("div", "notice refused", v.reason));
+  const made = [];
+  const keys = el("div", "choice-keys");
+  for (const b of v.buttons) {
+    const btn = el("button", "", b.label);
+    // ★`type` を明示する。今この file に `<form>` は無いので既定の `submit` は発火しないが、
+    //   将来 composer が form に包まれた瞬間、入力欄の Enter が**最初のボタン**を撃つ。
+    //   打鍵ボタンにそれが起きると、人が触っていない選択が決定される。
+    btn.type = "button";
+    // ★指紋は**この描画の**値を閉じ込める(`state` を押した時に読み直さない)。
+    //   読み直すと、描画と押下の間に届いた poll が別のメニューの指紋を入れ、
+    //   古いボタンの表示のまま**見ていない選択**がサーバの照合を通る(Codex 指摘 C)。
+    const digest = v.digest;
+    btn.addEventListener("click", () => {
+      for (const x of made) x.disabled = true; // fetch より**前**に、同期で伏せる
+      sendChoice(b.key, digest);
+    });
+    made.push(btn);
+    keys.appendChild(btn);
+  }
+  if (made.length) nodes.push(keys);
+  box.replaceChildren(...nodes);
+}
+
+async function sendChoice(key, digest) {
+  if (!conv) return;
+  try {
+    const r = await api(`/api/sessions/${encodeURIComponent(conv.id)}/choice`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key, digest }),
+    });
+    const body = await r.json().catch(() => null); // ★send() と同じ。読めない事を値にしない
+    const v = choiceResult(r.status, body); // ★判定は view.mjs
+    notice(v.kind, v.text);
+    // ★指紋の食い違いで自動的に撃ち直さない。サーバの再検証は「その画面が安全か」を
+    //   証明するだけで、「人がその画面の選択を意図したか」は証明しない(Codex 指摘 B)。
+    //   次の poll が新しい画面を描き、人がもう一度押す。
+  } catch (e) {
+    if (String(e.message) !== "unauthorized") notice("error", `押せませんでした(${e.message})`);
   }
 }
 

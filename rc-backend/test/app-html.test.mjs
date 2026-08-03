@@ -113,7 +113,7 @@ test("★読めなかった応答を `{}` に捏造していない(catch の既�
   assert.doesNotMatch(SCRIPT, /\.catch\(\s*\(\)\s*=>\s*\(\{\s*\}\)\s*\)/,
     "応答が読めなかった時に空の本文を作っている(null を渡して判定層に決めさせる)");
   const nulls = SCRIPT.match(/\.catch\(\s*\(\)\s*=>\s*null\s*\)/g) || [];
-  assert.equal(nulls.length, 2, "send() と interrupt() の2箇所が null を渡している");
+  assert.equal(nulls.length, 3, "send() / interrupt() / sendChoice() の3箇所が null を渡している");
 });
 
 test("★前面へ戻った時に流れを張り直す配線が居る(帯の断定に証拠を付ける)", () => {
@@ -283,4 +283,175 @@ test("★CSS 側の上限も同じ物差しを見る(片方だけ直すと『直
     "CSS の上限が dvh のまま = 鍵盤が出ても縮まない。JS だけ直しても CSS が古い物差しで残る");
   assert.match(ta, /max-height:\s*calc\(var\(--vvh/,
     "CSS の上限が --vvh を見ていない");
+});
+
+// ---- 選択待ちの操作面: **実行して**測る(2026-08-04)-------------------------
+//
+// この file の他の検査は全部「書いてある事」を測る正規表現で、その限界は上に明記してある。
+// ここだけ違う道を採る理由: この操作面は間違いの向きが**安全確認を押す側**へ倒れうる
+// 唯一の描画で、「どの指紋を送るか」は**文字列を眺めても分からない**(閉包に入っているか、
+// 押した時に読み直しているかは、走らせて初めて差が出る)。
+//
+// 手は Codex (gpt-5.6-sol xhigh, 2026-08-04) の助言 E に沿う: `document` の**手書きの偽物**を
+// 置き、使っているメソッドだけ持たせる。セレクタ・レイアウト・伝播は真似しない
+// (真似した瞬間、この偽物自体が正しさを要求される第二の実装になる)。
+//
+// ★依存ゼロは崩さない。jsdom は入れない。
+import { choiceView } from "../src/view.mjs";
+
+/** SCRIPT から `function <name>(…) {…}` を1本切り出す。文字列とコメントを跨いで数えない。 */
+function fnSource(name) {
+  const head = SCRIPT.indexOf(`function ${name}(`);
+  assert.notEqual(head, -1, `function ${name} が app.html に無い`);
+  let i = SCRIPT.indexOf("{", head);
+  let depth = 0;
+  for (; i < SCRIPT.length; i++) {
+    const ch = SCRIPT[i];
+    if (ch === "/" && SCRIPT[i + 1] === "/") { i = SCRIPT.indexOf("\n", i); continue; }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const q = ch;
+      for (i++; i < SCRIPT.length && SCRIPT[i] !== q; i++) if (SCRIPT[i] === "\\") i++;
+      continue;
+    }
+    if (ch === "{") depth++;
+    else if (ch === "}" && --depth === 0) return SCRIPT.slice(head, i + 1);
+  }
+  throw new Error(`function ${name} の終わりを見つけられない`);
+}
+
+/** 使っているメソッドだけの偽 DOM。これ以上増やさない事。 */
+function fakeDoc() {
+  const node = (tag) => ({
+    tag, className: "", textContent: "", type: "", disabled: false, children: [], clicks: [],
+    appendChild(c) { this.children.push(c); return c; },
+    replaceChildren(...n) { this.children = n; },
+    addEventListener(ev, f) { if (ev === "click") this.clicks.push(f); },
+    tap() { for (const f of this.clicks) f(); },
+  });
+  return { node, doc: { createElement: node } };
+}
+
+/** app.html の `el` + `renderChoicePanel` を切り出して走らせる台。 */
+function mount(sendChoice) {
+  const { node, doc } = fakeDoc();
+  const box = node("div");
+  const factory = new Function(
+    "document", "$", "choiceView", "sendChoice",
+    `${fnSource("el")}\n${fnSource("renderChoicePanel")}\nreturn renderChoicePanel;`,
+  );
+  const render = factory(doc, (id) => {
+    assert.equal(id, "conv-choice", "操作面が別の器を掴んでいる");
+    return box;
+  }, choiceView, sendChoice);
+  return { render, box };
+}
+
+const buttonsIn = (box) =>
+  box.children.filter((n) => n.tag === "div" && n.className === "choice-keys")
+     .flatMap((n) => n.children);
+
+const MENU = {
+  screen: "CHOICE",
+  choice: {
+    kind: "benign", matcher: "select-model@2", head: ["Select model"],
+    options: [{ n: 1, label: "Opus 5" }, { n: 2, label: "Sonnet 5" }, { n: 3, label: "Haiku 4.5" }],
+    cursor: 2, footer: "", keys: ["digit", "enter", "escape"], digest: "0123456789abcdef",
+  },
+};
+const clone = (o) => JSON.parse(JSON.stringify(o));
+
+test("★実行: 良性メニューで、実在する選択肢の数だけボタンが出る", () => {
+  const { render, box } = mount(() => {});
+  render(clone(MENU));
+  const bs = buttonsIn(box);
+  assert.deepEqual(bs.map((b) => b.textContent), [
+    "1. Opus 5", "2. Sonnet 5", "3. Haiku 4.5", "Enter(2. Sonnet 5 で決定)", "Escape",
+  ]);
+  assert.ok(box.children.some((n) => n.className === "choice-head"),
+    "何を選ぶ画面なのかの見出しが出ていない");
+});
+
+test("★実行: keys が空なら**ボタンは1つも作られない**(理由だけ出る)", () => {
+  const { render, box } = mount(() => { throw new Error("押せない筈の物が押された"); });
+  const s = clone(MENU);
+  s.choice.kind = "hard-stop";
+  s.choice.keys = [];
+  render(s);
+  assert.equal(buttonsIn(box).length, 0);
+  const why = box.children.find((n) => /notice/.test(n.className));
+  assert.ok(why && /許可・信頼の確認/.test(why.textContent), "断る理由が画面に出ていない");
+});
+
+test("★実行: 押すと、その描画の指紋がそのまま送られる", () => {
+  const calls = [];
+  const { render, box } = mount((key, digest) => calls.push([key, digest]));
+  render(clone(MENU));
+  buttonsIn(box)[1].tap();
+  assert.deepEqual(calls, [["2", "0123456789abcdef"]]);
+});
+
+test("★★実行: 描画の**後で**状態が入れ替わっても、古いボタンは古い指紋を送る", () => {
+  // これがこの検査台を作った理由。押した時に `conv.state` を読み直す実装だと、
+  // 描画と押下の間に届いた poll の指紋が乗り、**表示は古いメニューのまま**
+  // 新しいメニューの選択がサーバの照合を通る(Codex 指摘 C)。
+  // 古い指紋を送れば 409 `digest-mismatch` で確実に断られる = 見ていない物は決まらない。
+  const calls = [];
+  const { render, box } = mount((key, digest) => calls.push([key, digest]));
+  const live = clone(MENU);
+  render(live);
+  live.choice.digest = "ffffffffffffffff";           // poll が同じ器を書き換えた体
+  live.choice.options[0].label = "別のメニューの 1";
+  buttonsIn(box)[0].tap();
+  assert.deepEqual(calls, [["1", "0123456789abcdef"]],
+    "押した時に状態を読み直している = 見ていない選択が通る道が開いている");
+});
+
+test("★実行: 最初の1押しで、その描画の**全ての**ボタンが送信より前に伏せられる", () => {
+  let seen = null;
+  const { render, box } = mount(() => { seen = buttonsIn(box).map((b) => b.disabled); });
+  render(clone(MENU));
+  const bs = buttonsIn(box);
+  assert.deepEqual(bs.map((b) => b.disabled), [false, false, false, false, false]);
+  bs[0].tap();
+  assert.deepEqual(seen, [true, true, true, true, true],
+    "送信の時点でまだ押せる = 二度押しが `choice-already-sent` の雑音になる");
+});
+
+test("★実行: ボタンは type=button(将来 form に包まれた時、入力欄の Enter で発火しない)", () => {
+  const { render, box } = mount(() => {});
+  render(clone(MENU));
+  for (const b of buttonsIn(box)) assert.equal(b.type, "button", `${b.textContent} が submit のまま`);
+});
+
+test("★実行: 選択待ちでなければ器を空にする(前の会話の操作面を残さない)", () => {
+  const { render, box } = mount(() => { throw new Error("消えた筈の物が押された"); });
+  render(clone(MENU));
+  assert.ok(buttonsIn(box).length > 0);
+  render({ screen: "IDLE" });
+  assert.deepEqual(box.children, []);
+  render(null);
+  assert.deepEqual(box.children, []);
+});
+
+test("★陰性対照: 偽 DOM が本当に差を見分けるか(常に緑ではない事)", () => {
+  // 偽物の作りを間違えて「何を描いても children が空」なら、上の検査は全部無意味に緑になる。
+  // 器に節点が積まれる事と、押下が本当に呼び手へ届く事を、対照として独立に固定する。
+  const calls = [];
+  const { render, box } = mount((k) => calls.push(k));
+  render(clone(MENU));
+  assert.ok(box.children.length >= 2, "偽 DOM に節点が積まれていない = 何も測れていない");
+  buttonsIn(box)[4].tap();
+  assert.deepEqual(calls, ["escape"], "押下が呼び手に届いていない = 上の押下検査は空振り");
+});
+
+test("sendChoice が /choice へ {key, digest} を送る(静的)", () => {
+  const src = fnSource("sendChoice");
+  assert.match(src, /\/choice`/, "打鍵の宛先が /choice ではない");
+  assert.match(src, /JSON\.stringify\(\{\s*key,\s*digest\s*\}\)/, "key と digest を送っていない");
+  assert.match(src, /choiceResult\(r\.status,\s*body\)/, "判定を view.mjs に置いていない");
+  // ★指紋の食い違いで自動的に撃ち直さない(Codex 指摘 B)。撃ち直しの語が現れたら赤。
+  //   見るのは**本体だけ**(見出しの `function sendChoice(` を自分で拾わない様に落とす)。
+  const bodyOnly = src.slice(src.indexOf("{") + 1);
+  assert.doesNotMatch(bodyOnly, /sendChoice\s*\(/, "自分を呼び直している = 自動再送の芽");
+  assert.doesNotMatch(bodyOnly, /\bbody\.digest\b/, "サーバが返した指紋で撃ち直す道が生えている");
 });

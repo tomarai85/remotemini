@@ -423,3 +423,138 @@ export function readablePoll(d) {
 function isPlainEvent(v) {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
+
+// ---- 選択待ち画面の操作面(2026-08-04)---------------------------------------
+//
+// なぜここに在るか: `POST …/choice` は 2026-08-03 に出荷済みなのに、電話には**その口へ
+// 繋がる操作が1つも無かった**。会話が選択メニューで止まると、composer の送信は
+// `SEND_REFUSAL.choice` が断り、割り込みは Escape を撃つだけ = 外出先からは
+// **その会話を進める手が無い**。移動中に机の Claude Code を動かす、というこの系の
+// 目的そのものが、メニュー1枚で止まる。
+//
+// ★判断をここに置く理由は他と同じ(この file の冒頭)。特にこの層は
+// 「押せる/押せない」を決める = 間違いの向きが**安全確認を押す側**へ倒れうる唯一の場所なので、
+// 単体でも変異でも掴める所に無ければならない。app.html に書いたら、間違っても緑になる。
+
+/**
+ * 打鍵できない時に電話へ出す短い文。
+ *
+ * ★`server.mjs` の `CHOICE_REFUSAL` と**役割が違う**(重複ではない)。あちらは
+ *   「打鍵を要求したが断った」の**事後**の説明で、こちらは「そもそも押す物を出さない」の
+ *   **事前**の説明。同じ文言にすると、押していないのに「何も送っていません」と出る事になり、
+ *   何も要求していない人に打鍵の話をする事になる。`BLOCKED_TAG` / `BLOCKED_SHORT` を
+ *   一覧と会話画面で分けたのと同じ形(役割で分ける、写しを置かない)。
+ */
+const CHOICE_BLOCKED = {
+  "hard-stop":
+    "これは許可・信頼の確認画面です。電話からは操作を出しません(自動化に安全確認を押させない、という決め事)。机で確認してください。",
+  "unrecognized":
+    "見覚えのない選択画面です。安全と確認できた画面にしか打鍵しないので、操作は出しません。",
+  "not-menu":
+    "選択待ちですが、メニューの形を読み取れませんでした。操作は出しません。画面を確認してください。",
+};
+
+/** 打鍵 -> ボタンに出す語。数字は選択肢の本文が付くのでここには無い。 */
+const CHOICE_KEY_LABEL = { enter: "Enter", escape: "Escape" };
+
+/**
+ * poll が運んでくる画面状態 -> 選択の操作面。**純関数**。
+ *
+ * @param {null|{screen?:string, choice?:object}} state `conv.state`(= screenBody の本文)
+ * @returns {{show:boolean, reason:string, head:string[], options:{n:number,label:string,cursor:boolean}[],
+ *   buttons:{key:string,label:string}[], digest:string}}
+ *   `show` = 操作面そのものを描くか(= 選択待ちか)。`buttons` が空でも `show` は真になりうる
+ *   —— **押せない事と、何が出ているか見える事は別**(routeLabel の §2 と同じ判断)。
+ */
+export function choiceView(state) {
+  const none = { show: false, reason: "", head: [], options: [], buttons: [], digest: "" };
+  const v = state || {};
+  if (v.screen !== "CHOICE") return none;
+  const c = v.choice || null;
+  // サーバが CHOICE と言ったのに中身が無い = `choiceViewOf` が null を返した形
+  // (`classifyScreen` の「強い文言 + 番号行」経路)。押す物は出さないが、選択待ちである事は出す。
+  if (!c) return { ...none, show: true, reason: CHOICE_BLOCKED["not-menu"] };
+
+  const head = Array.isArray(c.head) ? c.head : [];
+  const options = Array.isArray(c.options) ? c.options : [];
+  const keys = Array.isArray(c.keys) ? c.keys : [];
+  const digest = typeof c.digest === "string" ? c.digest : "";
+  const base = { show: true, reason: "", head, options, buttons: [], digest };
+
+  // ★指紋が無ければ**押す物を出さない**。サーバは digest 必須(省略は 400)なので、
+  //   出したボタンは押した瞬間に必ず失敗する。押せない物を押せる顔で出さない(fail-closed)。
+  if (!digest) return { ...base, reason: CHOICE_BLOCKED["not-menu"] };
+  // ★`keys` が空 = サーバが「この画面に打ってよい鍵は無い」と言っている。理由は `kind` で分ける。
+  //   ここで `kind` を見て**自前に**押せると判断してはいけない —— 許可の出所を1つに保つ。
+  if (keys.length === 0) {
+    return { ...base, reason: CHOICE_BLOCKED[c.kind] || CHOICE_BLOCKED["unrecognized"] };
+  }
+
+  const buttons = [];
+  // ★数字の門は**2つ**。`keys` に `"digit"` が在る事と、その番号の選択肢が実在する事。
+  //   これは `#chooseExclusive` の2つの門(`matcher.keys.includes(keyKind(key))` と
+  //   `optionFor(c.menu, key)`)と1対1で、写しではなく**同じ規則の表側**。
+  //   ★Codex (gpt-5.6-sol xhigh, 2026-08-04) は「各数字が `keys` に在るかを見よ」と言ったが、
+  //     `keys` が持つのは種別語(`"digit"`)で `"1"`..`"9"` ではない(`choice.mjs` の `keyKind`)。
+  //     助言の**意図**(鍵の許可と選択肢の実在を両方要求する)はこの形で満たしている。
+  if (keys.includes("digit")) {
+    // 1-9 を機械的に並べると、5択の画面に 6-9 の4個が出る = サーバが
+    // `choice-no-such-option` で断るボタンを4個並べる事になる。
+    for (const o of options) {
+      if (!Number.isInteger(o.n) || o.n < 1 || o.n > 9) continue;
+      buttons.push({ key: String(o.n), label: `${o.n}. ${o.label}` });
+    }
+  }
+  for (const k of ["enter", "escape"]) {
+    if (!keys.includes(k)) continue;
+    // ★Enter は**カーソルが載っている選択肢**を押す。どれが選ばれるかを語にして出す
+    //   (「見た物と押す物が同じ」を、指紋だけでなく**人の目にも**通す)。
+    //   カーソルが読めない時は名乗らない — 分からない物を断定しない。
+    const at = k === "enter" ? options.find((o) => o.n === c.cursor) : null;
+    buttons.push({
+      key: k,
+      label: at ? `${CHOICE_KEY_LABEL[k]}(${at.n}. ${at.label} で決定)` : CHOICE_KEY_LABEL[k],
+    });
+  }
+  return { ...base, buttons };
+}
+
+/**
+ * `POST /api/sessions/<id>/choice` の応答を画面語にする。`sendResult` と同じ形。
+ *
+ * ★`applied` を「効いた」と読まない。サーバは「送った(accepted)」と「画面が動いた(applied)」を
+ *   別項目で返す —— 割り込みの `stopped` と同じ規律。ここで丸めると、押したのに何も
+ *   起きていない画面を「決定しました」と言う事になる。
+ *
+ * @returns {{kind:"ok"|"warn"|"refused"|"error", text:string}}
+ */
+export function choiceResult(status, body) {
+  const b = body || {};
+  if (status === 200) {
+    // 本文が読めない 200 を「押せた」と名乗らない(sendResult / interruptResult と同じ)。
+    if (body == null) {
+      return { kind: "warn", text: "打鍵しましたが、サーバの返事を読めませんでした。画面を見て確かめてください。" };
+    }
+    // `applied` の値域は "verified" | "unverified" | "moved-to-hard-stop" | null
+    // (`inject.mjs` の choice docstring)。**真偽値ではない** —— 初版で `=== false` と
+    // 書いて、`"unverified"` が全部「押しました」へ落ちていた(自分の diff を読み直して発見)。
+    if (b.applied === "verified") return { kind: "ok", text: "押しました(画面が変わったのを確認)。" };
+    // ★打鍵の後に許可・信頼の確認へ変わった時。**押した事は確か**なので `refused` にはしない
+    //   (refused は「何も送っていない」の語)。だが机で見る必要がある事は文で立てる。
+    //   文面はサーバの `note` が正(★付きで来る)。
+    if (b.applied === "moved-to-hard-stop") {
+      return { kind: "warn", text: b.note || "打鍵の後、許可・信頼の確認画面に変わりました。机で確認してください。" };
+    }
+    if (b.applied === "unverified") {
+      return { kind: "warn", text: b.note || "打鍵は送りましたが、画面が変わったのは確認できていません。画面を取り直してください。" };
+    }
+    // ここへ来るのは `sent:true` なのに `applied` が読めない形。分からない事を成功に丸めない。
+    return { kind: "warn", text: "打鍵しましたが、画面が変わったかを確認できませんでした。画面を見て確かめてください。" };
+  }
+  // 409 = サーバが打鍵を断った(指紋の食い違い・許可一覧に無い・二度打ち等)。文面はサーバの物。
+  if (status === 409) return { kind: "refused", text: b.error || "打鍵を断られました。" };
+  if (status === 400) return { kind: "error", text: b.error || "受け付けられない打鍵でした。" };
+  if (status === 401) return { kind: "error", text: "鍵が通りませんでした。" };
+  if (status >= 500) return { kind: "error", text: `サーバ側で失敗しました(HTTP ${status})。` };
+  return { kind: "error", text: `想定していない応答でした(HTTP ${status})。` };
+}

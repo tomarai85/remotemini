@@ -6,8 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WIRE_REASONS } from "../src/blocked.mjs";
 import {
-  freshness, gapNotice, interruptResult, mergeHistory, nextAttempt, nextHistoryLimit,
-  readablePoll, relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,
+  choiceResult, choiceView, freshness, gapNotice, interruptResult, mergeHistory, nextAttempt,
+  nextHistoryLimit, readablePoll, relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,
 } from "../src/view.mjs";
 
 const e = (role, text) => ({ role, text });
@@ -468,4 +468,151 @@ test("★陰性対照: 何でも真を返す形なら上の検査は落ちる", 
   const alwaysTrue = () => true;
   assert.equal(alwaysTrue({ items: [{ kind: "message" }] }), true); // = 検査が掴む差
   assert.notEqual(readablePoll({ items: [{ kind: "message" }] }), alwaysTrue());
+});
+
+// ---- 選択待ちの操作面(2026-08-04)-------------------------------------------
+//
+// この層だけは間違いの向きが**安全確認を押す側**へ倒れうるので、
+// 「押せる」と「押せない」の両方を、それぞれ落とし方付きで固定する。
+const menu = (over = {}) => ({
+  screen: "CHOICE",
+  choice: {
+    kind: "benign",
+    matcher: "select-model@2",
+    head: ["Select model"],
+    options: [
+      { n: 1, label: "Opus 5", cursor: false },
+      { n: 2, label: "Sonnet 5", cursor: true },
+      { n: 3, label: "Haiku 4.5", cursor: false },
+    ],
+    cursor: 2,
+    footer: "",
+    keys: ["digit", "enter", "escape"],
+    digest: "abc123def4567890",
+    ...over,
+  },
+});
+
+test("良性メニュー: 実在する選択肢の数だけ数字が出る(1-9 を並べない)", () => {
+  const v = choiceView(menu());
+  assert.equal(v.show, true);
+  assert.equal(v.reason, "");
+  assert.deepEqual(v.buttons.map((b) => b.key), ["1", "2", "3", "enter", "escape"]);
+  // ★数字の**個数**を先に言う。3択に 9 個出す実装でも「1 が在る」だけなら通ってしまう。
+  assert.equal(v.buttons.filter((b) => /^\d$/.test(b.key)).length, 3);
+  assert.equal(v.digest, "abc123def4567890");
+});
+
+test("ボタンの語に選択肢の本文が入る(押す物が読める)", () => {
+  const v = choiceView(menu());
+  assert.equal(v.buttons[0].label, "1. Opus 5");
+  // Enter はカーソルの載っている選択肢を名乗る = 人の目でも「見た物と押す物が同じ」
+  assert.equal(v.buttons[3].label, "Enter(2. Sonnet 5 で決定)");
+  assert.equal(v.buttons[4].label, "Escape");
+});
+
+test("カーソルが読めない時、Enter は何を決めるか名乗らない(断定しない)", () => {
+  const v = choiceView(menu({ cursor: -1 }));
+  assert.equal(v.buttons.find((b) => b.key === "enter").label, "Enter");
+});
+
+test("★keys が空なら押す物を出さない —— 許可の出所はサーバの keys ただ1つ", () => {
+  for (const kind of ["hard-stop", "unrecognized"]) {
+    const v = choiceView(menu({ kind, keys: [] }));
+    assert.equal(v.show, true, "押せなくても『選択待ちである事』は見える");
+    assert.equal(v.buttons.length, 0, `${kind} に操作を出した`);
+    assert.ok(v.reason.length > 0, `${kind} の理由が無い`);
+  }
+  // ★kind が benign のままでも keys が空なら出さない = 電話が kind で自前に判断していない事
+  //   (ここが `kind === "benign"` を見る実装だと、この検査だけが落ちる)
+  assert.equal(choiceView(menu({ keys: [] })).buttons.length, 0);
+});
+
+test("★hard-stop の文面は『机で確認』へ倒す(自動化に安全確認を押させない)", () => {
+  const v = choiceView(menu({ kind: "hard-stop", keys: [] }));
+  assert.match(v.reason, /許可・信頼の確認/);
+  assert.match(v.reason, /机/);
+});
+
+test("★指紋が無ければ押す物を出さない(サーバは digest 必須 = 出せば必ず失敗する)", () => {
+  for (const bad of ["", null, undefined, 123]) {
+    const v = choiceView(menu({ digest: bad }));
+    assert.equal(v.buttons.length, 0, `digest=${String(bad)} で操作を出した`);
+    assert.equal(v.digest, "", "読めない指紋を値として通した");
+    assert.ok(v.reason.length > 0);
+  }
+});
+
+test("keys に digit が無ければ数字は出ない(Enter/Escape だけ)", () => {
+  const v = choiceView(menu({ keys: ["enter", "escape"] }));
+  assert.deepEqual(v.buttons.map((b) => b.key), ["enter", "escape"]);
+});
+
+test("keys に enter が無ければ Enter は出ない", () => {
+  const v = choiceView(menu({ keys: ["digit", "escape"] }));
+  assert.deepEqual(v.buttons.map((b) => b.key), ["1", "2", "3", "escape"]);
+});
+
+test("選択肢の番号が 1-9 の外なら、その1個だけ落ちる", () => {
+  const v = choiceView(menu({
+    options: [{ n: 0, label: "零" }, { n: 2, label: "二" }, { n: 10, label: "十" }, { n: 1.5, label: "半" }],
+  }));
+  assert.deepEqual(v.buttons.map((b) => b.key), ["2", "enter", "escape"]);
+});
+
+test("CHOICE でなければ操作面ごと出さない", () => {
+  for (const s of [null, undefined, "CHOICE", {}, { screen: "IDLE" }, { screen: "BUSY", choice: menu().choice }]) {
+    assert.equal(choiceView(s).show, false, `${JSON.stringify(s)} で操作面を出した`);
+  }
+});
+
+test("CHOICE だが choice が無い(強い文言 + 番号行の経路)= 出すが押せない", () => {
+  const v = choiceView({ screen: "CHOICE" });
+  assert.equal(v.show, true);
+  assert.equal(v.buttons.length, 0);
+  assert.ok(v.reason.length > 0);
+});
+
+test("形の壊れた choice を投げずに受け止める(古い電話 x 新しいサーバ)", () => {
+  const v = choiceView({ screen: "CHOICE", choice: { kind: "benign", keys: "digit", options: "x", head: 1, digest: "d" } });
+  assert.equal(v.show, true);
+  assert.deepEqual(v.head, []);
+  assert.deepEqual(v.options, []);
+  assert.equal(v.buttons.length, 0, "keys が配列でない時に押せる物を出した");
+});
+
+test("★applied は文字列の値域。verified だけが『押しました』", () => {
+  // 初版は `applied === false` を見ていて、`"unverified"` が全部「押しました」に落ちていた。
+  // 値域は inject.mjs の choice docstring が正本。
+  assert.equal(choiceResult(200, { accepted: true, applied: "verified" }).kind, "ok");
+  assert.equal(choiceResult(200, { accepted: true, applied: "unverified", note: "動いていません" }).kind, "warn");
+  assert.equal(choiceResult(200, { accepted: true, applied: "moved-to-hard-stop", note: "★確認画面" }).kind, "warn");
+  assert.equal(choiceResult(200, { accepted: true, applied: null }).kind, "warn");
+  assert.equal(choiceResult(200, { accepted: true }).kind, "warn");
+});
+
+test("★『押した』と『効いた』を混ぜない —— 動いていない時に成功の語を出さない", () => {
+  const v = choiceResult(200, { accepted: true, applied: "unverified", note: "画面が変わっていません。" });
+  assert.equal(v.text, "画面が変わっていません。");
+  assert.doesNotMatch(v.text, /押しました|決定しました/);
+  // 許可確認へ着地した時も同じ。ここを ok にすると**一番知らせたい着地**が成功として出る。
+  const h = choiceResult(200, { accepted: true, applied: "moved-to-hard-stop", note: "★許可の確認が出ました。" });
+  assert.notEqual(h.kind, "ok");
+  assert.match(h.text, /許可/);
+});
+
+test("読めない 200 を『押せた』と名乗らない", () => {
+  const v = choiceResult(200, null);
+  assert.equal(v.kind, "warn");
+  assert.match(v.text, /読めませんでした/);
+});
+
+test("断りと失敗の文面はサーバの物を出す(電話が言い換えない)", () => {
+  assert.deepEqual(choiceResult(409, { error: "そのメニューはもう在りません。" }),
+    { kind: "refused", text: "そのメニューはもう在りません。" });
+  assert.deepEqual(choiceResult(400, { error: "打てない鍵です。" }),
+    { kind: "error", text: "打てない鍵です。" });
+  assert.equal(choiceResult(401, {}).kind, "error");
+  assert.equal(choiceResult(503, null).kind, "error");
+  assert.match(choiceResult(418, null).text, /418/);
 });
