@@ -123,6 +123,15 @@ esac
 
 say() { printf '\n=== %s ===\n' "$1"; }
 
+# ★警告の段(門ではない検査)の結果を、log の真ん中で流さずに最後まで持ち帰る帳面。
+#   2026-08-03 に足した。それまでは 3 段とも `|| true` で終了コードを飲み、
+#   最後の行は `say "完了"` だけだった —— 9b の注釈自身が「変わった事に**気付ける場所**が
+#   要る」と書いているのに、579 行の log の真ん中は気付ける場所ではない。
+#   `|| true`(= 門にしない)判断は変えない。捨てているのは判断ではなく**信号**の方。
+#   詳細と対照 = tools/warn-ledger.sh / test/warn-ledger-controls.sh(16 本)。
+. "$(dirname "${BASH_SOURCE[0]}")/warn-ledger.sh"
+wl_init
+
 # 私の物ではない2つ(上の注記)。本番の木へ書き戻す時と、複製を取る時の両方で除外する。
 FOREIGN=(--exclude '.git/' --exclude '.gitignore')
 
@@ -543,7 +552,7 @@ say "9. tailnet 鍵の残り日数(**警告であって門ではない**)"
 #
 # ★`|| true` を付ける理由 = 鍵が 40 日後に切れる事は、コードを配る妨げにならない。
 #   ここで deploy を止めても被害は減らず、出来る仕事だけが止まる。止めるかは人が決める。
-ssh "$EDITH" "/bin/bash '$LIVE/tools/tailnet-key-expiry.sh'" || true
+wl_run "鍵の期限" ssh "$EDITH" "/bin/bash '$LIVE/tools/tailnet-key-expiry.sh'"
 
 say "9b. 停電で落ちた後、自分で戻って来られるか(**警告であって門ではない**)"
 # ★2026-08-03 の Codex 査読の Q5「一度も検査していない壊れ方」への答え。
@@ -568,12 +577,26 @@ say "9b. 停電で落ちた後、自分で戻って来られるか(**警告で�
 #     - 「fdesetup が答えない」と「FileVault が On」を同じ扱いにしていた(未測定 ≠ 壊れ)
 #     - `awk '/autorestart/'` の部分一致。`sleep` を同じ書き方で足すと
 #       `disksleep` `displaysleep` `SleepDisabled` に当たって壊れる(対照 C11)
-#   実装は 1 つだけ在れば良いので、ここは呼ぶだけにする。`|| true` は変えない。
-ssh "$EDITH" "/bin/bash '$LIVE/tools/coldboot-chain.sh'" || true
+#   実装は 1 つだけ在れば良いので、ここは呼ぶだけにする。
+#   ★門にしない判断は変えていない。`|| true` を `wl_run` に替えたのは、
+#     **飲み込んだ終了コードを最後の帳尻まで持ち帰る**為(tools/warn-ledger.sh)。
+#     「門にしない」と「信号を捨てる」は別で、旧版はその2つを一緒にやっていた。
+wl_run "停電から戻れるか" ssh "$EDITH" "/bin/bash '$LIVE/tools/coldboot-chain.sh'"
 
 say "10. 複製の在庫(**自動では消さない**)"
 # ★消す判断を台本に持たせない。1つ 2.7MB 程度で、消し間違いの害の方が大きい。
 #   数と合計だけ出して、減らすかは人が決める。
-ssh "$EDITH" "ls -1 '$RELEASES' 2>/dev/null | wc -l | tr -d ' ' | sed 's/^/複製の数: /'; du -sh '$RELEASES' 2>/dev/null | sed 's/^/合計: /'" || true
+wl_run "複製の在庫" ssh "$EDITH" "ls -1 '$RELEASES' 2>/dev/null | wc -l | tr -d ' ' | sed 's/^/複製の数: /'; du -sh '$RELEASES' 2>/dev/null | sed 's/^/合計: /'"
+
+# ★配備そのものは通っている。ここで出すのは「門にしなかった段」の帳尻。
+#   `wl_report` は 0=全部緑 / 1=赤 / 2=未測定 を返すが、**配備の終了コードには使わない**
+#   —— 門にしない判断は変えていない。捨てるのを止めたのは判断ではなく信号の方。
+wl_rc=0
+wl_report || wl_rc=$?
+case "$wl_rc" in
+  0) : ;;
+  1) echo "  ↑ 配備は成功。上の赤は**別件として今日中に**片付ける事(次の配備まで誰も見ない)" ;;
+  2) echo "  ↑ 配備は成功。上の未測定は**緑ではない** —— 条件を揃えて測り直す事" ;;
+esac
 
 say "完了"
