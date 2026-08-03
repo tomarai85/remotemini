@@ -1030,14 +1030,12 @@ const server = createServer(async (req, res) => {
         // Escape のみ。C-c は送らない。**送信と同じ鍵**を取るので、送信の途中には割り込まない
         // (割り込むと送信側が「入力欄が空 = 届いた」と誤認する。inject.mjs の interrupt を参照)。
         const out = await injector.interrupt(r.pane);
-        if (!out.pressed) {
-          // ★押していない事を 200 で返さない。「止めた」と報告する形になる。
-          return json(res, 409, {
-            error:
-              "このペインは今ほかの送信を処理中で、順番待ちも一杯です。**まだ止めていません**。もう一度お試しください。",
-            interrupted: false, route: "tmux", pane: r.pane, reason: out.reason,
-          });
-        }
+        // ★2026-08-04、ここに在った「`pressed:false` なら 409」を**落とした**。
+        //   §2.18-11 で割り込みが上限に数えられなくなった時点で、注入器が
+        //   `pressed:false` を返す道が本番から消えていた(残っていたのは、差し込んだ鍵が
+        //   断ってきた時だけ)。継ぎ目を撃つ変異 W6 は**素通り** —— 到達しない枝は、
+        //   守っている様に見えるだけで**測れない**(`mutex.mjs` の見出しの規律)。
+        //   鍵が契約を破った時は注入器が投げ、外側の catch が 500 を返す。
         // ★2026-08-03、`interrupted: true` を**押した事**でなく**止まった事**に結び直した。
         //   旧版は Escape を送れたら必ず `true` を返していた。電話には
         //   `view.mjs` が「止めました(Escape)。」と出すので、止まっていないのに

@@ -440,8 +440,8 @@ MUT = [
   "          reject(mutexError(MUTEX_ABORTED, `${key}: 順番待ちの間に期限切れ。**送っていない**`));",
   "          void mutexError;"),
  ("M89 待ちの上限を1本ゆるめる", MTX,
-  "if (q.length >= maxWaiters) {",
-  "if (q.length > maxWaiters) {"),
+  "if (!priority && normalWaiters(q) >= maxWaiters) {",
+  "if (!priority && normalWaiters(q) > maxWaiters) {"),
  ("M90 fn が投げた時に鍵を渡さない(finally を外す)", MTX,
   """    try {
       return await fn();
@@ -461,11 +461,11 @@ MUT = [
     }""",
   ""),
  ("M93 待たずに全員が鍵を持つ(直列化そのものを外す)", MTX,
-  "      await enqueue(key, signal); // ここを抜けた = 自分が持ち主",
+  "      await enqueue(key, signal, priority); // ここを抜けた = 自分が持ち主",
   "      queueOf(key); // 直列化しない"),
  ("M94 鍵の値を無視して全部1本にする(並列性を殺す)", MTX,
-  "  async function run(key, fn, { signal, maxWaiters = defaultMaxWaiters } = {}) {",
-  "  async function run(key0, fn, { signal, maxWaiters = defaultMaxWaiters } = {}) {\n    const key = typeof key0 === 'string' && key0 ? 'ALL' : key0;"),
+  "  async function run(key, fn, { signal, maxWaiters = defaultMaxWaiters, priority = false } = {}) {",
+  "  async function run(key0, fn, { signal, maxWaiters = defaultMaxWaiters, priority = false } = {}) {\n    const key = typeof key0 === 'string' && key0 ? 'ALL' : key0;"),
 
  # ★M110-M112 =「積んだ待ちを、後から来た誰かの為に捨てない」(規則3、2026-08-04 決着)の対照。
  #   捨て方は**3通りあって、1つ潰しても他は通る**ので3本要る(Codex `gpt-5.6-sol` xhigh の指摘)。
@@ -533,8 +533,8 @@ MUT = [
     }"""),
 
  ("M112 後から積む時に、先の待ちを**断って**捨てる(明示的 flush)", MTX,
-  "      const w = { grant, detach: () => {} };",
-  """      const w = { grant, reject, detach: () => {} };
+  "      const w = { grant, detach: () => {}, priority: !!priority };",
+  """      const w = { grant, reject, detach: () => {}, priority: !!priority };
       if (q.length) {
         const v = q.shift();
         v.detach();
@@ -688,18 +688,68 @@ MUT = [
  # ★W4/W5/W6 は 2026-08-03 に的を付け替えた。割り込みの返り値が真偽値から4値
  #   (verified / already-done / unverified / null)へ変わり、探し文が本文に当たらなく
  #   なった為。**欠陥は同じ** —— 断ったのに「止めた」と名乗る / 鍵を通らない / 継ぎ目で化ける。
- ("W4 止めていないのに「止めた」と返す(鍵が満杯なのに verified を名乗る)", INJ,
-  '        return { pressed: false, stopped: null, reason: "pane-busy", waited: null };',
-  '        return { pressed: true, stopped: "verified", reason: null, waited: null };'),
+ # ★W4 は 2026-08-04 に**もう一度**的を付け替えた。旧的
+ #   (`pressed:false` … `reason:"pane-busy"`)は**本文から消えた** —— §2.18-11 で割り込みが
+ #   待ち上限に数えられなくなり、鍵が priority の取得を断る道が本番から無くなったので、
+ #   断りを値に化かす catch ごと落とした(Codex `gpt-5.6-sol` xhigh Q3/Q4、2026-08-04)。
+ #   **欠陥の名前は変えない**: 止めていないのに「止めた」と名乗る。今それを言える場所は
+ #   期限切れの返り値なので、そこへ移した。到達する場所へ的を置き直しただけで、緩めていない。
+ ("W4 止めていないのに「止めた」と返す(期限切れなのに verified を名乗る)", INJ,
+  '    return { stopped: "unverified", reason: "still-in-flight", waited: seen.waited };',
+  '    return { stopped: "verified", reason: null, waited: seen.waited };'),
  ("W5 割り込みを鍵の外へ出す(Escape が本文と Enter の間に落ちる)", INJ,
-  "      return await this.mutex.run(pane, () => this.#interruptExclusive(pane), { signal });",
-  "      return await this.#interruptExclusive(pane);"),
- # ★W6 は**継ぎ目**を撃つ(M78 と同じ狙い)。注入器が false を返しても、サーバが
- #   200 で「止めた」と返せば、電話には「止めた」と出る。両端が緑でも間で落ちる。
- #   素通りで返ってきたら、それは**継ぎ目に検査が無い**という答え。
- ("W6 断られた割り込みを 200 で返す(まだ止めていないのに電話へ「止めた」が出る)", SRV,
-  "        if (!out.pressed) {",
-  "        if (false) {"),
+  "    return await this.mutex.run(pane, () => this.#interruptExclusive(pane), { priority: true });",
+  "    return await this.#interruptExclusive(pane);"),
+
+ # ★M104-M109 + W14 = §2.18-11「割り込みの行列優先」。**優先と束ねはセットでしか正しくない**
+ #   ので、片方だけを撃つ変異が両側に要る(M104/M105 = 優先を外す / M106-M108 = 束ねを壊す)。
+ #   M107 と M108 は「束ねの消し所」の**前後**を撃つ:早すぎ(M108)ても遅すぎ(M107)ても
+ #   飢餓が戻る。同じ地図を消す1行の、置き場所だけが違う2つの欠陥。
+ ("M104 優先の挿入位置を末尾へ戻す(FIFO へ退行 = 直す前の状態)", MTX,
+  "        q.splice(i, 0, w);",
+  "        q.push(w);"),
+ ("M105 優先でも待ち上限を数える(混雑時に割り込みが 409 で断られる退行)", MTX,
+  "      if (!priority && normalWaiters(q) >= maxWaiters) {",
+  "      if (normalWaiters(q) >= maxWaiters) {"),
+ ("M106 束ねを外す(連打で Escape が複数回飛び、次の番に当たる)", INJ,
+  "    const joined = this.#interrupts.get(pane);\n    if (joined) return joined;\n",
+  ""),
+ # ★M107/M108 は 2026-08-04 に**向きが入れ替わった**。此処に在った規則
+ #   (「畳むのは臨界区間の最後の同期文」)は、その走行で M107 が**素通り**した =
+ #   検査がどちらの置き場所も区別できていなかった、と出た。区別できる計器
+ #   (`gapMutex` = 解放前の隙でだけ撃つ鍵、`test/inject-serial.test.mjs` の (5b))を
+ #   作って測ったら、規則が指していた方が**負けた**: `[Escape, Escape, 打:AAA]`
+ #   (送信が追い越された)対 `[Escape, 打:AAA]`。だから本文は「消すのは settle 時の
+ #   sweep だけ」へ改め、変異は**その両隣**を撃つ形にした。
+ #   M107 = 遅すぎる方を撃つ(= 旧本文。臨界区間の中で畳む)。M108 = 早すぎる方(取得直後)。
+ ("M107 束ねの消去を臨界区間の中へ戻す(解放の前に消す = 隙が開き、送信が追い越される)", INJ,
+  "    return await this.mutex.run(pane, () => this.#interruptExclusive(pane), { priority: true });",
+  """    return await this.mutex.run(pane, async () => {
+      try { return await this.#interruptExclusive(pane); } finally { this.#interrupts.delete(pane); }
+    }, { priority: true });"""),
+ # ★M108 = 消し所が**早すぎる**形(§2.18-11 の表の A)。鍵を取った直後に消えるので、
+ #   走っている間に来た割り込みが全部**先頭**へ積まれ、送信が永久に追い越される。
+ ("M108 束ねの消去を鍵の取得直後へ前倒し(押しっぱなしで送信が走れない)", INJ,
+  "    return await this.mutex.run(pane, () => this.#interruptExclusive(pane), { priority: true });",
+  """    return await this.mutex.run(pane, () => {
+      this.#interrupts.delete(pane);
+      return this.#interruptExclusive(pane);
+    }, { priority: true });"""),
+ ("M109 束ねた実行へ呼び手の signal を転送する(合流した2本目が他人の期限で倒れる)", INJ,
+  "    return await this.mutex.run(pane, () => this.#interruptExclusive(pane), { priority: true });",
+  "    return await this.mutex.run(pane, () => this.#interruptExclusive(pane), { priority: true, signal });"),
+ # ★W14 = 鍵は正しいのに**繋ぎ目が嘘**(§2.18-9 と同じ形)。M104/M105 が緑でも此処で死ぬ。
+ ("W14 interrupt() が priority を渡さない(鍵は正しいのに繋ぎ目が嘘)", INJ,
+  "    return await this.mutex.run(pane, () => this.#interruptExclusive(pane), { priority: true });",
+  "    return await this.mutex.run(pane, () => this.#interruptExclusive(pane), {});"),
+ # ★W6 も 2026-08-04 に付け替えた。旧的 `if (!out.pressed) {` は**到達不能**で、
+ #   実際に素通りした(その走行が、注入器の catch とサーバの 409 を落とす根拠になった)。
+ #   狙いは変えない —— **継ぎ目の嘘**: 注入器が「止まっていない」と返しているのに、
+ #   サーバが電話へ「止めた」と出す。今その一行は `interrupted` の導出なので、そこを撃つ。
+ #   到達する: e2e が「止まらなかった」「止める対象が無い」の2通りで false を要求している。
+ ("W6 止まっていないのに `interrupted:true` を返す(電話へ「止めた」が出る)", SRV,
+  "          interrupted: out.stopped === \"verified\",",
+  "          interrupted: true,"),
  # ★W10-W12 = 2026-08-03 に作り直した判定そのものの的。ここを的にしないと、
  #   「止まりを観測した」の中身が誰にも見張られない状態で残る(この file の趣旨)。
  ("W10 印を**増分**でなく存在で見る(前の番に残った `Interrupted` を今の結果と読む)", INJ,

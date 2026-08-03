@@ -1126,11 +1126,33 @@ try {
   check("★interrupt: stale は 409(別の会話を止めない)", rIntrS.status === 409, String(rIntrS.status));
   check("★interrupt: stale で send-keys が0件", sentKeys().length === beforeIntrS);
 
-  // 11-g2. ★送信で鍵が満杯の最中の割り込みは 409。「押したのに止めていない」を 200 で返さない。
-  //   出典: DESIGN §2.18-2。interrupt は送信と**同じ鍵**を取るので、満杯なら Escape は
-  //   1本も出ない。そこで 200 を返すと電話には「止めた」と出るのに実際は止まっていない
-  //   = 画面の見た目と機械の状態が食い違う。ここは 11-g の 409 とは別物で、あちらは
-  //   「宛先が決まらない」、こちらは「宛先は決まったが今は押せない」。
+  // 11-g2. ★送信で鍵が満杯の最中の割り込みは **200 で通り、行列を飛び越える**。
+  //   出典: DESIGN §2.18-11。**2026-08-04 に測る物ごと入れ替えた**ので経緯を残す:
+  //
+  //   旧版(§2.18-2 由来)はここで **409/pane-busy** を測っていた。interrupt が送信と同じ鍵を
+  //   取り、かつ待ち上限に数えられていたので、満杯なら Escape は1本も出ない —— そこで 200 を
+  //   返すと電話には「止めた」と出るのに実際は止まっていないから、というのが理由。
+  //   ★**その 409 自体を §2.18-11 が欠陥と裁定した**: 一番干渉したい瞬間(送信が混んでいる時)
+  //   に限って電話の「止める」が黙るのは、Tom の裁定「返答待ちであれ作業中であれいつでも見て、
+  //   干渉できればいい」と正面から反する。よって割り込みは**優先で行列の先頭に入り、待ち上限に
+  //   数えない**。旧版の3本は「直った物を赤にする」側に立つので、直さず**入れ替えた**。
+  //   ★これを**この e2e が最初に教えた**(単体 560/560 は全部緑のまま)。単体は注入器の中しか
+  //   見ておらず、409 を返すのは HTTP 経路の分岐なので届かない —— §2.26 と同じ形。
+  //
+  //   今ここで測る物(§2.18-11 の3点を、HTTP の外から):
+  //     ① 満杯でも **断られない**(200)
+  //     ② **保持者は待つ**(横取りしない)が、**待っている送信は飛び越える** =
+  //        Escape の前に走った送信は**1本だけ**(保持者)。行列の4本は後回し。
+  //     ③ **待った事実が値に出る**(`waitedMs > 0` = 鍵が空だったのではない)
+  //   ★② の陰性対照は変異 M104(優先の挿入位置を末尾へ戻す)。M104 では行列の4本が先に
+  //   走るので Escape の前の送信が 5本になり、この検査だけが赤くなる。
+  //
+  //   実測(2026-08-04、この検査の keystroke 列):
+  //     [["send-keys","%16","-l","--","混雑0"], ["send-keys","%16","Escape"], ["send-keys","%16","混雑1"]]
+  //     保持者 → Escape → 行列の1本目。`waitedMs` は 1034ms(= 保持者の echo 予算ぶん)。
+  //   ★`混雑0` に Enter が続いていないのは %16 が deaf なペインだから(echo が来ないので
+  //   送信は本文だけ置いて予算切れで降りる)。**Escape が本文と Enter の間に落ちた訳ではない**
+  //   —— 保持者は鍵を放してから割り込みが走っている(それが `waitedMs` の正体)。
   //
   //   ★鍵を埋める仕掛けは「tmux を遅くする」では作れない(2026-08-02、実測して作り替えた)。
   //   tmux は `execFileSync`(`server.mjs` の `exec: execFileSync`)なので、capture を遅くすると **event loop ごと
@@ -1152,11 +1174,13 @@ try {
   //   4版 = ここ。**専用の証人を立てない**。容量(1本が保持 + maxWaiters=4)より1本多く投げ、
   //   「どれか1本が 409 pane-busy で返った」= その瞬間に満杯だった、という**観測**を前提にする。
   //   その直後に割り込みを撃てば、同じ満杯に当たる —— 断られた送信は `mutex.mjs` の `maxWaiters` 判定の
-  //   `q.length >= maxWaiters` で **enqueue の前に** 弾かれるので行列を1つも消費せず、
+  //   `normalWaiters(q) >= maxWaiters` で **enqueue の前に** 弾かれるので行列を1つも消費せず、
   //   保持中の1本が echo 予算(RC_E2E_ECHO_BUDGET_MS)を使い切るまで満杯は崩れないから。
-  //   ★循環していない: 割り込みが常に 200 を返す変異でも「どれかが pane-busy」は成立するので
-  //   前提は緑のまま、下の本題だけが赤くなる(= W6 型の変異は捕まる)。逆に満杯が作れなければ
-  //   前提の検査が赤になる。
+  //   ★`q.length` ではなく `normalWaiters(q)`(§2.18-11 で通常の待ちだけを数える様に変えた)。
+  //   ここで数えているのは**送信**なので上限の効き方は同じ = この仕掛けは生き残っている。
+  //   ★循環していない: 満杯の観測は**送信が断られた事**だけで出来ていて、割り込みの結果を
+  //   一切見ていない。だから割り込み側をどう変異させても前提は緑のまま、下の本題だけが
+  //   赤くなる。逆に満杯が作れなければ前提の検査が赤になる。
   const S16 = join(SB, "screen-16.txt");
   const screen16 = readFileSync(S16, "utf8");
   const drain = async (sends) => {
@@ -1170,6 +1194,7 @@ try {
   let jFull = null;
   let rBusy = null;
   let jBusy = null;
+  let keysAtIntr = [];
   let tries = 0;
   for (; tries < 3 && !jFull; tries++) {
     beforeBusy = sentKeys().length;
@@ -1187,21 +1212,36 @@ try {
       // 満杯はまだ崩れていない(保持中の1本が予算を使い切るまで空きは出ない)。
       rBusy = await fetch(`${B}/api/sessions/${SID_DEAF}/interrupt`, { method: "POST", headers: H });
       jBusy = await rBusy.json();
+      // ★**割り込みが返った瞬間**で切る。`drain()` の後まで待つと、行列の残りが降りた分まで
+      //   混ざって「Escape の前に何本走ったか」が測れなくなる(順序の検査は窓の取り方が全て)。
+      keysAtIntr = sentKeys().slice(beforeBusy);
     }
     if (process.env.RC_E2E_DEBUG_BUSY) {
       console.log(`  [busy try ${tries}] full=${JSON.stringify(jFull)} intr=${rBusy?.status} keys=${sentKeys().length - beforeBusy}`);
     }
     await drain(busySends);
   }
-  // 前提そのものを測る。ここが赤なら、下の 409 は「鍵が満杯だったから」ではない。
+  // 前提そのものを測る。ここが赤なら、下の3本は「鍵が満杯だったから」の話になっていない。
   check("前提: 鍵が満杯(容量を超えた送信は 409 pane-busy = 積まない)",
     jFull !== null, `${tries}回作ろうとして満杯を観測できず`);
-  check("★interrupt: 鍵が満杯の時は 409(200 で「止めた」と名乗らない)", rBusy?.status === 409, String(rBusy?.status));
-  check("★interrupt: 理由は pane-busy / interrupted:false",
-    jBusy?.reason === "pane-busy" && jBusy?.interrupted === false, JSON.stringify(jBusy));
-  check("★interrupt: 断ったのだから Escape は1本も出ていない",
-    !sentKeys().slice(beforeBusy).some((k) => k.at(-1) === "Escape"),
-    JSON.stringify(sentKeys().slice(beforeBusy).filter((k) => k.at(-1) === "Escape")));
+  // ① 満杯でも断られない。旧版はここで 409 を要求していた(§2.18-11 が覆した)。
+  check("★interrupt: 鍵が満杯でも断られない(優先は待ち上限に数えない)",
+    rBusy?.status === 200, `${rBusy?.status} ${JSON.stringify(jBusy)}`);
+  // ② 保持者は待つ / 待っている送信は飛び越える。**Escape の手前に居る送信は保持者1本だけ**。
+  //   M104(優先を末尾へ)ではここが 5本になる = この1本だけが赤くなる。
+  const escAt = keysAtIntr.findIndex((k) => k.at(-1) === "Escape");
+  const sendsBeforeEsc = keysAtIntr.slice(0, Math.max(escAt, 0)).filter((k) => k.includes("-l")).length;
+  check("★interrupt: 行列を飛び越える(Escape の前に走った送信は保持者の1本だけ)",
+    escAt >= 0 && sendsBeforeEsc === 1,
+    `escAt=${escAt} sendsBefore=${sendsBeforeEsc} ${JSON.stringify(keysAtIntr)}`);
+  check("★interrupt: Escape はこの窓で1回だけ(連打にならない)",
+    keysAtIntr.filter((k) => k.at(-1) === "Escape").length === 1, JSON.stringify(keysAtIntr));
+  // ★`jBusy.waitedMs` を「鍵を待った証拠」に使ってはいけない(2026-08-04、書きかけて捨てた)。
+  //   `waited` は `#interruptExclusive` の **Escape を押した後の観測 poll** の長さ
+  //   (`seen.waited`)であって、鍵の行列で待った時間ではない。実測 1034ms は
+  //   PRE_FRAMES(24枚)ぶんの idle 判定に掛かった時間。鍵を一切待たない実装でも >0 になるので、
+  //   「待った事の検査」として置くと**何も見分けない緑**になる。鍵を待った事は上の ② が
+  //   保持者の本文を Escape の手前に見る事で測っている —— そちらが正しい住所。
 
   // 11-h. 壊れた登録ファイルがあっても他の会話は生きる(1件で全体を落とさない)
   writeFileSync(join(PANE_DIR, `${SID_REG_B}.json`), '{"session_id":"aaaa');

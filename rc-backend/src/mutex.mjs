@@ -113,10 +113,17 @@ export function makeKeyedMutex({ defaultMaxWaiters = 4 } = {}) {
     queues.delete(key);
   }
 
-  function enqueue(key, signal) {
+  /** 通常の待ちだけを数える。上限が守っている物は**送信の連打**なので(下の `run` 参照)。 */
+  function normalWaiters(q) {
+    let n = 0;
+    for (const w of q) if (!w.priority) n++;
+    return n;
+  }
+
+  function enqueue(key, signal, priority) {
     const q = queueOf(key);
     return new Promise((grant, reject) => {
-      const w = { grant, detach: () => {} };
+      const w = { grant, detach: () => {}, priority: !!priority };
       if (signal) {
         const onAbort = () => {
           // ★**ここが ghost send を塞ぐ唯一の場所**(実測でそう確かめた。上の releaseAndPump 参照)。
@@ -134,7 +141,15 @@ export function makeKeyedMutex({ defaultMaxWaiters = 4 } = {}) {
         // 溜まるのを防ぐだけ。だから検査も置いていない。
         w.detach = () => signal.removeEventListener("abort", onAbort);
       }
-      q.push(w);
+      if (priority) {
+        // 既に待っている priority の**後ろ**、通常の待ちの**前**。priority 同士は FIFO の
+        // ままにする(先に押した「止める」を後の「止める」が追い越す理由が無い)。
+        let i = 0;
+        while (i < q.length && q[i].priority) i++;
+        q.splice(i, 0, w);
+      } else {
+        q.push(w);
+      }
     });
   }
 
@@ -147,11 +162,20 @@ export function makeKeyedMutex({ defaultMaxWaiters = 4 } = {}) {
    * @param {object} [opts]
    * @param {AbortSignal} [opts.signal] **待っている間だけ**効く期限
    * @param {number} [opts.maxWaiters]
+   * @param {boolean} [opts.priority] 行列の**先頭**へ入れ、待ち上限に**数えない**(§2.18-11)。
+   *   渡すのは割り込みだけ。理由は2つとも「上限が守っている物が何か」から出ている:
+   *   上限は「連打した送信を全部**後から**入れない」為に在る(押した本人の意図と違うから)。
+   *   遅れて効く Escape は「止めたい」という意図と**ずれない**ので、その理由が移らない。
+   *   規則の形が同じだからといって、理由が移らない規則を適用しない。
+   *   ★**飢餓が起きないのは、呼ぶ側が束ねている時だけ**(= 鍵あたり走る割り込みは最大1本)。
+   *     この層は束ねない(「2回の割り込みは同じ1回」は割り込みの意味であって鍵の性質ではない。
+   *     鍵に「fn は冪等」を仮定させると、その仮定は**送信にも**適用されてしまう)。
+   *     よって `priority` を渡す新しい呼び口を作る時は、束ねも一緒に持ってくる事。
    * @returns {Promise<T>} `fn` の戻り。取れなかった時は code 付きで throw
    *
    * ★同じ鍵の入れ子は取れない(自分を待って固まる)。呼ぶ側で入れ子にしない。
    */
-  async function run(key, fn, { signal, maxWaiters = defaultMaxWaiters } = {}) {
+  async function run(key, fn, { signal, maxWaiters = defaultMaxWaiters, priority = false } = {}) {
     if (typeof key !== "string" || key === "") {
       throw mutexError("MUTEX_KEY", "鍵が空。鍵の値が空になる経路は直列化されない");
     }
@@ -163,10 +187,13 @@ export function makeKeyedMutex({ defaultMaxWaiters = 4 } = {}) {
 
     if (held.has(key)) {
       const q = queueOf(key);
-      if (q.length >= maxWaiters) {
+      // ★上限は**通常の待ちだけ**を数え、priority には掛けない(両方向。§2.18-11)。
+      //   数える側も外してあるのは、割り込みが1本挟まっただけで送信の席が1つ減る理由が
+      //   無いから。束ねが在るので priority の待ちは鍵あたり最大1本。
+      if (!priority && normalWaiters(q) >= maxWaiters) {
         throw mutexError(MUTEX_BUSY, `${key}: 送信中で、待ちも上限(${maxWaiters})。**積まない**`);
       }
-      await enqueue(key, signal); // ここを抜けた = 自分が持ち主
+      await enqueue(key, signal, priority); // ここを抜けた = 自分が持ち主
     } else {
       held.add(key);
     }

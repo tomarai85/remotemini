@@ -631,7 +631,7 @@ test("割り込みは Escape。C-c は使わない", async () => {
   const t = fakeTmux(screen("generating"));
   const inj = new TmuxInjector({ tmux: t });
   const r = await inj.interrupt("%1");
-  assert.equal(r.pressed, true);
+  void r;
   assert.deepEqual(sends(t)[0], ["send-keys", "-t", "%1", "Escape"]);
   assert.ok(!JSON.stringify(t.calls).includes("C-c"), "C-c は緊急専用で通常経路に出さない");
 });
@@ -701,8 +701,8 @@ test("★止まった所を見たら verified", async () => {
   const inj = new TmuxInjector({ tmux: t, interruptBudgetMs: 200, sleep: async () => {} });
   const r = await inj.interrupt("%1");
   assert.deepEqual(
-    { pressed: r.pressed, stopped: r.stopped, reason: r.reason },
-    { pressed: true, stopped: "verified", reason: null },
+    { stopped: r.stopped, reason: r.reason },
+    { stopped: "verified", reason: null },
   );
 });
 
@@ -711,7 +711,8 @@ test("★★印が消えなければ unverified(押した事を止まった事�
   const t = fakeTmux(screen("edith-generating-spinner-hidden"));
   const inj = new TmuxInjector({ tmux: t, interruptBudgetMs: 60, sleep: async () => {} });
   const r = await inj.interrupt("%1");
-  assert.equal(r.pressed, true, "Escape は押しているはず");
+  // ★「押した」は**値でなく打鍵**で見る(2026-08-04、常に true の欄を外した)。
+  assert.ok(sends(t).some((c) => c[3] === "Escape"), "Escape を押していない");
   assert.equal(r.stopped, "unverified", "止まっていないのに verified を名乗った");
   assert.equal(r.reason, "still-in-flight");
 });
@@ -780,14 +781,19 @@ test("★★★戻ってくる空白を「止まった」と読まない(生成�
   const cycle = [gen, gen, gap, gap, gap];
   let i = 0;
   const list = paneLine("%1", "2.1.220", "/dev/ttys001", "/Users/Shared/dev/roundtrip") + "\n";
-  const run = (args) =>
-    args[0] === "capture-pane" ? cycle[i++ % cycle.length] : args[0] === "list-panes" ? list : "";
-  const t = { calls: [], run, runStrict: run };
+  // ★`calls` を**実際に貯める**(2026-08-04)。此処の作り物は `calls: []` を持っているだけで
+  //   何も書き込んでいなかったので、打鍵を見る検査は書いた瞬間に空振りする。
+  const calls = [];
+  const run = (args) => {
+    calls.push(args);
+    return args[0] === "capture-pane" ? cycle[i++ % cycle.length] : args[0] === "list-panes" ? list : "";
+  };
+  const t = { calls, run, runStrict: run };
   const inj = new TmuxInjector({ tmux: t, interruptBudgetMs: 300, sleep: async () => {} });
   const r = await inj.interrupt("%1");
   assert.equal(r.stopped, "unverified", "戻ってくる空白を「止まった」と読んだ");
   assert.equal(r.reason, "still-in-flight");
-  assert.equal(r.pressed, true, "押す事自体は拒まない(Tom 裁定)");
+  assert.ok(sends(t).some((c) => c[3] === "Escape"), "押す事自体は拒まない(Tom 裁定)");
   // ★陽性対照。同じ仕掛けで**本当に止まったら** verified になる事を、同じ検査の中で見る。
   //   これが無いと「常に unverified を返す」実装でも上の assert は通る。
   let j = 0;
@@ -857,7 +863,10 @@ test("★押す前から印が無ければ stopped:null(「止めた」と言わ
   const t = fakeTmux(screen("edith-idle-footer"));
   const inj = new TmuxInjector({ tmux: t, interruptBudgetMs: 60, sleep: async () => {} });
   const r = await inj.interrupt("%1");
-  assert.equal(r.pressed, true, "Tom 裁定「いつでも干渉できれば」= 押す事自体は拒まない");
+  assert.ok(
+    sends(t).some((c) => c[3] === "Escape"),
+    "Tom 裁定「いつでも干渉できれば」= 押す事自体は拒まない",
+  );
   assert.equal(r.stopped, null, "止める対象を観測していないのに結論を出している");
   assert.equal(r.reason, "not-in-flight");
   // ★2026-08-03 に上限を 1 枚から `PRE_FRAMES + 1` 枚へ緩めた(押す前 1 + 押した後 24)。

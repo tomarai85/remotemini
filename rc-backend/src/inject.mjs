@@ -778,8 +778,24 @@ export class TmuxInjector {
   #choiceSent = new Map();
 
   /**
-   * 鍵が取れなかった時の返し。**送っていない / 押していない**を必ず名乗る。
+   * 走っている割り込みを鍵(ペイン)ごとに**1本へ束ねる**。§2.18-11 の 2。
+   *
+   * ★寿命は「待っている間」ではなく「**鍵を放すまで**」。待ちの間だけ束ねると、
+   *   I1 が鍵を取った瞬間に地図が空く → I2 が来て**先頭**へ積まれる → I1 が放す →
+   *   I2 が取る → I3 が…… で**送信が永久に追い越される**。優先と束ねはセットでしか
+   *   正しくない(優先だけ入れると、断られていた連打がそのまま行列に積まれる)。
+   *
+   * ★置き場所が `mutex.mjs` ではなく此処である理由: 「2回の割り込みは同じ1回」は
+   *   **割り込みの意味**であって鍵の性質ではない。鍵に「fn は冪等」を仮定させると、
+   *   その仮定は**送信にも**適用されてしまう。
+   */
+  #interrupts = new Map();
+
+  /**
+   * 鍵が取れなかった時の返し。**送っていない**を必ず名乗る。
    * `send()` の返り値の形をそのまま保つ(呼ぶ側に新しい分岐を増やさない為)。
+   * ★**割り込みは此処を通らない**(2026-08-04)。優先の取得は断られ得ないので、
+   *   断りを値に化かす道ごと落とした(§2.18-11 実装後記 (d))。使うのは送信系だけ。
    */
   static #refusedByLock(e) {
     if (e?.code === MUTEX_BUSY) {
@@ -948,9 +964,13 @@ export class TmuxInjector {
    *   13% しか写らず(実測、欠落が 10.8 秒連続)、消えた事が停止の証拠にならない。
    *   footer の `esc to interrupt` が 100%/0% で効くと分かったので、初めて測れる。
    *
-   * @returns {Promise<{pressed:boolean, stopped:("verified"|"already-done"|"unverified"|null),
+   * @returns {Promise<{stopped:("verified"|"already-done"|"unverified"|null),
    *   reason:(string|null), waited:(number|null)}>}
-   *   `pressed:false`            鍵が取れず Escape を**送っていない**
+   *   ★戻り値に `pressed` は**無い**(2026-08-04 に外した)。此処へ来た = Escape は押している。
+   *   押さずに帰る道は「鍵が取れなかった時」だけだったが、§2.18-11 で割り込みが
+   *   上限に数えられなくなり、その道は本番から消えた。常に `true` の欄を残すと、
+   *   それを見ている検査が**どの変異でも赤にならない緑**(空検査)になる。
+   *   鍵が契約を破って断ってきた時は、値で報せずに**投げる**。
    *   `stopped:"verified"`       止まったのを見た(印が増えた / 進行の印が消えて戻らない)
    *   `stopped:"already-done"`   押す前に番が自力で終わっていた = 完了行が増えた。
    *                              止めていないので「止めた」とは言わない
@@ -958,18 +978,64 @@ export class TmuxInjector {
    *   `stopped:null`             止める対象を観測できていない。
    *                              **これを「止めた」と言わない**のがこの改訂の要点。
    */
-  async interrupt(pane, { signal } = {}) {
-    try {
-      return await this.mutex.run(pane, () => this.#interruptExclusive(pane), { signal });
-    } catch (e) {
-      if (e?.code === MUTEX_BUSY) {
-        return { pressed: false, stopped: null, reason: "pane-busy", waited: null };
-      }
-      if (e?.code === MUTEX_ABORTED) {
-        return { pressed: false, stopped: null, reason: "pane-wait-timeout", waited: null };
-      }
-      throw e;
-    }
+  interrupt(pane, { signal } = {}) {
+    // ★地図への登録は**入口で同期的に**、しかも `#interruptCoalesced()` を**呼ぶ前**に。
+    //   async 関数は最初の `await` まで同期に走るので、`set` を呼んだ後に回すと、
+    //   その同期区間(鍵の取得と Escape が丸ごと入る)で来た2本目が合流できない。
+    //   ★これは机上ではなく**検査 (4) が実測で捕まえた**(2026-08-04)。初稿は
+    //     `const p = this.#interruptCoalesced(...)` → `set` の順で、束ねが素通りした。
+    //   だから約束の器を先に作って地図へ張り、本体はその後に**同期のまま**走らせて
+    //   結果を流し込む(`await` を挟むと鍵の取得が1マイクロタスク遅れる)。
+    const joined = this.#interrupts.get(pane);
+    if (joined) return joined;
+
+    let settle;
+    let fail;
+    const p = new Promise((res, rej) => { settle = res; fail = rej; });
+    this.#interrupts.set(pane, p);
+    // ★消すのは**此処だけ**。地図の寿命 = この約束の寿命、で完全に一致させる。
+    //   臨界区間の中で消す形は 2026-08-04 に**実測で捨てた**(下の #interruptCoalesced 参照):
+    //   消してから鍵を解放するまでの隙に来た割り込みが合流できず、新しい優先待ちとして
+    //   先頭へ積まれる = 送信を追い越し続けられる。此処で消せばその隙は**存在しない**
+    //   (地図が空くのは鍵を手放した後なので、優先待ちは1回の受け渡しに1本しか作れない)。
+    // 正常路も異常路も同じ1本。`fn` が一度も走らない失敗でも取り残しは出ない。
+    // ★同一性の照合は要らない: この地図へ書くのは上の `set` だけで、それは地図が
+    //   空の時にしか走らない。空になるのは此処だけなので、`p` 以外が入っている事は無い。
+    //   **書き手が2つに増えた日**は、この掃除に照合を戻す所から始まる。
+    const sweep = () => { this.#interrupts.delete(pane); };
+    p.then(sweep, sweep);
+    this.#interruptCoalesced(pane, signal).then(settle, fail);
+    return p;
+  }
+
+  /**
+   * 束ねの1本目だけが通る道。鍵を**優先で**取るだけ。
+   * ★地図を畳むのは此処**ではない** —— `interrupt()` の settle 時の sweep 1箇所。
+   *   臨界区間の中で畳む形は 2026-08-04 に実測で捨てた(理由は `interrupt()` の見出し)。
+   *
+   * ★`signal` を受け取って**渡さない**(§2.18-11)。束ねと正面から衝突するから:
+   *   2本目は1本目の約束に合流するので (i) **2本目の期限は読まれず** (ii) **1本目の
+   *   期限が切れると、頼んでいない2本目まで倒れる**(まだ電話の前に居る人に
+   *   「止めていません」が出る)。鍵の原則②「保持側を横から解放しない」の、合流版。
+   *   実測 0/22 = `interrupt` に期限を渡す呼び口は今日1つも無いので、失う能力も無い。
+   *   **受け取るのに効かない事を、署名から消さずに此処へ書いてある**のは、期限を
+   *   渡した呼び手が「効いている」と誤読しない為(消すと誤読が静かになるだけ)。
+   *   期限が要る日は束ねの**外**に置き、4値へ「押したか不明」を足す所から始まる。
+   *   **覆る条件**: 期限を渡す呼び口が1件でも出来たら、束ねごと再設計。
+   */
+  async #interruptCoalesced(pane, signal) {
+    void signal; // ★転送しない。理由は上。消すと M109 の的が消える
+    // ★断りを**握り潰さない**(2026-08-04、Codex `gpt-5.6-sol` xhigh に潰されて改めた)。
+    //   旧版は `MUTEX_BUSY` / `MUTEX_ABORTED` を捕まえて `pressed:false` に変えていた。
+    //   出荷している鍵 + `priority:true` の組では**どちらも起こせない**(上限は priority を
+    //   数えず、期限は渡していない)。つまりあの枝は本番で到達不能で、
+    //   「守っている様に見えるだけで測れない」形(`mutex.mjs` の見出しの規律)そのものだった。
+    //   実測でもそう出た: 継ぎ目を撃つ変異 W6 が**素通り**(2026-08-04 の走行)。
+    //   残すと「優先の割り込みも断られ得る」が協力者との正式な契約になり、
+    //   §2.18-11 の裁定(**割り込みは常に受理**)と正面から矛盾する。
+    //   だから断ってきた鍵は**契約違反**として上へ投げる(server.mjs の外側 catch が 500)。
+    //   静かな 409 で「まだ止めていません」と名乗るより、壊れた協力者は**うるさく**落ちる方が良い。
+    return await this.mutex.run(pane, () => this.#interruptExclusive(pane), { priority: true });
   }
 
   /** 鍵の中でだけ走る本体。**直接呼ばない**。 */
@@ -1023,18 +1089,18 @@ export class TmuxInjector {
     const seen = await this.pollScreen(pane, decide, { budgetMs: this.interruptBudgetMs });
 
     if (seen.tag === "stopped") {
-      return { pressed: true, stopped: "verified", reason: null, waited: seen.waited };
+      return { stopped: "verified", reason: null, waited: seen.waited };
     }
     if (seen.tag === "already-done") {
       // Escape は送ってあるが、止めたのはこちらではない。そう名乗る。
-      return { pressed: true, stopped: "already-done", reason: "finished-first", waited: seen.waited };
+      return { stopped: "already-done", reason: "finished-first", waited: seen.waited };
     }
     if (seen.tag === "idle") {
       // Escape は送る(Tom 裁定「いつでも干渉できれば」= 押す事自体は拒まない)。
       // しかし観測できた事は「押した」だけなので、そう名乗る。
-      return { pressed: true, stopped: null, reason: "not-in-flight", waited: seen.waited };
+      return { stopped: null, reason: "not-in-flight", waited: seen.waited };
     }
-    return { pressed: true, stopped: "unverified", reason: "still-in-flight", waited: seen.waited };
+    return { stopped: "unverified", reason: "still-in-flight", waited: seen.waited };
   }
 
   /**
