@@ -21,7 +21,11 @@
 #      本物の走行を `timeout` で切って作る = 手書きしない。
 #  (2) 直す前の版で赤になるか個別に見る。→ 変異表は §M。
 #
-# ── §M 変異表(`scratchpad/verdict-mutants.sh` が当てる) ──────────────────
+# ── §M 変異表(**`test/verdict-mutants.sh` が当てる**) ────────────────────
+# ★2026-08-03 訂正: 此処には「`scratchpad/verdict-mutants.sh` が当てる」と書いてあったが、
+#   **その file は存在しなかった**。表は 8 行の散文で、回す物が無い ——
+#   DESIGN (19)「規則は、それを回す物が無いと効かない」の同日 5 回目。
+#   回す物を `test/` へ据えた(`scratchpad/` は commit されないので次のセッションには無い)。
 #   fp-no-tools    指紋から tools/ を落とす            → 5-b が赤
 #   fp-no-test     指紋から test/ を落とす             → 5-c が赤
 #   fp-no-src      指紋から src/ を落とす              → 5-d が赤
@@ -46,7 +50,11 @@ ng(){ fail=$((fail+1)); printf '  NG %s\n     期待[%s] 実際[%s]\n' "$1" "$2"
 # chk(名前, 実際, 期待)。`ng` は (名前, 期待, 実際) の順なので入れ替えて渡す
 # —— 揃えないと赤の行が「期待」と「実際」を逆に表示し、読んだ人が反対方向を直す。
 chk(){ [ "$2" = "$3" ] && ok "$1" || ng "$1" "$3" "$2"; }
-has(){ case "$2" in *"$3"*) ok "$1" ;; *) ng "$1" "…$3… を含む" "$(printf '%s' "$2" | head -c 200)" ;; esac; }
+# ★切り口で不正な UTF-8 を作らない。`head -c` は多バイト文字の途中で切るので、そのまま出すと
+#   この出力を読む道具(`test/verdict-mutants.sh` の awk)が変換に失敗して**その先を読まなくなる**。
+#   赤の行が読めなくなるのではなく、**後ろの赤が消える**のが厄介な所。`iconv -c` で欠片を落とす。
+cut200(){ printf '%s' "$1" | head -c 200 | iconv -c -f UTF-8 -t UTF-8 2>/dev/null; }
+has(){ case "$2" in *"$3"*) ok "$1" ;; *) ng "$1" "…$3… を含む" "$(cut200 "$2")" ;; esac; }
 
 SB="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/verdictctl.XXXXXX")" && pwd -P)"
 cleanup(){
@@ -132,7 +140,7 @@ r=0; PATH="$SB/bin:$PATH" RC_VERDICT_DIR="$VDFP" /bin/bash "$TOOL" list >/dev/nu
 chk "  list も指紋を採れないなら 2" "$r" "2"
 case "$o" in
     *e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855*)
-        ng "  list が空入力の定数を指紋として印字しない" "その綴りが出ない事" "$(printf '%s' "$o" | head -c 200)" ;;
+        ng "  list が空入力の定数を指紋として印字しない" "その綴りが出ない事" "$(cut200 "$o")" ;;
     *)  ok "  list が空入力の定数を指紋として印字しない" ;;
 esac
 
