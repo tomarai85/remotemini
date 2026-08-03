@@ -2312,6 +2312,36 @@ no-linerefs 以外の失敗が出ていれば別因。**何も出ず終了コー
 (`_ok = (r.returncode == 0)` の二値。timeout だけ UNKNOWN の袋を持つ)。
 `loop-replan-gate.sh` は loop machinery = 自律ループ内から編集しない。machinery lane 案件。
 
+### 3-AC. ★★対照を測る道具が**一度も測っていなかった**(0/0/14 → 3/3/9、2026-08-03 23:58、commit `59ca50e`)
+
+`tools/prove-all-controls.sh` を素直に回したら 14 本全部が `履歴が引けない`(rc=2)。
+真因は 1 行: **`git ls-files --full-name` は repo の root 基準、`git log -- <経路>` の
+pathspec は cwd 基準**。この道具は `rc-backend/` の中で走るので
+`rc-backend/rc-backend/tools/…` を探して必ず空。`git show <rev>:<path>` だけ元から
+root 基準で正しかった為、経路の作りは合って見えていた。直し = `PSPEC=":/$FULL"`。
+
+**★直した瞬間に下流の未検査欠陥が2つ出た**(詳細 `DESIGN.md` §2.33):
+1. prove-all の loop 入力は `<<< "$MAP"` = **stdin**。`ssh` を使う対照が残りを食い、
+   14 本中 6 本で打ち切られ、**消えた 8 本は一覧にすら出ない**。→ `</dev/null`。
+2. 未測定の枝の助言行が**二重引用の中の backtick** でコマンド置換として走り、助言が消えていた。
+   → 単引用。この枝は未測定の時にしか通らないので緑の間は誰も見ない。
+
+**次に読む者への読み方**:
+- `prove-all-controls.sh` の結果は **3 つの袋**で読む。`効いていない` は**まだ欠陥ではない**
+  (既定の rev = 「その file を最後に変えた commit の親」なので、整形・改名だけの commit を
+  拾えば緑が正しい)。第4引数で rev を名指しして測り直すまで未確定。
+- 現在の `測れていない 9` のうち **8 本は `旧版が取れない`** = その file を最後に変えた
+  commit が**生まれた commit**。道具の欠陥ではなく、**若い file はこの道具では守れない**。
+- **`prove-all-controls.sh` 自身の対照は `test/prove-all-controls-controls.sh` に無い**。
+  P10/P10b/P10c として `test/prove-control-controls.sh` の中に居る。
+  pre-commit の staged-controls-gate が毎回「対照を導けない道具: prove-all-controls」と
+  注記するのはこの為で、**未検査という意味ではない**(専用 file にすると
+  `test/*-controls.sh` の glob で再帰的に自分を回す形になるので、意図的に同居させている)。
+
+**この節の型**: §2.31-e の `find -newermt` と同じ「在ると思っていた守りが最初から死んでいた」
+の4例目。新しいのは **死んだ計器が自分の下流の欠陥も隠す**という点 ——
+計器を生き返らせたら、その先は全部未検査だと思って掛かる事。
+
 ## 4. Tom にしかできない事(全文は `DESIGN.md` §8)
 
 1. **edith の `~/.claude/settings.json` に statusLine を1行**(hook 強制で私は触れない)。
