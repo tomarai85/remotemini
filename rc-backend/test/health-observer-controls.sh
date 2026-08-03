@@ -300,19 +300,31 @@ echo "── 10. ★tailnet 鍵の残日数(期限の**前**に言う為の、up
 #     全部が手前で転けていた —— その赤は変異ではなく異常終了が作った赤で、何も測っていない。
 #     判定に「§10 の外で落ちた数」を必ず併記するのはその為。
 #
+#     ★もう1つの偽の緑(同日 二巡目): 本体を書き換えると**古い変異の sed が当たらなくなる**。
+#       当たらない sed は「変異なしの木」を走らせているのと同じで、対照は緑のまま出る。
+#       駆動側は当てる**前後のハッシュ**を比べ、変わっていなければ「未測定」と言う。
+#     ★3つ目の偽の緑: 狙いの照合に `ok()` の文言を書くと、赤くなっているのに緑と出る
+#       (NG 行に出るのは `ng()` の文言)。照合は必ず**失敗時の文**で書く。
+#
 #     変異(1箇所だけ壊す)          落ちた対照                     §10外の巻き添え
-#     bucket=9999 → 45              10-a 両方 200 日 → 鳴らない      0
+#     b=9999 → 45                   10-a 両方 200 日 → 鳴らない      0
 #     呼ぶ位置を判定の後ろへ        10-b 異常なしの回でも鳴る        0
-#     --chain → --peer(相手だけ)  10-c 観測側だと分かる            0  ←★退けた設計そのもの
+#     観測側を見ない(peer だけ)   10-c 観測側だと分からない        0  ←★退けた設計そのもの
 #     段の抑制を外す                10-d 9 日は同じ段 = 増えない     0
-#     `bucket <= 7` → 常に真        10-d 遠い段は ping 無し          0
-#     `bucket <= 7` → 常に偽        10-d 7 日以内は @Tom             0
+#     `step <= 7` → 常に真          10-d 遠い段に ping が付いている  0
+#     `step <= 7` → 常に偽          10-d 7 日以内は @Tom             0
 #     期限なしで段を戻さない        10-e また近付いたら鳴り直す      0
 #     rc=2 の分岐を殺す             10-f 監視側が壊れている          0
-#     配達の**前**に時計を進める    10-g 失敗した回の記録は残らない  0
-#     --dry-run で時計を進める      10-h 記録も進めない              0
+#     配達の**前**に段を進める      10-g 失敗した side の段          0
+#     --dry-run で記録を書く        10-h 記録も進めない              0
 #     `[ $# -ge 2 ]` を外す         10-j 値の無い --peer             0
 #     既定 SCOPE を chain に        10-i 引数なし・遠い → 0          0
+#     ── 査読(Codex 2026-08-03)で塞いだ穴を戻す変異 ──
+#     段を鎖で1つだけ持つ           10-k 相手が段7へ入ったら鳴る     0
+#     2欄目を self の段として読む   10-k 古い2欄の記録は未通知       0
+#     期限切れの段(0)を消す       10-l 期限を越えたら段0           0
+#     失敗した回も時計を進める      10-g 時計も進めない              0
+#     観測主体を名乗らない          10-l 観測主体が載っていない      0
 TS_REAL="${RC_TAILSCALE_BIN:-/Applications/Tailscale.app/Contents/MacOS/Tailscale}"
 KEY_UNMEASURED=0
 if [ ! -x "$TS_REAL" ]; then
@@ -406,7 +418,10 @@ EOF
     key_run 200 10 --inject-ok >/dev/null; chk "  10 日(段 14)で 1通" "$(key_count)" "1"
     key_run 200 9  --inject-ok >/dev/null; chk "  ★9 日は同じ段 = 増えない" "$(key_count)" "1"
     key_run 200 5  --inject-ok >/dev/null; chk "  5 日(段 7)で段を降りた = 2通目" "$(key_count)" "2"
-    key_run 200 2  --inject-ok >/dev/null; chk "  2 日(段 3)で 3通目" "$(key_count)" "3"
+    # ★3 日は段 7 のまま。査読 Q4 で段を 45/30/14/7/3/1 → 45/14/7/1 に減らした事の対照。
+    #   減らす前の版はここで鳴った(= この行が赤くなれば段が戻った事に気付ける)。
+    key_run 200 3  --inject-ok >/dev/null; chk "  ★3 日はまだ段 7 = 増えない" "$(key_count)" "2"
+    key_run 200 1  --inject-ok >/dev/null; chk "  1 日(段 1)で 3通目" "$(key_count)" "3"
     grep -q 'MENTION=\[0\]' <(head -1 "$FAKE_NOTIFY_LOG") \
       && ok "  ★遠い段は ping 無し" || ng "  遠い段に ping が付いている: $(head -1 "$FAKE_NOTIFY_LOG")"
     grep -q 'MENTION=\[既定\]' <(tail -1 "$FAKE_NOTIFY_LOG") \
@@ -428,7 +443,10 @@ EOF
     key_reset
     export FAKE_SELF_DAYS=200 FAKE_PEER_DAYS=10
     run_with_notify "$SB/notify-fails.sh" --inject-ok >/dev/null
-    chk "  出し先が失敗した回の記録は残らない" "$([ -f "$SB/key.mark" ] && echo yes || echo no)" "no"
+    chk "  ★失敗した side の段を進めない" "$(/usr/bin/awk '{print $3}' "$SB/key.mark" 2>/dev/null)" "9999"
+    # ★時計も据え置く。進めると次の回が KEY_EVERY(本番では1日)の間ずっと早期 return し、
+    #   出し先が直っても最大1日黙る —— 「配達後に進める」の意図が時計側で骨抜きになる形。
+    chk "  ★時計も進めない" "$(/usr/bin/awk '{print $1}' "$SB/key.mark" 2>/dev/null)" "0"
     key_run 200 10 --inject-ok >/dev/null
     chk "  ★出し先が直った次の回に鳴る" "$(key_count)" "1"
 
@@ -460,6 +478,48 @@ EOF
     ( /bin/sleep 10; kill "$lp" 2>/dev/null ) & lw=$!
     wait "$lp"; lrc=$?; kill "$lw" 2>/dev/null; wait "$lw" 2>/dev/null
     chk "  値の無い --peer は即 2 で落ちる(143=網に殺された=回り続けた)" "$lrc" "2"
+
+    echo "  ── 10-k. ★段は side ごとに持つ(片方の警告がもう片方の初回を消さない)──"
+    # 査読(Codex 2026-08-03 / Q2)で見つかった穴。段を「鎖の最小値」に対して1つだけ覚えると、
+    # 観測側が残り3日で段7を鳴らした後に edith が残り5日へ入っても、鎖の最小は3のままなので
+    # 段は7、「段7は通知済み」で **edith の話が一度も出ない**。無人で残す方の機械が消える。
+    key_reset
+    key_run 3 200 --inject-ok >/dev/null
+    chk "  観測側 3 日で 1通" "$(key_count)" "1"
+    grep -q '監視を動かしている機械' "$FAKE_NOTIFY_LOG" && ok "  1通目は観測側の話" \
+      || ng "  1通目が観測側でない: $(cat "$FAKE_NOTIFY_LOG")"
+    key_run 3 5 --inject-ok >/dev/null
+    chk "  ★相手が段7へ入ったら鳴る(片側1つの段だと此処が消える)" "$(key_count)" "2"
+    grep -q 'test-peer' <(tail -1 "$FAKE_NOTIFY_LOG") && ok "  2通目は相手の話" \
+      || ng "  2通目が相手でない: $(tail -1 "$FAKE_NOTIFY_LOG")"
+    key_run 3 5 --inject-ok >/dev/null
+    chk "  両方とも通知済みなら増えない" "$(key_count)" "2"
+    # 記録は3欄。古い2欄の形(= 鎖全体で段を1つ)は、その段がどちら側の物か決められないので
+    # 両方「未通知」に倒す。1通多く出るだけで済み、逆に倒すと黙る。
+    #   下は「2欄目をそのまま self の段として読む」版だと沈黙する形:
+    #   古い記録の段7 を self の段と読むと、残り3日(段7)の観測側が抑制されて 0通になる。
+    key_reset; printf '%s 7\n' "$(date +%s)" > "$SB/key.mark"
+    key_run 3 200 --inject-ok >/dev/null
+    chk "  ★古い2欄の記録は未通知として読む(沈黙より重複)" "$(key_count)" "1"
+
+    echo "  ── 10-l. ★既に切れた鍵に固有の段がある(段1の後で黙らない)──"
+    # 同じ査読の Q2。残り -2 日は `-2 <= 1` なので段1に落ちる。段1を鳴らした後だと
+    # 「通知済み」で黙る = 監視が数時間止まっている間に期限を越えると、**越えた事が出ない**。
+    key_reset
+    key_run 200 1 --inject-ok >/dev/null; chk "  まず 1 日の段で 1通" "$(key_count)" "1"
+    key_run 200 -2 --inject-ok >/dev/null
+    chk "  ★期限を越えたら段0でもう1通(段1で止まる版は此処が 1 のまま)" "$(key_count)" "2"
+    grep -q '既に切れています' <(tail -1 "$FAKE_NOTIFY_LOG") \
+      && ok "  ★文面が『あと N 日』でなく『既に切れています』" \
+      || ng "  期限切れの文面になっていない: $(tail -1 "$FAKE_NOTIFY_LOG")"
+    grep -q 'MENTION=\[既定\]' <(tail -1 "$FAKE_NOTIFY_LOG") \
+      && ok "  期限切れは @Tom が付く" || ng "  期限切れに ping が無い: $(tail -1 "$FAKE_NOTIFY_LOG")"
+    key_run 200 -3 --inject-ok >/dev/null
+    chk "  切れたまま毎回は鳴らさない(段0も1回だけ)" "$(key_count)" "2"
+    # ★観測している主体を必ず名乗る(査読 Q3: 誰から見た話かが無いと取り違える)。
+    grep -q "$(hostname -s)" <(tail -1 "$FAKE_NOTIFY_LOG") \
+      && ok "  ★どの機械から見た話かが文面に載る" \
+      || ng "  観測主体が載っていない: $(tail -1 "$FAKE_NOTIFY_LOG")"
 
     unset TEST_KEY_CHECK TEST_TAILSCALE TEST_KEY_PEER FAKE_SELF_DAYS FAKE_PEER_DAYS FAKE_TS_SKELETON
 fi
