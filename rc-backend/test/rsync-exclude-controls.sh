@@ -116,7 +116,8 @@ probe() { # probe <option 文字列> <A|B> -> "RC=0 GIT=yes ..." を1行で
 }
 field() { printf '%s' "$1" | /usr/bin/tr ' ' '\n' | /usr/bin/grep "^$2=" | /usr/bin/cut -d= -f2; }
 
-# 4本の脚の option が全部同じなら実走は1回で足りる。違っていたら全部走らせる。
+# ★4本とも同じ文字列でも**脚ごとに走らせる**(纏めない)。纏めると、後で1本だけ旗が
+#   変わった時に「代表1本が緑」で通ってしまう。種類の数は下の見出しに出すだけ。
 UNIQ="$(printf '%s\n' "${LEG_OPTS[@]}" | /usr/bin/sort -u)"
 N_UNIQ="$(printf '%s\n' "$UNIQ" | /usr/bin/wc -l | /usr/bin/tr -d ' ')"
 
@@ -130,6 +131,7 @@ for o in "${LEG_OPTS[@]}"; do
   out="$(probe "$o" A)"
   rs="$(field "$out" RSYNC)"
   [ -n "$rs" ] || { echo "★rsync が見つからない(WHERE=$WHERE)= 測定不成立"; echo "$out"; exit 2; }
+  RS_PATH="$rs"   # ★最後に観測した実体を控える(要約の為だけに走行を1本増やさない)
   chk "X${i}a 脚${i}: 宛先の .git/HEAD が残る"        "yes"     "$(field "$out" GIT)"
   chk "X${i}b 脚${i}: 宛先の .gitignore が残る"       "yes"     "$(field "$out" IGN)"
   # ★空振り防止: 何も起きなくても .git は残る。**delete と転送が実際に起きた**事を釘付ける。
@@ -162,6 +164,6 @@ if [ "${RC_RSYNC_EXCL_NEG:-1}" = "1" ]; then
 fi
 
 echo "--- 合計: PASS $pass / FAIL $fail ---"
-echo "    測った rsync: $(printf '%s' "$(probe "${LEG_OPTS[0]}" A)" | /usr/bin/tr ' ' '\n' | /usr/bin/grep '^RSYNC=' | /usr/bin/cut -d= -f2-) (WHERE=$WHERE)"
+echo "    測った rsync: ${RS_PATH:-?} (WHERE=$WHERE)"
 [ "$WHERE" = edith ] || echo "    ★edith 側の rsync は**ここでは測っていない**(別個体)= RC_RSYNC_EXCL_WHERE=edith"
 [ "$fail" = 0 ]
