@@ -100,6 +100,83 @@ test("★capacity=0 を許すと追いつきが恒久的に死ぬ(R5 が防い�
   assert.equal(res.gap, true, "gap は立つ = 壊れ方は『恒久 gap』であって『黙って消える』ではない");
 });
 
+// ── 量の門(2026-08-04)────────────────────────────────────────────────────
+// 件数の門は**1件の大きさを問わない**。tool 結果が数 MB になる 1 行が 256 件 x 数 MB で
+// 常駐し、会話は `feeds` / `WorkerManager.rings` に溜まり続ける(掃除する口が無い)ので、
+// 上限が件数だけだと常駐量は**会話数 x 1件の大きさ**で伸びる。
+// 落とす向きは件数の門と**同じ「古い方から」**にしてある = 溢れは既存の gap 判定に
+// そのまま乗る。ここが逆向き(新しい方から)だと、gap が立たないまま列が欠ける。
+const big = (n) => ({ blob: "x".repeat(n) });
+
+test("量の上限を超えたら古い方から落ちる(件数にはまだ余裕が在っても)", () => {
+  const r = new EventRing(100, { maxBytes: 400 });
+  for (let i = 1; i <= 6; i++) r.push(big(100)); // 1件 ≒ 113 byte
+  assert.ok(r.buf.length < 6, "件数に余裕が在っても量で落ちねばならない");
+  assert.ok(r.bytes <= 400, `合計が上限を超えたまま: ${r.bytes}`);
+});
+
+test("★量で落ちた分も gap を申告する(件数で落ちた時と同じ意味論)", () => {
+  const r = new EventRing(100, { maxBytes: 400 });
+  for (let i = 1; i <= 6; i++) r.push(big(100));
+  const res = r.since(1);
+  assert.equal(res.gap, true, "量で消えた列を『連続』として渡すと電話に嘘の履歴が出る");
+});
+
+test("合計の帳簿が実際の中身と一致する(増減で持っているので狂うと静かに壊れる)", () => {
+  const r = new EventRing(100, { maxBytes: 100_000 });
+  for (let i = 1; i <= 20; i++) r.push({ i, pad: "あ".repeat(i) }); // 多バイト文字を混ぜる
+  const recomputed = r.buf.reduce((a, e) => a + e.bytes, 0);
+  assert.equal(r.bytes, recomputed, "帳簿と中身がずれている = 以後の判定が全部ずれる");
+});
+
+test("計測は UTF-8 のバイト数(UTF-16 の文字数ではない)", () => {
+  // 日本語は UTF-8 で 3 byte / UTF-16 の length では 1。ここを length で測ると
+  // Tom の会話(日本語)で**3 倍過小評価**し、量の門が実質効かなくなる。
+  const r = new EventRing(10, { maxBytes: 100_000 });
+  r.push("あ"); // JSON は `"あ"` = 3 + 引用符 2 = 5 byte
+  assert.equal(r.buf[0].bytes, 5, "UTF-8 で測っていない");
+});
+
+test("maxBytes が正の整数でなければ構築時に throw する(capacity と同じ形の門)", () => {
+  for (const bad of [0, -1, 1.5, NaN, Infinity, "8", null]) {
+    assert.throws(
+      () => new EventRing(8, { maxBytes: bad }),
+      /maxBytes must be a positive integer/,
+      `maxBytes=${String(bad)} は撥ねられねばならない`,
+    );
+  }
+  // 既定(未指定)は構築できる — 上を「常に throw」で満たしてしまわない為の対。
+  assert.ok(new EventRing(8).maxBytes > 0);
+});
+
+test("JSON にできない物は**採番の前に**撥ねる(seq に穴を空けない)", () => {
+  const r = new EventRing(8, { maxBytes: 100_000 });
+  assert.equal(r.push({ ok: 1 }), 1);
+  const cyc = {};
+  cyc.self = cyc;
+  assert.throws(() => r.push(cyc), /circular|Converting circular/i);
+  assert.throws(() => r.push(undefined), /JSON-serializable/);
+  // ★ここが本題: 撥ねた後も次の seq は 2。飛んでいると、電話の栞が存在しない番号を
+  //   指し、`since()` は「その番号より後」を返すので**欠落が gap にならない**。
+  assert.equal(r.push({ ok: 2 }), 2, "撥ねた分で seq が飛んだ = 静かな取りこぼしの穴");
+  assert.equal(r.buf.length, 2);
+});
+
+test("★残る穴を名指しで固定: 1件で上限を超えるイベントは次の push まで残る", () => {
+  // 「最新1件は落とさない」の代償。ここが緑である事が仕様であって、事故ではない。
+  // 落とす設計にしない理由は src/ring.mjs の push の注記(Codex 2026-08-04 の反論と撤回条件)。
+  const r = new EventRing(100, { maxBytes: 200 });
+  r.push(big(50));
+  r.push(big(5000)); // 単体で上限超え
+  assert.equal(r.buf.length, 1, "巨大な1件だけが残る");
+  assert.ok(r.bytes > r.maxBytes, "= 常駐量の天井は maxBytes ではなく max(maxBytes, 最大の1件)");
+  // 次の push で追い出される事まで見る(= 恒久的に居座りはしない)。
+  r.push(big(10));
+  assert.ok(r.bytes <= r.maxBytes, "次の push で追い出されていない = 本当に居座る");
+  // そして buf は空にならない = 「buf が空 ⟹ nextSeq === 1」が保たれる。
+  assert.ok(r.buf.length >= 1);
+});
+
 test("★capacity>=1 が『buf が空 ⟹ nextSeq===1』を成り立たせている(R3 の等価性の土台)", () => {
   // 変異 R3(空リングの起点を nextSeq でなく 0 と読む)は素通りした。調べると、
   // 差が出る入力は `since(-1)` の1点だけで、負の seq は `tail.mjs` の `^\d+$` で

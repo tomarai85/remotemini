@@ -974,8 +974,10 @@ MUT = [
  # 保証できない時だけ立つ印で、これが落ちるとクライアントは /history の読み直しへ
  # 倒さず、**欠けた列を連続として描く**(= 電話に嘘の履歴が出る)。
  # 族の性質は M/P と同じ病気の一族: 「読めなかった」を値として通す形。
+ # ★2026-08-04: 量の門を足した時に本文が `if` から `while` へ変わり、この的が外れた
+ #   (`--dry` が「当たらない 1件」で捕まえた = 門が仕事をした実例)。
  ("R1 溢れても切り捨てない(固定長リングが無限に伸びる)", RNG,
-  "    if (this.buf.length > this.capacity) this.buf.shift();",
+  "    while (this.buf.length > this.capacity) this.bytes -= this.buf.shift().bytes;",
   "    void 0;"),
  ("R2 溢れを黙って連続として渡す(gap を立てない = 嘘の連続性)", RNG,
   "    if (seq + 1 < oldestHeld) out.gap = true;",
@@ -999,6 +1001,27 @@ MUT = [
       throw new Error(`EventRing: capacity must be a positive integer, got ${capacity}`);
     }""",
   "    void capacity;"),
+ # --- R12-R14 = 量の門 (2026-08-04) ------------------------------------------------
+ # 件数の門(R1)は**1件の大きさを問わない**。tool 結果が数 MB になる 1 行が来ると
+ # 256 件 x 数 MB がそのまま常駐し、会話は `feeds` / `WorkerManager.rings` に溜まり続ける
+ # (どちらも掃除する口が無い)ので、常駐量は**会話数 x 1件の大きさ**で伸びる。
+ # R1 の的だけ在って量の的がゼロだと、「リングは上限を守る」という主張の**半分しか**
+ # 測っていない事になる(件数は測る / 量は誰も見張っていない)。
+ ("R12 量の門を外す(件数に余裕が在る限り、1件が何 MB でも溜め続ける)", RNG,
+  """    while (this.buf.length > 1 && this.bytes > this.maxBytes) {
+      this.bytes -= this.buf.shift().bytes;
+    }""",
+  "    void 0;"),
+ ("R13 maxBytes の検査を外す(0 や負で構築でき、最新1件しか残らないリングが静かに出来る)", RNG,
+  """    if (!Number.isInteger(maxBytes) || maxBytes < 1) {
+      throw new Error(`EventRing: maxBytes must be a positive integer, got ${maxBytes}`);
+    }""",
+  "    void maxBytes;"),
+ # ★R14 は「効かない門」の的。UTF-16 の文字数で測ると、日本語(UTF-8 で 3 byte)の会話では
+ #   **3 倍過小評価**する = 門は在るのに実質 3 倍まで溜まる。門の**有無**でなく**目盛り**の変異。
+ ("R14 量を UTF-16 の文字数で測る(日本語の会話で上限が実質 3 倍に緩む)", RNG,
+  '  return Buffer.byteLength(s, "utf8");',
+  "  return s.length;"),
  # --- R6-R11 = 長待ち受け(long-poll)の栞 (2026-08-04、DESIGN §2.36) ------------------
  # 族が `src/ring.mjs` から広がった。電話の配信が SSE から long-poll へ替わった事で、
  # 「間が失われたのを黙って連続に見せない」責任が **栞の判定 (`tail.mjs`) と
