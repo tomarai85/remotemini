@@ -102,6 +102,12 @@ LOCAL_CTLS=(
                                      # 破って `npm test` を赤にした結果、以降の変異が全部
                                      # 「検出」と記録された(= 素通りが丸ごと隠れ、要約は
                                      # 「素通り: なし」= **緑の方向に壊れた**)
+    test/commit-suite-gate-controls.sh # commit の直前に単体の一式を回す門
+                                     # (`tools/commit-suite-gate.sh`)。偽の一式を差すので
+                                     # 本物の `npm test` は回さない。実測1秒未満。
+                                     # ★本体が守るのは「rc は 0 なのに落ちた検査が在る」形と
+                                     # 「集計行が出ていない(= そもそも走っていない)」形。
+                                     # 素朴な rc だけ見る版に差し替えると 11 本中 8 本が倒れる
 )
 EDITH_CTLS=(
     test/env-death-controls.sh

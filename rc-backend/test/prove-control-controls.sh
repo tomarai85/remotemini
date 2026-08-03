@@ -9,8 +9,11 @@
 # そこで `RC_ROOT` の継ぎ目で**砂場の repo** を指す(継ぎ目を使うのであって、
 # 門を迂回しているのではない —— 砂場には変異走行の機構がそもそも無い)。
 #
-# 砂場の作り: 守り `tools/guard.sh` を v1(欠陥あり)→ v2(直した)の順で commit し、
-# 対照 `test/g-controls.sh` を置く。prove-control.sh が
+# 砂場の作り: 守り `$d/tools/guard.sh` を v1(欠陥あり)→ v2(直した)の順で commit し、
+# 対照 `$d/test/g-controls.sh` を置く(**この repo の file ではない**。走行中に
+# `mk_sandbox` が作る。名前だけ書くと「実在する file を引いた」形になり、
+# `test/no-linerefs.test.mjs` の引用検査が正しく赤にする —— 実際に一度赤くした)。
+# prove-control.sh が
 #   ①今の版(v2)= 緑 ②旧版(v1)= 赤 ③どの行が倒れたか
 # を正しく出せるかを見る。
 set -uo pipefail
