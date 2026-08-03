@@ -467,6 +467,80 @@ MUT = [
   "  async function run(key, fn, { signal, maxWaiters = defaultMaxWaiters } = {}) {",
   "  async function run(key0, fn, { signal, maxWaiters = defaultMaxWaiters } = {}) {\n    const key = typeof key0 === 'string' && key0 ? 'ALL' : key0;"),
 
+ # ★M110-M112 =「積んだ待ちを、後から来た誰かの為に捨てない」(規則3、2026-08-04 決着)の対照。
+ #   捨て方は**3通りあって、1つ潰しても他は通る**ので3本要る(Codex `gpt-5.6-sol` xhigh の指摘)。
+ #     - 孤児化(M110/M111): 約束が**永久に未解決**。素の配列操作で起きる事故の形。
+ #     - 明示的 flush(M112): 断って捨てる。仕様違反だが「ちゃんと」書かれている形。
+ #   両者は片方が片方を含まない。だから `watch()` は「決着した」ではなく
+ #   **`resolved` である事**を要求している(断って捨てる方は settled では素通りする)。
+ ("M110 後から積む時に、先に待っている待ちを黙って捨てる(孤児化)", MTX,
+  "      q.push(w);",
+  "      q.length = 0;\n      q.push(w);"),
+ # ★M111 が**境界だけ**の形。上限ちょうどの時にしか現れないので、2本→3本の検査では
+ #   掴めない(だから `test/mutex.test.mjs` に上限ちょうどの検査が別に居る)。
+ #   §2.18-11 の優先挿入が入ると「先頭へ入れる」がこれに化ける道が出来る。
+ ("M111 上限で断る代わりに、古い待ちを外して席を空ける(優先挿入が化ける形)", MTX,
+  "        throw mutexError(MUTEX_BUSY, `${key}: 送信中で、待ちも上限(${maxWaiters})。**積まない**`);",
+  "        q.shift();"),
+ # ★M113-M117 = ワーカー経路側(§2.18-12)。鍵の層で「捨てない」を決めた後も、
+ #   **こちらには捨てる実装が生きたまま残っていた**。検査 538 本が全部緑だったので、
+ #   「決めた事」と「決めた事を実現している事」を分けて測る対照が此処に要る。
+ ("M113 退役の時に、積んだ送信を黙って消す(2026-08-04 まで本当にこうだった)", WRK,
+  "    this._dropQueued(sessionId, entry, reason);\n    // ★`workers` から外す事",
+  "    void reason;\n    // ★`workers` から外す事"),
+ # ★M114 が Codex の名指しした穴(「失敗イベントを揮発性にする」)。リングには残るので
+ #   後から拾えるが、**繋がっている電話にはその場で届かない**。
+ #
+ #   ★2026-08-04 に**的を差し替えた**。元の的は `_retire` の中の順序(通知を entry を外した
+ #   後に出す)だったが、同日に「宛先が entry 持ちだと、外した後の通知は全部届かない」
+ #   —— 死亡通知・割り込み・idle 回収の**全部** —— が実測で出たので、宛先を
+ #   `this.listeners`(セッション持ち)へ移した。結果、順序の入れ替えは**何も変えない**
+ #   = 元の的は永久に素通りする死んだ変異になる。撤去ではなく、同じ穴の**今の形**へ移す:
+ #   「生配信を workers の在籍で門番する」。旧実装の意味をそのまま再現する形。
+ ("M114 生配信を workers の在籍で門番する(entry を外した後の通知が電話に届かない)", WRK,
+  "    (this.listeners.get(sessionId) || noop)(seq, data);",
+  "    (this.workers.has(sessionId) ? (this.listeners.get(sessionId) || noop) : noop)(seq, data);"),
+ ("M115 予期しない死の道だけ通知を落とす(退役路は5本ある)", WRK,
+  '      this._dropQueued(sessionId, entry, "worker_died");\n',
+  ""),
+ # ★M116 は逆向きの対照。「退役のたびに落ちた事にする」= 嘘の failed を流す形。
+ #   上の肯定側の検査5本は**これを全部緑で通す**ので、陰性対照が別に要る。
+ ("M116 積んだ物が無くても『落ちました』と出す(嘘の failed)", WRK,
+  "    if (!entry.queue.length) return 0;\n    const dropped = entry.queue.splice(0, entry.queue.length);",
+  '    const dropped = entry.queue.splice(0, entry.queue.length).concat([{ text: "", seq: 0 }]);'),
+ ("M117 どの turn が落ちたか言わない(名指しをやめる)", WRK,
+  "        queuedSeq: item.seq,\n",
+  ""),
+ # ★M118 は「積んだ物を消す」の**隣の形**。消すのは行列ではなく Map の席で、
+ #   巻き添えで消えるのは**生きている次の子**。`error` は kill 失敗でも出るので、
+ #   割り込みで差し替わった後に届く。名前で消すと H2(1つの転写に書き手が2人)。
+ ("M118 遅れて来た error が、名前で Map を消す(差し替わった後の生きた子を外す)", WRK,
+  "此処だけ無かった。\n      if (this.workers.get(sessionId) === entry) this.workers.delete(sessionId);",
+  "此処だけ無かった。\n      this.workers.delete(sessionId);"),
+
+ # ★2026-08-04 に的が空いていた事が判った。X6 は「猶予後に SIGKILL を撃たない」側で、
+ #   「死を確認しても猶予を止めない」側は誰も撃っていなかった。掴む検査 (H2-9b) は
+ #   `timers.every(t => t.cleared)` = **空配列でも true** なので、対照としても空回りし得た。
+ #   前提 (`timers.length >= 1`) を足した上で、此処に的を置いて実際に赤くなる事を測る。
+ ("M119 死を確認しても猶予タイマーを止めない(死体に SIGKILL を撃つ)", WRK,
+  """    if (entry.killTimer) {
+      this.clearTimer(entry.killTimer);
+      entry.killTimer = null;
+    }""",
+  """    if (false) {
+      this.clearTimer(entry.killTimer);
+      entry.killTimer = null;
+    }"""),
+
+ ("M112 後から積む時に、先の待ちを**断って**捨てる(明示的 flush)", MTX,
+  "      const w = { grant, detach: () => {} };",
+  """      const w = { grant, reject, detach: () => {} };
+      if (q.length) {
+        const v = q.shift();
+        v.detach();
+        v.reject(mutexError(MUTEX_BUSY, "席を空ける為に断って捨てた"));
+      }"""),
+
  # ★M95 が本丸。頭が読めない時に祖先へ倒すと、机の TUI と同じ転写ファイルを2人で書く。
  ("M95 頭が読めない時に**祖先**を返す(= 共有書き込みへ倒す。H2 が防ぐ破壊そのもの)", HDS,
   '  const e = parseHead(text, name);\n  return e ? e.head : "";',
@@ -670,9 +744,13 @@ MUT = [
  # ★的に**閉じ括弧まで**入れてある。8 空白の行だけでは 10 空白の行(= W18 と同じ site B)の
  #   部分文字列になって**2件に当たる**(`--dry` が `NG(2件)` で出した。2026-08-03)。
  #   site A は `      });`(6 空白)で閉じ、site B は `        });`(8 空白)で閉じる。
+ # ★2026-08-04 に的を付け替えた。site A に `stale` 欄が増えて、旧探し文の `\n      });` が
+ #   もう続かない(= `--dry` の「当たらない 1件」で pre-commit gate に捕まった)。欄を消すのでは
+ #   なく**site A を撃つ**事が W26 の趣旨なので、探し文を今の本文へ寄せた。続く註釈行を
+ #   1行入れてあるのは上と同じ理由 —— 8 空白の行だけでは site B の部分文字列に当たる。
  ("W26 異常終了側にだけ死因を付ける(spawn 失敗は理由なしのまま電話へ)", WRK,
-  "        stderr: flushStderr(entry),\n      });",
-  "        // mutated: 片方だけ\n      });"),
+  "        stderr: flushStderr(entry),\n        // ★**今の子の失敗か",
+  "        // mutated: 片方だけ\n        // ★**今の子の失敗か"),
  # --- W19-W23: 会話の**居場所**(DESIGN §2.22 / §3-V)。検出は `test/server-cwd.test.mjs`
  #   の静的検査 —— `server.mjs` は import すると listen するので単体から呼べない。
  ("W19 会話の居場所を spawn に渡さない($HOME で開く)", SRV,
@@ -1194,8 +1272,26 @@ _CHILD_PGIDS = set()
 
 # 実測: `npm test` 約0.7秒 / e2e 約35秒。600秒 = 17倍の余裕。
 # ★これは「遅かったら赤」の閾値ではなく**無限に待たない為の上限**。
-#   ここに引っ掛かったら測定は失敗であって「検出」ではないので、下では die する。
+#   ここに引っ掛かったら測定は失敗であって「検出」ではない。
+#
+# ★2026-08-04 の是正: 引っ掛かった時に**必ず die する**形だった。理由は正しかった
+#   (時間切れを「検出」に丸めるのは成績の水増し)が、結論が行き過ぎていた ——
+#   **変異1件の測定失敗で、走行 157 件が全部落ちる**。実際に M111 で起きた。
+#   M111 は「上限超えを断る」を「古い待ちを外す」へ変える変異で、外された待ちの
+#   約束が永久に未解決になる = e2e の HTTP 要求が永遠に返らない。つまり**この変異が
+#   撃っている欠陥そのものの症状として**脚が固まる。それで台本ごと止まるなら、
+#   固まる系の欠陥を撃つ変異は1つも置けなくなる。
+#
+#   分けたのは**処分**であって閾値ではない(数は1つのまま = 増やすと必ず drift する):
+#     - 対照の脚(無変異 / 故意に壊した木)で時間切れ → **die**。台本が自分の赤を
+#       見分けられる事の証明が取れていないので、以降の判定に意味が無い。
+#     - 変異の脚で時間切れ → その脚は **未測定**。緑にも赤にも丸めず、行にそう書き、
+#       走行は続ける。素通りが1件も無くても未測定が在れば終了コードは **2**。
+#   「未測定を緑に丸めない」は守ったまま、「未測定を赤(検出)にも丸めない」を足した。
 CHILD_TIMEOUT_S = 600
+
+# 変異の脚で時間切れになった記録。変異1件ごとに clear する(NO_SUMMARY と同じ作法)。
+TIMED_OUT = []
 
 def _reap_children(grace=1.0):
     if not _CHILD_PGIDS:
@@ -1225,7 +1321,11 @@ def _on_signal(signum, _frame):
 for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(_sig, _on_signal)
 
-def run_child(cmd, cwd, label):
+def run_child(cmd, cwd, label, timeout_fatal=True, timeout_s=None):
+    # timeout_s は**対照の口だけ**が渡す(下の `--selftest-timeout`)。走行は既定のまま。
+    # env で上書きできる形にしなかったのは、低い値が real な走行に残ると偽の未測定が
+    # 出るから —— 差し替え口は在るが、走行の経路からは触れない。
+    timeout_s = CHILD_TIMEOUT_S if timeout_s is None else timeout_s
     p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          stdin=subprocess.DEVNULL, text=True, start_new_session=True)
     try:
@@ -1235,7 +1335,7 @@ def run_child(cmd, cwd, label):
     _CHILD_PGIDS.add(pgid)
     timed_out = False
     try:
-        out, err = p.communicate(timeout=CHILD_TIMEOUT_S)
+        out, err = p.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         timed_out = True
         try:
@@ -1250,18 +1350,79 @@ def run_child(cmd, cwd, label):
             pass
         _CHILD_PGIDS.discard(pgid)
     if timed_out:
-        die(f"{label}: {CHILD_TIMEOUT_S} 秒を超えた(実測は 0.7〜52 秒。e2e は 2026-08-03 に\n"
-            f"割り込みの予算を 4000ms へ戻した分だけ伸びた = 35→52 秒)。\n"
-            f"これは**測定の失敗**であって「変異を検出した」ではないので、"
-            f"検出に丸めずここで止める。\n"
-            f"--- stdout 末尾 ---\n" + "\n".join(out.splitlines()[-8:]) +
-            f"\n--- stderr 末尾 ---\n" + "\n".join(err.splitlines()[-8:]))
+        msg = (f"{label}: {timeout_s} 秒を超えた(実測は 0.7〜52 秒。e2e は 2026-08-03 に\n"
+               f"割り込みの予算を 4000ms へ戻した分だけ伸びた = 35→52 秒)。\n"
+               f"これは**測定の失敗**であって「変異を検出した」ではない。\n"
+               f"--- stdout 末尾 ---\n" + "\n".join(out.splitlines()[-8:]) +
+               f"\n--- stderr 末尾 ---\n" + "\n".join(err.splitlines()[-8:]))
+        if timeout_fatal:
+            die(msg + "\n(対照の脚なので、ここで止める。台本が赤を見分けられる証明が無い)")
+        TIMED_OUT.append((label, msg))
+        return None      # ★「測れていない」を**型で**表す。read_suite に渡さない
     return subprocess.CompletedProcess(cmd, p.returncode, out, err)
 
-def suites(dst):
-    u = run_child(["npm", "test", "--silent"], dst, "単体")
-    e = run_child(["node", "test/e2e-local.mjs"], dst, "e2e")
-    return read_suite(u, "単体", UNIT_FAIL), read_suite(e, "e2e", E2E_FAIL)
+def suites(dst, timeout_fatal=True):
+    """(単体, e2e) を返す。各要素は True=落ちた / False=緑 / **None=測れていない**。"""
+    u = run_child(["npm", "test", "--silent"], dst, "単体", timeout_fatal)
+    e = run_child(["node", "test/e2e-local.mjs"], dst, "e2e", timeout_fatal)
+    return (None if u is None else read_suite(u, "単体", UNIT_FAIL),
+            None if e is None else read_suite(e, "e2e", E2E_FAIL))
+
+def verdict_of(ufail, efail, why, blind_here):
+    """変異1件の判定。ufail/efail は True/False/**None(未測定)**。
+
+    順序が全て。**赤が先、未測定が次、緑は最後**:
+      - 脚が1本でも赤 → 検出(他方が固まっていても、捕まえた事実は動かない)
+      - 赤が無く未測定が在る → **未測定**。素通り(検査の穴)と区別が付いていないので、
+        どちらにも丸めない。ここを「素通り」に倒すと嘘の穴を報告し、「検出」に倒すと
+        守れていない物を守れたと報告する。両方とも過去に踏んだ形。
+      - 全部緑 → 素通り(注記つきなら未到達)
+    """
+    if ufail is True or efail is True:
+        return "★注記を外せる" if why else ("検出(要約なしで落ちた)" if blind_here else "検出")
+    if ufail is None or efail is None:
+        return "★未測定(時間切れ)"
+    return "未到達(注記)" if why else "★素通り"
+
+def leg_text(fail, name):
+    return f"{name}未測定" if fail is None else (f"{name}落ちる" if fail else f"{name}通る")
+
+# --- `--verdict <u> <e> [why]`: 上の判定表**だけ**を外から駆動する口 -----------------
+# 対照(test/mutation-verdict-controls.sh)がここを叩く。`--env-death` と同じ作法で、
+# 判定を対照側に書き写さない(写した方だけ正しくて本体は間違ったまま緑、を避ける)。
+# 引数は `t`/`f`/`u` (= True/False/None)。
+if "--verdict" in sys.argv:
+    _i = sys.argv.index("--verdict")
+    _a = sys.argv[_i + 1:]
+    if len(_a) < 2:
+        die("--verdict の後に <u> <e> が要る(t|f|u)")
+    _m = {"t": True, "f": False, "u": None}
+    if _a[0] not in _m or _a[1] not in _m:
+        die(f"--verdict の引数は t|f|u のみ: {_a[:2]}")
+    _why = _a[2] if len(_a) > 2 and _a[2] not in ("", "-") else None
+    print(verdict_of(_m[_a[0]], _m[_a[1]], _why, []))
+    sys.exit(0)
+
+# --- `--selftest-timeout <fatal|soft> <秒> <hang|fast>`: **配線**を駆動する口 ---------
+#
+# ★上の `--verdict` だけでは足りない。判定表が全部正しくても `run_child` が今まで通り
+#   die していたら、変異の脚は verdict_of へ **辿り着かない**。「写した方だけ正しくて
+#   本体は間違ったまま緑」を避けるのがこの file の作法なので、配線そのものを本物の
+#   `run_child` で回す(偽の脚 = `sleep`。検査一式を回さないので数秒で済む)。
+if "--selftest-timeout" in sys.argv:
+    _i = sys.argv.index("--selftest-timeout")
+    _a = sys.argv[_i + 1:]
+    if len(_a) < 3 or _a[0] not in ("fatal", "soft") or _a[2] not in ("hang", "fast"):
+        die("--selftest-timeout <fatal|soft> <秒> <hang|fast>")
+    _cmd = ["/bin/sh", "-c", "sleep 999" if _a[2] == "hang" else "exit 0"]
+    TIMED_OUT.clear()
+    _r = run_child(_cmd, SRC, "偽の脚", timeout_fatal=(_a[0] == "fatal"), timeout_s=float(_a[1]))
+    # fatal + hang はここへ来ない(die 済み)。来たら**それ自体が外れ**なので言う。
+    if _r is None:
+        print(f"未測定 timed_out={len(TIMED_OUT)}")
+    else:
+        print(f"測れた rc={_r.returncode} timed_out={len(TIMED_OUT)}")
+    sys.exit(0)
 
 # 作業コピーは中断路(die / 対象行が無くて continue)でも必ず消す。
 # 木まるごとのコピーなので、放置すると /var/folders に何本も残る(実際に残っていた)。
@@ -1350,6 +1511,7 @@ print("対照 OK: 無変異=緑 / 故意に壊した木=赤。以降の判定は
 
 rows = []
 blind = []          # 要約が読めないまま落ちた検査を含む変異(行8)
+timed = []          # 脚が時間切れになった変異(= その脚は未測定)
 # ★進捗を1行ずつ出す(行4)。以前は 50 分間まるごと無言で、走っているのか固まったのかが
 #   外から区別できなかった(実測: 78 件 x 37 秒)。`flush=True` が要る — stdout が
 #   file にリダイレクトされると Python は既定でブロックバッファリングになり、
@@ -1373,16 +1535,19 @@ for i, m in enumerate(MUT_RUN, 1):
         mutated = mutated.replace(_o, _n, 1)
     open(p, "w").write(mutated)
     NO_SUMMARY.clear()
-    ufail, efail = suites(dst)
+    TIMED_OUT.clear()
+    # ★変異の脚は timeout_fatal=False。対照2枚は上で既に die 付きで通してある =
+    #   「この台本は赤を見分けられる」証明は取れているので、ここでの時間切れは
+    #   台本の故障ではなく**その変異の測定失敗**として1件だけ切り離せる。
+    ufail, efail = suites(dst, timeout_fatal=False)
     blind_here = list(NO_SUMMARY)
-    if ufail or efail:
-        verdict = "★注記を外せる" if why else ("検出(要約なしで落ちた)" if blind_here else "検出")
+    verdict = verdict_of(ufail, efail, why, blind_here)
+    if verdict.startswith("検出") or verdict == "★注記を外せる":
         if blind_here:
             blind.append((name, blind_here))
-    else:
-        verdict = "未到達(注記)" if why else "★素通り"
-    rows.append((name, verdict, "unit落ちる" if ufail else "unit通る",
-                 "e2e落ちる" if efail else "e2e通る", why))
+    if TIMED_OUT:
+        timed.append((name, verdict, [lab for lab, _ in TIMED_OUT], list(TIMED_OUT)))
+    rows.append((name, verdict, leg_text(ufail, "unit"), leg_text(efail, "e2e"), why))
     shutil.rmtree(d, ignore_errors=True)
 
 w = max(len(r[0]) for r in rows)
@@ -1414,6 +1579,25 @@ if blind:
 else:
     print("\n検出はすべて要約行つき(= 何件がどう落ちたかまで読めている)")
 
+# ★時間切れの内訳。**判定に関わらず**出す —— 「unit が捕まえたから良い」で畳むと、
+#   e2e 側に穴が在るのか固まっただけなのかを誰も追えなくなる。
+if timed:
+    td = os.path.join(SRC, ".harness", "mutation-timeout")
+    os.makedirs(td, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    print(f"\n★脚が時間切れになった変異 **{len(timed)}件**"
+          f"({CHILD_TIMEOUT_S}秒。その脚は緑でも赤でもなく**未測定**):")
+    for _ti, (name, verdict, labels, items) in enumerate(timed, 1):
+        _mo = re.match(rf"[{FAM}]\d+[a-z]?", name)
+        tag = _mo.group(0) if _mo else f"unnamed{_ti}"
+        path = os.path.join(td, f"{stamp}-{tag}.txt")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(name + "\n\n" + "\n\n".join(f"=== {lab} ===\n{txt}" for lab, txt in items))
+        print(f"  - {name}\n      判定: {verdict} / 時間切れの脚: {', '.join(labels)}"
+              f"\n      写し: {path}")
+    print("  固まる系の欠陥を撃つ変異では、脚が固まる事自体がその欠陥の症状な事がある。"
+          "\n  「その脚に検査が無い」と読む前に、写しの末尾でどこで止まったかを見る事。")
+
 noted = [r for r in rows if r[1] == "未到達(注記)"]
 if noted:
     print("\n--- 未到達(実測の上で承知。理由つき)---")
@@ -1441,4 +1625,11 @@ if _moved:
     print("  今の木の判定が要るなら回し直す事(凍結のおかげで、この結果自体は有効)。")
 
 print("\n素通りした変異:", missed if missed else "なし")
-sys.exit(1 if missed else 0)
+
+# 終了コード: 1 = 素通りあり(検査の穴) / **2 = 未測定あり** / 0 = 全部測れて穴なし。
+# 2 を 0 に丸めないのがこの file の一貫した約束(read_suite / ENV_DEATH と同じ扱い)。
+# 素通りと未測定が両方在る時は 1 —— 穴が確定している方が重いが、上の節で未測定も出ている。
+unmeasured = [r[0] for r in rows if r[1] == "★未測定(時間切れ)"]
+if unmeasured:
+    print("未測定(時間切れで判定できなかった変異):", unmeasured)
+sys.exit(1 if missed else (2 if unmeasured else 0))

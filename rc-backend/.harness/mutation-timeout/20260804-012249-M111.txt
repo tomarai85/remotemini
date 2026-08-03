@@ -1,0 +1,16 @@
+M111 上限で断る代わりに、古い待ちを外して席を空ける(優先挿入が化ける形)
+
+=== e2e ===
+e2e: 600 秒を超えた(実測は 0.7〜52 秒。e2e は 2026-08-03 に
+割り込みの予算を 4000ms へ戻した分だけ伸びた = 35→52 秒)。
+これは**測定の失敗**であって「変異を検出した」ではない。
+--- stdout 末尾 ---
+PASS  ★C で send-keys が0件(A/B のペインに混ざらない)
+PASS  一覧: A は tmux/%20
+PASS  一覧: stale は blocked(理由つき)
+PASS  一覧: cwd 不一致も blocked
+PASS  status: A は registry 由来
+PASS  interrupt: A は %20 へ Escape 1回
+PASS  ★interrupt: stale は 409(別の会話を止めない)
+PASS  ★interrupt: stale で send-keys が0件
+--- stderr 末尾 ---

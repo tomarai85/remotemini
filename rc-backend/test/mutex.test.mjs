@@ -11,7 +11,15 @@
 // ★この file の作法(2つ。どちらも「計器を壊さない」ための規則):
 //   1. **落ちた検査が後続を巻き込まない**(`withDeferreds` = 作った保持者を必ず降ろす)。
 //   2. **変異で未解決になり得る約束を `await` しない**(`watch` + `assertRejected`)。
-//      → `grep 'assert.rejects' this-file` が**何も返さない**事がこの規則の検査。
+//      → これは**この file の末尾の検査が回す**(規則を散文にだけ置かない = 教義19)。
+//      ★2026-08-04 の経緯を2段書く。同じ日に、同じ規則で**別々に**2回外している:
+//        (a) 元は「`grep 'assert.rejects' this-file` が何も返さない事」。**緑になり得ない**
+//            —— 規則を説明している此処の注釈自体が当たるから。回すと必ず2件出る
+//            = 「回した人が毎回無視する」検査。赤にならない検査の裏返しで、同じく計器でない。
+//        (b) 直した形(`| grep -v '://'`)は**偶然**通っていた。除いていたのは注釈ではなく、
+//            `grep -n` が付ける `16:` と行頭の `//` が隣り合って出来る `://` の並び。
+//            注釈を1文字字下げすれば静かに壊れる = 通る理由が意図と違う。
+//        だから grep をやめて、**注釈行を綴りで落とす**検査に置き換えた(末尾)。
 //
 //   2 の実測(2026-08-02): 最初は素直に `await assert.rejects(p, …)` と書いていた。
 //   断るのをやめる変異(M88)を当てると、その約束は**永久に未解決**になり、
@@ -21,6 +29,8 @@
 //   「待って確かめる」ではなく「**もう決着しているか**を見る」形に統一した。
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { makeKeyedMutex, MUTEX_BUSY, MUTEX_ABORTED } from "../src/mutex.mjs";
 
 /** 外から解ける約束。「保持者をいつ降ろすか」を検査側が決められる様にする。 */
@@ -276,6 +286,93 @@ test("待ちが全部中止されたら鍵は空く(次が即取れる)", async 
   });
 });
 
+// ================== 「捨てない」(§2.18-2 の未決を 2026-08-04 に決着) ==================
+//
+// 決めた形 = **積んだ待ちを、後から来た誰かの為に捨てない**(`src/mutex.mjs` 冒頭の規則3)。
+// 割り込みは送信と同じ鍵に入るので(§2.18-2)、「電話が『止める』を押したら、既に積んだ
+// 送信が消えるか」はこの層の性質になる。
+//
+// ★**順序を見ない**のは意図的。§2.18-11(優先挿入、未実装)が入ると割り込みが**先頭**へ
+//   回る = 順序は**正しく**変わる。ここで順序を固定すると、その日に此処が赤くなり、
+//   「捨てない」の主張ごと緩めて直される道が出来る。守る性質(顔ぶれが欠けない)と
+//   変わってよい性質(順序)を、別の検査に分けて書く。順序・排他・優先はそれぞれ別の的。
+//
+// ★下の2本目(上限ちょうど)が要る理由(Codex `gpt-5.6-sol` xhigh 2026-08-04 の指摘):
+//   1本目の「2本待ち → 3本待ち」だけだと、**満杯の時にだけ現れる**捨て方
+//   (`q.unshift(割り込み); if (q.length > maxWaiters) q.pop();`)を見逃す。境界は別に撃つ。
+
+test("★割り込みが来ても、先に待っている送信を捨てない(顔ぶれだけ見る。順序は見ない)", async () => {
+  await withDeferreds(async (mk) => {
+    const m = makeKeyedMutex();
+    const hold = mk();
+    const ran = [];
+
+    const p0 = m.run("%1", async () => {
+      ran.push("s0");
+      await hold.promise;
+    });
+    await settle();
+
+    const w1 = watch(m.run("%1", () => ran.push("s1")));
+    const w2 = watch(m.run("%1", () => ran.push("s2")));
+    await settle();
+    assert.equal(m.waiting("%1"), 2, "前提が崩れている(2本積めていない)");
+
+    // ここで電話が「止める」を押した。割り込みも同じ鍵に入る。
+    const wi = watch(m.run("%1", () => ran.push("INT")));
+    await settle();
+    assert.equal(m.waiting("%1"), 3, "割り込みが席を空ける為に先の待ちを外した(= 捨てた)");
+
+    hold.resolve();
+    await settle(40);
+
+    // ★`resolved` を要求する(「決着した」ではなく)。断って捨てる実装は `rejected` に
+    //   なるので、settled で見ると素通りする。
+    assert.equal(w1.state, "resolved", "s1 が走っていない(捨てられた / 孤児になった)");
+    assert.equal(w2.state, "resolved", "s2 が走っていない(捨てられた / 孤児になった)");
+    assert.equal(wi.state, "resolved", "割り込み自身が決着していない");
+    assert.deepEqual([...ran].sort(), ["INT", "s0", "s1", "s2"], "走った顔ぶれが欠けている");
+    await p0;
+  });
+});
+
+test("★待ちが上限ちょうどの時、後から来た1本は**断られる**。席を空けるのではない", async () => {
+  await withDeferreds(async (mk) => {
+    const m = makeKeyedMutex(); // 既定の上限そのもので測る(本番と同じ境界)
+    const hold = mk();
+    const ran = [];
+    const CAP = 4; // makeKeyedMutex の defaultMaxWaiters
+
+    const p0 = m.run("%1", async () => {
+      ran.push("s0");
+      await hold.promise;
+    });
+    await settle();
+
+    const ws = [];
+    for (let i = 1; i <= CAP; i++) ws.push(watch(m.run("%1", () => ran.push(`s${i}`))));
+    await settle();
+    assert.equal(m.waiting("%1"), CAP, "前提が崩れている(上限ちょうどまで積めていない)");
+
+    const wx = watch(m.run("%1", () => ran.push("X")));
+    await assertRejected(wx, MUTEX_BUSY, "上限超えを断っていない");
+    assert.equal(m.waiting("%1"), CAP, "断る代わりに古い待ちを外して席を空けた(= 捨てた)");
+
+    hold.resolve();
+    await settle(60);
+
+    for (let i = 0; i < CAP; i++) {
+      assert.equal(ws[i].state, "resolved", `s${i + 1} が走っていない(捨てられた / 孤児になった)`);
+    }
+    assert.deepEqual(
+      [...ran].sort(),
+      ["s0", "s1", "s2", "s3", "s4"],
+      "走った顔ぶれが欠けている / 断ったはずの X が走った",
+    );
+    await p0;
+  });
+});
+
 test("鍵が空文字の経路は直列化されないので、取れない", async () => {
   const m = makeKeyedMutex();
   let ran = false;
@@ -286,4 +383,46 @@ test("鍵が空文字の経路は直列化されないので、取れない", as
   );
   await assertRejected(p, "MUTEX_KEY", "空の鍵を受け付けた");
   assert.equal(ran, false);
+});
+
+// ── 作法2を**機械に回させる**(DESIGN 教義19: 規則は、それを回す物が無いと効かない)──
+//
+// 綴りは連結で組み立てる。この検査は**自分の file を走査する**ので、生の literal を
+// 置くと自分に当たる(`test/no-linerefs.test.mjs` と同じ理由・同じ作法)。
+const FORBIDDEN = "assert" + "." + "rejects";
+
+/** 注釈行を落として本文だけ返す。行番号は**元の file の番号**を保つ。 */
+function codeLines(text) {
+  return text
+    .split("\n")
+    .map((line, i) => [i + 1, line])
+    .filter(([, line]) => !line.trimStart().startsWith("//"));
+}
+
+test("★作法2: 未解決になり得る約束を await しない(禁じ手が本文に1件も無い)", () => {
+  const self = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const body = codeLines(self);
+  // ★空を走査して緑を名乗らない。道が壊れて 0 行になった時、上の陰性対照は
+  //   合成文字列を見ているので**気付かない**(死んだ計器は下流の欠陥も隠す = §2.33)。
+  assert.ok(body.length > 100, `自分の file を読めていない(本文 ${body.length} 行)`);
+  const hits = body
+    .filter(([, line]) => line.includes(FORBIDDEN))
+    .map(([n, line]) => `${n}: ${line.trim()}`);
+  assert.deepEqual(
+    hits, [],
+    "断るのをやめる変異を当てると、その約束は永久に未解決になり、event loop が空になって" +
+      " node ごと終了 → 後続が全部 cancelled になる(2026-08-02 の実測: fail 0 / cancelled 8)。" +
+      " `watch()` + `assertRejected()` で「もう決着しているか」を見る形に直す事",
+  );
+});
+
+test("陰性対照: 本文に混ぜれば見つかる / 注釈に在る分は見つけない", () => {
+  const inCode = `  await ${FORBIDDEN}(p, { code: "X" });`;
+  assert.equal(codeLines(inCode).filter(([, l]) => l.includes(FORBIDDEN)).length, 1,
+    "本文の禁じ手を見逃した = この検査は空振りしている");
+  assert.equal(codeLines(`  // ${FORBIDDEN} は使わない`).filter(([, l]) => l.includes(FORBIDDEN)).length, 0,
+    "注釈に当たっている = 8/04 (a) の『緑になり得ない検査』へ戻っている");
+  // ★字下げした注釈でも落ちる事(= 8/04 (b) の grep が静かに壊れた形を、ここでは踏まない)
+  assert.equal(codeLines(`      // 例: ${FORBIDDEN}`).filter(([, l]) => l.includes(FORBIDDEN)).length, 0,
+    "字下げした注釈を本文と誤認している");
 });

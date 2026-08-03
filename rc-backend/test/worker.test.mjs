@@ -162,6 +162,9 @@ test("busy 中は idle timeout の対象にならない", () => {
   const { mgr, spawned } = makeMgr({ idleMs: 500, now: () => t });
   mgr.send("s1", "a"); // busy のまま
   t += 10_000;
+  // ★前提: **時間の条件は満たしている**(満たしていなければ「殺されない」は当たり前で、
+  //   busy を見ている事の証明にならない)。上の `idle timeout` 検査と同じ時計で回す。
+  assert.equal(mgr.status("s1").state, "busy", "前提が崩れた(busy でない)");
   mgr.sweep();
   assert.ok(!spawned[0].killed);
 });
@@ -216,6 +219,13 @@ test("H2-3b: fork していない時は名乗りを頭として書かない(無�
   const { mgr, spawned } = makeMgr({ heads });
   mgr.send(SID, "a");
   spawned[0].emitLine({ type: "system", subtype: "init", session_id: HEAD });
+  // ★前提を先に確かめる(2026-08-04、Codex Q3)。「書かなかった」は、**名乗りが処理系に
+  //   届いていない**時にも成立する = 何も起きていないのに緑になる形。
+  assert.equal(spawned[0].opts.fork, false, "前提が崩れた(fork してしまっている)");
+  assert.ok(
+    mgr.eventsSince(SID, 0).some((e) => e.data.type === "system"),
+    "前提が崩れた(名乗りが処理系に届いていない)",
+  );
   assert.deepEqual(heads.writes, []);
 });
 
@@ -319,6 +329,9 @@ test("H2-9b: exit が来たら猶予タイマーは取り消す(死体に SIGKIL
   const { mgr, spawned, timers, fireTimers } = makeMgr({ heads, killGraceMs: 5000 });
   mgr.send(SID, "a");
   mgr.interrupt(SID);
+  // ★猶予タイマーが**張られた**事を先に言う。`every` は空配列で true なので、
+  //   タイマーを1本も作らない実装でも下の1行は緑になる(2026-08-04、§2.35)。変異 M119 の的。
+  assert.ok(timers.length >= 1, "猶予タイマーが張られていない = 取り消しを測れていない");
   spawned[0].exit(0, "SIGTERM");
   assert.ok(timers.every((t) => t.cleared), "取り消していないタイマーが残っている");
   fireTimers();
@@ -494,4 +507,187 @@ test("正常終了(code=0)には死因を付けない", () => {
   const evs = mgr.eventsSince("s1", 0).map((e) => e.data);
   assert.ok(evs.some((d) => d.type === "worker_closed"));
   assert.ok(!evs.some((d) => d.type === "worker_error"));
+});
+
+// ============ 積んだ送信を黙って消さない(§2.18-12、2026-08-04) ============
+//
+// 2026-08-04 に鍵の層(tmux 経路)で「割り込みは積んだ送信を捨てない」を決めた直後、
+// **ワーカー経路には捨てる実装が生きたまま残っている**事が分かった。`interrupt` が
+// entry ごと退役させるので `entry.queue` が道連れで消え、`user_queued` と電話に出した
+// turn が**何のイベントも出さずに**消滅していた(検査 538 本が全部緑のまま)。
+//
+// 決めた形(Codex `gpt-5.6-sol` xhigh 2026-08-04): ワーカー経路は tmux と同じ振る舞いに
+// **しない**。子を殺す以上「積んだ分も届く」は作れないので、揃えるのは
+// **turn の終端状態** = `accepted → delivered | failed(理由)`。
+// 駄目なのは「`user_queued` と出した後、どちらにも落ちない」= 今日までの姿。
+
+/** 積んだ turn の「届かなかった」通知だけを取り出す。 */
+const drops = (mgr, sid) =>
+  mgr.eventsSince(sid, 0).map((e) => e.data).filter((d) => d.type === "user_dropped");
+
+test("★割り込みは、積んだ送信を黙って消さない(1件ずつ名指しで failed になる)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "a");            // これが走る
+  const q1 = mgr.send("s1", "b"); // 積まれる
+  const q2 = mgr.send("s1", "c"); // 積まれる
+  assert.equal(mgr.status("s1").queued, 2);
+
+  assert.equal(mgr.interrupt("s1"), true);
+
+  const d = drops(mgr, "s1");
+  assert.deepEqual(d.map((x) => x.text), ["b", "c"], "積んだ本文が名指しで出ていない");
+  assert.deepEqual(d.map((x) => x.reason), ["worker_interrupted", "worker_interrupted"]);
+  // ★turn の名前は `user_queued` の seq。番号を別に発明せず、既に在る目盛りを使う。
+  assert.deepEqual(d.map((x) => x.queuedSeq), [q1, q2], "どの turn が落ちたのか特定できない");
+  assert.equal(mgr.status("s1").queued, 0);
+  assert.equal(spawned[0].killed, "SIGTERM");
+});
+
+test("★届かなかった事は**揮発しない**(割り込みの瞬間に電話が切れていても後から拾える)", () => {
+  const { mgr } = makeMgr();
+  // onEvent を一度も渡さない = 誰も繋がっていない状態で割り込みが起きた場合。
+  mgr.send("s1", "a");
+  mgr.send("s1", "b");
+  mgr.interrupt("s1");
+  // 繋ぎ直した電話は seq 0 から読み直す。ここに残っていなければ、結局「無通知の消失」。
+  assert.deepEqual(drops(mgr, "s1").map((x) => x.text), ["b"]);
+});
+
+test("★通知は entry を外す**前**に出る(繋がっている電話にはその場で届く)", () => {
+  const { mgr } = makeMgr();
+  const seen = [];
+  mgr.send("s1", "a", { onEvent: (seq, data) => seen.push(data.type) });
+  mgr.send("s1", "b");
+  mgr.interrupt("s1");
+  assert.ok(seen.includes("user_dropped"), `外した後に出している(seen=${seen.join(",")})`);
+});
+
+test("★予期しない死でも、積んだ送信は名指しで failed になる", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "a");
+  mgr.send("s1", "b");
+  spawned[0].exit(1); // 自分から死んだ(interrupt を通らない道)
+  assert.deepEqual(drops(mgr, "s1").map((x) => [x.text, x.reason]), [["b", "worker_died"]]);
+});
+
+test("★shutdown でも、積んだ送信は名指しで failed になる(再配信はしない)", () => {
+  const { mgr } = makeMgr();
+  mgr.send("s1", "a");
+  mgr.send("s1", "b");
+  mgr.shutdown();
+  assert.deepEqual(drops(mgr, "s1").map((x) => [x.text, x.reason]), [["b", "server_shutdown"]]);
+});
+
+// ★陰性対照。「積んだ物が無いのに『落ちました』と出す」方の壊れ方を掴む。
+//   `_retire` は全部の退役路が通るので、ここで無条件に出す実装にすると
+//   idle 回収のたびに嘘の failed が流れる。上の5本は全部それを**緑のまま**通す。
+//   ★2026-08-04: この対照は**一度も回収していなかった**。`idleMs: 0` + 止まった時計だと
+//     `t - lastActive > idleMs` が `0 > 0` = 偽で、`sweep()` は素通り。空を掃いて緑を名乗る形
+//     (§2.33)を、この対照を書いた翌日に自分で踏んだ。時計を動かし、**回収された事**を
+//     先に確かめてから「嘘の failed が無い」を主張する。
+test("★積んだ物が無ければ、何も出さない(idle 回収で嘘の failed を流さない)", () => {
+  let t = 1000;
+  const { mgr, spawned } = makeMgr({ idleMs: 500, now: () => t });
+  mgr.send("s1", "a");
+  spawned[0].emitLine({ type: "result", result: "ok" }); // 走り切って ready
+  assert.equal(mgr.status("s1").queued, 0);
+  t += 501;
+  mgr.sweep();
+  assert.equal(mgr.status("s1").worker, "none", "回収が起きていない = 何も掃いていない");
+  assert.deepEqual(drops(mgr, "s1"), [], "何も積んでいないのに failed を流している");
+});
+
+// ---------------------------------------------------------------------------
+// ★生配信の宛先は**セッションが持つ**(2026-08-04、実測で発見)。
+//
+// 旧実装は `entry.onEvent`。`_emit` が `workers` から entry を引いていたので、
+// **entry を外した後の通知は繋がっている電話に届かなかった**: 死亡通知 /
+// `worker_interrupted` / idle 回収 —— つまり「この会話は終わった」と言う口の**全部**。
+// 電話からは応答が止まったのと区別が付かない。
+//
+// 見つからなかった理由がそのまま教訓: この file の検査は全部 `eventsSince`(= リング)で
+// 見ていて、**生配信の口を誰も見ていなかった**。だから下の3本は `onEvent` で受ける。
+// ---------------------------------------------------------------------------
+/** live で受けた type だけを並べる(リングは見ない)。 */
+function liveTypes(fn) {
+  const seen = [];
+  return { on: (_s, d) => seen.push(d.type), seen, fn };
+}
+
+test("★割り込みの通知が、繋がっている電話へ**その場で**届く", () => {
+  const L = liveTypes();
+  const { mgr } = makeMgr();
+  mgr.send("s1", "a", { onEvent: L.on });
+  mgr.interrupt("s1");
+  assert.ok(L.seen.includes("worker_interrupted"), `live に来ていない: ${L.seen}`);
+});
+
+test("★死亡通知が、繋がっている電話へ**その場で**届く", () => {
+  const L = liveTypes();
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "a", { onEvent: L.on });
+  spawned[0].exit(1);
+  assert.ok(L.seen.includes("worker_error"), `live に来ていない: ${L.seen}`);
+});
+
+test("★idle 回収の通知が、繋がっている電話へ**その場で**届く", () => {
+  let t = 1000;
+  const L = liveTypes();
+  const { mgr, spawned } = makeMgr({ idleMs: 500, now: () => t });
+  mgr.send("s1", "a", { onEvent: L.on });
+  spawned[0].emitLine({ type: "result", result: "ok" });
+  t += 501;
+  mgr.sweep();
+  assert.ok(L.seen.includes("worker_idle_closed"), `live に来ていない: ${L.seen}`);
+});
+
+// ★陰性対照。宛先をセッション持ちにした事で、**別のセッションの通知まで**流れたら壊れている。
+test("★陰性対照: 宛先はセッションごと(隣の会話の通知が混ざらない)", () => {
+  const A = liveTypes(), B = liveTypes();
+  const { mgr } = makeMgr();
+  mgr.send("s1", "a", { onEvent: A.on });
+  mgr.send("s2", "b", { onEvent: B.on });
+  mgr.interrupt("s1");
+  assert.ok(A.seen.includes("worker_interrupted"), "本人に届いていない");
+  assert.ok(!B.seen.includes("worker_interrupted"), `隣の会話へ漏れた: ${B.seen}`);
+});
+
+// ---------------------------------------------------------------------------
+// ★退役の同一性は `exit`/`close` にしか付いていなかった(2026-08-04、自分の diff の読み直しで発見)。
+//
+// `proc.on("error")` は spawn 失敗だけでなく **kill 失敗**でも出る。kill は割り込みの中で
+// 撃つので、その error は「退役 → 別の子に差し替わった」後に届き得る。届いた先で
+// `workers.delete(sessionId)` を無条件にやると、**生きている次の子が Map から外れる**。
+// 外れた子は誰も知らないまま同じ転写へ書き続け、次の送信はもう1本 spawn する = H2
+// (1つの転写に書き手が2人)。設計が一番避けたい形に、後始末の1行で入ってしまう。
+//
+// 直し方は `onDeath` と同じ = 「名前で消さず、同一性で消す」。
+// ---------------------------------------------------------------------------
+test("★遅れて来た error は、差し替わった後の生きた子を Map から外さない", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "a");
+  mgr.interrupt("s1");   // A を退役(Map から外れ、SIGTERM を撃つ。まだ死んではいない)
+  mgr.send("s1", "b");   // B を spawn。ready なので即書き込み → busy
+  mgr.send("s1", "c");   // B の行列に積む
+  assert.equal(spawned.length, 2, "前提が崩れた(2本目が上がっていない)");
+  assert.equal(mgr.workers.get("s1")?.proc, spawned[1], "前提が崩れた(Map が B でない)");
+
+  spawned[0].emit("error", new Error("kill ESRCH"));  // ★A の遅い error
+
+  assert.equal(mgr.workers.get("s1")?.proc, spawned[1], "生きている B が Map から消えた");
+  assert.equal(mgr.status("s1").queued, 1, "B に積んだ turn が巻き添えで消えた");
+  assert.deepEqual(drops(mgr, "s1"), [], "他人の行列を落としたと名乗っている");
+  // ★失敗は黙らせない(§2.16)が、**誰の失敗か**は言う(Codex 2026-08-04)。
+  assert.equal(lastError(mgr, "s1").stale, true, "先代の失敗が今の子の失敗として出ている");
+});
+
+// ★陰性対照。同一性で見る事にした結果、**本当に現役の子が error で死んだ**時に
+//   Map から外れなくなったら、次の送信が死んだ子へ書きに行く。そちらの壊れ方を掴む。
+test("★陰性対照: 現役の子の error では、ちゃんと Map から外れる / stale と名乗らない", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "a");
+  spawned[0].emit("error", new Error("spawn ENOENT"));
+  assert.equal(mgr.workers.get("s1"), undefined, "死んだ子が Map に残っている");
+  // ★これが無いと「常に stale と言う」実装でも上の検査は緑になる。
+  assert.equal(lastError(mgr, "s1").stale, false, "現役の失敗を先代扱いしている");
 });

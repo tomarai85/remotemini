@@ -34,12 +34,17 @@ test("gap なしの場合 gap フラグは falsy", () => {
   const r = new EventRing(8);
   r.push({});
   r.push({});
+  // ★先に「差分が出ている」事を言う。`since` が空配列を返す実装でも `[].gap` は undefined =
+  //   falsy なので、下の1行だけでは**何も返さない壊れ方**を緑で通す(2026-08-04、§2.35)。
+  assert.equal(r.since(1).length, 1, "差分が出ていない = gap を測れる状態ですらない");
   assert.ok(!r.since(1).gap);
 });
 
 test("since(最新) は空配列", () => {
   const r = new EventRing(4);
   r.push({});
+  // ★積めた事を先に確かめる。push が効いていない木でも「空配列」は満たされる。
+  assert.equal(r.since(0).length, 1, "積んだ物が入っていない = 空配列の意味が変わる");
   assert.deepEqual(r.since(1), []);
 });
 

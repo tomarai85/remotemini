@@ -129,6 +129,13 @@ export class WorkerManager {
     //   = H2 そのもの。全員を覚えれば「1人でも未確認なら分岐する」が素直に言える。
     this.dying = new Map();
     this.gens = new Map();    // sessionId -> 世代番号(単調増加)
+    // sessionId -> 生配信の宛先。**entry ではなくセッションが持つ**(2026-08-04、実測で発見)。
+    // 旧: `entry.onEvent`。`_emit` が `workers` から entry を引いていたので、**entry を外した後の
+    // 通知が繋がっている電話に届かなかった** —— つまり `worker_interrupted` / 死亡通知 /
+    // idle 回収の全部。検査は全部 `eventsSince`(= リング)で見ていたので、1本も落ちなかった
+    // (§2.33「死んだ計器は下流の欠陥も隠す」の、計器が**別の口を見ていた**版)。
+    // 宛先はワーカーより長生きする物なので、リング(`this.rings`)と同じ寿命に置く。
+    this.listeners = new Map();
   }
 
   _ring(sessionId) {
@@ -142,8 +149,9 @@ export class WorkerManager {
 
   _emit(sessionId, data) {
     const seq = this._ring(sessionId).push(data);
-    const entry = this.workers.get(sessionId);
-    (entry?.onEvent || noop)(seq, data);
+    // ★宛先は `workers` から引かない。引いていた頃、entry を外した後の通知(死・割り込み・
+    //   idle 回収)は繋がっている電話に届かず、電話は「黙った」としか見えなかった。
+    (this.listeners.get(sessionId) || noop)(seq, data);
     return seq;
   }
 
@@ -164,18 +172,59 @@ export class WorkerManager {
    * 戻り値: 受理時点の seq(user_sent イベント)。
    */
   send(sessionId, text, { onEvent, cwd } = {}) {
+    // ★宛先は `_start` より**先に**登録する。spawn の途中で出る通知(同期の失敗など)も
+    //   同じ口から出したい。旧実装は `_start` の後に `entry.onEvent` を代入していたので、
+    //   起動中に出た物だけが静かにリング止まりになっていた。
     let e = this.workers.get(sessionId);
+    if (onEvent) this.listeners.set(sessionId, onEvent);
     if (!e) {
       // ★cwd の既定値をここで作らない。作った瞬間に「渡し忘れ」が観測できなくなる
       //   (`_openPlan` の第2引数を argv に写し忘れた H2 と同じ型)。
       e = this._start(sessionId, cwd);
     }
-    if (onEvent) e.onEvent = onEvent;
     if (e.state === "busy") {
-      e.queue.push(text);
-      return this._emit(sessionId, { type: "user_queued", text });
+      // ★積む物が**文字列でなく物**なのは、`user_queued` の seq を持たせる為
+      //   (§2.18-12)。この seq が turn の名前になり、後で「その turn は届かなかった」と
+      //   **名指しで**言える。番号を別に発明していない = 既に在る計器(EventRing)の目盛りを使う。
+      //   先に push してから emit するのは、今日までの順序をそのまま保つ為。
+      const item = { text, seq: 0 };
+      e.queue.push(item);
+      item.seq = this._emit(sessionId, { type: "user_queued", text });
+      return item.seq;
     }
     return this._write(sessionId, e, text);
+  }
+
+  /**
+   * ★accepted した turn を**黙って**消さない(§2.18-12、2026-08-04)。
+   *
+   * entry が `workers` から外れる時、まだ積んだままの turn を1件ずつ名指しで
+   * 「届かなかった」と出す。**外れる道は5本ある**(interrupt / idle 回収 / shutdown /
+   * 予期しない死 / spawn の error)ので、道ごとに書くと必ずどれかが漏れる。
+   * だから「外す直前に必ず通る場所」に1つ置いて、全部そこを通す。
+   *
+   * ★かつて此処に「`_emit` は `workers` から entry を引くので map から外す**前に**呼べ」と
+   *   書いてあった。守る側の作法として正しかったが、**規則を守れる位置に置いた事**が、
+   *   規則を守っていない他の口を隠していた —— 死亡通知 / `worker_interrupted` /
+   *   idle 回収は全部「外した後」で、繋がっている電話に届いていなかった(2026-08-04 実測)。
+   *   宛先を `this.listeners`(セッション持ち)へ移して、順序への依存ごと消した。
+   * ★届かなかった事は EventRing に残る = 電話が割り込みの瞬間に切れていても、
+   *   繋ぎ直して `eventsSince` で拾える。Codex `gpt-5.6-sol` xhigh 2026-08-04 が
+   *   「一番ありそうな失敗は、失敗イベントを揮発性にする事。検査では listener が
+   *   繋がっているので通るが、本番では切断中に消える」と名指しした穴が、これで塞がる。
+   */
+  _dropQueued(sessionId, entry, reason) {
+    if (!entry.queue.length) return 0;
+    const dropped = entry.queue.splice(0, entry.queue.length);
+    for (const item of dropped) {
+      this._emit(sessionId, {
+        type: "user_dropped",
+        text: item.text,
+        queuedSeq: item.seq,
+        reason,
+      });
+    }
+    return dropped.length;
   }
 
   _write(sessionId, entry, text) {
@@ -219,7 +268,6 @@ export class WorkerManager {
       state: "ready",
       queue: [],
       lastActive: this.now(),
-      onEvent: noop,
       buf: "",
       gen,
       dead: false,
@@ -250,7 +298,7 @@ export class WorkerManager {
           entry.lastActive = this.now();
           if (entry.queue.length > 0) {
             const next = entry.queue.shift();
-            this._write(sessionId, entry, next);
+            this._write(sessionId, entry, next.text);
           } else {
             entry.state = "ready";
           }
@@ -267,8 +315,20 @@ export class WorkerManager {
         // ★空でも欄ごと落とさない。欄が無い事と「何も言わずに死んだ」事は、
         //   電話から区別が付かない(§2.16 を production 側でもう一度)。
         stderr: flushStderr(entry),
+        // ★**今の子の失敗か、退役した先代の失敗か**を欄で言う(Codex 2026-08-04)。
+        //   消さないのは §2.16 の通り(失敗を黙らせない)。だが黙らせないだけだと、
+        //   電話は「今動いている子が壊れた」と読む —— `error` は kill 失敗でも出るので、
+        //   割り込みの直後に**先代の**失敗が今の会話の帯を赤くし得る。
+        //   真偽値は**常に載せる**(欄の不在と false は区別が付かない、が此処の作法)。
+        stale: this.workers.get(sessionId) !== entry,
       });
-      this.workers.delete(sessionId);
+      // 行列は**無条件に**畳む(この entry の物なので、退役済みなら既に空 = 何も起きない)。
+      this._dropQueued(sessionId, entry, "worker_error");
+      // ★Map から外すのは**同一性で**。`error` は spawn 失敗だけでなく kill 失敗でも出るので、
+      //   割り込みで退役 → 別の子に差し替わった**後**に届き得る。名前で消すと、その時
+      //   生きている次の子が Map から外れ、次の送信がもう1本 spawn する = 1つの転写に
+      //   書き手が2人(H2)。`exit`/`close` 側(下)には同じ守りが在って、此処だけ無かった。
+      if (this.workers.get(sessionId) === entry) this.workers.delete(sessionId);
     });
     // ★`exit` と `close` の両方を購読する。**死んだ事の合図は `exit`**(DESIGN §2.18-10(2)):
     //   `close` は stdio が全部閉じるまで来ないので、孫がパイプを持っていると永久に来ない。
@@ -281,6 +341,7 @@ export class WorkerManager {
       // 居る = 予期しない終了。同一性で見る(名前で見ると、既に別の子に差し替わった後の
       // 遅い close が新しい子を消してしまう)。
       if (this.workers.get(sessionId) !== entry) return;
+      this._dropQueued(sessionId, entry, "worker_died");
       this.workers.delete(sessionId);
       if (code !== 0) {
         this._emit(sessionId, {
@@ -349,7 +410,12 @@ export class WorkerManager {
    * 退役させて SIGTERM を撃つ。**死ぬのを待たない**。
    * 猶予を過ぎたら SIGKILL を撃つが、それは送信経路の外の話。
    */
-  _retire(sessionId, entry) {
+  _retire(sessionId, entry, reason = "worker_retired") {
+    // ★外す**前**に、積んだままの turn を名指しで出す(§2.18-12)。
+    //   idle 回収は「ready なら行列は空」なので普通は0件だが、**それを言葉で保証しない**:
+    //   名前(state === "ready")に頼ると、その名前の意味が変わった日に黙って壊れる。
+    //   ここで実際に中を見て0件なら何も起きない = 保証が構造になる(Codex 2026-08-04 の Q3)。
+    this._dropQueued(sessionId, entry, reason);
     // ★`workers` から外す事**そのもの**が退役の印(別に旗を持たない)。
     //   旗を持っていた時、それを読む場面が1つも無い事に変異 X1/X8 の素通りで気づいた。
     if (this.workers.get(sessionId) === entry) this.workers.delete(sessionId);
@@ -372,11 +438,19 @@ export class WorkerManager {
     if (entry.killTimer && typeof entry.killTimer.unref === "function") entry.killTimer.unref();
   }
 
-  /** 割り込み = kill。--resume 再開は実測で無傷(MULTITURN-OK 検証)。 */
+  /**
+   * 割り込み = kill。--resume 再開は実測で無傷(MULTITURN-OK 検証)。
+   *
+   * ★積んだ送信は**此処で終端が決まる**(§2.18-12)。tmux 経路は「割り込みの後も積んだ
+   *   送信は打たれる」= `delivered` に落ちるが、ワーカー経路は子を殺すので同じにはならない。
+   *   両経路で揃えるのは**中の振る舞いではなく turn の終端状態**:
+   *   `accepted → delivered | failed(理由)`。どちらも言える形になっていればよく、
+   *   駄目なのは「`user_queued` と出した後、**どちらにも落ちない**」= 今日までの姿。
+   */
   interrupt(sessionId) {
     const e = this.workers.get(sessionId);
     if (!e) return false;
-    this._retire(sessionId, e);
+    this._retire(sessionId, e, "worker_interrupted");
     this._emit(sessionId, { type: "worker_interrupted" });
     return true;
   }
@@ -386,14 +460,20 @@ export class WorkerManager {
     const t = this.now();
     for (const [sid, e] of this.workers) {
       if (e.state === "ready" && t - e.lastActive > this.idleMs) {
-        this._retire(sid, e);
+        this._retire(sid, e, "worker_idle_closed");
         this._emit(sid, { type: "worker_idle_closed" });
       }
     }
   }
 
-  /** シャットダウン(サーバ終了時)。 */
+  /**
+   * シャットダウン(サーバ終了時)。
+   *
+   * ★積んだ送信は此処でも終端を決める。「プロセスが終わるのだから消えてよい」は通らない
+   *   (Codex 2026-08-04 の Q3): クラッシュと違い shutdown は**こちらの意図**なので、
+   *   accepted した turn の会計は残る。再配信はしない = `failed(server_shutdown)` で確定。
+   */
   shutdown() {
-    for (const [sid, e] of [...this.workers]) this._retire(sid, e);
+    for (const [sid, e] of [...this.workers]) this._retire(sid, e, "server_shutdown");
   }
 }

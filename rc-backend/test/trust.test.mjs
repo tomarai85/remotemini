@@ -122,6 +122,9 @@ test("★判定は一覧 file を1バイトも変えない(信頼を機械で与
 
 test("★src/trust.mjs は書く手段を持たない(構造で禁じる。変異 W23 の的)", () => {
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "trust.mjs"), "utf8");
+  // ★「読む手段は在る」を先に言う。空 file / 別 file を掴んでいても下の否定は全部通るので、
+  //   これが無いと**中身を見ていない事**と**書く手段が無い事**が同じ緑になる(2026-08-04、§2.35)。
+  assert.ok(src.includes("readFileSync"), "信頼一覧を読む手段が無い = この file を見ていない");
   for (const bad of ["writeFileSync", "appendFileSync", "openSync", "createWriteStream", "rmSync"]) {
     assert.ok(!src.includes(bad), `信頼一覧へ書ける手段が入った: ${bad}`);
   }
