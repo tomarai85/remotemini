@@ -67,6 +67,14 @@ f=0
 if bash "$G" GOOD >/dev/null 2>&1; then echo "OK  B1 安全な入力は緑のまま"; else echo "NG  B1 安全な入力は緑のまま"; f=1; fi
 exit $f'
 
+# 見分けるが、**行の形が NG/OK でない**対照(判定は正しいのに③が読めない型)
+CTL_ODD='#!/bin/bash
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+G="${GUARD_SCRIPT:-$ROOT/tools/guard.sh}"
+f=0
+if bash "$G" BAD >/dev/null 2>&1; then echo "[×] C1 危ない入力を赤にする"; f=1; else echo "[○] C1 危ない入力を赤にする"; fi
+exit $f'
+
 run_prove() { RC_ROOT="$1" bash "$PROVE" test/g-controls.sh GUARD_SCRIPT tools/guard.sh 2>&1; }
 
 # ── P1 効いている対照を「効いている」と言う ───────────────────────────────
@@ -93,6 +101,15 @@ chk "P6 継ぎ目が無い -> 未測定(rc=2)・自力型の説明を出す" 2 $
 
 # ── P7 比べた commit の中身を出す(欠陥と rev 選択を見分ける材料)───────────
 chk "P7 比べた commit の subject を出す" 0 0 "危ない入力を赤にする" "" "$out"
+
+# ── P8 ★行の形が違う対照を「効いている」と言わない ────────────────────────
+#    初稿は `^NG` 決め打ちで数えていたので、行頭を字下げする対照から1行も読めず
+#    「倒れた 0 枚 / 倒れなかった 0 枚」と出しながら結論だけ「効いている」と書いた。
+#    rc が赤い事は「狙った欠陥を測っている」証明にならない(この file の P2/P3 と同じ話)。
+d3="$SB/odd"; mk_sandbox "$d3" "$CTL_ODD"
+out4=$(run_prove "$d3")
+chk "P8 行の形が読めない -> 未測定(rc=2)・名指しできないと言う" 2 $? "名指しできない" "" "$out4"
+chk "P8b 0枚のまま「効いている」と書かない" 2 2 "" "PROVE: 効いている" "$out4"
 
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]

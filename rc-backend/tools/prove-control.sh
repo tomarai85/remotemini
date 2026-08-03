@@ -152,14 +152,30 @@ echo "  ② 旧版 = 赤(rc=1)"
 # ── ③ **どの行が倒れたか**。ここがこの道具の本体 ────────────────────────
 #     suite 全体が赤い事は「狙った欠陥を測っている」証明にならない。巻き添えかもしれない。
 #     行ごとに突き合わせて、倒れた物と倒れなかった物を両方出す。
-flipped=$(/usr/bin/grep -c '^NG' "$OUT1" 2>/dev/null || true)
-held=$(/usr/bin/grep -c '^OK' "$OUT1" 2>/dev/null || true)
+#     ★行の形は対照ごとに違う。`^NG` 決め打ちだった初稿は、行頭を字下げする対照
+#       (`  ok  ` / `  NG  ` = health-observer-controls.sh 等)から**1行も読めず**、
+#       「倒れた 0 枚 / 倒れなかった 0 枚」と出しながら結論だけ「効いている」と書いていた。
+#       枚数を数える道具が 0/0 を平気で返すのは、数えていないのと同じ。
+NGPAT='^[[:space:]]*(NG|ng)[[:space:]]'
+OKPAT='^[[:space:]]*(OK|ok)[[:space:]]'
+flipped=$(/usr/bin/grep -cE "$NGPAT" "$OUT1" 2>/dev/null || true)
+held=$(/usr/bin/grep -cE "$OKPAT" "$OUT1" 2>/dev/null || true)
 echo ""
+if [ "$flipped" -eq 0 ] && [ "$held" -eq 0 ]; then
+    # rc は赤い。だが**どの行が見分けたのか**を出せない = 巻き添えと区別できていない。
+    # この道具の本体は③なので、ここを飛ばして「効いている」とは書かない。
+    echo "  ③ ★この対照の出力から assertion 行を読めない(NG / OK の形が違う)"
+    /usr/bin/tail -6 "$OUT1" | /usr/bin/sed 's/^/       /'
+    echo ""
+    echo "PROVE: 未測定(旧版で赤くはなったが、倒れた行を名指しできない)"
+    echo "  対照側の出力を `NG <名前>` / `OK <名前>` の形に揃えるか、この道具の型を足す事。"
+    exit 2
+fi
 echo "  ③ 旧版で倒れた assertion = ${flipped} 枚 / 倒れなかった = ${held} 枚"
 echo "     -- 倒れた(= この欠陥を見分けている) --"
-/usr/bin/grep '^NG' "$OUT1" | /usr/bin/sed 's/^NG  /       /' || true
+/usr/bin/grep -E "$NGPAT" "$OUT1" | /usr/bin/sed -E 's/^[[:space:]]*(NG|ng)[[:space:]]+/       /' || true
 echo "     -- 倒れなかった(= この欠陥については何も言っていない。別の欠陥を見ている可能性) --"
-/usr/bin/grep '^OK' "$OUT1" | /usr/bin/sed 's/^OK  /       /' | /usr/bin/head -30 || true
+/usr/bin/grep -E "$OKPAT" "$OUT1" | /usr/bin/sed -E 's/^[[:space:]]*(OK|ok)[[:space:]]+/       /' | /usr/bin/head -30 || true
 [ "$held" -gt 30 ] && echo "       … 他 $((held - 30)) 枚"
 
 echo ""

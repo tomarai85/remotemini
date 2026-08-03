@@ -17,6 +17,7 @@ cd "$ROOT" || exit 2
 
 OBS="$ROOT/tools/health-observer.sh"
 [ -f "$OBS" ] || { echo "対象が無い: $OBS"; exit 2; }
+[ -f "$ROOT/tools/health-step.mjs" ] || { echo "判定台本が無い: $ROOT/tools/health-step.mjs"; exit 2; }
 
 pass=0; fail=0
 ok()   { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
@@ -27,10 +28,37 @@ SB="$(cd "$(mktemp -d /tmp/health-ctl.XXXXXX)" && pwd -P)"
 SRV_PID=""
 cleanup() {
     [ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null
+    for f in "$SB"/tools/*; do [ -e "$f" ] && /bin/rm -f "$f"; done
+    rmdir "$SB/tools" 2>/dev/null
     for f in "$SB"/*; do [ -e "$f" ] && /bin/rm -f "$f"; done
     rmdir "$SB" 2>/dev/null
 }
 trap cleanup EXIT
+
+# ★差替型の継ぎ目(`tools/prove-control.sh` が「直す前の版」を差し込む口)。
+#   素直に旧版の経路をそのまま使うと**測定にならない**: health-observer.sh は兄弟を
+#   自分の位置から引く(`$ROOT/tools/health-step.mjs`)ので、/tmp に置かれた旧版は
+#   判定台本を見失って落ちる —— 対照は測りたい物へ辿り着く前に赤くなり、
+#   **理由の違う赤**が「効いている」と読まれる(prove-control.sh が一番嫌う偽陽性)。
+#   なので差された時だけ、砂場に tools/ を組んで**兄弟ごと**据える。
+#   差し替えるのは1枚だけ(規則: 守られている file 以外は今の版のまま)。
+#
+#   ★兄弟は health-step.mjs だけではない —— それ自身が `../src/health.mjs` を読む。
+#     判定台本1枚だけ写した初稿は、node が import に失敗して KIND が想定外になり、
+#     **28 枚が赤**になった。狙った Q3 の対照は 6 枚なので、残り 22 枚は
+#     「差し替えが壊れている」赤。そのまま読めば「効いている」と誤読する ——
+#     赤の枚数ではなく**赤の理由**を見る事。だから src は丸ごと繋いで、
+#     差分を「守られている file 1枚」に閉じ込める。
+if [ -n "${RC_HEALTH_OBS:-}" ]; then
+    [ -f "$RC_HEALTH_OBS" ] || { echo "差し込まれた版が無い: $RC_HEALTH_OBS"; exit 2; }
+    /bin/mkdir -p "$SB/tools" || exit 2
+    /bin/cp "$ROOT/tools/health-step.mjs" "$SB/tools/health-step.mjs" || exit 2
+    /bin/ln -s "$ROOT/src" "$SB/src" || exit 2
+    /bin/cp "$RC_HEALTH_OBS"              "$SB/tools/health-observer.sh" || exit 2
+    /bin/chmod +x "$SB/tools/health-observer.sh"
+    OBS="$SB/tools/health-observer.sh"
+    echo "  (継ぎ目 \$RC_HEALTH_OBS で差し替え済み: $RC_HEALTH_OBS)"
+fi
 
 # 捨ての通知先: 渡された文面と mention の値を1行で記録するだけ。本物へは出さない。
 cat > "$SB/fake-notify.sh" <<'EOF'
@@ -49,7 +77,12 @@ export FAKE_NOTIFY_LOG="$SB/notify.log"
 printf '#!/bin/bash\necho "KEY self - none"\nexit 0\n' > "$SB/quiet-key.sh"; chmod +x "$SB/quiet-key.sh"
 
 STATE="$SB/state.json"
-run() {   # $@ = health-observer.sh への引数。設定は全部環境変数で差す
+# 「監視が最後に働けた時刻」の記録(§11 が測る)。既定は `$STATE.last-ok` だが、
+# 砂場の中で**明示的に**持つ —— 位置を既定値の綴りに頼ると、本体側で既定を変えた日に
+# 対照は「何も測っていないまま緑」になる(測る相手を見失った事に気付けない)。
+OKM="$SB/last-ok.mark"
+
+_obs() {  # 環境を差して実走するだけ。stdout は握り潰さない(§11-g が読む)
     RC_HEALTH_CONF="$SB/none.conf" \
     RC_HEALTH_URL="${TEST_URL:-http://127.0.0.1:9/健康}" \
     RC_HEALTH_HOST="test.example" \
@@ -57,14 +90,16 @@ run() {   # $@ = health-observer.sh への引数。設定は全部環境変数�
     RC_HEALTH_NOTIFY="$SB/fake-notify.sh" \
     RC_HEALTH_LOG="$SB/observer.log" \
     RC_HEALTH_BROKEN_MARK="$SB/broken.mark" \
+    RC_HEALTH_OK_MARK="$OKM" \
     RC_HEALTH_KEY_CHECK="${TEST_KEY_CHECK:-$SB/quiet-key.sh}" \
     RC_HEALTH_KEY_MARK="$SB/key.mark" \
     RC_HEALTH_KEY_EVERY="${TEST_KEY_EVERY:-0}" \
     RC_HEALTH_KEY_PEER="${TEST_KEY_PEER:-test.example}" \
     RC_TAILSCALE_BIN="${TEST_TAILSCALE:-$SB/no-such-tailscale}" \
-    bash "$OBS" "$@" >/dev/null 2>&1
-    echo $?
+    bash "$OBS" "$@"
 }
+run()     { _obs "$@" >/dev/null 2>&1; echo $?; }   # $@ = health-observer.sh への引数
+run_out() { _obs "$@" 2>/dev/null; }                # 終了コードでなく**文面**を見る時
 notify_count() { wc -l < "$FAKE_NOTIFY_LOG" | tr -d ' '; }
 
 echo "── 1. 連続の数え方と、鳴る回数 ──"
@@ -163,6 +198,7 @@ run_with_notify() {   # $1 = 出し先。残りは health-observer.sh への引�
     RC_HEALTH_CONF="$SB/none.conf" RC_HEALTH_URL="http://127.0.0.1:9/健康" \
     RC_HEALTH_HOST="test.example" RC_HEALTH_STATE="$STATE" RC_HEALTH_NOTIFY="$n" \
     RC_HEALTH_LOG="$SB/observer.log" RC_HEALTH_BROKEN_MARK="$SB/broken.mark" \
+    RC_HEALTH_OK_MARK="$OKM" \
     RC_HEALTH_KEY_CHECK="${TEST_KEY_CHECK:-$SB/quiet-key.sh}" \
     RC_HEALTH_KEY_MARK="$SB/key.mark" \
     RC_HEALTH_KEY_EVERY="${TEST_KEY_EVERY:-0}" \
@@ -523,6 +559,115 @@ EOF
 
     unset TEST_KEY_CHECK TEST_TAILSCALE TEST_KEY_PEER FAKE_SELF_DAYS FAKE_PEER_DAYS FAKE_TS_SKELETON
 fi
+
+echo "── 11. ★「監視側が壊れています」に**いつから**を載せる(査読 Q3)──"
+# 何を守っているか: 「監視側が壊れています」だけを受け取った Tom は、それが 10 分前からなのか
+# 3 日前からなのかを **log を開くまで**測れない。緊急度が文面に無い警報は、移動中に読んだ時に
+# 「後で見る」に倒れる —— この案件の相手は渡米中の Tom なので、そこが実質の失敗点になる。
+#
+# ★この節の本体は「時刻が載る」ではなく **記録している時刻の意味**:
+#   記録するのは「対象が up だった時刻」ではなく「**判定が一周できた時刻**」。
+#   up を記録すると「対象が長く落ちている」が「監視が長く壊れている」に見え、
+#   Q3 が消したがっている取り違えを別の場所で作り直す事になる。11-e / 11-f がそこを測る。
+worked_at() { cat "$OKM" 2>/dev/null; }
+fresh_mark() { # 記録が今さっき進んだか(60 秒以内)
+    local t; t="$(worked_at)"
+    case "$t" in ''|*[!0-9]*) echo no; return ;; esac
+    [ $(( $(date +%s) - t )) -lt 60 ] && echo yes || echo no
+}
+break_state() { echo 'これは JSON ではない' > "$STATE"; }
+
+echo "  ── 11-a. 据え付け直後(一度も成功していない)に**数字を作らない** ──"
+/bin/rm -f "$STATE" "$SB/broken.mark" "$OKM"; : > "$FAKE_NOTIFY_LOG"
+break_state
+rc="$(run --inject-fail)"
+chk "  壊れた状態で 3" "$rc" "3"
+chk "  1通鳴る" "$(notify_count)" "1"
+grep -q '一度も成功していない' "$FAKE_NOTIFY_LOG" \
+  && ok "  ★記録が無い事をそう言う" || ng "  文面: $(cat "$FAKE_NOTIFY_LOG")"
+# 負の対照。ここで「0 分前」と出す版が一番危ない —— 一度も動いた事が無い監視が
+# 「さっきまで動いていた」と名乗る = 据え付けの書き損じが**緑の顔**で隠れる。
+if grep -qE '[0-9]+ (分|時間|日)前' "$FAKE_NOTIFY_LOG"; then
+    ng "  ★記録が無いのに時間を作っている: $(cat "$FAKE_NOTIFY_LOG")"
+else
+    ok "  ★分からない物を数字にしていない"
+fi
+
+echo "  ── 11-b. 一周できた後なら、その時刻が載る ──"
+/bin/rm -f "$STATE" "$SB/broken.mark" "$OKM"; : > "$FAKE_NOTIFY_LOG"
+run --inject-ok >/dev/null                      # 対象は正常 = 判定が一周した回
+chk "  ★正常な回に記録が進む" "$(fresh_mark)" "yes"
+break_state
+run --inject-fail >/dev/null
+grep -qE '最後に監視が働けたのは [0-9]+ 分前' "$FAKE_NOTIFY_LOG" \
+  && ok "  ★壊れた通知に『いつから』が載る" || ng "  文面: $(tail -1 "$FAKE_NOTIFY_LOG")"
+
+echo "  ── 11-c/d. 記録が読めない・未来を指している(ここも数字にしない)──"
+/bin/rm -f "$STATE" "$SB/broken.mark"; : > "$FAKE_NOTIFY_LOG"
+echo 'こわれた記録' > "$OKM"; break_state
+run --inject-fail >/dev/null
+grep -q '記録が読めない' "$FAKE_NOTIFY_LOG" \
+  && ok "  ★数字でない記録 → 「不明(記録が読めない)」" || ng "  文面: $(tail -1 "$FAKE_NOTIFY_LOG")"
+
+/bin/rm -f "$STATE" "$SB/broken.mark"; : > "$FAKE_NOTIFY_LOG"
+echo $(( $(date +%s) + 100000 )) > "$OKM"; break_state
+run --inject-fail >/dev/null
+grep -q '時計が巻き戻っている' "$FAKE_NOTIFY_LOG" \
+  && ok "  ★未来の記録 → 「不明(時計が巻き戻っている)」" || ng "  文面: $(tail -1 "$FAKE_NOTIFY_LOG")"
+if grep -qE -- '-[0-9]+ (分|時間|日)前' "$FAKE_NOTIFY_LOG"; then
+    ng "  ★負の時間を出している: $(tail -1 "$FAKE_NOTIFY_LOG")"
+else
+    ok "  ★負の時間を出していない"
+fi
+
+echo "  ── 11-e. ★**対象が落ちている間も**記録は進む(監視は働けている)──"
+# ここが Q3 の意味の中心。対象の down を「監視の停止」と読み替えないので、
+# 「対象が 3 日落ちている」の最中に監視が壊れても、その通知は正しく「今さっきまでは働けていた」
+# と言える。逆に up 時刻を記録する版は、ここで「3 日前」と出して取り違えを作り直す。
+/bin/rm -f "$STATE" "$SB/broken.mark" "$OKM"; : > "$FAKE_NOTIFY_LOG"
+run --inject-fail >/dev/null; run --inject-fail >/dev/null
+echo $(( $(date +%s) - 7200 )) > "$OKM"          # 記録を 2 時間前へ戻す
+run --inject-fail >/dev/null                     # 3回目 = 「落ちました」と知らせる回
+chk "  落ちたと知らせた" "$(notify_count)" "1"
+chk "  ★その回にも記録が進む(対象は down のまま)" "$(fresh_mark)" "yes"
+echo $(( $(date +%s) - 7200 )) > "$OKM"
+run --inject-ok >/dev/null                       # 戻りましたの回
+chk "  戻ったと知らせた" "$(notify_count)" "2"
+chk "  ★戻りの回にも記録が進む" "$(fresh_mark)" "yes"
+
+echo "  ── 11-f. ★監視が壊れた回は記録を進めない(そこが『いつから』の基準)──"
+# これが無いと、壊れた回自身が記録を進めてしまい、何日壊れていても通知は毎回「0 分前」。
+# = 文面に時刻は載るのに、その時刻が何も意味しない形(一番たちの悪い緑)。
+/bin/rm -f "$STATE" "$SB/broken.mark"; : > "$FAKE_NOTIFY_LOG"
+was=$(( $(date +%s) - 7200 )); echo "$was" > "$OKM"
+break_state
+rc="$(run --inject-fail)"
+chk "  壊れた状態で 3" "$rc" "3"
+chk "  ★記録は進んでいない" "$(worked_at)" "$was"
+grep -q '最後に監視が働けたのは 2 時間前' "$FAKE_NOTIFY_LOG" \
+  && ok "  ★文面が実際の経過を出す" || ng "  文面: $(tail -1 "$FAKE_NOTIFY_LOG")"
+if grep -q '0 分前' "$FAKE_NOTIFY_LOG"; then
+    ng "  ★壊れた回が記録を進めている(時刻が意味を失う形)"
+else
+    ok "  ★「0 分前」に化けていない"
+fi
+# 起動前に落ちる形(§9 の閾値不正)でも同じ —— こちらは判定を起こす**手前**で終わるので、
+# 記録の書き込みが判定の後ろに在る事が効いているかを別経路で見る。
+/bin/rm -f "$STATE" "$SB/broken.mark"; : > "$FAKE_NOTIFY_LOG"
+was=$(( $(date +%s) - 7200 )); echo "$was" > "$OKM"
+export RC_HEALTH_THRESHOLD=0
+rc="$(run --inject-fail)"
+chk "  設定が壊れている回も 3" "$rc" "3"
+chk "  ★その回も記録を進めない" "$(worked_at)" "$was"
+unset RC_HEALTH_THRESHOLD
+
+echo "  ── 11-g. --dry-run でも同じ文面を出す(据える前に読める)──"
+/bin/rm -f "$STATE" "$SB/broken.mark"; : > "$FAKE_NOTIFY_LOG"
+echo $(( $(date +%s) - 7200 )) > "$OKM"; break_state
+out="$(run_out --inject-fail --dry-run)"
+chk "  本物の出し先へは出さない" "$(notify_count)" "0"
+printf '%s' "$out" | grep -q '最後に働けたのは 2 時間前' \
+  && ok "  ★下見でも『いつから』が読める" || ng "  出力: $out"
 
 echo ""
 echo "HEALTH-OBSERVER-CONTROLS: pass=$pass fail=$fail$([ "$KEY_UNMEASURED" -eq 1 ] && echo ' ★鍵の系統は測定不成立')"

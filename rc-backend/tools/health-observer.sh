@@ -33,6 +33,14 @@ LOG="${RC_HEALTH_LOG:-$HOME/.rc-backend/health-observer.log}"
 # 壊れ方が続くと 10 分毎に鳴り続け、Tom が経路ごと黙らせる = yoda と同じ結末になる。
 BROKEN_EVERY="${RC_HEALTH_BROKEN_EVERY:-21600}"
 BROKEN_MARK="${RC_HEALTH_BROKEN_MARK:-$STATE.broken-notified}"
+# ★「監視が最後に働けた時刻」(Codex Q3)。「監視側が壊れています」だけでは、
+#   10 分前からなのか 3 日前からなのかが分からず、Tom は log を開くまで緊急度を測れない。
+#   ★記録するのは **対象が up だった時刻ではなく、判定が一周できた時刻**。
+#     up を記録すると「対象が長く落ちている」が「監視が長く壊れている」に見え、
+#     Q3 が消したがっている取り違えを別の場所で作り直す事になる。
+#   状態 file とは**別の file** に置く。監視が壊れる二形のうち一方が
+#   「状態 file が壊れている」なので、そこに相乗りすると肝心な時に読めない。
+OK_MARK="${RC_HEALTH_OK_MARK:-$STATE.last-ok}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STEP="$ROOT/tools/health-step.mjs"
@@ -87,11 +95,29 @@ log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
 # 引数: $1 = Tom に見せる短い語。**必ず我々の固定文字列**を渡す事 —— `$ERR` の中身は
 #       渡さない(通知は Tom が読む面なので、素性の分からない文字列を流し込まない)。
 # 返り値は常に 3(= 監視が壊れている)。鳴らせたかどうかで変えない。
+
+# 「最後に監視が働けたのは何時か」を人が読む一言にする。
+# ★分からない時に**数字を作らない**。記録が無い/読めない/未来を指している の3つは
+#   それぞれ別の文を返す。ここで 0 や「今」を返すと、Tom は「さっきまで動いていた」と
+#   読む —— 一度も動いた事が無い据え付け直後こそ、それが一番起きやすい。
+last_worked_phrase() {
+    local t now d
+    [ -f "$OK_MARK" ] || { echo "一度も成功していない(据え付け以来か、記録ごと消えた)"; return; }
+    t="$(cat "$OK_MARK" 2>/dev/null)"
+    case "$t" in ''|*[!0-9]*) echo "不明(記録が読めない)"; return ;; esac
+    now="$(date +%s)"; d=$((now - t))
+    if   [ "$d" -lt 0 ]     ; then echo "不明(時計が巻き戻っている)"
+    elif [ "$d" -lt 3600 ]  ; then echo "$((d / 60)) 分前"
+    elif [ "$d" -lt 86400 ] ; then echo "$((d / 3600)) 時間前"
+    else                           echo "$((d / 86400)) 日前"
+    fi
+}
+
 notify_monitor_broken() {
     local why="$1" now last nrc
     if [ "$DRY" -eq 1 ]; then
         log "DRY-RUN: 監視が壊れている($why) — 通知は出さない"
-        echo "監視側が壊れています($why)"
+        echo "監視側が壊れています($why / 最後に働けたのは $(last_worked_phrase))"
         return 3
     fi
     if [ ! -x "$NOTIFY" ]; then
@@ -107,7 +133,7 @@ notify_monitor_broken() {
         log "★監視が壊れている($why) — 前回の通知から $((now - last)) 秒 = 抑制"
         return 3
     fi
-    printf '%s' "rc-backend の監視側が壊れています($(hostname -s) / $why)。log を見る事: $LOG" | "$NOTIFY"
+    printf '%s' "rc-backend の監視側が壊れています($(hostname -s) / $why)。最後に監視が働けたのは $(last_worked_phrase)。log を見る事: $LOG" | "$NOTIFY"
     nrc=$?
     log "★監視が壊れている($why)を通知(出し先 rc=$nrc)"
     # ★抑制時計は**配達が済んでから**進める。「知らせると決めた」時点で進めると、
@@ -319,6 +345,20 @@ ERR="$(cat "$ERRF" 2>/dev/null)"; /bin/rm -f "$ERRF"
 
 # 値は `FLEET_NOTIFY_MENTION` にそのまま渡す物。"0" = ping を抑える / 空 = 既定(= @Tom 付き)
 PING_SUPPRESS=""
+
+# ── ★監視が一周できた事を記録する(Codex Q3 の材料)──────────────────
+# KIND 0/10/11 = 判定が使える答えを返した = **監視は働けている**(対象の up/down は別の話)。
+# KIND 3 と その他 = 監視が壊れている回なので、ここは通らない。
+# 書けなくても止めない: これは通知を読みやすくする為の材料であって、監視の可否ではない。
+# ただし**黙って落とさない** —— 書けない状態が続けば通知が毎回「一度も成功していない」に
+# なり、それは嘘に見える。log に理由を残して後から辿れる様にする。
+case "$KIND" in
+    0|10|11)
+        date +%s > "$OK_MARK" 2>>"$LOG" \
+            || log "  ★最終稼働時刻を書けない($OK_MARK) — 壊れた時の通知が『一度も成功していない』になる"
+        ;;
+esac
+
 # ★台本自身の終了コードは「監視が健全か」を表す。**通知を出したかどうかで変えない**。
 #   (対照が拾った実際の不整合: 抑制された時だけ 3、鳴らした時は 0 を返していた ——
 #    同じ「監視が壊れている」状態が、鳴らした回だけ launchd から見て正常に見えていた)
