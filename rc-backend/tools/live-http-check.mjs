@@ -405,19 +405,26 @@ async function main() {
     console.log(`起動 ok(${boot.waited}ms)`);
 
     // --- 2. 登録簿に自分で名乗るまで待つ(statusLine が書く) ------------------
+    // ★輪の中で飲むのは正しい(json を書いている最中に読むと必ず落ちる)。正しくないのは
+    //   **30 秒で落ちた時に理由が消える**事 —— 「壊れた json が在る」と「そもそも1件も出ない」が
+    //   同じ一文になっていた(§2.20-a-ii の「条件付き1」)。最後の理由だけ残して check に混ぜる。
+    let lastPaneErr = "";
     const reg = await waitFor(async () => {
       for (const f of readPanes()) {
         if (before.has(f)) continue;
         try {
           const j = JSON.parse(readFileSync(join(PANE_DIR, f), "utf8"));
           if (j.pane === pane) return { id: f.replace(/\.json$/, ""), entry: j };
-        } catch {
-          /* 書き込み途中 */
+        } catch (e) {
+          lastPaneErr = `${f}: ${String(e?.message || e)}`;
         }
       }
       return null;
     }, 30_000);
-    check("登録簿に名乗る", reg.ok, reg.ok ? `${reg.v.id}(${reg.waited}ms)` : "30秒で新しい登録が出ない");
+    check("登録簿に名乗る", reg.ok, reg.ok
+      ? `${reg.v.id}(${reg.waited}ms)`
+      // 「無し」も必ず出す = 欄が出ない事と「読めなかった物が無い」を区別する(§2.16)。
+      : `30秒で新しい登録が出ない(最後に読めなかった物: ${lastPaneErr || "無し"})`);
     if (!reg.ok) return;
     sessionId = reg.v.id;
     writeFileSync(join(outDir, "01-registry.json"), JSON.stringify(reg.v.entry, null, 2));

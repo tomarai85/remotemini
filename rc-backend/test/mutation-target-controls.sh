@@ -100,13 +100,27 @@ else ng "番号選択 --only M1" "${got_m1}件 — 前方一致で巻き込ん�
 #   13枚足した瞬間にこの対照だけが赤くなった —— 並びも走行も正しく、**数え方が古かった**。
 #   同じ一覧が2つの file に居ると、族を足す作業が必ず片方を置き去りにする。
 #   取り出しに失敗したら空になり、下の grep が0件を返して**赤で止まる**(黙って緑にならない)。
-ALPHA="$(sed -n 's/.*re\.match(r"\[\([A-Z][A-Z]*\)\]\\d+.*/\1/p' "$SRC_ROOT/test/mutation-controls.py" | head -1)"
+#   ★2026-08-03: その fail-closed が実際に働いた。本体が族の一覧を**起動段の正規表現から
+#   `FAM` という定数へ**移した(= 一覧を1箇所に集める、正しい直し)ので、正規表現を当てに
+#   していた此処の取り出しが空になり赤で止まった。**取り出し先を正本の側へ付け替える**のが直し方
+#   で、写しを持ち直すのではない。次に本体が置き場所を変えても、また空になって赤で止まる。
+ALPHA="$(sed -n 's/^FAM = "\([A-Z][A-Z]*\)".*/\1/p' "$SRC_ROOT/test/mutation-controls.py" | head -1)"
 if [ "${#ALPHA}" -ge 3 ]; then
     ok "族の頭文字を本体から取り出せた(${ALPHA} — 写しを持たない)"
 else
     ng "族の頭文字の取り出し" "取れたのは「${ALPHA}」— 本体の起動段の形が変わった。下の全件検査は当てにならない"
 fi
-got_all="$(DRY '')"; want_all="$(grep -cE "^ *\\(\"[${ALPHA}][0-9]+[ (]" "$SRC_ROOT/test/mutation-controls.py" || true)"
+# ★数え方は本体の**命名規則の ERE 訳**でしかない。訳は黙って古くなるので、本体の規則そのものを
+#   留めて、変わった瞬間に赤にする。2026-08-03 に現物で踏んだ: 本体が `P12b` の為に番号の後ろの
+#   1文字を許した(`[a-z]?`)のに此処が追随せず、**176 対 175 の1件差**として出た。
+#   1件差は「取りこぼし」とも「囮を拾った」とも読めるので、原因を指す行がここに要る。
+NAME_RULE='re.match(rf"[{FAM}]\d+[a-z]?(?=[ (])"'
+if grep -qF "$NAME_RULE" "$SRC_ROOT/test/mutation-controls.py"; then
+    ok "命名規則が本体と一致(下の数え方の訳が古くない)"
+else
+    ng "命名規則の追随" "本体の命名規則が変わった — 下の ERE 訳を合わせ直す事(合うまで件数は当てにならない)"
+fi
+got_all="$(DRY '')"; want_all="$(grep -cE "^ *\\(\"[${ALPHA}][0-9]+[a-z]?[ (]" "$SRC_ROOT/test/mutation-controls.py" || true)"
 if [ "$got_all" = "$want_all" ]; then ok "既定(--only 無し)= ${got_all}件 = 並びの全件"
 else ng "既定は全件" "${got_all}件 ≠ 並びの ${want_all}件"; fi
 
