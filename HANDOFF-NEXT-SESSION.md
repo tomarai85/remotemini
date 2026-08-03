@@ -2338,8 +2338,23 @@ Codex 裁定: **A failed deployment must not replace the next-boot tree.**
    (`list-panes` は「このペインがどの会話か」を教えない)ので、その会話は tmux 経路に載らず
    ワーカー経路へ落ちる = H2(同一 transcript の二重書き)。よって**「素の `claude` で開いた会話」
    の1件のみがこの1行の守備範囲**。急ぎではないが、消えてもいない。
-2. `sudo mkdir -p /Users/tomtim && sudo chown edith:staff /Users/tomtim`(sudo は構造的に不可能)。
-   **持ち出し/戻し機能だけが依存**。本体はこれ無しで動く。急がない。
+2. ~~`sudo mkdir -p /Users/tomtim && sudo chown edith:staff /Users/tomtim`~~
+   → **★2026-08-03 16:36 に撤回。Tom は何もしなくていい**。
+
+   この依頼は「`--resume` は両機で同一の絶対パスを要求する」という**測っていない仮定**の上に
+   立っていた。実測6本(外部通信ゼロ・`total_cost_usd: 0`)= 探索鍵は**起動 cwd から作った
+   slug ディレクトリ名だけ**で、transcript の中の `cwd` は照合に使われない。よって宛先パスを
+   写像し、写像後のパスから作った slug へ記録を置けば sudo は要らない。
+
+   - 実験系と6本の全文 = `.harness/evidence-2026-08-03/resume-scope-measurement.md`
+   - 設計 + Codex 裁定 + 守り7つ = `DESIGN.md` §2.31 / 撤回の経緯 = §8-2
+   - 対照 24 本 = `rc-backend/test/remote-mini-root-controls.sh`(`tools/run-controls.sh` に登録済)
+   - ★**この対照は Claude Code の版が上がったら回す**。写像設計はその版(`2.1.220`)の
+     実測に乗っている
+   - ★**本物の edith へこの写像版でまだ一度も持ち出していない**。対照は全部偽 ssh/rsync
+
+   **ここから持って帰る型**: 「私にはできない」と書いた項目が、実は**測っていない仮定**だった。
+   Tom の待ち行列に積む前に、その前提が測れる物かを1回見る事。
 3. **★edith をどの Claude アカウントで走らせるか**。実測: `oauthAccount.emailAddress` =
    `mail-redacted@example.invalid`(会社側)、かつ**週次上限に到達**(解除 8/3 0時 JST)。
    渡米 8/20・client-a 引き渡し進行中を跨ぐと前提が崩れる。推奨 = 個人アカウントへ切替(§8-3)。

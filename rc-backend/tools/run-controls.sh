@@ -67,6 +67,17 @@ LOCAL_CTLS=(
                                      # 起動ラッパを実走する対照 38 本。実測2秒、本物の
                                      # `tailscale serve` は撃たない。`test/` ではなく `tools/`
                                      # に在るのは置き場所の歴史的な揺れで、性質は対照
+    test/remote-mini-root-controls.sh # ★測る相手が **この repo の外**(`~/.claude/tools/
+                                     # remote-mini.sh`)に在る唯一の対照。それでも此処に居るのは、
+                                     # 回す物が此処しか無いから ——「誰も回さない対照は対照でない」。
+                                     # 偽 ssh/rsync + 偽 HOME で、edith にも Tom の tmux にも
+                                     # 触らない(偽 ssh は tmux/osascript/curl/wget を含む命令を
+                                     # 実行拒否する = 手元で走る偽 ssh が本物の tmux へ
+                                     # send-keys する事故を構造で塞ぐ)。実測25秒。
+                                     # ★Claude Code の版が上がったら **これを回す** ——
+                                     # `--resume` の探索鍵が slug だけ、という実測(
+                                     # `.harness/evidence-2026-08-03/resume-scope-measurement.md`)
+                                     # の上に写像設計が乗っているので、版が変われば前提が動く
 )
 EDITH_CTLS=(
     test/env-death-controls.sh
