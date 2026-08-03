@@ -175,7 +175,14 @@ PYJSON
         exit 2
     fi
     # 保存側が壊れていたら未測定。読めない json を緑に丸めない。
-    if ! "$PY" - "$p" "$fp" "$SEL" <<'PYCHK'
+    #
+    # ★2026-08-03 に此処で 3 本倒れた。初稿は `if ! "$PY" … then rc=$?` と書いていて、
+    #   **`if ! cmd` の then の中では `$?` が必ず 0**(否定した側の成否になる)。
+    #   結果 `exit "$rc"` が毎回 `exit 0` = 素通りの在る判定も、書き換えられた判定も、
+    #   壊れた json も、全部**緑**で返っていた。判定が正しく 1/2 を作れていたのに、
+    #   それを持ち帰る所で捨てていた —— 中身は合っていて、伝える線だけが切れていた形。
+    #   終了コードは、生んだ場所の**直後**に取る事。`if` を挟むと別物になる。
+    "$PY" - "$p" "$fp" "$SEL" <<'PYCHK'
 import json, sys
 p, fp, sel = sys.argv[1:4]
 try:
@@ -188,8 +195,8 @@ print(f"判定: {d.get('recorded_at')} / 変異 {d.get('mutants_run')} 件 / "
       f"素通り {d.get('survivors')}")
 sys.exit(0 if d.get("exit_code") == 0 else 1)
 PYCHK
-    then
-        rc=$?
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
         [ "$rc" -eq 1 ] && echo "★素通りが在る = 赤。log を読む事: $(grep -o '"log": "[^"]*"' "$p" | cut -d'"' -f4)" >&2
         exit "$rc"
     fi

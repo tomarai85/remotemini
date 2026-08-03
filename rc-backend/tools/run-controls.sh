@@ -102,12 +102,33 @@ LOCAL_CTLS=(
                                      # 破って `npm test` を赤にした結果、以降の変異が全部
                                      # 「検出」と記録された(= 素通りが丸ごと隠れ、要約は
                                      # 「素通り: なし」= **緑の方向に壊れた**)
+    test/coldboot-chain-controls.sh  # 停電の後 edith が自力で戻れるかを測る道具
+                                     # (`tools/coldboot-chain.sh`)。偽の fdesetup/
+                                     # defaults/pmset + **本物の PlistBuddy に本物の
+                                     # plist** を読ませるので、edith にも電源にも
+                                     # 触らない。実測1秒未満。
+                                     # ★元は deploy 9b の heredoc。切り出した理由は
+                                     # 「注釈が名指しした 7 つの内 4 つしか読んでいな
+                                     # かった」= heredoc には対照が書けないから
+                                     # 誰も気付けなかった。旧版に差し替えると
+                                     # **17 本全部が倒れる**(旧版は常に 0 で終わる)
     test/commit-suite-gate-controls.sh # commit の直前に単体の一式を回す門
                                      # (`tools/commit-suite-gate.sh`)。偽の一式を差すので
                                      # 本物の `npm test` は回さない。実測1秒未満。
                                      # ★本体が守るのは「rc は 0 なのに落ちた検査が在る」形と
                                      # 「集計行が出ていない(= そもそも走っていない)」形。
                                      # 素朴な rc だけ見る版に差し替えると 11 本中 8 本が倒れる
+    test/staged-controls-gate-controls.sh # commit が**触れた対照**を回す門
+                                     # (`tools/staged-controls-gate.sh`)。偽の repo の木 +
+                                     # 偽の staged 一覧なので、本物の git にも repo にも
+                                     # 触らない。実測1秒未満。
+                                     # ★上の門(単体の一式)と役割が違う: `test/*-controls.sh`
+                                     # は `npm test` の一部ではないので、上の門では対照の
+                                     # 回し忘れが素通りする。**同日に2回踏んだ**方の穴。
+                                     # ★一番危ない壊れ方は「選び方が空振りして、いつも
+                                     # 『触れた対照は無い』と言う」—— 普段の commit では
+                                     # 区別が付かないので S15 が陰性対照を張っている。
+                                     # 道具だけ見る素朴版に差し替えると S6/S7/S8 が倒れる
 )
 EDITH_CTLS=(
     test/env-death-controls.sh

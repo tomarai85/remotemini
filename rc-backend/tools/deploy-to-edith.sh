@@ -557,25 +557,19 @@ say "9b. 停電で落ちた後、自分で戻って来られるか(**警告で�
 #   ここは配備の度に必ず通るので、置き場所として一番安い。
 #   ★門にしない理由 = 自動ログインが切れている事は、コードを配る妨げにならない。
 #     ここで止めても停電への強さは増えず、出来る仕事だけが止まる。
-ssh "$EDITH" 'bash -s' <<'REMOTE_COLDBOOT' || true
-warn=0
-fv="$(/usr/bin/fdesetup status 2>/dev/null || echo '不明')"
-case "$fv" in *"is Off"*) echo "FileVault: Off(= 起動時に解錠を人に求めない)" ;;
-                       *) echo "★FileVault: ${fv} = 停電の後、解錠する人が居ないと戻らない" >&2; warn=1 ;; esac
-al="$(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null || echo '')"
-if [ "$al" = "edith" ]; then echo "自動ログイン: $al"
-else echo "★自動ログイン: ${al:-無効} = GUI の session が立たない → gui/501 の job も load されない" >&2; warn=1; fi
-p="$HOME/Library/LaunchAgents/com.edith.rc-backend.plist"
-if [ -f "$p" ]; then
-    ral="$(/usr/libexec/PlistBuddy -c 'Print :RunAtLoad' "$p" 2>/dev/null || echo false)"
-    [ "$ral" = "true" ] && echo "RunAtLoad: true" || { echo "★RunAtLoad が true でない($ral)= login しても起きない" >&2; warn=1; }
-else
-    echo "★plist が $p に無い = login 時に load される物が無い" >&2; warn=1
-fi
-ar="$(/usr/bin/pmset -g 2>/dev/null | awk '/autorestart/ {print $2}')"
-[ "$ar" = "1" ] && echo "autorestart: 1(通電で自動起動)" || { echo "★autorestart が 1 でない(${ar:-不明})= 停電後に電源が入らない" >&2; warn=1; }
-[ "$warn" -eq 0 ] && echo "→ 停電から自力で戻る鎖は繋がっている" || echo "★→ 鎖が切れている。渡米後は物理で直せない" >&2
-REMOTE_COLDBOOT
+#
+# ★2026-08-03 夜: ここに在った heredoc を `tools/coldboot-chain.sh` へ**切り出した**。
+#   heredoc のままでは対照が書けず、実際にずれていた —— 上の注釈は 7 つの性質を
+#   名指ししているのに、コードが読んでいたのは 4 つだけ(KeepAlive と `sleep 0` は
+#   文章にしか無かった)。切り出して対照(`test/coldboot-chain-controls.sh`、17 本)を
+#   当てたら、**旧版はその 17 本すべてを通せなかった**:
+#     - 最後の文が `[ warn -eq 0 ] && echo || echo` なので **常に 0 で終わっていた**
+#       (呼び側が `|| true` なので害は無いが、下流が読める信号は 1 つも無かった)
+#     - 「fdesetup が答えない」と「FileVault が On」を同じ扱いにしていた(未測定 ≠ 壊れ)
+#     - `awk '/autorestart/'` の部分一致。`sleep` を同じ書き方で足すと
+#       `disksleep` `displaysleep` `SleepDisabled` に当たって壊れる(対照 C11)
+#   実装は 1 つだけ在れば良いので、ここは呼ぶだけにする。`|| true` は変えない。
+ssh "$EDITH" "/bin/bash '$LIVE/tools/coldboot-chain.sh'" || true
 
 say "10. 複製の在庫(**自動では消さない**)"
 # ★消す判断を台本に持たせない。1つ 2.7MB 程度で、消し間違いの害の方が大きい。
