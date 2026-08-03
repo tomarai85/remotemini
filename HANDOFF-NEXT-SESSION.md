@@ -2266,6 +2266,52 @@ Codex 裁定: **A failed deployment must not replace the next-boot tree.**
   停止判定器で fail-**open** = 誤りの向きが最悪。`.harness/evidence-2026-08-03/…NOTE.md` に記載。
   **直すのはこのレーンではない**(fleet 全体の安全計器 = §4 / `DESIGN.md` §8-6)。
 
+### 3-AB. ★★survival の赤が**理由を残さなかった**。包みを据えて読める形にした(2026-08-03 23:1x、commit `98c026e`)
+
+**症状**: `loop-replan-gate.sh survival` が `choice-reply` に赤を出したが、
+**なぜ赤かを一言も言えない**。`subprocess.run(..., capture_output=True)` の結果を読まずに
+`returncode` だけ見る作りなので、出力が捨てられている。
+
+仮説を3つ立てて3つとも落とした —— ポート衝突(否定: e2e は `RC_PORT=0` の一時ポート)、
+`npm test` の同時走行(否定: 2本同時で両方 536/536)、機械の負荷(否定: 負荷下で e2e 203/203)。
+**機序は未確定のまま残った**。此処で方針を変えた:
+
+> ★根は「機序が分からない」ではなく「**計器が証拠を捨てる**」。直す場所は計器。
+> doctrine (20) として `DESIGN.md` §2.32 に載せた。
+
+**据えた物**(全部 commit 済):
+- `rc-backend/tools/verify-log.sh` — 検査を包んで stdout / stderr / 終了コードを
+  `/tmp/rc-verify-logs/<id>.log` へ**追記**。repo は汚さない。
+  **終了コードは素と一字一句同じ**(此処が崩れたら包みが判定を書き換える = repo 全体の生死が嘘になる)。
+- `rc-backend/test/verify-log-controls.sh`(19項、1秒未満)— 自力型。中心は終了コード同一。
+  陰性 N1 = 握り潰す版は失敗を 0 で返す(この repo は `mutation-verdict.sh` の `assert` で
+  同じ病気を既に踏んでいる)。`run-controls.sh` の LOCAL_CTLS に登録(25本目)。
+- ゲートの task 6本のうち検査を持つ5本を `verify-log.sh` で包んだ
+  (`~/.claude/loop/tasks-<SID>.json`。`verify_wrap_note` に理由を残してある)。
+
+**据えた直後の走行で元を取った**。`alive=3 dead=3` が出て、log を読んだら3本とも同じ1件:
+```
+not ok 285 - ★注釈が行番号で他所を引いていない(1件でも戻れば赤)
+actual: ['test/verify-log-controls.sh: deploy-to-edith-controls.sh:45']
+```
+犯人は私。**「行番号で引くな」の罠を説明する注釈に行番号を書いて当たった**(3-X の検査)。
+中身の目印へ張り替えて解消。**包みが無ければ、また「3本死んだ、理由不明」で仮説狩りに戻っていた。**
+
+**併せて直した別件** —— `3s-instrument` の検査が**原理的に確かめられなかった**。
+survival の上限は `min(max(verify_timeout_s, 5), 300)` = **300s が硬い天井**で、
+旧検査(`npm test` 6s + e2e 60s + `run-controls.sh` 250〜300s)は構造的に超える。
+**どう回しても timeout しか返らない検査は検査ではない**。task の主張(`live-http-check.mjs` の
+欠陥3件が塞がり陰性対照で赤が出る)を測る 33件・1秒へ差し替えた。緩めていない:
+repo 全体の広さは pre-commit の commit-suite-gate(536件)と staged-controls-gate が
+毎コミット担う = survival より強い場所に既に在る。
+
+**次に同じ赤が出た時の読み方**: `/tmp/rc-verify-logs/<id>.log` を開く。
+no-linerefs 以外の失敗が出ていれば別因。**何も出ず終了コードだけ非ゼロなら計器側**。
+
+**持ち越し(このレーンでは触らない)**: `survival` に **exit 2(未測定)の袋が無い**
+(`_ok = (r.returncode == 0)` の二値。timeout だけ UNKNOWN の袋を持つ)。
+`loop-replan-gate.sh` は loop machinery = 自律ループ内から編集しない。machinery lane 案件。
+
 ## 4. Tom にしかできない事(全文は `DESIGN.md` §8)
 
 1. **edith の `~/.claude/settings.json` に statusLine を1行**(hook 強制で私は触れない)。
