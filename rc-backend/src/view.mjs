@@ -58,8 +58,8 @@ export function sendResult(status, body) {
     // ★本文が読めなかった(`body == null`)時に「送った」と名乗らない(2026-08-02 追加)。
     //   202 の意味は「受け取った」までで、取り込まれたかは**本文の `delivered` にしか無い**。
     //   その本文が読めていないなら、私は確認していない。`{}` に潰すと「確認できた」側へ倒れる。
-    //   `frames.mjs:86-95` が同じ状況で ok:false を返すのと同じ判断 — 読めない事は値ではない。
-    //   ★`{}` は対象外。`server.mjs:790`(worker 経路)は `delivered` を正当に持たないので、
+    //   `frames.mjs` の `decodeEvent()` が同じ状況で ok:false を返すのと同じ判断 — 読めない事は値ではない。
+    //   ★`{}` は対象外。`server.mjs` の 202 応答(worker 経路)は `delivered` を正当に持たないので、
     //     「鍵が無い読める本文」は今まで通り ok のままにする。変えるのは `null` だけ。
     if (body == null) {
       return {
@@ -115,7 +115,7 @@ export function interruptResult(status, body) {
   if (status === 200) {
     // ★本文が読めなかった時に「対象が無かった」と断定しない(2026-08-02 追加)。
     //   「止める対象が無かった」は**観測した結果**であって、既定値ではない。
-    //   `server.mjs:808/811/814` の 200 は必ず `interrupted` を載せるので、それが読めていない
+    //   `server.mjs` の割り込み応答の 200 は必ず `interrupted` を載せるので、それが読めていない
     //   のは「無かった」ではなく「分からない」。下の workPhrase の注記(観測できなかったを
     //   静かと書かない)と同じ誤りを、こちらは `|| {}` の1行でやっていた。
     if (body == null) {
@@ -155,7 +155,7 @@ export function interruptResult(status, body) {
  * tmux の行に出す「動き」の語。
  *
  * ★**「観測できなかった」を「静か」と書かない**(2026-08-02 に直した)。
- * `inject.mjs` の activity docstring・`server.mjs:229`・`server.mjs:500` の3箇所が揃って
+ * `inject.mjs` の activity docstring・`server.mjs` の `screenOf()`・`screenBody()` の3箇所が揃って
  * 「observed でない事は待機中を意味しない」と書いているのに、表示層だけが「静か」と
  * 断定していた。`activity` の値域は `"observed" | "unknown"` の2値で、待機中を表す値は
  * **存在しない**。値の言い換えではなく創作だった。

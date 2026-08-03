@@ -150,7 +150,7 @@ function scanSessions({ only = null, limit = 0, heads = null } = {}) {
       if (!he) continue;
       headIds.add(h);
       // ★`st` と `p` は**組のまま**持つ。`MetaCache.keyOf(st)` は inode 由来で path を
-      //   含まない(`listing.mjs:241`)ので、片方だけ差し替えると祖先の中身が枝の鍵で
+      //   含まない(`listing.mjs` の `keyOf`)ので、片方だけ差し替えると祖先の中身が枝の鍵で
       //   仕舞われる(罠2 / 変異 P15)。畳むのは「どこを見るか」であって行の身元ではない。
       e.head = { p: he.p, st: he.st, slug: he.slug };
       e.sortMs = he.st.mtimeMs; // 並びも updatedAt も枝の側の現在

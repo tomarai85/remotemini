@@ -236,7 +236,7 @@ test("★行に出る欄は決まった5つだけ(新しい欄が黙って増え
  *
  * 出所は2つ。片方だけ見ると足りない:
  *   ① API の本文の `reason: "…"`(server.mjs / blocked.mjs 等)
- *   ② `cwdVerdict()` の返り値(trust.mjs)—— server.mjs:936 が `reason: verdict` として
+ *   ② `cwdVerdict()` の返り値(trust.mjs)—— server.mjs が `reason: verdict` として
  *      そのまま本文へ載せるので、**文字列としては src に1回しか現れない**。
  */
 function reasonsInSource() {

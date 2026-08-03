@@ -196,7 +196,7 @@ function openStream(port, key, sessionId) {
       });
     },
   );
-  // ★60 秒。server は 25 秒ごとに `: ping` を書く(src/server.mjs:879-885)ので、
+  // ★60 秒。server は 25 秒ごとに `: ping` を書く(`src/server.mjs` の `: ping` と `25_000`)ので、
   //   60 秒の無音は「暇」ではなく**死**。api() と同じ 30 秒にすると余裕が 5 秒しか
   //   無く偽陽性になる。§2.20-a L2。
   req.setTimeout(60_000, () => {
@@ -533,7 +533,7 @@ async function main() {
       //
       // ただし「message で届く」を要求する形は**検査の側が間違っていた**。同じ機械・同じコードで
       // 数分違いの2回が `message 1 件 @0ms`(緑)と `message 0 件 @8s`(赤)に割れた。
-      // 競争でも退行でもなく設計 — `src/server.mjs:404-419`:
+      // 競争でも退行でもなく設計 — `src/server.mjs` の `f.tail.poll()`(`過去分は流さない`):
       //   tail は初回に**末尾へ位置合わせして過去分を流さない**(`過去分は流さない`)。
       //   代わりに `gap{rereadHistory:true, why:"tail-attached"}` を投げ、電話に読み直させる。
       // つまり返答が tail の接続より先に着いた回の届け先は message ではなく「gap → 読み直し」。

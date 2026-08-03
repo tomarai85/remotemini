@@ -26,7 +26,8 @@ DRY=""
 # ★変異の走行中は配備しない。**ただし理由は当初書いていた物ではない**(2026-08-02 17:1x に訂正)。
 #   旧: 「走行中は `src/` が意図的に壊されているので、壊れた木を本番へ送る事になる」
 #   → **これは事実と違う。** 台本は `tempfile.mkdtemp` + `copytree` で複製を壊すだけで
-#     (test/mutation-controls.py:716-719 / `cwd=dst` 706-707)、本物の木は無傷。
+#     (test/mutation-controls.py の `tempfile.mkdtemp` + `copytree`。走らせる時の
+#      `cwd` も複製の中)、本物の木は無傷。
 #     走行中の node の cwd を lsof で見ると `/private/var/folders/.../T/mut-*/rc` = 複製。
 #     rsync が送るのは常に本物の木なので、「壊れた木を送る」は起き得ない。
 #
@@ -130,7 +131,7 @@ say "5. e2e の作業場が残っていないか"
 #     2. どこを探したのかがログに残らない。人が後から「本当に見たのか」を確かめられない。
 #   → `bash -s` で shell を固定し、TMPDIR が空なら**落ちる**。探した場所を必ず出す。
 #
-#   (verify-on-edith.sh:65-68 に在るのは**別の罠**。`ls -d A B C` と glob を並べた時、
+#   (verify-on-edith.sh の `ls -d A B C` の注記に在るのは**別の罠**。`ls -d A B C` と glob を並べた時、
 #    A の nomatch で B と C を一度も見ずに終わる、という情報を落とす型。こちらは単一 glob
 #    なのでそれには当たらない。同じ教訓に見えるが別物なので混ぜない)
 ssh "$EDITH" bash -s <<'REMOTE'

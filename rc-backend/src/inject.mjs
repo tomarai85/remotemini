@@ -97,7 +97,7 @@ const IN_FLIGHT = /^[^\S\r\n]*[✻✽✢✶✳·][^\S\r\n]+\S+…/m;
  * ★2026-08-03、実機の対照で足した。それまでこのファイルは冒頭 M1 で
  * 「`esc to interrupt` はこのビルドの画面に存在しない(240/0)」と書き、それを唯一の根拠に
  * BUSY を概念ごと捨てていた。**その 240/0 は在り得ない場所を数えた 0 だった**:
- *   - 出所は `test/e2e-local.mjs:125` の旧・手書き画面 `✻ Baking… (… esc to interrupt)`。
+ *   - 出所は `test/e2e-local.mjs` の旧・手書き画面 `✻ Baking… (… esc to interrupt)`。
  *     測定はこの**合成行**を正しく否定した。実物はスピナー行ではなく footer に出るので、
  *     「この行は無い」から「この文字列は無い」への一般化が誤りだった。
  *   - 数えた側の fixture(`generating*.txt` 3枚)は**別機体の 50 行画面**で、footer が
@@ -682,7 +682,7 @@ export class TmuxInjector {
    *   差し替えられるのは検査の為だけ。**共有しない**: 鍵は「同じ物理キーボード」を守るので、
    *   注入器が2本になったら鍵も2本になり、直列化は成り立たない。
    *   今の構成では `server.mjs` が注入器を1本しか作らないのでこれで足りる(実測: `new TmuxInjector` は
-   *   `server.mjs:209` の1箇所。`tools/live-*.mjs` は別プロセスの点検道具)。
+   *   `server.mjs` の1箇所。`tools/live-*.mjs` は別プロセスの点検道具)。
    */
   constructor({
     tmux,

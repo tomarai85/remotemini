@@ -403,7 +403,7 @@ chmodSync(fakeAcct, 0o755);
 // ★port は**カーネルに決めさせる**(2026-08-02 に変更)。旧: `8790 + random(0..99)`。
 //
 // 旧の形が作れた嘘: この 8790-8889 の範囲に**過去の走行が落とした孤児**が居座り得る。
-// 実測 — pid 45236 が `T/mut-xsaw2j1a/rc/src/server.mjs` のまま **11時間33分** 8861 を
+// 実測 — pid 45236 が `$TMPDIR/mut-xsaw2j1a/rc/src/server.mjs` のまま **11時間33分** 8861 を
 // 掴んでいた(PPID=1 = 走行が外から止められて孫だけ残った形。親の e2e には
 // `finally { sv.kill }` が在るので、親ごと殺された時だけ起きる)。
 // 衝突すると bind に失敗 → "listening" が出ない → ここが `server did not start` で throw
@@ -1028,7 +1028,7 @@ try {
   //   「宛先が決まらない」、こちらは「宛先は決まったが今は押せない」。
   //
   //   ★鍵を埋める仕掛けは「tmux を遅くする」では作れない(2026-08-02、実測して作り替えた)。
-  //   tmux は `execFileSync`(server.mjs:206)なので、capture を遅くすると **event loop ごと
+  //   tmux は `execFileSync`(`server.mjs` の `exec: execFileSync`)なので、capture を遅くすると **event loop ごと
   //   止まる**。すると後続の要求はそもそも parse されず、鍵に並ぶ前に順番待ちになる
   //   = 鍵の行列は常に空のまま、6本目が 202 で通ってしまう(初版はこれで4件赤になった)。
   //   鍵が **await をまたいで** 握られる場所は1つだけ: pollScreen の `await sleep(25)`。
@@ -1046,7 +1046,7 @@ try {
   //        実測 (RC_E2E_DEBUG_BUSY): `#4 409/pane-busy @649ms` / `証人 409/composer-mismatch @24455ms`。
   //   4版 = ここ。**専用の証人を立てない**。容量(1本が保持 + maxWaiters=4)より1本多く投げ、
   //   「どれか1本が 409 pane-busy で返った」= その瞬間に満杯だった、という**観測**を前提にする。
-  //   その直後に割り込みを撃てば、同じ満杯に当たる —— 断られた送信は `mutex.mjs:140` の
+  //   その直後に割り込みを撃てば、同じ満杯に当たる —— 断られた送信は `mutex.mjs` の `maxWaiters` 判定の
   //   `q.length >= maxWaiters` で **enqueue の前に** 弾かれるので行列を1つも消費せず、
   //   保持中の1本が echo 予算(RC_E2E_ECHO_BUDGET_MS)を使い切るまで満杯は崩れないから。
   //   ★循環していない: 割り込みが常に 200 を返す変異でも「どれかが pane-busy」は成立するので

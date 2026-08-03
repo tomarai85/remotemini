@@ -16,7 +16,8 @@ SRC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # ★ここに「走行中は測れないので降りる(exit 2)」を置いていたが、**前提が事実と違った**ので
 #   外した(2026-08-02 17:1x)。「走行中は `src/` が壊れている」と書いていたが、
 #   変異台本は `tempfile.mkdtemp` + `copytree` で**複製の中だけ**を壊す
-#   (test/mutation-controls.py:716-719、走行中の node の cwd を lsof で実測して確認)。
+#   (test/mutation-controls.py の `tempfile.mkdtemp(prefix="mut-")` + `shutil.copytree`。
+#    走行中の node の cwd を lsof で実測して確認)。
 #   本物の `src/` は無傷なので、ここで作る複製も正しく、走行中でも測れる。
 #
 #   ★この降り方には副作用があった: 「未測定」は緑でも赤でもないので正直な形に見えるが、

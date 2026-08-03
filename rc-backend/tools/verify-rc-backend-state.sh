@@ -2,7 +2,8 @@
 # verify-rc-backend-state.sh — edith の常設 rc-backend が **本当に動いているか / 本当に止まるか**を
 # 層ごとの観測値で JSON に落とす。AI の主観(「起動しました」)を証拠として使わない為の道具。
 #
-# 出典: ~/.claude/rules/safety-core.md HARD GATE 1。あちらの `verify-production-stop.sh` は
+# 出典: ~/.claude/rules/safety-core.md HARD GATE 1。あちらの
+# `~/.claude/tools/verify-production-stop.sh` は
 # **停止方向**の判定器で、自動送信系(yoda / client-a)の形に合わせてある。こちらはその鏡:
 #   - 常設を**入れた**時に要るのは「全層が『動いている』で一致するか」+「止められるか」
 #   - 「止められるか」を測らずに常駐を置くと、消せない物を人の機械に残す事になる
@@ -10,7 +11,7 @@
 # ★HTTP の応答コードを同一性の証拠に使わない。8787 を掴んだままの**古いプロセス**も
 #   同じ 401 を返す。だから PID で見る:
 #     launchd の job の pid == 8787 の listener の pid == 我々の起動ラッパの子
-#   この3つが一致して初めて「今のコードが動いている」と言える(deploy-to-edith.sh:6 と同じ理由)。
+#   この3つが一致して初めて「今のコードが動いている」と言える(deploy-to-edith.sh の「MBP の緑は edith の緑ではない」と同じ理由)。
 #
 # 使い方:
 #   bash tools/verify-rc-backend-state.sh                 # 観測だけ(何も変えない)
@@ -49,7 +50,7 @@ OUT="$ART_DIR/verify-rc-backend-${MODE}-$(date +%Y%m%d-%H%M%S).json"
 #   `$2="node" / $3="src/server.mjs"` に割れる。実際 8/02 03:55 にこれを踏み、
 #   pgrep のパターンが `node` に化けて **EDITH 自身の常駐6本**(edith-claude-http 等)を
 #   拾い、「bootout 後も残留プロセスがある」という**偽の赤**を出した。
-#   この罠は verify-on-edith.sh:9-24 に既に書いてあったのに、こちらで適用し忘れた。
+#   この罠は verify-on-edith.sh の冒頭(引用符付きヒアドキュメントの節)に既に書いてあったのに、こちらで適用し忘れた。
 ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" bash -s -- "$(printf %q "$MODE")" "$(printf %q "$PROC_PAT")" > "$OUT" <<'REMOTE'
 job=gui/501/com.edith.rc-backend
 label=com.edith.rc-backend

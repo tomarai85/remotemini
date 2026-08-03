@@ -18,9 +18,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #   (2026-08-02 17:1x)。書いていた理由は「走行中は `src/` が意図的に壊れているので
 #   `--dry` が嘘の赤を出す / commit すると変異が混ざった木を記録する」だった。
 #   **どちらも起きない。** 変異台本は本物の木を書き換えない:
-#     test/mutation-controls.py:716-719  d = tempfile.mkdtemp(prefix="mut-")
-#                                        shutil.copytree(SRC, dst, ...)
-#     同 706-707                          subprocess.run([...], cwd=dst)
+#     test/mutation-controls.py  d = tempfile.mkdtemp(prefix="mut-")
+#                                shutil.copytree(SRC, dst, ...)
+#     同                         subprocess.Popen(cmd, cwd=cwd)  # cwd は複製の中
 #   実測(走行 38/119 の最中):
 #     - `--dry` → 「的の照合: 112件 / 当たらない 0件」= 正確。嘘の赤は出ない
 #     - 走行中の node の cwd = /private/var/folders/.../T/mut-yt53i0bl/rc(lsof) = 複製の中

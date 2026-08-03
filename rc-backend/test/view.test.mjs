@@ -92,7 +92,7 @@ test("★送信 202 で本文が読めなかったら「送った」と名乗ら
 });
 
 test("★読める本文に delivered が無いのは今まで通り ok(worker 経路は正当に持たない)", () => {
-  // server.mjs:790 の `{accepted, route:"worker", seq}` には delivered が無い。
+  // server.mjs の 202 `{accepted, route:"worker", seq}` には delivered が無い。
   // 変えるのは `null` だけ = 修正の範囲がここより広がっていない事の対照。
   assert.equal(sendResult(202, { route: "worker" }).kind, "ok");
   assert.equal(sendResult(202, {}).kind, "ok");
@@ -274,7 +274,7 @@ test("★routeLabel: 電話に流れる理由を**全部**覆う(表が2枚あ�
 });
 
 test("★routeLabel: 古い購読が運んでくる gone も blocked と同じ扱い(死んだ経路名を残さない)", () => {
-  // 旧実装は `server.mjs:486` が `route:"gone"` を産み、使う側が**1つも無かった**。
+  // 旧実装は `server.mjs` が `route:"gone"` を産み、使う側が**1つも無かった**。
   // 既定に落ちて「状態不明」= 理由が画面から消えていた(2026-08-02 に実行して確認)。
   // サーバ側は `blockedBody()` に寄せたが、繋ぎっ放しの購読が古い本文を持つので受け続ける。
   const l = routeLabel({ route: "gone", reason: "pane-gone" });

@@ -97,8 +97,9 @@ fi
 # 見本と同じ族: **読む為の物は実行されないので、壊れていても誰も気付かない**。
 # 手順書が改名で置き去りにされると、次に据える人が**据える瞬間に初めて**気付く。
 #   実測 2026-08-02: DESIGN.md + HANDOFF に repo 相対の参照が 162件・不在 0件。
-#   同日に1件、`tools/rc-pane-register.sh` と裸で書いてあったが基準が `~/.claude` の方
-#   だった物を見つけて絶対の形へ直した(この検査は `~` 始まりを対象外にする)。
+#   同日に1件、`tools/` 始まりの裸の相対で書いてあったが基準がこの repo でなく
+#   `~/.claude/tools/rc-pane-register.sh` だった物を見つけて絶対の形へ直した
+#   (この検査は `~` 始まりを対象外にする)。
 DOC_DIR="${RC_EXAMPLE_DOC_DIR:-$(cd "$ROOT/.." && pwd)}"
 c_out="$(RC_C_ROOT="$ROOT" RC_C_DOCS="$DOC_DIR" python3 - <<'PY' 2>&1
 import re, os, sys

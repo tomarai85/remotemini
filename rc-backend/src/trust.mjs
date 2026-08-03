@@ -21,7 +21,7 @@ export const CWD_REFUSALS = ["cwd_unknown", "cwd_missing", "cwd_untrusted"];
 
 /**
  * 信頼一覧の在り処。`RC_PHONE_TRUST_FILE` は**検査用の使い捨て**を差し込む口
- * (`tools/ensure-phone-window.sh:55` と同じ名前)。検査が本物の `~/.claude.json` を
+ * (`tools/ensure-phone-window.sh` の `TRUST_FILE` と同じ名前)。検査が本物の `~/.claude.json` を
  * 触らない為に在る —— 読むだけとはいえ、本物を読ませると環境で結果が変わる検査になる。
  */
 export const trustFilePath = () => process.env.RC_PHONE_TRUST_FILE || join(homedir(), ".claude.json");
