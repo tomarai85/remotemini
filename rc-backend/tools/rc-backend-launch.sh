@@ -24,10 +24,45 @@ TS="${RC_TAILSCALE_BIN:-/Applications/Tailscale.app/Contents/MacOS/Tailscale}"
 PORT="${RC_PORT:-8787}"
 LOG_DIR="${RC_LOG_DIR:-/Users/edith/Library/Logs/rc-backend}"
 KEY_FILE="${RC_KEY_FILE:-/Users/edith/.rc-backend/api.key}"
+MARK="${RC_DEPLOY_MARK:-/Users/edith/.rc-backend/deploy-in-progress}"
+MARK_MAX_S="${RC_DEPLOY_MARK_MAX_S:-180}"
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"; }
 
 log "起動 — node $($NODE -v 2>&1), port ${PORT}"
+
+# --- 配備中は起動しない(相互排他) -------------------------------------------
+# ★2026-08-03 追加。Codex 指摘:「入れ替えの rsync が木を書き換えている最中に
+#   launchd が node を起こしうる」。`KeepAlive` が張ってあるので、入れ替えの窓(約1秒)に
+#   たまたま今の node が死ぬと、launchd は**版の混ざった木**から起動する。
+#   rsync は既定で「一時 file に書いて rename」なので **file 1つ単位では原子的**だが、
+#   木全体としては新旧が混ざりうる。混ざった module 群で上がったサーバは、
+#   起動には成功して**振る舞いだけが説明不能**になる = 一番診断しにくい壊れ方。
+#
+# ★印の置き場は同期ツリーの**外**(`~/.rc-backend/`)。中に置くと入れ替えの
+#   `rsync --delete` が印そのものを消す = 守りたい瞬間に守りが消える。
+#
+# ★恒久的に詰まらせない。印が古ければ**無視して起動する**。
+#   配備台本が落ちた / 機械が落ちた時に印だけが残ると、fail-closed のつもりが
+#   「サービスが二度と上がらない」になる。`tools/mutation-run-live.sh` の注記に在るのと
+#   同じ型(fail-closed でも詰まったままなら壊れている)。
+#   既定 180 秒の根拠: 印が立っているのは**木を書き換えている間だけ**(前へ入れ替える
+#   rsync と、失敗した時に複製から戻す rsync。木は 2.7MB / 同一 disk 内なので実測数秒)。
+#   転送も edith 側の単体・e2e も印の外side = 印が 180 秒残っているなら、それは
+#   配備が進んでいるのではなく**配備台本が死んでいる**。
+#
+# ★この分岐は `tools/rc-backend-launch-check.sh` の L/M/N が駆動している
+#   (新しい印 -> 起動しない / 古い印 -> ★を出して起動する / 印なし -> 何も言わない)。
+#   守りを外した写しで L・L2・L3・M・M3 が赤くなる事まで確かめてある(2026-08-03)。
+if [ -f "$MARK" ]; then
+    mt=$(stat -f %m "$MARK" 2>/dev/null || echo 0)
+    age=$(( $(date +%s) - mt ))
+    if [ "$age" -lt "$MARK_MAX_S" ]; then
+        log "配備中の印が在る(${age} 秒前)= 木が書き換わっている最中。起動しない(launchd の再試行に任せる)"
+        exit 0
+    fi
+    log "★配備中の印が古い(${age} 秒 > ${MARK_MAX_S} 秒)= 配備台本が途中で落ちた跡。印を無視して起動する"
+fi
 
 # --- 鍵 ---------------------------------------------------------------------
 # ★作り直さない。server.mjs が無ければ作るが、在れば読むだけ。

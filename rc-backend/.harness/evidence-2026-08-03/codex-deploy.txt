@@ -1,0 +1,97 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019fc63e-d4ad-7003-9a40-ad8f11b6a413
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Context (everything inline; do not read files):
+
+I maintain a small self-hosted Node service ("rc-backend", ~18 src files, no framework) that lets a phone
+drive Claude Code sessions running on a Mac mini. It runs on the mini under launchd
+(gui/501/com.edith.rc-backend), listens on 127.0.0.1:8787 over a tailnet, auth = a bearer key file.
+It is single-user (me), not customer-facing, but it IS the thing I will depend on while travelling.
+
+Current state, all observed today:
+- Mini currently runs commit 0750a48 (deployed 02:35 today), pid 52311 owns :8787, node v25.9.0.
+- Local repo HEAD = 61f18c8, working tree clean. 0750a48..HEAD = 40 commits, of which 5 touch src/.
+- The mini has NO .git. The only version stamp there is a DEPLOYED-REV text file the deploy script writes.
+- Deploy script (tools/deploy-to-edith.sh) order is:
+    1. stamp SRC_REV
+    2. rsync -a --delete  (excludes .git, node_modules, *.log)  -> overwrites the mini's tree
+    3. write DEPLOYED-REV
+    4. run `npm test` ON the mini
+    5. run `node test/e2e-local.mjs` ON the mini
+    6. launchctl kickstart -k  -> verify the launchd pid CHANGED, that the :8787 listener IS that new pid,
+       then a loopback request that must answer 401
+    7. warn if the tailnet key is near expiry
+  set -e throughout.
+
+Test evidence on the local tree at 61f18c8:
+- unit: 536/536 pass
+- e2e:  203/203 pass
+- mutation testing: I have a 197-mutant corpus. On the CURRENT tree I have only run the 21-mutant "C"
+  family (21/21 killed, 0 survivors). The last FULL 197-mutant green pass was on 0750a48 — i.e. exactly
+  the revision currently deployed. A full pass costs roughly 2.5-3 hours of wall clock.
+
+Four questions. Answer each with a direct verdict, not options.
+
+Q1. Is in-place `rsync --delete` + `kickstart -k` an acceptable upgrade path for this live service, or
+    does it warrant staging into a new directory and flipping a symlink? Note the service holds no
+    on-disk state under the deployed dir; its state (key file, logs) lives elsewhere.
+
+Q2. Ordering hazard: rsync (step 2) happens BEFORE the mini-side tests (steps 4-5). If the mini's tests
+    fail, set -e aborts before kickstart — leaving disk=new-and-red, process=old-and-good. The old
+    process keeps serving from memory, but any later crash/reboot boots a tree that failed its own tests.
+    Is this a real defect I should fix now (e.g. rsync to a staging dir, test there, then swap), or am I
+    over-weighting it for a single-user service?
+
+Q3. Rollback: the mini has no git. My plan is to tar the current /Users/edith/rc-backend into the mini's
+    $TMPDIR before rsync, so rollback = untar + kickstart. Is a tarball in $TMPDIR adequate, or should
+    rollback come from re-deploying the old commit out of my local git (which I have) instead? What is
+    the failure mode of each?
+
+Q4. The judgement call: is it defensible to deploy 61f18c8 when the full 197-mutant pass has NOT run on
+    that tree — given unit+e2e are fully green, only the 21-mutant C family is measured on it, and the
+    last full green was on the very revision I'd be replacing? Options I see: (a) run the full pass first
+    and deploy in ~3h, (b) deploy now and run the full pass after, (c) run a targeted subset covering the
+    5 src-touching commits first. Which, and why? What would make you switch answers?
+2026-08-03T06:10:35.593844Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-03T06:10:35.703436Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-03T06:10:35.778151Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+Q1. No. For a service you will depend on while travelling, stage into a versioned release directory, test it there, then atomically flip a symlink and restart. Stateless deployment makes this cheap.
+
+Q2. Yes, it is a real defect; fix it now. A failed deployment must not replace the next-boot tree. Test the staged release before activation, then flip and verify. If verification fails, flip back and restart the previous release.
+
+Q3. Do not use `$TMPDIR` as the primary rollback mechanism. It can be purged or lost on reboot—precisely when rollback may be needed. Keep the previous release directory on the mini and retain the local Git commit as the recovery source.
+
+- Previous release directory failure: disk corruption or accidental deletion.
+- Local Git redeploy failure: your development machine, network, toolchain, or dependency resolution may be unavailable.
+- `$TMPDIR` tarball failure: cleanup/reboot removes it; extraction can also leave a partially restored tree.
+
+Q4. Choose (c): run a targeted mutation subset covering every changed source file and materially affected dependency path, then deploy if green; run the full corpus afterward. Unit and e2e are already strong gates, while spending three hours retesting untouched mutation families has limited pre-deploy value.
+
+I would switch to (a) if the five source changes affect authentication, command/session lifecycle, process termination, persistence/recovery, or shared infrastructure that makes “targeted” coverage unreliable. I would choose (b) only for an urgent fix whose risk is clearly lower than delaying it.
+tokens used
+16,478
+Q1. No. For a service you will depend on while travelling, stage into a versioned release directory, test it there, then atomically flip a symlink and restart. Stateless deployment makes this cheap.
+
+Q2. Yes, it is a real defect; fix it now. A failed deployment must not replace the next-boot tree. Test the staged release before activation, then flip and verify. If verification fails, flip back and restart the previous release.
+
+Q3. Do not use `$TMPDIR` as the primary rollback mechanism. It can be purged or lost on reboot—precisely when rollback may be needed. Keep the previous release directory on the mini and retain the local Git commit as the recovery source.
+
+- Previous release directory failure: disk corruption or accidental deletion.
+- Local Git redeploy failure: your development machine, network, toolchain, or dependency resolution may be unavailable.
+- `$TMPDIR` tarball failure: cleanup/reboot removes it; extraction can also leave a partially restored tree.
+
+Q4. Choose (c): run a targeted mutation subset covering every changed source file and materially affected dependency path, then deploy if green; run the full corpus afterward. Unit and e2e are already strong gates, while spending three hours retesting untouched mutation families has limited pre-deploy value.
+
+I would switch to (a) if the five source changes affect authentication, command/session lifecycle, process termination, persistence/recovery, or shared infrastructure that makes “targeted” coverage unreliable. I would choose (b) only for an urgent fix whose risk is clearly lower than delaying it.

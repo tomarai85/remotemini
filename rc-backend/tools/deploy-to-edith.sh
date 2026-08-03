@@ -1,22 +1,62 @@
 #!/bin/bash
-# deploy-to-edith.sh — rc-backend を edith に置き、**その機械で緑を取る**まで。
+# deploy-to-edith.sh — rc-backend を edith に置き、**その機械で緑を取ってから**入れ替える。
 #
-# 常設(launchd)の前段。ここが緑にならない限り plist は入れない。
 # 理由: edith は Node 25.9.0、MBP とは別の実行系。MBP の緑は edith の緑ではない。
 #
 # 使い方:
-#   bash tools/deploy-to-edith.sh            # 転送 + edith 側で単体 + e2e
-#   bash tools/deploy-to-edith.sh --dry-run  # rsync の差分だけ見る(転送しない)
+#   bash tools/deploy-to-edith.sh            # 仮置き → edith で緑 → 入れ替え → 再起動を観測
+#   bash tools/deploy-to-edith.sh --dry-run  # 仮置きの rsync 差分だけ見る(転送しない)
+#
+# ============================================================================
+# ★2026-08-03 に**順序を作り直した**。旧版は
+#     rsync で本番の木を上書き → その木で npm test → e2e → kickstart
+#   だった。`set -e` なので edith 側の検査が赤なら kickstart の前で止まる。
+#   その時に残る状態が **disk=新しくて赤 / process=古くて正常** で、
+#   走っているサーバはメモリ上の古いコードで動き続けるから**その場では何も壊れない**。
+#   壊れるのは次に機械が落ちた時 —— KeepAlive や再起動が拾うのは
+#   「自分の検査に落ちた木」で、**赤い木が次回起動の木になっている**。
+#   Codex の裁定(同日): 「A failed deployment must not replace the next-boot tree.」
+#
+#   → 新しい順序は **仮置き(rc-staging)で緑を取るまで本番の木に触らない**。
+#     赤なら本番の木は前回の緑のまま = 次回起動も緑のまま。
+#
+# ★入れ替えの形について(Codex は当初「symlink を貼り替えろ」と言った。**採らなかった**)
+#   採らない理由は2つ、どちらも Codex が知らなかった事実:
+#     1. `/Users/edith/rc-backend` には**私の物ではない `.git` が居る**(2026-08-03 12:52、
+#        版管理外の本番コードを git 化する fleet の掃除が作った物。remote 無し・単発 commit)。
+#        本番パスを symlink にすると、その repo を特定の release の中へ**黙って移す**事になる。
+#     2. 本番パスを見ている plist が**2枚**ある(com.edith.rc-backend / com.edith.rc-phone-window)。
+#        plist を書き換えると `bootout` + `bootstrap` が要る(この機械には 2026-07-17 に
+#        `launchctl load` が古い定義を掴んだ事故が在る)= 依存している面を一度畳む事になる。
+#   代わりに得た物: 「本番の木に触る前に緑を取る」と「戻せる複製が再起動を跨いで残る」。
+#   諦めた物: 入れ替えそのものの原子性。走っている node は module をメモリに持っていて
+#   rsync 中に `src/` を読み直さないので、この非原子の窓は**サービスからは観測されない**。
+#
+# ★戻し先を `$TMPDIR` に置かない(Codex 裁定)。tmp は再起動や掃除で消える =
+#   **一番戻したい瞬間に無い**。`/Users/edith/rc-releases/` に実体で残す。
 #
 # 触らない物(同期ツリーの外に在るので --delete の巻き添えにならない):
 #   ~/.rc-backend/api.key      鍵。作り直すと電話に貼った鍵が失効する
 #   ~/.rc-backend/panes/*.json 登録簿
 #   ~/Library/Logs/rc-backend/ ログ
+# 触らない物(同期ツリーの**中**に在るが、私の物ではないので除外する):
+#   /Users/edith/rc-backend/.git       fleet の掃除が作った repo
+#   /Users/edith/rc-backend/.gitignore ↑と同時刻に作られた対の file。手元の木には**無い**ので、
+#                                      除外しないと `--delete` が黙って消す。中身は
+#                                      tokens/oauth/credential を無視する規則 = 消すと
+#                                      その repo が次に秘密を巻き込む側に倒れる。
 
 set -euo pipefail
 
 EDITH="${RC_EDITH_HOST:-edith@10.0.0.0}"
-DEST="${RC_EDITH_DIR:-/Users/edith/rc-backend}"
+LIVE="${RC_EDITH_DIR:-/Users/edith/rc-backend}"
+STAGE="${RC_EDITH_STAGE:-/Users/edith/rc-staging}"
+RELEASES="${RC_EDITH_RELEASES:-/Users/edith/rc-releases}"
+# 配備中の印。**同期ツリーの外**に置く(`--delete` の巻き添えにならない為)。
+# 既定値は `tools/rc-backend-launch.sh` の `RC_DEPLOY_MARK` と一致していなければならない。
+MARK="${RC_DEPLOY_MARK:-/Users/edith/.rc-backend/deploy-in-progress}"
+LOCK="${RC_DEPLOY_LOCK:-/Users/edith/.rc-backend/deploy.lock}"
+LOCK_MAX_S="${RC_DEPLOY_LOCK_MAX_S:-7200}"
 NODE="/opt/homebrew/bin/node"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -81,36 +121,81 @@ case "$dirt_rc" in
      fi ;;
 esac
 
-# 送らない物: git の中身と、e2e が作る作業場(そもそもここには無い筈だが保険)。
-# ★`--delete` を使うので、除外に入れた物は宛先に在っても消されない = 意図的。
 say() { printf '\n=== %s ===\n' "$1"; }
 
-say "1. 転送 (rsync -a --delete${DRY:+ ${DRY}})"
+# 私の物ではない2つ(上の注記)。本番の木へ書き戻す時と、複製を取る時の両方で除外する。
+FOREIGN=(--exclude '.git/' --exclude '.gitignore')
+
+say "0. 配備の錠を取る(= 二重配備を構造的に不可能にする)"
+# ★Codex 2026-08-03 指摘。2本の配備が重なると、片方の「複製」が
+#   **もう片方が入れ替えた後の木**になる = 戻し先が前の版ではなくなる。
+#   `mkdir` は原子的なので、成功した側だけが錠を持つ(file の存在確認 → 作成、では競る)。
+#   fail-closed だが**詰まらせない**: 落ちた配備が残した錠は 2 時間で取り直す
+#   (mutation-run-live.sh で恒久的に塞がった時と同じ轍を踏まない)。
+release_lock() { ssh "$EDITH" "rm -f '$LOCK/at' 2>/dev/null; rmdir '$LOCK' 2>/dev/null" >/dev/null 2>&1 || true; }
+lock_rc=0
+ssh "$EDITH" bash -s -- "'$LOCK'" "'$LOCK_MAX_S'" <<'REMOTE_LOCK' || lock_rc=$?
+set -u
+lock="$1"; maxs="$2"
+mkdir -p "$(dirname "$lock")"
+if mkdir "$lock" 2>/dev/null; then
+    date +%s > "$lock/at"
+    echo "錠を取った: $lock"
+    exit 0
+fi
+at="$(cat "$lock/at" 2>/dev/null || echo 0)"
+age=$(( $(date +%s) - at ))
+if [ "$age" -lt "$maxs" ]; then
+    echo "★別の配備が走っている(${age} 秒前に始まった)。重ねない" >&2
+    exit 1
+fi
+echo "★錠が古い(${age} 秒 > ${maxs} 秒)= 前の配備が途中で落ちた跡。取り直す" >&2
+date +%s > "$lock/at"
+exit 0
+REMOTE_LOCK
+[ "$lock_rc" -eq 0 ] || exit 1
+trap release_lock EXIT
+
+say "1. 仮置きへ転送 (rsync -a --delete${DRY:+ ${DRY}} → $STAGE)"
+# ★本番の木ではなく**仮置き**へ送る。ここが今回の設計変更の本体。
+#   仮置きは毎回 `--delete` で手元の木の完全な写しにする(前回の残骸を持ち越さない)。
 rsync -a --delete $DRY \
     --exclude '.git/' \
     --exclude 'node_modules/' \
     --exclude '*.log' \
-    "$SRC"/ "$EDITH:$DEST"/
+    "$SRC"/ "$EDITH:$STAGE"/
 
 if [ -n "$DRY" ]; then
     echo "(dry-run。ここで終わり)"
     exit 0
 fi
 
-say "1b. 送った木の版を宛先に刻む(= 本番の版を推理でなく観測にする)"
-# rsync --delete は SRC に無いこの file を次回消すが、その直後にこの行が書き直す。
-# 途中で落ちれば刻印は消えたまま = 観測子は "unknown" を出す(黙って古い版を名乗らない)。
-ssh "$EDITH" "printf '%s\n%s\n' '$SRC_REV' \"\$(date -Iseconds)\" > '$DEST/DEPLOYED-REV'"
-echo "刻んだ版: $SRC_REV"
+say "1b. 送った木の版を**仮置きに**刻む(= 本番の版を推理でなく観測にする)"
+# 旧版はここで本番へ直接書いていた。仮置きに刻んでおけば step 7 の rsync が本番へ運ぶので、
+# 「刻印だけ新しくて中身が古い」も「中身だけ新しくて刻印が古い」も**構造的に起きない**。
+ssh "$EDITH" "printf '%s\n%s\n' '$SRC_REV' \"\$(date -Iseconds)\" > '$STAGE/DEPLOYED-REV'"
+echo "刻む版: $SRC_REV"
 
 say "2. edith 側の実行系を観測"
-ssh "$EDITH" "$NODE -v && cd '$DEST' && ls -1 src/ test/ | wc -l"
+ssh "$EDITH" "$NODE -v && cd '$STAGE' && ls -1 src/ test/ | wc -l"
 
-say "3. 単体 (edith 上)"
-ssh "$EDITH" "cd '$DEST' && PATH=/opt/homebrew/bin:\$PATH npm test --silent"
+say "3. 単体 (edith 上・仮置きで)"
+ssh "$EDITH" "cd '$STAGE' && PATH=/opt/homebrew/bin:\$PATH npm test --silent"
 
-say "4. e2e (edith 上)"
-ssh "$EDITH" "cd '$DEST' && PATH=/opt/homebrew/bin:\$PATH $NODE test/e2e-local.mjs"
+say "4. e2e (edith 上・仮置きで)"
+# ★本番のサーバが 8787 で動いたままここを走らせても衝突しない。実測(2026-08-03)で確かめた:
+#   e2e は `RC_PORT: "0"`(= 借りる port は毎回別)で、状態も `mkdtemp` の砂場と
+#   `RC_KEY_DIR=<砂場>/keys` に閉じている。本番の鍵も登録簿も触らない。
+ssh "$EDITH" "cd '$STAGE' && PATH=/opt/homebrew/bin:\$PATH $NODE test/e2e-local.mjs"
+
+say "4b. 起動ラッパの分岐 (edith 上・仮置きで)"
+# ★`npm test` は `test/*.test.mjs` しか回さないので、**起動ラッパは単体の網に入っていない**。
+#   ところが配備で最後に効くのはこの台本で、間違えた時の症状は
+#   「edith の上では全部緑、電話からだけ永久に到達できない」= 一番気付けない形。
+#   step 8 の kickstart で気付く事は出来るが、その時にはもう本番の木を入れ替えた後 =
+#   **戻す羽目になってから知る**。ここで先に駆動しておけば、赤なら本番に触らずに止まる。
+#   この検査は偽の tailscale / node / dir を噛ませた砂場で完結する(本物の serve は撃たない)。
+ssh "$EDITH" "cd '$STAGE' && /bin/bash tools/rc-backend-launch-check.sh"
 
 say "5. e2e の作業場が残っていないか"
 # ★この確認が無かったせいで 364個 65MB を残した(WORKLOG 2026-08-02 02:10)。
@@ -134,7 +219,7 @@ say "5. e2e の作業場が残っていないか"
 #   (verify-on-edith.sh の `ls -d A B C` の注記に在るのは**別の罠**。`ls -d A B C` と glob を並べた時、
 #    A の nomatch で B と C を一度も見ずに終わる、という情報を落とす型。こちらは単一 glob
 #    なのでそれには当たらない。同じ教訓に見えるが別物なので混ぜない)
-ssh "$EDITH" bash -s <<'REMOTE'
+ssh "$EDITH" bash -s <<'REMOTE_LEFTOVER'
 T="${TMPDIR:-}"
 if [ -z "$T" ]; then
     # 見られない事を「無い」と言わない。TMPDIR が空なら e2e の作業場の場所自体が不明。
@@ -148,9 +233,71 @@ for d in "$T"rc-e2e-*; do
 done
 echo "残っている rc-e2e-*: ${n}  (探した場所: ${T})"
 [ "$n" -eq 0 ] || echo "★片付いていない。e2e が異常終了した跡が在る"
-REMOTE
+REMOTE_LEFTOVER
 
-say "6. 常設(launchd)が既に在るなら、走っている物を新しい木に入れ替える"
+# ------------------------------------------------------------------------------
+# ここから先が**本番の木に触る**区間。ここより上が全部緑でなければ到達しない。
+# ------------------------------------------------------------------------------
+
+say "6. 複製を取ってから、仮置きを本番の木へ入れ替える"
+# ★この段の間だけ**配備中の印**を立てる。理由(Codex 2026-08-03 指摘):
+#   `KeepAlive` が張ってあるので、入れ替えの窓に今の node がたまたま死ぬと launchd は
+#   **版の混ざった木**から起動しうる。起動には成功して振る舞いだけが壊れる = 最悪の形。
+#   印が在る間、`tools/rc-backend-launch.sh` は node を起こさず launchd の再試行に任せる。
+#   印は同期ツリーの外(`~/.rc-backend/`)に置く = `--delete` の巻き添えにならない。
+#   `trap` で必ず外す。外し損ねても launcher 側が 180 秒で無視するので詰まらない。
+#
+# ★複製は `.partial` に作ってから rename する(Codex 指摘)。途中で落ちた複製が
+#   `prev-*` の名前で残ると、**戻せない物を戻せる物として数える**事になる。
+#   rename は原子的なので、名前が付いている = 完成している、が構造的に保証される。
+SWAP_OUT="$(ssh "$EDITH" bash -s -- "'$LIVE'" "'$STAGE'" "'$RELEASES'" "'$MARK'" <<'REMOTE_SWAP'
+set -u
+live="$1"; stage="$2"; releases="$3"; mark="$4"
+
+mkdir -p "$(dirname "$mark")" "$releases"
+trap 'rm -f "$mark"' EXIT
+date +%s > "$mark"
+echo "配備中の印を立てた: $mark"
+
+snapshot="NONE"
+if [ -d "$live" ]; then
+    # 置き場が足りないまま複製を始めると、半端な複製と満杯の disk が同時に出来る。
+    need_k=$(du -sk "$live" | awk '{print $1}')
+    free_k=$(df -k "$releases" | awk 'NR==2 {print $4}')
+    if [ "$free_k" -lt $(( need_k * 10 )) ]; then
+        echo "★空きが足りない(必要 ${need_k}KB の10倍を見る / 空き ${free_k}KB)。配備しない" >&2
+        exit 1
+    fi
+    oldrev="$(head -1 "$live/DEPLOYED-REV" 2>/dev/null || true)"
+    [ -n "$oldrev" ] || oldrev="unknown"
+    base="$releases/$(date +%Y%m%d-%H%M%S)-$oldrev"
+    mkdir -p "$base.partial"
+    # `.git` と `.gitignore` は私の物ではないので複製にも入れない(戻す時にも書き戻さない為)。
+    # `--delete` を付けるのは、万一 `.partial` が残っていても**混ざった複製**にしない為。
+    rsync -a --delete --exclude '.git/' --exclude '.gitignore' "$live"/ "$base.partial"/
+    mv "$base.partial" "$base"
+    snapshot="$base"
+    echo "複製: $base"
+else
+    echo "初回配備(本番の木がまだ無い)= 複製は取らない"
+fi
+
+rsync -a --delete --exclude '.git/' --exclude '.gitignore' "$stage"/ "$live"/
+echo "入れ替えた: $stage → $live"
+echo "SNAPSHOT=$snapshot"
+REMOTE_SWAP
+)"
+# `|| true` = 全行が SNAPSHOT= だけだった時に grep が 1 を返して `set -e` に殺されない為。
+printf '%s\n' "$SWAP_OUT" | grep -v '^SNAPSHOT=' || true
+SNAPSHOT="$(printf '%s\n' "$SWAP_OUT" | sed -n 's/^SNAPSHOT=//p')"
+[ -n "$SNAPSHOT" ] || { echo "★入れ替えの結果を読めなかった" >&2; exit 1; }
+
+say "7. 刻印が送った版と一致するか(= rsync が黙って何もしていない、を捕まえる)"
+LIVE_REV="$(ssh "$EDITH" "head -1 '$LIVE/DEPLOYED-REV'")"
+echo "本番に刻まれた版: $LIVE_REV"
+[ "$LIVE_REV" = "$SRC_REV" ] || { echo "★刻印($LIVE_REV)が送った版($SRC_REV)と違う" >&2; exit 1; }
+
+say "8. 常設(launchd)が在るなら、走っている物を新しい木に入れ替える"
 # ★rsync しただけでは**動いているサーバは古いコードのまま**。
 #   同型の事故で F1 を 11 日止めた(memory: method_measure_where_the_system_actually_reads
 #   のプロセス版)。「転送した」を「反映された」と読み替えない為に、ここで機械に確かめさせる。
@@ -165,57 +312,121 @@ say "6. 常設(launchd)が既に在るなら、走っている物を新しい木
 #     ② 8787 を実際に掴んでいるプロセスが**その PID である**事(= 古い居座りではない)
 #     ③ その上で 401(= 認証が生きている)
 #   ①②が通らないのに③だけ通る状態こそが、この検査が捕まえたい状態。
-ssh "$EDITH" bash -s <<'REMOTE'
+#
+# ★2026-08-03 追加: ここが赤なら**複製から戻して、もう一度 kickstart する**。
+#   「配ったが動かない」で終わらせない = 戻す判断を人の手に残さない(戻す事自体は可逆)。
+restart_rc=0
+ssh "$EDITH" bash -s -- "'$SNAPSHOT'" "'$LIVE'" "'$MARK'" "'$SRC_REV'" <<'REMOTE_RESTART' || restart_rc=$?
+snapshot="$1"; live="$2"; mark="$3"; want_rev="$4"
 job=gui/501/com.edith.rc-backend
 jobpid() { launchctl print "$job" 2>/dev/null | awk -F'= *' '/^[[:space:]]*pid =/ {print $2; exit}'; }
+# 戻しの途中で launchd に起こされない為の印(step 6 と同じ物)。ここで死んでも必ず外す。
+trap 'rm -f "$mark"' EXIT
 
 if ! launchctl print "$job" >/dev/null 2>&1; then
-    echo "常設なし(まだ plist を入れていない)。転送だけで終わり = これは正常"
+    echo "常設なし(まだ plist を入れていない)。入れ替えだけで終わり = これは正常"
     exit 0
 fi
 
+# $1 = kickstart 前の PID / $2 = 走っていて欲しい版(空なら観測だけして判定しない)
+verify() {
+    local before="$1" want="$2" rc=0 after="" listener="" code="" health="" hver="" hpid=""
+    launchctl kickstart -k "$job" || { echo "★kickstart が失敗した" >&2; return 1; }
+    # 立ち上がるまで待つ。固定 sleep だと遅い機械で偽の赤、速い機械で無駄待ちになる。
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 1
+        after=$(jobpid)
+        [ -n "$after" ] && [ "$after" != "$before" ] && break
+    done
+    if [ -z "$after" ]; then
+        echo "★10 秒待っても PID が付かない。crash loop の疑い" >&2; rc=1
+    elif [ "$after" = "$before" ]; then
+        echo "★PID が変わっていない(${before})= 入れ替わっていない" >&2; rc=1
+    else
+        echo "PID: ${before:-なし} → ${after}(入れ替わった)"
+    fi
+    # ★ここが本題。8787 を掴んでいるのが**その PID か**。
+    listener=$(lsof -nP -iTCP:8787 -sTCP:LISTEN -t 2>/dev/null | head -1)
+    if [ -z "$listener" ]; then
+        echo "★8787 を掴んでいるプロセスが居ない(起動に失敗している)" >&2; rc=1
+    elif [ "$listener" != "$after" ]; then
+        echo "★8787 を掴んでいるのは pid=${listener} で、launchd の job(pid=${after})ではない。" >&2
+        echo "  = 古いプロセスが居座っている。この状態でも curl は 401 を返すので、応答コードだけ見ると気付けない" >&2
+        rc=1
+    else
+        echo "8787 の listener = ${listener}(launchd の job と一致)"
+    fi
+    code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8787/api/sessions 2>/dev/null || echo "接続不可")
+    echo "応答: ${code}(401 が正 = 鍵を求めている)"
+    [ "$code" = "401" ] || { echo "★401 以外" >&2; rc=1; }
+
+    # ★★2026-08-03 追加(Codex: "Verify the deployed build/revision, not merely 'returns 401.'")。
+    #   ここまでの検査が全部通っても、証明できたのは「新しいプロセスが 8787 を掴んで
+    #   認証している」まで。**そのプロセスが何版を読み込んだか**は一言も言っていない。
+    #   `/healthz` の `version` は `src/server.mjs` の起動時 IIFE が読んだ値 = disk ではなく
+    #   **プロセスが実際に載せた版**。disk の DEPLOYED-REV(step 7)と対にして初めて
+    #   「配ったのは新版」と「動いているのも新版」の両方が言える。
+    #   `/healthz` は鍵を求めないので、この検査自体は鍵を持たずに成立する。
+    health=$(curl -sS --max-time 5 http://127.0.0.1:8787/healthz 2>/dev/null || echo '')
+    hver=$(printf '%s' "$health" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+    hpid=$(printf '%s' "$health" | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')
+    if [ -z "$health" ]; then
+        echo "★/healthz が答えない(401 は返るのに = 経路の一部だけ生きている疑い)" >&2; rc=1
+    else
+        echo "/healthz: version=${hver:-不明} pid=${hpid:-不明}"
+        if [ -n "$hpid" ] && [ -n "$listener" ] && [ "$hpid" != "$listener" ]; then
+            echo "★/healthz が名乗る pid(${hpid})が listener(${listener})と違う" >&2; rc=1
+        fi
+        if [ -n "$want" ] && [ "$hver" != "$want" ]; then
+            echo "★走っているのは ${hver:-不明} で、動いていて欲しい版(${want})ではない。" >&2
+            echo "  = 木は入れ替わったのにプロセスが別の版を載せている(古いプロセスの居座り/起動失敗の後始末)" >&2
+            rc=1
+        fi
+    fi
+    return "$rc"
+}
+
 before=$(jobpid)
 echo "常設あり(pid=${before:-不明}) → kickstart -k で入れ替える(bootout はしない = 定義は触らない)"
-launchctl kickstart -k "$job" || { echo "★kickstart が失敗した" >&2; exit 1; }
-
-# 立ち上がるまで待つ。固定 sleep だと遅い機械で偽の赤、速い機械で無駄待ちになる。
-after=""
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    sleep 1
-    after=$(jobpid)
-    [ -n "$after" ] && [ "$after" != "$before" ] && break
-done
-
-rc=0
-if [ -z "$after" ]; then
-    echo "★10 秒待っても PID が付かない。crash loop の疑い" >&2; rc=1
-elif [ "$after" = "$before" ]; then
-    echo "★PID が変わっていない(${before})= 入れ替わっていない" >&2; rc=1
-else
-    echo "PID: ${before:-なし} → ${after}(入れ替わった)"
+if verify "$before" "$want_rev"; then
+    exit 0
 fi
 
-# ★ここが本題。8787 を掴んでいるのが**その PID か**。
-listener=$(lsof -nP -iTCP:8787 -sTCP:LISTEN -t 2>/dev/null | head -1)
-if [ -z "$listener" ]; then
-    echo "★8787 を掴んでいるプロセスが居ない(起動に失敗している)" >&2; rc=1
-elif [ "$listener" != "$after" ]; then
-    echo "★8787 を掴んでいるのは pid=${listener} で、launchd の job(pid=${after})ではない。" >&2
-    echo "  = 古いプロセスが居座っている。この状態でも curl は 401 を返すので、応答コードだけ見ると気付けない" >&2
-    rc=1
-else
-    echo "8787 の listener = ${listener}(launchd の job と一致)"
+echo "" >&2
+echo "★★新しい木で立ち上がらなかった。複製から戻す。" >&2
+if [ "$snapshot" = "NONE" ] || [ ! -d "$snapshot" ]; then
+    echo "★戻す複製が無い(${snapshot})。手で直す必要がある。" >&2
+    echo "  ログ: /Users/edith/Library/Logs/rc-backend/rc-backend.error.log" >&2
+    exit 1
 fi
+# 戻しの間も KeepAlive は生きている。印を立ててから書き戻す(でないと**戻している最中の
+# 混ざった木**で起動されうる = 前へ進む時と同じ危険が、戻る時にも在る)。
+date +%s > "$mark"
+rsync -a --delete --exclude '.git/' --exclude '.gitignore' "$snapshot"/ "$live"/
+rm -f "$mark"
+echo "戻した: $snapshot → $live" >&2
+prev_rev="$(head -1 "$snapshot/DEPLOYED-REV" 2>/dev/null || true)"
+before=$(jobpid)
+if verify "$before" "$prev_rev"; then
+    echo "★戻した木では立ち上がった。配備は失敗、本番は前の版のまま = 安全側で止まっている。" >&2
+    exit 2
+fi
+echo "★★戻した木でも立ち上がらない。これは配備とは別の障害。" >&2
+echo "  ログ: /Users/edith/Library/Logs/rc-backend/rc-backend.error.log" >&2
+exit 3
+REMOTE_RESTART
 
-code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8787/api/sessions 2>/dev/null || echo "接続不可")
-echo "応答: ${code}(401 が正 = 鍵を求めている)"
-[ "$code" = "401" ] || { echo "★401 以外" >&2; rc=1; }
+case "$restart_rc" in
+  0) : ;;
+  2) echo "" >&2
+     echo "★配備は失敗した。ただし本番は前の版で動いている(自動で戻した)。" >&2
+     exit 2 ;;
+  *) echo "" >&2
+     echo "★配備が失敗し、戻しも効かなかった。人の手が要る。" >&2
+     exit "$restart_rc" ;;
+esac
 
-[ "$rc" -eq 0 ] || echo "ログ: /Users/edith/Library/Logs/rc-backend/rc-backend.error.log" >&2
-exit "$rc"
-REMOTE
-
-say "7. tailnet 鍵の残り日数(**警告であって門ではない**)"
+say "9. tailnet 鍵の残り日数(**警告であって門ではない**)"
 # ★ここで見る理由 = 「触っている今」が唯一まともに手を打てる瞬間だから。
 #   起動ラッパも同じ script を呼ぶが、あちらは**起動時にしか**出ない。4ヶ月先に切れる鍵に
 #   対して起動時の1行は警報にならない(そう書いてあるのに気付かないと、見張った気になる)。
@@ -223,6 +434,11 @@ say "7. tailnet 鍵の残り日数(**警告であって門ではない**)"
 #
 # ★`|| true` を付ける理由 = 鍵が 40 日後に切れる事は、コードを配る妨げにならない。
 #   ここで deploy を止めても被害は減らず、出来る仕事だけが止まる。止めるかは人が決める。
-ssh "$EDITH" "/bin/bash '$DEST/tools/tailnet-key-expiry.sh'" || true
+ssh "$EDITH" "/bin/bash '$LIVE/tools/tailnet-key-expiry.sh'" || true
 
-say "完了 — ここまで緑なら Phase P の step 2(plist を書く)へ"
+say "10. 複製の在庫(**自動では消さない**)"
+# ★消す判断を台本に持たせない。1つ 2.7MB 程度で、消し間違いの害の方が大きい。
+#   数と合計だけ出して、減らすかは人が決める。
+ssh "$EDITH" "ls -1 '$RELEASES' 2>/dev/null | wc -l | tr -d ' ' | sed 's/^/複製の数: /'; du -sh '$RELEASES' 2>/dev/null | sed 's/^/合計: /'" || true
+
+say "完了"

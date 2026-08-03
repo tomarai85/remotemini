@@ -1,0 +1,140 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019fc642-6ea2-7962-83d7-cb457a26b8e6
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Follow-up to your earlier verdict. I gave you a wrong fact and I found two constraints you did not have.
+Re-decide Q1 with these.
+
+Your earlier verdict (for reference): "Q1. No. Stage into a versioned release directory, test it there,
+then atomically flip a symlink and restart. Stateless deployment makes this cheap." And Q2: the
+rsync-before-test ordering is a real defect, fix it now. Q3: don't use $TMPDIR; keep the previous release
+directory on the machine, keep local Git as recovery source.
+
+CORRECTION 1 — I told you "the mini has NO .git". That was false. The live deploy directory
+/Users/edith/rc-backend DOES contain a .git: a single initial commit made today at 12:52 by a
+fleet-wide hygiene pass that git-inits unversioned production code (it has no remote, no configured
+user, and a generic secrets-oriented .gitignore listing .venv/__pycache__/tokens/oauth which are
+irrelevant to this zero-dependency Node project — i.e. a template, not project-specific). It is NOT
+mine and I am not going to relocate or delete someone else's repository. It is excluded from the
+deploy rsync, so today it survives deploys in place. It must stay at the root of its worktree, i.e.
+at /Users/edith/rc-backend.
+
+CONSTRAINT 2 — making /Users/edith/rc-backend a symlink, or repointing the service at a `current/`
+subdirectory, both cost more than you assumed:
+  - The launchd plist has ProgramArguments = /bin/bash /Users/edith/rc-backend/tools/rc-backend-launch.sh
+    and WorkingDirectory = /Users/edith/rc-backend.
+  - Changing the plist requires `launchctl bootout` + `bootstrap` (this machine has a documented
+    2026-07-17 incident where `launchctl load` kept serving a stale definition), i.e. a full teardown
+    and re-registration of the service I depend on, rather than the `kickstart -k` restart I use today.
+  - Turning the live path itself into a symlink drags that .git into whichever release directory I move,
+    which silently reassigns another owner's repository to one specific old release.
+
+MY COUNTER-PROPOSAL (no symlink, no plist change, live path stays a real directory):
+  1. rsync the new tree into /Users/edith/rc-staging/ (fresh dir, outside the live path)
+  2. run `npm test` and the e2e suite INSIDE rc-staging. If red: abort. The live tree was never touched,
+     so the next-boot tree is still the last known-good one. (This is your Q2 fix.)
+  3. green -> copy the current live tree to /Users/edith/rc-releases/prev-<oldrev>-<timestamp>/
+     (a real directory on the data volume, NOT $TMPDIR, survives reboot). (This is your Q3 fix.)
+  4. rsync rc-staging -> /Users/edith/rc-backend (--delete, excluding .git/)
+  5. `launchctl kickstart -k`, then verify: launchd pid changed AND the :8787 listener IS that pid
+     AND it answers 401
+  6. if step 5 fails: rsync the prev-<oldrev> snapshot back over the live path, kickstart again, report
+
+The one property this gives up versus your symlink flip is atomicity of the swap in step 4. My argument
+that it does not matter here: the running node process has its modules resident in memory and does not
+re-read src/ during the ~1s rsync, and the restart happens only after rsync returns. The inconsistent
+on-disk window is therefore never observed by the service. A crash landing exactly inside that window
+would boot a half-written tree — but KeepAlive would restart-loop and step 6's snapshot is the recovery.
+
+Two questions:
+
+QA. Given the .git ownership constraint and the bootout/bootstrap cost, is my counter-proposal an
+    acceptable substitute for the symlink flip, or is the atomicity you asked for load-bearing enough
+    that I should pay the plist change anyway? Direct verdict.
+
+QB. Is there a failure mode in my 6 steps that I have not named? Specifically I want you to attack
+    step 3 (is copying the live tree while the service runs from it safe, given the service holds no
+    state under that directory — its key file, pane registry and logs all live outside it), and
+    step 6 (restoring by rsync rather than by an atomic swap).
+2026-08-03T06:14:31.559611Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-03T06:14:31.737204Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-03T06:14:31.757962Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+QA — Direct verdict
+
+Yes. Keep `/Users/edith/rc-backend` as a real directory and keep the plist unchanged. I would not pay the bootout/bootstrap cost for a symlink flip.
+
+Atomic replacement is beneficial, but not load-bearing here. However, the six steps need one additional safeguard: prevent launchd from starting Node while either forward or rollback rsync is modifying the live tree.
+
+QB — Failure modes
+
+Step 3 is safe under your stated assumptions: the tree is immutable while running and all mutable state lives elsewhere. Open modules do not make the snapshot inconsistent.
+
+Harden it as follows:
+
+- Acquire a deployment lock to prevent concurrent deploys.
+- Copy into a `.partial` snapshot, check completion and disk space, then rename it to its final `prev-*` name.
+- Exclude `.git/` from the snapshot too. Otherwise you duplicate someone else’s repository into every release.
+- Do not derive `oldrev` from the live `.git`; that hygiene commit is not deployment provenance.
+
+Step 6 is the weak point as written. After failed verification:
+
+- The new process might still be running and lazily reading files.
+- KeepAlive might launch another process during the rollback rsync.
+- A machine reboot or deployment-script crash during step 4 means step 6 never runs automatically.
+
+Add an external maintenance marker that the launch script checks before executing Node. While the marker exists, the launcher should wait rather than restart-loop. Set it before step 4 and retain or recreate it throughout rollback. This requires changing the launcher once, but not the plist.
+
+Also:
+
+- Do not use rsync `--inplace`; normal temporary-file-and-rename behavior avoids individually truncated files, although the overall tree remains mixed-version during transfer.
+- Verify the deployed build/revision, not merely “returns 401.” Otherwise a wrong or old build can pass.
+- Apply the same PID/listener/readiness checks after rollback.
+- Audit for lazy imports, runtime file reads, templates, or spawned scripts; “modules are resident” is safe only if none exist.
+
+So: accept the directory-based deployment, preserve the foreign `.git`, and add a launch interlock. The corrected `.git` is not a valid recovery source; the verified release snapshot is.
+tokens used
+17,353
+QA — Direct verdict
+
+Yes. Keep `/Users/edith/rc-backend` as a real directory and keep the plist unchanged. I would not pay the bootout/bootstrap cost for a symlink flip.
+
+Atomic replacement is beneficial, but not load-bearing here. However, the six steps need one additional safeguard: prevent launchd from starting Node while either forward or rollback rsync is modifying the live tree.
+
+QB — Failure modes
+
+Step 3 is safe under your stated assumptions: the tree is immutable while running and all mutable state lives elsewhere. Open modules do not make the snapshot inconsistent.
+
+Harden it as follows:
+
+- Acquire a deployment lock to prevent concurrent deploys.
+- Copy into a `.partial` snapshot, check completion and disk space, then rename it to its final `prev-*` name.
+- Exclude `.git/` from the snapshot too. Otherwise you duplicate someone else’s repository into every release.
+- Do not derive `oldrev` from the live `.git`; that hygiene commit is not deployment provenance.
+
+Step 6 is the weak point as written. After failed verification:
+
+- The new process might still be running and lazily reading files.
+- KeepAlive might launch another process during the rollback rsync.
+- A machine reboot or deployment-script crash during step 4 means step 6 never runs automatically.
+
+Add an external maintenance marker that the launch script checks before executing Node. While the marker exists, the launcher should wait rather than restart-loop. Set it before step 4 and retain or recreate it throughout rollback. This requires changing the launcher once, but not the plist.
+
+Also:
+
+- Do not use rsync `--inplace`; normal temporary-file-and-rename behavior avoids individually truncated files, although the overall tree remains mixed-version during transfer.
+- Verify the deployed build/revision, not merely “returns 401.” Otherwise a wrong or old build can pass.
+- Apply the same PID/listener/readiness checks after rollback.
+- Audit for lazy imports, runtime file reads, templates, or spawned scripts; “modules are resident” is safe only if none exist.
+
+So: accept the directory-based deployment, preserve the foreign `.git`, and add a launch interlock. The corrected `.git` is not a valid recovery source; the verified release snapshot is.

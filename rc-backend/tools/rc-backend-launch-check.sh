@@ -59,10 +59,14 @@ chmod +x "$T/bin/node"
 # 鍵の期限は遠い方に倒す(この検査の対象ではないので、警告行で紛れさせない)
 printf '%s' '{"BackendState":"Running","Self":{"KeyExpiry":"2027-12-25T00:00:00Z"}}' > "$S/status.json"
 
+# 配備中の印。**必ず砂場の中を見せる**(既定値は edith の実物なので、edith 上でこの検査を
+# 回した時に本物の配備の印を読んでしまう = 検査の答えが本番の状態で変わる)。
+MARK_F="$S/deploy-in-progress"
+
 reset_state() {
     printf '%s' 0 > "$S/serve-calls"
     printf '%s' 0 > "$S/serve-rc"
-    rm -f "$S/applied" "$S/serve-err" "$S"/serve-out-* 2>/dev/null
+    rm -f "$S/applied" "$S/serve-err" "$MARK_F" "$S"/serve-out-* 2>/dev/null
     cp "$HERE/serve-decision.sh" "$T/app/tools/serve-decision.sh"
 }
 
@@ -75,6 +79,8 @@ launch() {
     RC_TAILSCALE_BIN="$ts" \
     RC_LOG_DIR="$T/logs" \
     RC_KEY_FILE="$T/state/api.key" \
+    RC_DEPLOY_MARK="$MARK_F" \
+    RC_DEPLOY_MARK_MAX_S="${MARK_MAX_OVERRIDE:-180}" \
     RC_PORT="${PORT_OVERRIDE:-8787}" \
         /bin/bash "$SRC" 2>&1
 }
@@ -187,6 +193,42 @@ reset_state
 printf '%s' '{"TCP":{"443":{"HTTPS":true}},"Web":{"h:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:9999"}}}}}' > "$S/serve-out-1"
 out=$(PORT_OVERRIDE=9999 launch)
 expect K2 "…その port の既存設定は自分の物と読む"  in  "既に自分に向いている"      "$out"
+
+# --- L/M/N: 配備中の印(2026-08-03 追加) -------------------------------------
+# この分岐は `tools/deploy-to-edith.sh` が本番の木を書き換えている窓で launchd が
+# node を起こさない為に在る。守る対象が「版の混ざった木で**起動に成功してしまう**」
+# という一番診断しにくい壊れ方なので、読んで正しそうでは置けない。3 通り全部駆動する。
+
+# --- L: 新しい印が在る -> 起動しない -----------------------------------------
+# ★443 を**空**にしておく(= 印が無ければ serve を撃つ状況)。`$MINE` だと元々撃たない
+#   場面なので、L3 が「守りが効いた」と「そもそも撃つ場面ではない」を区別できない。
+#   守りを外した写しで駆動して確かめた(2026-08-03): `$MINE` だと L3 は緑のまま、
+#   `{}` にすると赤くなる = ここで初めて対照になる。
+reset_state; printf '%s' '{}' > "$S/serve-out-1"
+date +%s > "$MARK_F"
+out=$(launch); rc=$?
+expect L  "新しい印 -> 起動しないと言う"           in  "起動しない"                "$out"
+expect L2 "★陰性対照: node を起こしていない"       notin "NODE-EXEC"               "$out"
+expect L3 "★陰性対照: serve も撃っていない"        in  "0"                         "$(applied_count)"
+expect L4 "…exit 0(launchd の再試行に任せる)"      in  "0"                         "$rc"
+
+# --- M: 古い印 -> 無視して起動する -------------------------------------------
+# ★fail-closed が**恒久的な停止**にならない事の対照。配備台本が途中で落ちて印が残った時、
+#   ここが無いと「サービスが二度と上がらない」になる。mtime の算術ごと駆動する為に
+#   既定の 180 秒のまま、印を 2020 年の日付にする(閾値を 0 に下げて通すのは検査ではない)。
+reset_state; printf '%s' "$MINE" > "$S/serve-out-1"
+: > "$MARK_F"; touch -t 202001010000 "$MARK_F"
+out=$(launch)
+expect M  "古い印 -> 無視して起動すると言う"       in  "印を無視して起動する"      "$out"
+expect M2 "…node まで到達する"                     in  "NODE-EXEC src/server.mjs"  "$out"
+expect M3 "…黙って無視しない(★を出す)"            in  "★配備中の印が古い"        "$out"
+
+# --- N: 印が無い -> 何も言わない ---------------------------------------------
+# ★陰性対照。この分岐が常時発火していたら L/M は意味を持たない。
+reset_state; printf '%s' "$MINE" > "$S/serve-out-1"
+out=$(launch)
+expect N  "★陰性対照: 印が無ければ印の話をしない"  notin "配備中の印"              "$out"
+expect N2 "…node まで到達する"                     in  "NODE-EXEC src/server.mjs"  "$out"
 
 echo
 if [ "$fail" = 0 ]; then echo "全部 OK"; else echo "★外れが在る"; fi
