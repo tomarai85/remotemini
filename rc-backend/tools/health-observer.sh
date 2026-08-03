@@ -38,6 +38,24 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STEP="$ROOT/tools/health-step.mjs"
 NODE="${RC_HEALTH_NODE:-$(command -v node || echo /opt/homebrew/bin/node)}"
 
+# ── tailnet 鍵の残日数(up/down とは**別系統**)────────────────────────
+# 鍵が切れると機械は tailnet から落ちる。up/down の監視はそれを「落ちた」としてしか言えず、
+# しかも**切れてから**しか言えない。切れる前に言う為の系統が要る = 此処。
+#
+# ★測る相手が2つ在る理由(2026-08-03 実測): 監視は「edith を、別のノードから」叩く形なので、
+#   鎖には鍵が2本ある。実測値は 観測側(Jervis)46 日 / edith 143 日 —— **先に切れるのは
+#   監視する側**。遠い方だけ見ていると、先に壊れる方を一度も見ない。だから両方を見る。
+#   観測側が落ちると edith は無事なのに `/healthz` へ届かず、**本物の障害と区別が付かない
+#   偽の警報**が出るか、監視ごと黙る。
+KEY_CHECK="${RC_HEALTH_KEY_CHECK:-$ROOT/tools/tailnet-key-expiry.sh}"
+KEY_PEER="${RC_HEALTH_KEY_PEER:-$HOST}"      # 監視している相手。既定 = 叩いている先
+KEY_EVERY="${RC_HEALTH_KEY_EVERY:-86400}"    # 測る間隔(既定 1 日1回。10 分毎に測る物ではない)
+KEY_MARK="${RC_HEALTH_KEY_MARK:-$STATE.key-checked}"
+KEY_WARN_DAYS="${RC_HEALTH_KEY_WARN_DAYS:-45}"
+# 段(この日数を**下回った**時に1回だけ鳴らす)。45 日間まいにち鳴らすと Tom が経路ごと
+# 黙らせる —— yoda の 46 時間と同じ終わり方をする。だから段を降りた時だけ言う = 全部で最大 6 通。
+KEY_STEPS="${RC_HEALTH_KEY_STEPS:-45 30 14 7 3 1}"
+
 MODE="probe"; DRY=0
 for a in "$@"; do
     case "$a" in
@@ -106,6 +124,110 @@ notify_monitor_broken() {
                     notify_monitor_broken "node が無い"; exit 3; }
 [ -f "$STEP" ] || { log "判定の繋ぎが無い: $STEP"; echo "判定の繋ぎが無い: $STEP" >&2
                     notify_monitor_broken "判定の繋ぎが無い"; exit 3; }
+
+# ── 鍵の残日数を見る(段を降りた時だけ1回鳴らす)─────────────────────
+# 記録 `$KEY_MARK` の中身 = "<最後に測った epoch> <最後に鳴らした段>"(段 9999 = 未通知)。
+#
+# ★up/down より**手前**で呼ぶ。KIND=0(異常なし)の回は下の case で `exit 0` するので、
+#   後ろに置くと**平常時に一度も走らない** —— 平常時こそが、これが働くべき時。
+# ★時計を配達が済んでから進めるのは、この file の他の2箇所と同じ理由。決めた時点で進めると
+#   出し先が壊れている間ずっと黙る(この案件で既に3度踏んだ形)。
+check_key_expiry() {
+    local now last_ts last_step out rc _k side days _rest nearest nearest_side
+    local step bucket who msg nrc
+    now="$(date +%s)"; last_ts=0; last_step=9999
+    [ -f "$KEY_MARK" ] && read -r last_ts last_step < "$KEY_MARK" 2>/dev/null
+    case "${last_ts:-}"   in ''|*[!0-9]*) last_ts=0 ;; esac
+    case "${last_step:-}" in ''|*[!0-9]*) last_step=9999 ;; esac
+    [ $((now - last_ts)) -lt "$KEY_EVERY" ] && return 0
+
+    if [ ! -x "$KEY_CHECK" ]; then
+        log "鍵の残日数を測れない(台本が無い/実行できない: $KEY_CHECK)"
+        notify_monitor_broken "鍵の残日数を測る台本が無い" >/dev/null
+        printf '%s %s\n' "$now" "$last_step" > "$KEY_MARK" 2>>"$LOG"
+        return 0
+    fi
+
+    out="$(RC_KEY_WARN_DAYS="$KEY_WARN_DAYS" "$KEY_CHECK" --porcelain --chain "$KEY_PEER" 2>/dev/null)"
+    rc=$?
+    if [ "$rc" -eq 2 ]; then
+        # ★「測れなかった」を「切れない」と読まない。監視の材料が取れていない = 監視が壊れている。
+        log "鍵の残日数: 少なくとも片方を測れなかった(rc=2)"
+        notify_monitor_broken "鍵の残日数を測れない" >/dev/null
+        printf '%s %s\n' "$now" "$last_step" > "$KEY_MARK" 2>>"$LOG"
+        return 0
+    fi
+
+    # 一番近い方を採る。書式は `KEY <self|peer> <日数|-> <日付|-|none>` の固い1行/対象。
+    nearest=""; nearest_side=""
+    while read -r _k side days _rest; do
+        [ "${_k:-}" = "KEY" ] || continue
+        case "$days" in ''|-) continue ;; esac
+        case "$days" in *[!0-9-]*) continue ;; esac
+        if [ -z "$nearest" ] || [ "$days" -lt "$nearest" ]; then nearest="$days"; nearest_side="$side"; fi
+    done <<< "$out"
+
+    if [ -z "$nearest" ]; then
+        # 両方とも「期限なし」= Tom が無効化した。段を戻し、また期限が付いた時に言い直せる様にする。
+        log "鍵の残日数: 期限なし(無効化済み)"
+        printf '%s %s\n' "$now" 9999 > "$KEY_MARK" 2>>"$LOG"
+        return 0
+    fi
+
+    # 降りた段 = `nearest <= step` を満たす中で**一番きつい** step。
+    bucket=9999
+    for step in $KEY_STEPS; do
+        case "$step" in ''|*[!0-9]*) continue ;; esac
+        if [ "$nearest" -le "$step" ] && [ "$step" -lt "$bucket" ]; then bucket="$step"; fi
+    done
+
+    if [ "$bucket" -ge 9999 ]; then
+        log "鍵の残日数: 一番近い方が $nearest 日($nearest_side / 段の外 = 鳴らさない)"
+        printf '%s %s\n' "$now" 9999 > "$KEY_MARK" 2>>"$LOG"
+        return 0
+    fi
+    if [ "$bucket" -ge "$last_step" ]; then
+        log "鍵の残日数: 一番近い方が $nearest 日($nearest_side / 段 $bucket は通知済み)"
+        printf '%s %s\n' "$now" "$last_step" > "$KEY_MARK" 2>>"$LOG"
+        return 0
+    fi
+
+    # ★文面は**我々が持っている値だけ**で組む(整数の日数と、設定に書いた相手の名前)。
+    #   `$KEY_CHECK` の散文をそのまま流さないのは、`$ERR` を通知に載せないのと同じ理由。
+    case "$nearest_side" in
+        self) who="この監視を動かしている機械($(hostname -s))" ;;
+        *)    who="$KEY_PEER" ;;
+    esac
+    msg="rc-backend: tailnet の鍵があと ${nearest} 日で切れます(${who})。切れるとその機械は tailnet から落ち、電話の面と復旧用の ssh を同時に失います。直す = Tailscale admin console → Machines → 該当機 → Disable key expiry"
+
+    if [ "$DRY" -eq 1 ]; then
+        log "DRY-RUN: 鍵の警報 [$msg]"
+        echo "$msg"
+        # ★時計を進めない。試し打ちが本物の警報を1日黙らせない為。
+        return 0
+    fi
+    if [ ! -x "$NOTIFY" ]; then
+        log "★鍵の警報を出せない(出し先が実行できない: $NOTIFY)"
+        return 0
+    fi
+
+    # 残り 7 日以内になってから @Tom を付ける。段を降りた時しか鳴らないので全部で最大 6 通、
+    # うち ping 付きは最後の3通。45 日間まいにち鳴らす形にすると経路ごと黙らせられて終わる。
+    if [ "$bucket" -le 7 ]; then
+        printf '%s' "$msg" | "$NOTIFY"
+    else
+        printf '%s' "$msg" | FLEET_NOTIFY_MENTION=0 "$NOTIFY"
+    fi
+    nrc=$?
+    log "鍵の警報を通知(残り $nearest 日 / $nearest_side / 段 $bucket / 出し先 rc=$nrc)"
+    if [ "$nrc" -eq 0 ]; then
+        printf '%s %s\n' "$now" "$bucket" > "$KEY_MARK" 2>>"$LOG"
+    else
+        log "  ★出し先が失敗(rc=$nrc) — 記録を進めない(次回また鳴らし直す)"
+    fi
+    return 0
+}
+check_key_expiry
 
 # ── 1回叩く ───────────────────────────────────────────────────────
 # 本体は捨てずに見る: 200 を返すだけの別物(tailscale の受け口や proxy)を「生きている」と

@@ -41,6 +41,13 @@ chmod +x "$SB/fake-notify.sh"
 export FAKE_NOTIFY_LOG="$SB/notify.log"
 : > "$FAKE_NOTIFY_LOG"
 
+# ★鍵の残日数の系統を、**それを測っていない対照からは黙らせる**(2026-08-03 に足した時の実測)。
+#   `check_key_expiry` は毎回走るので、既定のままだと(a)本物の tailscale を1回叩いて数十秒
+#   食い、(b)観測側の鍵が閾値を割った日から、鍵とは無関係な対照の通知数が全部 1 ずれる。
+#   実測: この機械の Self は残り 46 日 = 閾値 45 の**すぐ外**。つまり明日には割る = 時限爆弾。
+#   なので既定は「期限なし」を返す捨て台本に差し替える。鍵を測る対照だけが §10 で本物を差す。
+printf '#!/bin/bash\necho "KEY self - none"\nexit 0\n' > "$SB/quiet-key.sh"; chmod +x "$SB/quiet-key.sh"
+
 STATE="$SB/state.json"
 run() {   # $@ = health-observer.sh への引数。設定は全部環境変数で差す
     RC_HEALTH_CONF="$SB/none.conf" \
@@ -50,6 +57,11 @@ run() {   # $@ = health-observer.sh への引数。設定は全部環境変数�
     RC_HEALTH_NOTIFY="$SB/fake-notify.sh" \
     RC_HEALTH_LOG="$SB/observer.log" \
     RC_HEALTH_BROKEN_MARK="$SB/broken.mark" \
+    RC_HEALTH_KEY_CHECK="${TEST_KEY_CHECK:-$SB/quiet-key.sh}" \
+    RC_HEALTH_KEY_MARK="$SB/key.mark" \
+    RC_HEALTH_KEY_EVERY="${TEST_KEY_EVERY:-0}" \
+    RC_HEALTH_KEY_PEER="${TEST_KEY_PEER:-test.example}" \
+    RC_TAILSCALE_BIN="${TEST_TAILSCALE:-$SB/no-such-tailscale}" \
     bash "$OBS" "$@" >/dev/null 2>&1
     echo $?
 }
@@ -151,6 +163,11 @@ run_with_notify() {   # $1 = 出し先。残りは health-observer.sh への引�
     RC_HEALTH_CONF="$SB/none.conf" RC_HEALTH_URL="http://127.0.0.1:9/健康" \
     RC_HEALTH_HOST="test.example" RC_HEALTH_STATE="$STATE" RC_HEALTH_NOTIFY="$n" \
     RC_HEALTH_LOG="$SB/observer.log" RC_HEALTH_BROKEN_MARK="$SB/broken.mark" \
+    RC_HEALTH_KEY_CHECK="${TEST_KEY_CHECK:-$SB/quiet-key.sh}" \
+    RC_HEALTH_KEY_MARK="$SB/key.mark" \
+    RC_HEALTH_KEY_EVERY="${TEST_KEY_EVERY:-0}" \
+    RC_HEALTH_KEY_PEER="${TEST_KEY_PEER:-test.example}" \
+    RC_TAILSCALE_BIN="${TEST_TAILSCALE:-$SB/no-such-tailscale}" \
     bash "$OBS" "$@" >/dev/null 2>&1
     echo $?
 }
@@ -261,7 +278,194 @@ chk "  それでも 3 を返す(健全と名乗らない)" "$rc" "3"
 chk "  ★抑制時計も進めない(次に本番で叩いた時に鳴る)" "$(mark_exists)" "no"
 unset RC_HEALTH_THRESHOLD
 
+echo "── 10. ★tailnet 鍵の残日数(期限の**前**に言う為の、up/down とは別系統)──"
+# 何を守っているか: 鍵が切れると機械は tailnet から落ちる。up/down の監視はそれを
+# 「落ちた」としか言えず、しかも**切れてから**しか言えない。だから期限前に言う系統が要る。
+#
+# ★測る相手が2つある理由(2026-08-03 実測): 監視は「edith を、別のノードから」叩く形なので
+#   鎖には鍵が2本ある。実測値は 観測側 46 日 / edith 143 日 = **先に切れるのは監視する側**。
+#   遠い方だけ見ていると先に壊れる方を一度も見ない。10-c がその向きの対照。
+#
+# ★入力は本物の生成元から取る(run-changes.sh 冒頭の規則(1)):
+#   偽の JSON を手で書くと「status --json の形についての私の思い込み」ごと緑になる。
+#   なので**本物の `tailscale status --json` を1回取り**、台本が読む項(HostName / DNSName /
+#   KeyExpiry)だけを残し、機械名は差し替え、KeyExpiry だけを合成値にする。
+#   ★残す項を絞るのは PII の為でもある: 生の status には LoginName(= 実在の mail address)が
+#     載る。対照の出力にも一時ファイルにも、それを持ち込まない。
+#
+# ── 規則(2)の測定結果(2026-08-03、`scratchpad/key-mutants.sh`)────────────
+#   「直したら、直す前の版で対照が赤になるか個別に見る」を欠陥ごとに1つずつ実施。
+#   ★先に**変異なしの木**を写して 81/81 緑を確認してから始める事。最初の sweep は
+#     写す木に `src/` を入れ忘れ(`tools/health-step.mjs` が `../src/health.mjs` を読む)、
+#     全部が手前で転けていた —— その赤は変異ではなく異常終了が作った赤で、何も測っていない。
+#     判定に「§10 の外で落ちた数」を必ず併記するのはその為。
+#
+#     変異(1箇所だけ壊す)          落ちた対照                     §10外の巻き添え
+#     bucket=9999 → 45              10-a 両方 200 日 → 鳴らない      0
+#     呼ぶ位置を判定の後ろへ        10-b 異常なしの回でも鳴る        0
+#     --chain → --peer(相手だけ)  10-c 観測側だと分かる            0  ←★退けた設計そのもの
+#     段の抑制を外す                10-d 9 日は同じ段 = 増えない     0
+#     `bucket <= 7` → 常に真        10-d 遠い段は ping 無し          0
+#     `bucket <= 7` → 常に偽        10-d 7 日以内は @Tom             0
+#     期限なしで段を戻さない        10-e また近付いたら鳴り直す      0
+#     rc=2 の分岐を殺す             10-f 監視側が壊れている          0
+#     配達の**前**に時計を進める    10-g 失敗した回の記録は残らない  0
+#     --dry-run で時計を進める      10-h 記録も進めない              0
+#     `[ $# -ge 2 ]` を外す         10-j 値の無い --peer             0
+#     既定 SCOPE を chain に        10-i 引数なし・遠い → 0          0
+TS_REAL="${RC_TAILSCALE_BIN:-/Applications/Tailscale.app/Contents/MacOS/Tailscale}"
+KEY_UNMEASURED=0
+if [ ! -x "$TS_REAL" ]; then
+    echo "  ※測定不成立: 本物の tailscale が無い($TS_REAL)= 生成元から入力を取れない"
+    KEY_UNMEASURED=1
+else
+    "$TS_REAL" status --json 2>/dev/null > "$SB/ts-real.json"
+    if ! /usr/bin/python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+self_n = d.get("Self") or {}
+peers = [v for v in (d.get("Peer") or {}).values() if v.get("KeyExpiry")]
+if not peers:
+    # 本物に KeyExpiry を持つ相手が1人も居ない = この形を実物で確かめられない。
+    raise SystemExit(3)
+out = {
+  "Self": {"HostName": "test-self", "DNSName": "test-self.example.ts.net.",
+           "KeyExpiry": self_n.get("KeyExpiry")},
+  "Peer": {"nodekey:test": {"HostName": "test-peer", "DNSName": "test-peer.example.ts.net.",
+                            "KeyExpiry": peers[0].get("KeyExpiry")}},
+}
+json.dump(out, open(sys.argv[2], "w"))
+' "$SB/ts-real.json" "$SB/ts-skeleton.json"; then
+        echo "  ※測定不成立: 本物の status --json から骨組みを採れない(形が変わった可能性)"
+        KEY_UNMEASURED=1
+    fi
+    /bin/rm -f "$SB/ts-real.json"      # ★生の status は即座に捨てる(LoginName を残さない)
+fi
+
+if [ "$KEY_UNMEASURED" -eq 0 ]; then
+    # 偽 tailscale: 骨組みの KeyExpiry だけを環境変数の日数で差し替えて返す。
+    #   FAKE_*_DAYS = 整数(その日数後に切れる) / none(期限なし) / gone(相手が居ない)
+    cat > "$SB/fake-tailscale.sh" <<'EOF'
+#!/bin/bash
+[ "${1:-}" = "status" ] || exit 1
+/usr/bin/python3 - "$FAKE_TS_SKELETON" <<'PY'
+import json, sys, os, datetime
+d = json.load(open(sys.argv[1]))
+def stamp(days):
+    # ★12 時間足す: ちょうど N 日後に置くと、読む頃には僅かに過ぎていて
+    #   `(t - now).days` が N-1 に落ちる(切り捨て)。対照が 1 日ずれる。
+    t = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=int(days), hours=12)
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+def apply(node, spec):
+    if spec == "none": node.pop("KeyExpiry", None)
+    else:              node["KeyExpiry"] = stamp(spec)
+apply(d["Self"], os.environ.get("FAKE_SELF_DAYS", "none"))
+p = os.environ.get("FAKE_PEER_DAYS", "none")
+if p == "gone": d["Peer"] = {}
+else:           apply(d["Peer"]["nodekey:test"], p)
+json.dump(d, sys.stdout)
+PY
+EOF
+    chmod +x "$SB/fake-tailscale.sh"
+
+    export FAKE_TS_SKELETON="$SB/ts-skeleton.json"
+    export TEST_KEY_CHECK="$ROOT/tools/tailnet-key-expiry.sh"   # ★本物を通す(偽の porcelain を書かない)
+    export TEST_TAILSCALE="$SB/fake-tailscale.sh"
+    export TEST_KEY_PEER="test-peer"
+    key_run() { export FAKE_SELF_DAYS="$1" FAKE_PEER_DAYS="$2"; shift 2; run "$@"; }
+    key_count()    { local n; n="$(grep -c 'tailnet の鍵' "$FAKE_NOTIFY_LOG" 2>/dev/null)"; echo "${n:-0}"; }
+    broken_count() { local n; n="$(grep -c '監視側が壊れています' "$FAKE_NOTIFY_LOG" 2>/dev/null)"; echo "${n:-0}"; }
+    key_reset()    { : > "$FAKE_NOTIFY_LOG"; /bin/rm -f "$STATE" "$SB/key.mark" "$SB/broken.mark"; }
+
+    echo "  ── 10-a. 閾値の内側で鳴る / 外側で鳴らない ──"
+    key_reset; key_run 200 200 --inject-ok >/dev/null
+    chk "★両方 200 日 → 鳴らない(負の対照)" "$(key_count)" "0"
+    key_reset; key_run 200 10 --inject-ok >/dev/null
+    chk "相手が残り 10 日 → 1通" "$(key_count)" "1"
+    grep -q 'あと 10 日' "$FAKE_NOTIFY_LOG" && ok "  残日数が文面に載る" \
+      || ng "  残日数が載っていない: $(cat "$FAKE_NOTIFY_LOG")"
+    grep -q 'test-peer' "$FAKE_NOTIFY_LOG" && ok "  どちらの鍵かが分かる" \
+      || ng "  対象が分からない: $(cat "$FAKE_NOTIFY_LOG")"
+
+    echo "  ── 10-b. ★probe が健全な回(KIND=0 で即 exit する道)でも走る ──"
+    # 平常時こそがこの系統の働き場所。up/down の判定より**手前**で呼んでいないと、
+    # 異常が無い限り一度も走らない = 期限が来るまで誰も気付かない形になる。
+    key_reset; rc="$(key_run 200 10 --inject-ok)"
+    chk "  異常なしの回でも鳴る" "$(key_count)" "1"
+    chk "  ★それでも終了コードは 0(鍵の警報は監視の異常ではない)" "$rc" "0"
+
+    echo "  ── 10-c. ★近い方を採る(観測側が先に切れる形)──"
+    key_reset; key_run 10 200 --inject-ok >/dev/null
+    chk "  観測側 10 日 / 相手 200 日 → 鳴る" "$(key_count)" "1"
+    grep -q '監視を動かしている機械' "$FAKE_NOTIFY_LOG" \
+      && ok "  ★観測側の鍵だと分かる(相手だけ見ていたら出ない文面)" \
+      || ng "  観測側だと分からない: $(cat "$FAKE_NOTIFY_LOG")"
+
+    echo "  ── 10-d. 段を降りた時だけ鳴る(45日ぶん毎日鳴らして黙らされない為)──"
+    key_reset
+    key_run 200 10 --inject-ok >/dev/null; chk "  10 日(段 14)で 1通" "$(key_count)" "1"
+    key_run 200 9  --inject-ok >/dev/null; chk "  ★9 日は同じ段 = 増えない" "$(key_count)" "1"
+    key_run 200 5  --inject-ok >/dev/null; chk "  5 日(段 7)で段を降りた = 2通目" "$(key_count)" "2"
+    key_run 200 2  --inject-ok >/dev/null; chk "  2 日(段 3)で 3通目" "$(key_count)" "3"
+    grep -q 'MENTION=\[0\]' <(head -1 "$FAKE_NOTIFY_LOG") \
+      && ok "  ★遠い段は ping 無し" || ng "  遠い段に ping が付いている: $(head -1 "$FAKE_NOTIFY_LOG")"
+    grep -q 'MENTION=\[既定\]' <(tail -1 "$FAKE_NOTIFY_LOG") \
+      && ok "  ★7 日以内は @Tom が付く" || ng "  近い段に ping が無い: $(tail -1 "$FAKE_NOTIFY_LOG")"
+
+    echo "  ── 10-e. 鍵を更新したら段が戻る(次に近付いた時また言える)──"
+    key_reset
+    key_run 200 10   --inject-ok >/dev/null; chk "  まず 1通" "$(key_count)" "1"
+    key_run none none --inject-ok >/dev/null; chk "  期限なしにした回は鳴らない" "$(key_count)" "1"
+    key_run 200 10   --inject-ok >/dev/null
+    chk "  ★また近付いたら鳴り直す(段を戻していないと二度と鳴らない)" "$(key_count)" "2"
+
+    echo "  ── 10-f. ★測れない時に「異常なし」と読まない ──"
+    key_reset; rc="$(key_run 200 gone --inject-ok)"
+    chk "  相手が tailnet に居ない → 鍵の警報は出ない" "$(key_count)" "0"
+    chk "  ★代わりに『監視側が壊れている』を出す(沈黙しない)" "$(broken_count)" "1"
+
+    echo "  ── 10-g. 配達が失敗したら記録を進めない(次回また鳴らし直す)──"
+    key_reset
+    export FAKE_SELF_DAYS=200 FAKE_PEER_DAYS=10
+    run_with_notify "$SB/notify-fails.sh" --inject-ok >/dev/null
+    chk "  出し先が失敗した回の記録は残らない" "$([ -f "$SB/key.mark" ] && echo yes || echo no)" "no"
+    key_run 200 10 --inject-ok >/dev/null
+    chk "  ★出し先が直った次の回に鳴る" "$(key_count)" "1"
+
+    echo "  ── 10-h. --dry-run が本物の警報を黙らせない ──"
+    key_reset; key_run 200 10 --inject-ok --dry-run >/dev/null
+    chk "  試し打ちでは出さない" "$(key_count)" "0"
+    chk "  ★記録も進めない" "$([ -f "$SB/key.mark" ] && echo yes || echo no)" "no"
+    key_run 200 10 --inject-ok >/dev/null
+    chk "  ★次の本番の回でちゃんと鳴る" "$(key_count)" "1"
+
+    echo "  ── 10-i. 呼び口の互換(deploy 台本 / 起動ラッパは引数なしで呼ぶ)──"
+    ex_run() { FAKE_SELF_DAYS="$1" FAKE_PEER_DAYS=200 FAKE_TS_SKELETON="$SB/ts-skeleton.json" \
+               RC_TAILSCALE_BIN="$SB/fake-tailscale.sh" \
+               bash "$ROOT/tools/tailnet-key-expiry.sh" "${@:2}" 2>/dev/null; }
+    out="$(ex_run 200)"; rc=$?
+    chk "  引数なし・遠い → 0" "$rc" "0"
+    case "$out" in *"鍵の期限"*) ok "  人向けの1行が出る" ;; *) ng "  文面が変わった: $out" ;; esac
+    ex_run 10 >/dev/null; chk "  引数なし・近い → 1(警告であって門ではない)" "$?" "1"
+    out="$(ex_run 200 --porcelain --chain test-peer)"
+    case "$out" in
+        "KEY self 200 "*$'\n'"KEY peer 200 "*) ok "  porcelain は1対象1行の固い形" ;;
+        *) ng "  porcelain の形が違う: [$out]" ;;
+    esac
+
+    echo "  ── 10-j. ★引数不足で回り続けない(2026-08-03 に実際に焼いた形)──"
+    # `shift 2` は残り1個の時に失敗し、しかも shift しない = while が永久に回る。
+    # 対照そのものが固まらない様に、網を掛けて測る。
+    ( bash "$ROOT/tools/tailnet-key-expiry.sh" --peer >/dev/null 2>&1 ) & lp=$!
+    ( /bin/sleep 10; kill "$lp" 2>/dev/null ) & lw=$!
+    wait "$lp"; lrc=$?; kill "$lw" 2>/dev/null; wait "$lw" 2>/dev/null
+    chk "  値の無い --peer は即 2 で落ちる(143=網に殺された=回り続けた)" "$lrc" "2"
+
+    unset TEST_KEY_CHECK TEST_TAILSCALE TEST_KEY_PEER FAKE_SELF_DAYS FAKE_PEER_DAYS FAKE_TS_SKELETON
+fi
+
 echo ""
-echo "HEALTH-OBSERVER-CONTROLS: pass=$pass fail=$fail"
+echo "HEALTH-OBSERVER-CONTROLS: pass=$pass fail=$fail$([ "$KEY_UNMEASURED" -eq 1 ] && echo ' ★鍵の系統は測定不成立')"
 [ "$fail" -eq 0 ] || exit 1
+[ "$KEY_UNMEASURED" -eq 0 ] || exit 2
 exit 0
