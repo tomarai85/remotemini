@@ -239,6 +239,17 @@ git -C "$d" add -A; git -C "$d" commit -qm c
 out=$(run "$d"); chk "C20 経路名に hostname -> 名指しするが、経路も伏せて出す" 1 $? \
   "<この機械の名前>" "$HOST_SELF" "$out"
 
+# C21h ★**別の理由で赤い時に、種類3 を見た事を言うか**。
+#      この検査は §8-3 の2件で定常的に赤なので、赤の枝が普段の枝。
+#      種類3 の開示は元々**緑の枝にしか無かった** —— 普段まず通らない側に置いてあった。
+#      その状態だと、赤い報告の中で種類3 は綺麗とも未検査とも言わずただ黙る。
+#      C17-C20 は全部「hostname の当たりがある赤」なので、この穴を1本も踏まない。
+#      沈黙を「問題なし」と読ませる形はこのコードベースで繰り返し踏んでいるので対照を置く。
+d=$(mk c21h); printf 'contact rc-fixture-usr@example.com\nnode 10.0.0.0\n' > "$d/f.md"
+git -C "$d" add -A; git -C "$d" commit -qm c
+out=$(run "$d"); chk "C21h 別の理由で赤・hostname は綺麗 -> 見た上で綺麗と明言する" 1 $? \
+  "一致なし(見た上で綺麗)" "$HOST_SELF" "$out"
+
 fi
 
 echo "--- 合計: PASS $pass / FAIL $fail ---"
