@@ -172,5 +172,25 @@ run; out=$(readout)
 #   ★本数で見る。1本でも出ていれば良い、にすると「1本だけ出して残りを捨てる」を通す。
 chk "R18 子の最終行を全部の子について出す" "$N_LOCAL" "$(printf '%s' "$out" | /usr/bin/grep -c '偽の子 ')"
 
+# ── R19-R21 ★一覧に載っていない対照を見つける(2026-08-04 に実際に漏れた)──────
+#   `LOCAL_CTLS` は手書きなので、対照を書いても足し忘れると**一度も回らない**。
+#   実測: repo に 30 本在って登録は 29 本、漏れは同じ日に書いた copied-tree-controls.sh。
+#   ★ここで測るのは「漏れを見つける」だけでなく、**平時に鳴らない**事の両方。
+#     常に鳴る門は外されるので、偽陽性が出ないかを先に釘付けにする(R19)。
+setup
+run; out=$(readout)
+chk "R19 平時は登録漏れを鳴らさない(偽陽性なし)" 0 \
+    "$(printf '%s' "$out" | /usr/bin/grep -c 'UNREG')"
+
+# 一覧に無い対照を1本植える。名前は既存のどれとも重ならない形にする。
+ORPHAN="$SANDBOX/test/zz-not-registered-controls.sh"
+printf '#!/bin/bash\necho "偽の子 zz"\nexit 0\n' > "$ORPHAN"
+run; out=$(readout)
+chk "R20 ★未登録の対照を**名指しで**出す" 1 \
+    "$(printf '%s' "$out" | /usr/bin/grep -c 'UNREG.*zz-not-registered-controls.sh')"
+#   赤(1)であって未測定(2)ではない —— 回せなかったのではなく、回す物が無い事が確定している。
+chk "R21 ★未登録は赤(未測定に丸めない)" 1 "$RUN_RC"
+/bin/rm -f "$ORPHAN"
+
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]

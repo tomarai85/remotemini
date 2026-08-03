@@ -19,12 +19,40 @@
 //   「植えた source なら真」「注釈だけなら偽」の両方向を下で撃つ。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const DESIGN = readFileSync(join(ROOT, "..", "DESIGN.md"), "utf8");
+
+// ── ★木の外を**先頭で**読むと、変異走行が丸ごと起動できなくなる(2026-08-04、実測)──
+// `DESIGN.md` は `rc-backend` の**外**(repo の頭)に在る。一方 `test/mutation-controls.py`
+// は `rc-backend` だけを temp へ写して、その写しで `npm test` を回す —— 写しに親は無い。
+// 初版はこの読みを module の先頭に置いていたので、写しでは import の時点で throw し、
+// この file が丸ごと `testCodeFailure` になった。すると変異台本の**対照1(無変異の木は緑)**
+// が死に、`die()` で走行そのものが始まらない。197 件の変異が 1 件も回らない状態を、
+// この場では 580/580 緑に見えたまま作っていた(見つけたのは `run-controls.sh` の
+// mutation-freeze-controls が赤くなった事)。
+//
+// だから読みを**遅らせず、無い事を許す**形にする。ただし「無ければ飛ばす」だけだと
+// fail-open になる —— repo の中で DESIGN.md を消しても緑になってしまう。
+// 飛ばしてよいのは「そもそも木の外が存在しない = repo から写した木」の時だけなので、
+// `.git` の有無でその2つの世界を見分け、repo の中に居るなら**読めない事を赤にする**。
+const REPO = process.env.RC_DESIGN_REPO || join(ROOT, "..");   // ← 対照の差し替え口
+const IN_REPO = existsSync(join(REPO, ".git"));
+const DESIGN_PATH = join(REPO, "DESIGN.md");
+const DESIGN = existsSync(DESIGN_PATH) ? readFileSync(DESIGN_PATH, "utf8") : null;
+
+/** DESIGN.md が読めない時、飛ばしてよいかを判定する。よくないなら**この場で赤にする**。 */
+function designOrSkip(t) {
+  if (DESIGN !== null) return true;
+  assert.equal(
+    IN_REPO, false,
+    "repo の中に居る(.git が在る)のに DESIGN.md が読めない。これは飛ばしてよい不在ではない",
+  );
+  t.skip("木の外に DESIGN.md が無い(= repo から写した木。変異走行の写しがこれ)");
+  return false;
+}
 
 /** 見出しの後ろ何行までを「頭」と見なすか。銘板が本文に埋もれたら意味が無い。 */
 const BANNER_WINDOW = 30;
@@ -84,7 +112,8 @@ export function bannerMissing(text, row) {
 }
 
 // ── ① 本体 ───────────────────────────────────────────────────────────
-test("★コードが古いと言っている節には、頭に後継を指す銘板が立っている", () => {
+test("★コードが古いと言っている節には、頭に後継を指す銘板が立っている", (t) => {
+  if (!designOrSkip(t)) return;
   const bad = [];
   for (const row of SUPERSEDED) {
     if (!row.stale()) continue; // コードが戻った = 銘板は要らない
@@ -99,7 +128,8 @@ test("★コードが古いと言っている節には、頭に後継を指す�
 });
 
 // ── ② 登録簿が腐っていない ────────────────────────────────────────────
-test("登録簿の見出しが全部**実在する**(題を変えて検査を黙らせない)", () => {
+test("登録簿の見出しが全部**実在する**(題を変えて検査を黙らせない)", (t) => {
+  if (!designOrSkip(t)) return;
   const ghosts = SUPERSEDED.filter((r) => !DESIGN.split("\n").some((l) => l.startsWith(r.heading)));
   assert.deepEqual(
     ghosts.map((r) => r.id), [],

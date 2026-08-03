@@ -31,6 +31,18 @@
 > 見つけたのは検査ではなく自分の差分の再読)/ §2.37(古い節の頭に銘板を貼る仕組みと、
 > それを機械で回す `test/design-supersede.test.mjs`)。
 >
+> **④ 2026-08-04 06:45 JST 追記 —— 計器が2つ、静かに死んでいた(両方直した)。**
+>
+> | 何が | 実測 | 直した形 |
+> |---|---|---|
+> | **変異走行が1件も起動できなかった** | `npm test` は手元で **580/580 緑**なのに、木を写すと `not ok 4 - test/design-supersede.test.mjs` で対照1が死に、**197 件の変異が1件も回らない**。原因は §2.37 で足した検査が module の先頭で木の**外**の `DESIGN.md` を読んでいた事 | `.git` の有無で「repo の中」と「写した木」を見分け、中なら**赤**・写しなら飛ばす。新しい対照 `test/copied-tree-controls.sh` が同じ病気を **15 秒で file 名ごと**名指しする(元は 85 秒の塊で4手)。→ `DESIGN.md` §2.39 |
+> | **書いた対照が一覧に無く、一度も回らなかった** | `test/*-controls.sh` は **30 本**在るのに `run-controls.sh` の手書き配列の登録は **29 本**。漏れていたのは上の新対照 | 登録漏れを `UNREG` として**名指しで赤**にする照合を `run-controls.sh` に入れた(未測定ではなく赤)。門を落とす手 = `run-controls-controls.sh` R19〜R21。→ `DESIGN.md` §2.40 |
+>
+> 波及して戻った物: `mutation-freeze-controls` `pass=1 fail=4` → **`pass=5 fail=0`**、
+> `mutation-verdict-controls` 未測定 → **`pass=27 fail=0`**。どちらも「凍結が壊れた」
+> のではなく、その手前で走行が起動できなかっただけ。
+> 掃き終わりの実測: `RUN-CONTROLS: green=28 red=0 未測定=0`(rc=0)。
+>
 > ★本書を全面改訂していないのは意図的。**測った値だけを頭に足し**、本文は
 > 「その時そう書いた記録」として残す —— 現在形に書き換えると、なぜそう決めたかが消える。
 
@@ -2365,7 +2377,7 @@ root 基準で正しかった為、経路の作りは合って見えていた。
   拾えば緑が正しい)。第4引数で rev を名指しして測り直すまで未確定。
 - 現在の `測れていない 9` のうち **8 本は `旧版が取れない`** = その file を最後に変えた
   commit が**生まれた commit**。道具の欠陥ではなく、**若い file はこの道具では守れない**。
-- **`prove-all-controls.sh` 自身の対照は `test/prove-all-controls-controls.sh` に無い**。
+- **`prove-all-controls.sh` には専用の対照 file が無い**(道具名から対照名を組み立てて探すと空振りする)。
   P10/P10b/P10c として `test/prove-control-controls.sh` の中に居る。
   pre-commit の staged-controls-gate が毎回「対照を導けない道具: prove-all-controls」と
   注記するのはこの為で、**未検査という意味ではない**(専用 file にすると

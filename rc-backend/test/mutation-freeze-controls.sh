@@ -47,9 +47,17 @@ ng(){ fail=$((fail+1)); printf '  NG %s\n     期待[%s] 実際[%s]\n' "$1" "$2"
 echo "── 走行中に手元を赤にして、凍結が効いているかを見る(実測 150〜200 秒)──"
 
 # 走行が既に動いているなら測れない(同じ台本が 2 本走ると木の写しが競る)。
-if bash "$ROOT/tools/mutation-run-live.sh" 2>/dev/null; then
-    echo "★別の変異走行が動いている。この対照は走行を1本起こすので、今は測れない"
-    echo "FREEZE-CONTROLS: 未測定(別の走行が動いている)= **緑ではない**"
+_mrl=0; bash "$ROOT/tools/mutation-run-live.sh" 2>/dev/null || _mrl=$?
+# 丁度 1(居ないと確認できた)の時だけ走行を起こす。2 は「居ない」ではないので、
+# そこで起こすと 2 本目の走行になる —— それが 2026-08-02 夜に実際にやった事である。
+if [ "$_mrl" -ne 1 ]; then
+    if [ "$_mrl" -eq 0 ]; then
+        echo "★別の変異走行が動いている。この対照は走行を1本起こすので、今は測れない"
+        echo "FREEZE-CONTROLS: 未測定(別の走行が動いている)= **緑ではない**"
+    else
+        echo "★走行の有無を測れなかった(mutation-run-live.sh exit=${_mrl})。2 本目を起こしかねないので測らない"
+        echo "FREEZE-CONTROLS: 未測定(走行の有無が不明)= **緑ではない**"
+    fi
     exit 2
 fi
 

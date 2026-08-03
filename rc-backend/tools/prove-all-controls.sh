@@ -24,10 +24,20 @@ DRY=0
 [ "${1:-}" = "--dry" ] && DRY=1
 
 # 変異走行と競らせない(prove-control.sh 自身も断るが、197本を順に断られても意味が無い)
-if [ "$DRY" -eq 0 ] && [ -x tools/mutation-run-live.sh ] && bash tools/mutation-run-live.sh 2>/dev/null; then
-    echo "★変異走行が動いている。対照を回すと競るので測らない" >&2
-    echo "PROVE-ALL: 未測定(変異走行中)= **効いている事の証拠ではない**"
-    exit 2
+if [ "$DRY" -eq 0 ] && [ -x tools/mutation-run-live.sh ]; then
+    _mrl=0; bash tools/mutation-run-live.sh 2>/dev/null || _mrl=$?
+    # 進むのは「居ないと確認できた」= 丁度 1 の時だけ。2(測れなかった)で進むと、
+    # 走行と競っている最中の結果を「効いている/いない」の証拠として使ってしまう。
+    if [ "$_mrl" -ne 1 ]; then
+        if [ "$_mrl" -eq 0 ]; then
+            echo "★変異走行が動いている。対照を回すと競るので測らない" >&2
+            echo "PROVE-ALL: 未測定(変異走行中)= **効いている事の証拠ではない**"
+        else
+            echo "★変異走行の有無を測れなかった(mutation-run-live.sh exit=${_mrl})。競るかもしれないので測らない" >&2
+            echo "PROVE-ALL: 未測定(走行の有無が不明)= **効いている事の証拠ではない**"
+        fi
+        exit 2
+    fi
 fi
 
 # ── 継ぎ目を探す ──────────────────────────────────────────────────────────

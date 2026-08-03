@@ -67,10 +67,19 @@ grep -q "\${${SEAM}:-" "$CTL" || {
 }
 
 # ── 走行中の変異と衝突しない。一部の対照は自分で変異走行を起こす ──────────
-if [ -x tools/mutation-run-live.sh ] && bash tools/mutation-run-live.sh 2>/dev/null; then
-    echo "★変異走行が動いている。対照を回すと競るので測らない" >&2
-    echo "PROVE: 未測定(変異走行が動いている)= **効いている事の証拠ではない**"
-    exit 2
+if [ -x tools/mutation-run-live.sh ]; then
+    _mrl=0; bash tools/mutation-run-live.sh 2>/dev/null || _mrl=$?
+    # 丁度 1(居ないと確認できた)以外は測らない。2 は「動いていない」ではない。
+    if [ "$_mrl" -ne 1 ]; then
+        if [ "$_mrl" -eq 0 ]; then
+            echo "★変異走行が動いている。対照を回すと競るので測らない" >&2
+            echo "PROVE: 未測定(変異走行が動いている)= **効いている事の証拠ではない**"
+        else
+            echo "★変異走行の有無を測れなかった(mutation-run-live.sh exit=${_mrl})" >&2
+            echo "PROVE: 未測定(走行の有無が不明)= **効いている事の証拠ではない**"
+        fi
+        exit 2
+    fi
 fi
 
 # ── 直す前の版を取り出す ─────────────────────────────────────────────────
@@ -166,8 +175,13 @@ echo "  ② 旧版 = 赤(rc=1)"
 #       (`  ok  ` / `  NG  ` = health-observer-controls.sh 等)から**1行も読めず**、
 #       「倒れた 0 枚 / 倒れなかった 0 枚」と出しながら結論だけ「効いている」と書いていた。
 #       枚数を数える道具が 0/0 を平気で返すのは、数えていないのと同じ。
-NGPAT='^[[:space:]]*(NG|ng)[[:space:]]'
-OKPAT='^[[:space:]]*(OK|ok)[[:space:]]'
+#     ★2026-08-04、**同じ形で2度目**。字下げは直したが**語彙**が片方しか無かった。
+#       実測: 対照 29 本のうち `NG`/`OK` が 11 本、`PASS`/`FAIL` が 8 本。つまりこの道具は
+#       corpus の 8 本について、旧版で赤くしても「倒れた行を名指しできない」= 未測定しか
+#       返せなかった。前回の是正が「読めなかった1本に合わせて字下げを許す」で終わっていて、
+#       **corpus 全体の語彙を数えていなかった**のが理由。だから今回は数えてから足した。
+NGPAT='^[[:space:]]*(NG|ng|FAIL)[[:space:]]'
+OKPAT='^[[:space:]]*(OK|ok|PASS)[[:space:]]'
 flipped=$(/usr/bin/grep -cE "$NGPAT" "$OUT1" 2>/dev/null || true)
 held=$(/usr/bin/grep -cE "$OKPAT" "$OUT1" 2>/dev/null || true)
 echo ""
@@ -189,9 +203,9 @@ if [ "$flipped" -eq 0 ] && [ "$held" -eq 0 ]; then
 fi
 echo "  ③ 旧版で倒れた assertion = ${flipped} 枚 / 倒れなかった = ${held} 枚"
 echo "     -- 倒れた(= この欠陥を見分けている) --"
-/usr/bin/grep -E "$NGPAT" "$OUT1" | /usr/bin/sed -E 's/^[[:space:]]*(NG|ng)[[:space:]]+/       /' || true
+/usr/bin/grep -E "$NGPAT" "$OUT1" | /usr/bin/sed -E 's/^[[:space:]]*(NG|ng|FAIL)[[:space:]]+/       /' || true
 echo "     -- 倒れなかった(= この欠陥については何も言っていない。別の欠陥を見ている可能性) --"
-/usr/bin/grep -E "$OKPAT" "$OUT1" | /usr/bin/sed -E 's/^[[:space:]]*(OK|ok)[[:space:]]+/       /' | /usr/bin/head -30 || true
+/usr/bin/grep -E "$OKPAT" "$OUT1" | /usr/bin/sed -E 's/^[[:space:]]*(OK|ok|PASS)[[:space:]]+/       /' | /usr/bin/head -30 || true
 [ "$held" -gt 30 ] && echo "       … 他 $((held - 30)) 枚"
 
 echo ""

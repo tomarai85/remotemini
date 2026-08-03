@@ -263,14 +263,20 @@ p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
 s2 = s.replace("""for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(_sig, _on_signal)""", "pass  # 直す前の版: 信号処理なし")
 assert s2 != s, "信号処理の登録が見つからない(負の対照の前提が崩れている)"
-# 子を独立した群にせず、群ごとの始末もしない = 元の subprocess.run 相当へ戻す
-s3 = s2.replace("""def suites(dst):
-    u = run_child(["npm", "test", "--silent"], dst, "単体")
-    e = run_child(["node", "test/e2e-local.mjs"], dst, "e2e")""",
-"""def suites(dst):
-    u = subprocess.run(["npm", "test", "--silent"], cwd=dst, capture_output=True, text=True)
-    e = subprocess.run(["node", "test/e2e-local.mjs"], cwd=dst, capture_output=True, text=True)""")
-assert s3 != s2, "suites の呼び出しが見つからない(負の対照の前提が崩れている)"
+# 子を独立した群にせず、群ごとの始末もしない = 元の subprocess.run 相当へ戻す。
+# ★本文を丸ごと写して `replace` すると、**引数が1つ増えただけで負の対照が死ぬ**。
+#   実際に死んだ(2026-08-04 検出): 時間切れの仕事で `suites(dst, timeout_fatal=True)` に
+#   なり docstring も入ったので、写した4行はどこにも一致しなくなった。
+#   この対照が守っている当の失敗(判定の写しは腐る)を、対照自身がやっていた。
+#   だから写しを捨てて **`suites` の本体の中の `run_child(...)` 呼び出しだけ**を
+#   形で狙う。本数(2本)は固定で確かめる —— 増減したらそれは前提の変化なので赤にする。
+m = re.search(r'^def suites\(.*?(?=^\S)', s2, re.M | re.S)
+assert m, "suites の定義が見つからない(負の対照の前提が崩れている)"
+body, n = re.subn(
+    r'run_child\(\s*(\[[^\]]*\])\s*,\s*dst\s*,\s*"[^"]*"[^)]*\)',
+    r'subprocess.run(\1, cwd=dst, capture_output=True, text=True)', m.group(0))
+assert n == 2, f"suites の中の run_child 呼び出しが 2 本ではない(見つかった={n} 本)"
+s3 = s2[:m.start()] + body + s2[m.end():]
 p.write_text(s3, encoding="utf-8")
 print("直す前の版を作った(信号処理なし / subprocess.run)")
 PY
