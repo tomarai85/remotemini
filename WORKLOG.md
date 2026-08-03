@@ -7046,3 +7046,50 @@ pre-commit の門に置くと commit が常に止まり、止まる門は外さ�
 「壊したのに落ちた項が少ない」という嘘の観測になる。両側を直した:
 抽出器は `LC_ALL=C`(バイトとして読む)、親は `cut200()` = `iconv -c` で欠片を落とす。
 `head -c` を性質で掃いて、同じ形が親にもう1箇所在ったのも潰した。
+
+## 2026-08-03 22:09 — 配備対照・第3弾(実測)。「旗が書いてある」と「旗が効く」の間を塞いだ(§7-P-n)
+
+第1弾も第2弾も、自分の頭に**同じ空白**を書いて次弾へ投げていた。第1弾「捕まえられない =
+rsync が旗の通りに振る舞わない」/ 第2弾「偽の rsync は転送しないので、除外の旗が本当に
+`.git/` を守るかは測っていない」。守っている物は仮定して良い物ではない —— edith の
+`/Users/edith/rc-backend/.git` と `.gitignore` は艦隊の整備が今日 12:52 に置いた**他人の物**で、
+配備は `rsync -a --delete` で本番の木を上書きする。
+
+据えた物:
+- `test/rsync-exclude-controls.sh`(30 項)= 台本から option 文字列を抜き、**本物の rsync** を
+  砂場で走らせて宛先の `.git/HEAD` と `.gitignore` が残る事を見る。空振り防止に「除外外の
+  古い file は消えた」「新しい file は届いた」を各脚で釘付け(何も起きなくても .git は残る為)。
+  M2 = 写しを作る脚は `.git` を**運ばない**(連鎖の前半)。陰性 N1/N2 = 旗を外すと本当に消える。
+- `test/rsync-exclude-edith-controls.sh` = 同じ台本を `RC_RSYNC_EXCL_WHERE=edith` で回すだけ。
+  入れ替えと戻しの rsync は remote heredoc の中 = **向こうの binary** が走るので、手元の緑は
+  向こうの保証にならない。EDITH_CTLS に登録。
+
+実測: 手元 PASS 30/30 / edith PASS 30/30(両方 openrsync protocol 29)。edith 側は小片が
+自分で砂場を消して `LEFT=0` を報告し、その後 ssh で残置 0 と `.git`/`.gitignore` の健在を確認。
+
+**また自分の計器で1件**: 陰性対照の削り式 `s/--exclude '[^']*' //g` が末尾の空白を必須に
+していた為、**行末の最後の 1 本が削り残った**。旗を外したつもりの走行が `.gitignore` を守り、
+N2 が「消えない」と赤を出した。並んでいた空振り防止 N0 は「元と違うか」を見ていたので 1 本
+でも削れれば通り、素通しした。差分でなく性質(`--exclude` が 0 本)に直した。
+**陰性対照の空振り防止は「変わったか」でなく「狙った性質になったか」で書く。**
+
+ついでに、韓国語の音節が1文字紛れていたのを直した(`deploy-to-edith-controls.sh:12`
+「doctrine 그대로の形」→「doctrine そのままの形」)。キリル文字の時と同じ形なので、
+Cyrillic / Greek / Hangul の範囲で repo 全体を掃いた = 残り0(WORKLOG:7005 は修正の記録なので残す)。
+
+## 2026-08-03 22:09 — survival の dead=1 は退行ではなく**未測定を dead に丸めた**もの
+
+`loop-replan-gate.sh survival` が `checked=6 alive=5 dead=1`。死んでいたのは `3s-instrument`。
+verifier は `npm test && node test/e2e-local.mjs && bash tools/run-controls.sh`。
+
+原因: 変異走行が生きている間 `test/mutation-freeze-controls.sh` は正直に **exit 2(未測定)**
+を返す(実測 `freeze_exit=2`)。run-controls は今日「未測定を緑に丸めない」に直した(それ自体が
+この lane の成果)ので非ゼロ。survival 側は `_ok = (r.returncode == 0)` の**二値**で、
+0 以外を全部 dead にする —— timeout だけは UNKNOWN の袋を持っているのに、**2 の袋が無い**。
+
+つまり dead=1 は「出荷した物が壊れた」ではなく「今は測れない」。三分(0/1/2)を守る側の道具が、
+それを読む側で二値に潰されている。**直す場所は survival だが、`loop-replan-gate.sh` は loop
+machinery で、自分の doctrine「machinery は自律ループ内から編集しない」に当たる**ので此処では
+触らない。machinery lane への持ち込み案件として記録する。
+反証条件: 変異走行が終わってから `bash tools/run-controls.sh` が 0 を返し、survival 再走で
+alive=6 になれば此の診断は正しい。ならなければ本当の退行 —— 走行終了後に実際に確かめる。

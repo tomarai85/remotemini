@@ -169,7 +169,19 @@ LOCAL_CTLS=(
                                      # 初めて判る**)。空振り防止に B0c = 「通れば触っている」を
                                      # 陽性側で釘付けにしてある。陰性 N1-N5 付き。実測4秒。
                                      # ★これでも言えない事: 偽 rsync は転送しないので、除外の旗が
-                                     # 本当に `.git/` を守るかは**両弾を合わせても仮定のまま**。
+                                     # 本当に `.git/` を守るか。→ 第3弾(次)が実測で塞いだ。
+    test/rsync-exclude-controls.sh
+                                     # 同・第3弾 = **実測**。台本から option 文字列を抜き、
+                                     # **本物の rsync** を砂場で走らせて、宛先の `.git/` と
+                                     # `.gitignore` が残る事を見る。第1弾は「旗が書いてある」、
+                                     # 第2弾は「本番に触らない」までで、**旗が効く**は誰も
+                                     # 測っていなかった(両弾が自分でそう書いていた)。
+                                     # 守っている物 = edith 側の他人の `.git`(fleet の整備が
+                                     # 2026-08-03 12:52 に置いた物。私の物ではない)。
+                                     # 陰性 N1/N2 = 旗を外すと本当に消える(消えないなら
+                                     # 上の緑は「守っている」でなく「元々消えない」を見ている)。
+                                     # ★ここで測るのは**手元の** rsync。入れ替え/戻しは edith 側で
+                                     # 走るので、向こうの実測は EDITH_CTLS の姉家族が持つ。実測1秒。
 )
 # ── ★ここに**わざと入れていない**物(消えた訳ではない)────────────────────────
 # `test/verdict-mutants.sh` = `test/mutation-verdict-controls.sh` の陰性対照
@@ -186,6 +198,12 @@ LOCAL_CTLS=(
 EDITH_CTLS=(
     test/env-death-controls.sh
     test/phone-window-controls.sh
+    test/rsync-exclude-edith-controls.sh
+                                     # 第3弾の edith 側。同じ台本を `RC_RSYNC_EXCL_WHERE=edith`
+                                     # で回すだけ(写しを2つ持たない)。入れ替えと戻しの rsync は
+                                     # remote heredoc の中 = **向こうの binary** が走るので、
+                                     # 手元の緑は向こうの保証にならない。砂場は向こうの mktemp、
+                                     # 小片が自分で消して `LEFT=0` を報告する(恒久物を置かない)。
 )
 
 list=("${LOCAL_CTLS[@]}")
