@@ -5801,7 +5801,7 @@ sudo mkdir -p /Users/tomtim && sudo chown edith:staff /Users/tomtim
 - ★これが「見て」の要求そのもの。ここが NG なら v1 の 2 番(履歴 + ライブの流れ)が
   半分死ぬので、**他の3つが動いていても完成とは言わない**
 
-### 8-5. ★edith の tailnet 鍵の期限切れを無効化するか(Yes/No。推奨 = **Yes**)
+### 8-5. ★日本に残す機械の tailnet 鍵の期限切れを無効化するか(**edith と friday の 2 台**。締切 **2026-09-19**。Yes/No。推奨 = **Yes**)
 
 - 実測(2026-08-02、`tailscale status --json`): **edith = 2026-12-25 に失効**。
   渡米 8/20 の **+127 日** = 旅行の途中で切れる。friday は 2026-09-19(**+30 日**)。
