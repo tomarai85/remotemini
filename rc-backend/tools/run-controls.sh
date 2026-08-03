@@ -44,6 +44,9 @@ LOCAL_CTLS=(
     test/mutation-run-live-controls.sh
     test/mutation-target-controls.sh
     test/pii-controls.sh
+    test/prove-control-controls.sh   # 判定する道具そのものの対照。これが壊れると
+                                     # 全ての対照の判定が静かに嘘になるので、砂場の
+                                     # repo(RC_ROOT)で測定経路まで通す
     test/verify-script-controls.sh
     test/deploy-dirt-controls.sh
     test/child-reaping-controls.sh   # 実際に変異台本を起こして殺す。実測10秒だが e2e の子が
