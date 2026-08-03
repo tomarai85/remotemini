@@ -128,6 +128,24 @@ test("★前面へ戻った時に流れを張り直す配線が居る(帯の断�
     "catch 側が refresh を見ていない(自分で閉じた時に張り直してしまう / 逆に張り直せない)");
 });
 
+test("★世代を跨いだ書き込みを `conv &&` だけで守らない(前の後始末が新しい会話を黙らせる)", () => {
+  // 実際に出した傷(2026-08-04): poll の catch に `conv && (conv.reading = false)` と書いた。
+  // 会話を開き直すと `closeConv` が前の保留を畳むが、その catch が走るのは
+  // **新しい conv が入った後**。`conv` は真なので通ってしまい、新しい世代の
+  // `reading` が偽になる。すると次の前面復帰が onForeground の
+  // `if (!conv || !conv.reading) return;` で落ち、撃ち直されない
+  // = 帯は「つながっています」のまま、証拠の無い断定に戻る。
+  //
+  // ★この検査の限界を先に書く: 掴めるのは**この形**(存在確認だけを門にした代入)
+  //   だけで、「世代を確かめずに書く」一般ではない。行を跨いだ書き方には当たらない。
+  //   それでも置くのは、これが実際に手が滑った形だから。
+  assert.doesNotMatch(SCRIPT, /conv\s*&&\s*\(?\s*conv\.\w+\s*=[^=]/,
+    "存在確認だけを門にして conv へ書いている(世代が違えば別の会話を触る)");
+  // 直した側が居る事も確かめる。上の否定形だけだと、代入ごと消しても緑になる。
+  assert.match(SCRIPT, /if\s*\(conv\s*&&\s*conv\.gen\s*===\s*myGen\)\s*conv\.reading\s*=\s*false;/,
+    "poll の失敗経路が reading を戻していない(前面復帰の担当が誰も居なくなる)");
+});
+
 test("★履歴の取得に失敗したら描き直す(「以前を読む」が二度と押せなくならない)", () => {
   // renderConv がボタンを毎回作り直す設計なので、押した時の `more.disabled = true` は
   // 描き直しでしか戻らない。失敗経路で描き直さないと、その1回で押せなくなる。
@@ -152,7 +170,7 @@ test("★判断を HTML 側に書き戻していない(移した関数名が定�
   // **緑のまま実物と乖離する**。名前が戻ってきた時点で赤にする。
   const moved = ["scanLine", "whoOf", "gapNotice", "nextAttempt", "nextHistoryLimit",
                  "sendResult", "interruptResult", "mergeHistory", "routeLabel", "subtitleOf", "relTime",
-                 "freshness"];
+                 "freshness", "readablePoll"];
   for (const n of moved) {
     const re = new RegExp(`(?:function|const|let|var)\\s+${n}\\b`);
     assert.ok(!re.test(SCRIPT), `${n} が app.html の中で再定義されている(import が死に文になる)`);

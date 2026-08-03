@@ -1360,6 +1360,110 @@ try {
     await pump;
   }
 
+  // 12-g. ★long-poll(電話の本線)。2026-08-04
+  //
+  //   なぜ SSE でなく此処が本線か: iPhone Safari が `fetch` の本文を逐次で渡すかは
+  //   **実機でしか測れない**(§8-4 = 人の門)。検出器を書けばその検出器の正しさが同じ
+  //   測れない一点に載る = `mutex.mjs` の「到達しない守り」。完了した応答は中継も browser も
+  //   溜め込めないので、構造で正しい方を採った。
+  //
+  //   ★此処で初めて測る物: **poll と poll の隙間に起きた gap が消えない**事。
+  //   従来 gap は id 無しで流れるだけだったので、購読が切れている間に起きた「読み直せ」は
+  //   誰にも届かず消えていた —— 電話は古い履歴を正しいと信じたまま走り続ける。
+  {
+    const pollUrl = (sid, q) => `${B}/api/sessions/${sid}/poll?${new URLSearchParams(q)}`;
+    const poll = async (sid, q) => {
+      const r = await fetch(pollUrl(sid, q), { headers: H });
+      return { r, j: await r.json() };
+    };
+
+    // --- tmux 経路 ---
+    const p1 = await poll(SID_FRESH, { wait: "0" });
+    check("★poll は完了した JSON を返す(中継も browser も溜め込めない形)",
+      p1.r.status === 200 && p1.j.route === "tmux" && typeof p1.j.cursor === "string",
+      JSON.stringify(p1.j).slice(0, 200));
+    check("★poll の応答は握られない(cache-control: no-store)",
+      /no-store/.test(String(p1.r.headers.get("cache-control"))), String(p1.r.headers.get("cache-control")));
+    check("栞は経路が読める形(電話は中身を解釈しない)", p1.j.cursor.startsWith("t."), p1.j.cursor);
+
+    // ★世代の印が**連番でない**事を測る。ここを測らないと、直したと言っている欠陥
+    //   (再起動後に最初の feed がまた `1` を取り、再起動前の栞 `1.50` が偶然一致して
+    //    `ring.since(50)` が空 = 「追いついた」と黙って嘘をつく)を守る物が1つも無い。
+    //   ★正直に言うと、これは**跨ぎの一意性そのものの証明ではない**。process を跨いで
+    //     測っていないので、証明しているのは (a) 印が連番の見た目をしていない事
+    //     (b) 同じ process 内の別の会話で値が違う事 —— 連番と固定値という現実的な
+    //     退化の2つを殺せる網であって、乱数性の証明ではない。過大に読まない。
+    const tokOf = (c) => String(c).split(".")[1];
+    check("★世代の印が連番の見た目をしていない(8桁の16進)", /^[0-9a-f]{8}$/.test(tokOf(p1.j.cursor)), tokOf(p1.j.cursor));
+
+    // ★**同じ tmux 経路の別の会話**と比べる。feed の印は会話ごとなので、此処が同じなら
+    //   固定値へ退化している。ワーカー経路の印(`w.`)は manager に1つなので比較対象に
+    //   ならない —— 出所の違う2つを並べても、それは何も測っていない。
+    const pOther = await poll(SID_CHOICE, { wait: "0" });
+    check("★同じ経路の別の会話は別の世代の印を持つ(固定値へ退化していない)",
+      pOther.j.route === "tmux" && tokOf(p1.j.cursor) !== tokOf(pOther.j.cursor),
+      `${pOther.j.route}: ${tokOf(p1.j.cursor)} vs ${tokOf(pOther.j.cursor)}`);
+
+    // ここで転記が現れる。tail が後から取り付くと、電話が撮った /history との継ぎ目が
+    // 見えないので「読み直せ」が要る。**その合図が次の poll まで生き残るか**が本題。
+    writeFileSync(join(PROJ, `${SID_FRESH}.jsonl`), [
+      JSON.stringify({ entrypoint: "cli", cwd: CWD_FRESH, type: "user", message: { role: "user", content: "poll用" } }),
+      JSON.stringify({ type: "ai-title", aiTitle: "poll 経路" }),
+    ].join("\n"));
+
+    let gapSeen = null;
+    let cur = p1.j.cursor;
+    for (let i = 0; i < 6 && !gapSeen; i++) {
+      const p = await poll(SID_FRESH, { cursor: cur, wait: "1500" });
+      cur = p.j.cursor;
+      gapSeen = (p.j.items || []).find((it) => it.kind === "gap");
+    }
+    check("★poll と poll の隙間に起きた gap が届く(id 無しで流して消えていた物)",
+      !!gapSeen && gapSeen.why === "tail-attached", JSON.stringify(gapSeen));
+    check("★その gap は順序を持っている(= ring に載った = 再生できる)",
+      !!gapSeen && Number.isInteger(gapSeen.seq), JSON.stringify(gapSeen));
+
+    const again = await poll(SID_FRESH, { cursor: cur, wait: "0" });
+    check("★一度渡した gap を栞の先で二度渡さない(読み直しが永久に続かない)",
+      !(again.j.items || []).some((it) => it.kind === "gap" && it.why === "tail-attached"),
+      JSON.stringify(again.j.items));
+
+    const forged = await poll(SID_FRESH, { cursor: "t.deadbeef.99.0", wait: "0" });
+    check("★別の世代の栞では繋がない(再起動を跨いだ「追いついた」の嘘を塞ぐ)",
+      (forged.j.items || []).some((it) => it.kind === "gap" && it.why === "epoch-mismatch"),
+      JSON.stringify(forged.j.items));
+    const crossed = await poll(SID_FRESH, { cursor: "w.deadbeef.99.0", wait: "0" });
+    check("★経路が入れ替わった栞では繋がない(seq の空間が別物)",
+      (crossed.j.items || []).some((it) => it.kind === "gap" && it.why === "route-changed"),
+      JSON.stringify(crossed.j.items));
+
+    // --- ワーカー経路 ---
+    const w1 = await poll(SID1, { wait: "0" });
+    check("ワーカー経路の poll は route=worker、栞は w.", w1.j.route === "worker" && w1.j.cursor.startsWith("w."),
+      JSON.stringify(w1.j).slice(0, 160));
+    // ★世代の印は manager に1つ。連番だと再起動後の最初の manager がまた同じ値を取る。
+    check("★ワーカー側の世代の印も連番の見た目をしていない(8桁の16進)",
+      /^[0-9a-f]{8}$/.test(String(w1.j.cursor).split(".")[1]), String(w1.j.cursor).split(".")[1]);
+    const wCross = await poll(SID1, { cursor: "t.deadbeef.5.0", wait: "0" });
+    check("★tmux の栞をワーカー経路に持ち込んでも「追いついた」にしない",
+      (wCross.j.items || []).some((it) => it.kind === "gap"), JSON.stringify(wCross.j.items));
+
+    // ★保留が**出来事で起きる**事。時間切れで返るだけなら long-poll ではなく短周期の
+    //   ポーリングで、電話の電池と回線をただ食う。
+    const t0 = Date.now();
+    const held = poll(SID1, { cursor: w1.j.cursor, wait: "8000" });
+    await new Promise((r) => setTimeout(r, 150)); // 保留が登録されるまで
+    await fetch(`${B}/api/sessions/${SID1}/messages`, {
+      method: "POST", headers: { ...H, "content-type": "application/json" },
+      body: JSON.stringify({ text: "poll を起こす" }),
+    });
+    const hp = await held;
+    const elapsed = Date.now() - t0;
+    check("★保留中の poll が出来事で起きる(時間切れ待ちではない)",
+      (hp.j.items || []).length > 0 && elapsed < 7000, `elapsed=${elapsed} items=${(hp.j.items || []).length}`);
+
+  }
+
   // 12-e. 登録簿にも jsonl にも居ない ID は今まで通り 404
   check("登録も jsonl も無い ID -> 404",
     (await fetch(`${B}/api/sessions/aaaaaaaa-0000-0000-0000-0000000000ff/status`, { headers: H })).status === 404);
@@ -1577,6 +1681,18 @@ try {
   check("★ストリームの行に経路が乗る(§3-W が刺さった当の欄)",
     reqLines.some((l) => /\/api\/sessions\/:id\/stream .*route=(tmux|worker) /.test(l)),
     reqLines.filter((l) => l.includes("/stream")).slice(-1)[0] || "(ストリームの行が無い)");
+  // ★道を1本足した時、ログの表を直し忘れると新しい道は `(other)` として積まれ、
+  //   **ログが静かなだけ**で誰も気づかない(reqlog.mjs の見出しが言っている当の型)。
+  //   電話の本線がその静かな穴に落ちていないかを、経路の欄まで含めて測る。
+  check("★poll の行が道として畳まれ、経路の欄も埋まっている(`(other)` に落ちていない)",
+    reqLines.some((l) => /\/api\/sessions\/:id\/poll .*route=(tmux|worker) /.test(l)),
+    reqLines.filter((l) => l.includes("/poll")).slice(-1)[0] || "(poll の行が無い)");
+  // ★陰性対照は「`(other)` が1本も無い」ではない —— それは表が**何でも飲み込む**時にも
+  //   通ってしまう(最初にそう書いて、無関係な 404 の行で落ちて気付いた)。表が道を
+  //   見分けている事を言うには、知らない道が**ちゃんと `(other)` に落ちる**方を測る。
+  check("★陰性対照: 表に無い道は `(other)` のまま(表が何でも飲み込む形になっていない)",
+    reqLines.some((l) => / \(other\) /.test(l)),
+    "知らない道まで畳まれている = 道の表が catch-all になっている");
   // ★以下3つが本体。「1行残る」より「中身が残らない」の方が取り返しがつかない。
   check("★送った本文がログに出ていない", !svlog.includes("テスト送信"), "本文がログに複製されている");
   check("★sessionId は先頭8文字だけ(全部は出ない)",

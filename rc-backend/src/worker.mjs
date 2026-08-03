@@ -11,6 +11,7 @@
 //   - busy 中の send は FIFO queue(公式仕様でも同一 transcript へは interleave —
 //     こちらは1本の書き手なので順序を自分で保証する)
 //   - idle timeout は sweep() で発火(タイマーはサーバ層が回す。テスト容易性のため)
+import { randomBytes } from "node:crypto";
 import { EventRing } from "./ring.mjs";
 import { redact } from "./redact.mjs";
 
@@ -108,9 +109,15 @@ export class WorkerManager {
     killGraceMs = 5000,
     setTimer = setTimeout,
     clearTimer = clearTimeout,
+    generation = null,
   }) {
     if (typeof spawn !== "function") throw new Error("WorkerManager: spawn injection required");
     this._spawn = spawn;
+    // この manager の**通し番号ではない印**。`this.rings` は process の寿命なので、再起動すると
+    // seq が 1 から振り直される。電話が持っている古い栞(`w.<印>.50.0`)が、印を見ないと
+    // そのまま有効に見えて `since(50)` が空 = 「追いついた」と黙って嘘をつく。
+    // 注入できるのは検査の為(乱数だと期待値が書けない)。既定は乱数。
+    this.generation = generation || randomBytes(4).toString("hex");
     this.idleMs = idleMs;
     this.now = now;
     this.ringCapacity = ringCapacity;

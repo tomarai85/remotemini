@@ -999,6 +999,33 @@ MUT = [
       throw new Error(`EventRing: capacity must be a positive integer, got ${capacity}`);
     }""",
   "    void capacity;"),
+ # --- R6-R11 = 長待ち受け(long-poll)の栞 (2026-08-04、DESIGN §2.36) ------------------
+ # 族が `src/ring.mjs` から広がった。電話の配信が SSE から long-poll へ替わった事で、
+ # 「間が失われたのを黙って連続に見せない」責任が **栞の判定 (`tail.mjs`) と
+ #  世代の印 (`server.mjs` / `worker.mjs`)** に分かれた。的を ring.mjs に留めると、
+ # 同じ病気の**新しい住処**を1つも見張らない事になる。
+ # ★R10/R11 の限界を先に書く: 此処が守っているのは「process を跨いだ栞の偶然の一致」で、
+ #   それは process を跨いで測っていない。的が殺せるのは**連番への退化**(印が `1`)と
+ #   **固定値への退化**(全会話で同じ)の2つだけ。乱数性の証明ではない。
+ ("R6 栞の世代を照合しない(再起動を跨いだ古い栞が「追いついた」と読まれる)", TAI,
+  'if (tok !== String(token)) return { kind: "gap", why: "epoch-mismatch" };',
+  "void tok;"),
+ ("R7 栞の経路を照合しない(tmux と worker で seq の空間が違うのに繋ぐ)", TAI,
+  'if (r !== (route === "tmux" ? "t" : "w")) return { kind: "gap", why: "route-changed" };',
+  "void r;"),
+ ("R8 栞の数字を検めない(`x` が NaN の seq として ring.since へ渡る)", TAI,
+  'if (!/^\\d+$/.test(sq) || !/^\\d+$/.test(sr)) return { kind: "gap", why: "cursor-malformed" };',
+  "void sq; void sr;"),
+ ("R9 取りこぼしを ring に載せず流すだけにする(切れている間の gap が消える)", SRV,
+  """  const seq = f.ring.push({ kind: "gap", why });
+  feedBroadcast(f, { id: `${f.epoch}.${seq}`, event: "gap", data: { rereadHistory: true, why } });""",
+  '  feedBroadcast(f, { event: "gap", data: { rereadHistory: true, why } });'),
+ ("R10 世代の印を連番へ戻す(再起動後の最初の feed が前の栞と偶然一致する)", SRV,
+  'return randomBytes(4).toString("hex"); // `.` を含まない = 栞の区切りと衝突しない',
+  'return "1";'),
+ ("R11 ワーカー側の世代の印を連番へ戻す(同上。manager 側の同じ穴)", WRK,
+  "this.generation = generation || randomBytes(4).toString(\"hex\");",
+  'this.generation = generation || "1";'),
  # ---- H 系(外向きの生存信号の判定層。DESIGN §7-P)-----------------------
  # ★13枚とも砂場で先に「赤くなる」事を層ごとに実測してから入れた(APPLY-PLAN-phaseP §3)。
  #   変異走行は `npm test` と `test/e2e-local.mjs` を回すが `health-observer-controls.sh` は
@@ -1069,6 +1096,21 @@ MUT = [
  ("V8 実高さの落とし先を外す(visualViewport が無い環境で高さが 0 になる)", APP,
   "  return Math.round((vv && vv.height) || window.innerHeight || 0);",
   "  return Math.round((vv && vv.height) || 0);"),
+ # --- V9/V10 = 長待ち受けの応答の形を検める層 (2026-08-04、DESIGN §2.36) --------------
+ # ★この2枚は「判断を app.html に置かない」規則の**費用**を測る物でもある。初版は
+ #   この関数を画面側に書いており、そこでは的を当てても単体も e2e も動かない。
+ #   view.mjs へ移した瞬間に、ワーカー経路を毎回落とす取り違えが出た。
+ ("V9 応答の形を検めず何でも通す(読めない形を空の配信として飲む)", VIE,
+  '  if (!d || typeof d !== "object" || !Array.isArray(d.items)) return false;',
+  "  if (!d) return true;"),
+ ("V10 ワーカー経路の形を読めない事にする(worker の poll が毎回例外へ落ちる)", VIE,
+  '    if (it.kind === "message" && !Array.isArray(it.entries) && !isPlainEvent(it.event)) return false;',
+  '    if (it.kind === "message" && !Array.isArray(it.entries)) return false;'),
+ # ★V11 = 実際に手が滑った形そのもの。存在確認だけを門にすると、前の会話の後始末が
+ #   新しい会話の `reading` を偽にして、前面復帰の撃ち直しが黙って消える。
+ ("V11 世代の門を存在確認へ落とす(前の購読の後始末が次の会話を黙らせる)", APP,
+  "      if (conv && conv.gen === myGen) conv.reading = false;",
+  "      conv && (conv.reading = false);"),
 ]
 
 # ★変異の番号は一意でなければならない(2026-08-02 追加。実際に M69-M73 を重複させた)。

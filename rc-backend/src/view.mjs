@@ -389,3 +389,37 @@ export function subtitleOf(row) {
   if (r.metadataIncomplete) return "(直近の発言は読み取り範囲の外)";
   return "(まだ発言がありません)";
 }
+
+/**
+ * 長待ち受け(`/api/sessions/:id/poll`)の応答1回分の形を、**適用の前に**丸ごと検める。
+ * 真を返した物だけ画面へ渡す(DESIGN §2.36)。
+ *
+ * ★`entries || []` で埋めない理由: 読めない形を空に化かすと「何も来なかった」と区別が
+ *   付かなくなる。サーバが壊れた時に**電話だけが黙って正常に見える** —— この系がいちばん
+ *   嫌う嘘の形。読めなければ読めないと言い、帯を切断側へ倒す。
+ * ★**判断を app.html に置かない**理由がまさにこの関数: ここを画面側に書いた初版は、
+ *   `entries` だけを見ていた。ところが**ワーカー経路の item は `entries` を持たない**
+ *   (`server.mjs` は `{kind:"message", event: <NDJSON1行>}` を積む)。画面側に在ると
+ *   単体検査も変異検査も掴めないので、**ワーカー経路の poll が毎回投げる**形のまま
+ *   緑で出荷できてしまう。view.mjs へ移した事でこの取り違えが出た。
+ * ★知らない `kind` は**捨てて良い**(偽を返さない)。将来サーバが種類を1つ足した時、
+ *   古い電話が配信を丸ごと拒んで固まる方が害が大きい。読めない物を「空」と偽らずに
+ *   ただ素通りさせるのは、化かす事とは別。
+ *
+ * @param {{items?: unknown}} d poll の応答本文
+ * @returns {boolean} 適用してよいか
+ */
+export function readablePoll(d) {
+  if (!d || typeof d !== "object" || !Array.isArray(d.items)) return false;
+  for (const it of d.items) {
+    if (!it || typeof it !== "object") return false;
+    // `kind:"message"` は経路で中身が違う。tmux = `entries`(転記の行)、
+    // worker = `event`(我々が起こした子の NDJSON 1行)。どちらでもなければ読めない。
+    if (it.kind === "message" && !Array.isArray(it.entries) && !isPlainEvent(it.event)) return false;
+  }
+  return true;
+}
+
+function isPlainEvent(v) {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}

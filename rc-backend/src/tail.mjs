@@ -60,6 +60,53 @@ export function resumeDecision(rawLast, epoch) {
   return { kind: "resume", seq: Number(sq) };
 }
 
+// ---- long-poll の栞(cursor)------------------------------------------------
+// 電話が使う配信は SSE ではなく long-poll(2026-08-04、§2.36)。栞は**不透明**に扱う
+// 契約で、電話は受け取った文字列をそのまま返すだけ。組み立てと解釈が此処に居るのは
+// `resumeDecision` と同じ理由 —— 嘘の連続性を作れる唯一の場所を純関数に出す為。
+//
+// 形:
+//   tmux   `t.<epoch>.<seq>.<screenRev>`
+//   worker `w.<generation>.<seq>.0`
+// epoch / generation は **process ごとの token**(連番ではない)。連番だと再起動で
+// 1 に戻り、再起動前の栞が偶然一致して「追いついた」と黙って嘘をつく。
+// ★この欠陥は SSE 側に**実在していた**(`feedEpochSeq` は 0 起点の連番だった)。
+//   poll を足すついでに直したのではなく、同じ穴を2本目に掘らない為に先に直した。
+const CURSOR_MAX = 128; // 長さの栓。栞は自分で作った物しか来ない筈だが、外から来る値なので絞る
+
+/** 栞を組む。`screenRev` は worker 経路では常に 0(画面を持たない)。 */
+export function formatPollCursor({ route, token, seq, screenRev = 0 }) {
+  return `${route === "tmux" ? "t" : "w"}.${token}.${seq}.${screenRev}`;
+}
+
+/**
+ * 栞をどう繋ぐか。
+ *
+ * ★`kind:"gap"` は「差分では繋げない」であって「異常」ではない。初回(栞が無い)だけは
+ * `fresh` で、これを gap にすると開くたびに履歴の読み直しを命じる事になり、やがて電話は
+ * gap を無視する = **本物の取りこぼしが埋もれる**(`resumeDecision` と同じ判断)。
+ *
+ * @param {string} raw       電話が返してきた栞
+ * @param {"tmux"|"worker"} route 今の経路
+ * @param {string} token     今の epoch / generation
+ * @returns {{kind:"fresh"}|{kind:"resume",seq:number,screenRev:number}|{kind:"gap",why:string}}
+ */
+export function pollDecision(raw, route, token) {
+  const s = String(raw ?? "");
+  if (s === "") return { kind: "fresh" };
+  if (s.length > CURSOR_MAX) return { kind: "gap", why: "cursor-too-long" };
+  const parts = s.split(".");
+  if (parts.length !== 4) return { kind: "gap", why: "cursor-malformed" };
+  const [r, tok, sq, sr] = parts;
+  // ★経路が変わった時に **gap を出す**。tmux で開いていた会話が閉じられて worker 経路へ
+  //   落ちる(逆も)と、seq の空間ごと別物になる。ここを素通りさせると、別の空間の数字で
+  //   「追いついた」と答える経路ができる。
+  if (r !== (route === "tmux" ? "t" : "w")) return { kind: "gap", why: "route-changed" };
+  if (tok !== String(token)) return { kind: "gap", why: "epoch-mismatch" };
+  if (!/^\d+$/.test(sq) || !/^\d+$/.test(sr)) return { kind: "gap", why: "cursor-malformed" };
+  return { kind: "resume", seq: Number(sq), screenRev: Number(sr) };
+}
+
 const defaultIo = {
   open: (p) => openSync(p, "r"),
   fstat: (fd) => fstatSync(fd),

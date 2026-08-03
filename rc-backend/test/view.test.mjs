@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { WIRE_REASONS } from "../src/blocked.mjs";
 import {
   freshness, gapNotice, interruptResult, mergeHistory, nextAttempt, nextHistoryLimit,
-  relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,
+  readablePoll, relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,
 } from "../src/view.mjs";
 
 const e = (role, text) => ({ role, text });
@@ -429,4 +429,43 @@ test("一覧の古さ — 時計がずれて未来を指しても壊れない(re
   const f = freshness(1_000_000, 900_000); // now が過去
   assert.equal(f.stale, false);
   assert.match(f.text, /たった今/);
+});
+
+// ---- 長待ち受けの応答の形 (DESIGN §2.36) --------------------------------------
+// ★この検査群が在る理由そのものが、初版の取り違えを掴んだ事: 判断を app.html に
+//   書いていた時は `entries` しか見ておらず、**ワーカー経路の poll が毎回投げる**形
+//   だったのに、静的検査(app-html.test.mjs)も e2e も緑のままだった。
+
+test("★tmux 経路の形を読める(entries を持つ)", () => {
+  assert.equal(readablePoll({ items: [{ kind: "message", entries: [e("user", "a")] }] }), true);
+  assert.equal(readablePoll({ items: [] }), true);
+  assert.equal(readablePoll({ items: [{ kind: "gap", why: "ring-overflow" }] }), true);
+});
+
+test("★★ワーカー経路の形も読める(entries でなく event を運ぶ)", () => {
+  // これが偽になると、ワーカー経路の電話は poll のたびに例外へ落ちて
+  // 「切れました」を出し続ける = 経路まるごと使えない。初版はここで落ちた。
+  assert.equal(readablePoll({ items: [{ kind: "message", event: { type: "user_sent", text: "x" }, seq: 3 }] }), true);
+});
+
+test("★読めない形は真にしない(空へ化かさない)", () => {
+  assert.equal(readablePoll({ items: [{ kind: "message" }] }), false);       // どちらの欄も無い
+  assert.equal(readablePoll({ items: [{ kind: "message", entries: "abc" }] }), false); // 配列でない
+  assert.equal(readablePoll({ items: [{ kind: "message", event: [] }] }), false);      // 配列は event でない
+  assert.equal(readablePoll({ items: [null] }), false);
+  assert.equal(readablePoll({ items: "nope" }), false);
+  assert.equal(readablePoll({}), false);
+  assert.equal(readablePoll(null), false);
+});
+
+test("知らない kind は拒まない(古い電話が新しいサーバで固まらない)", () => {
+  assert.equal(readablePoll({ items: [{ kind: "future-thing", whatever: 1 }] }), true);
+});
+
+test("★陰性対照: 何でも真を返す形なら上の検査は落ちる", () => {
+  // `readablePoll` を `() => true` に潰したら「読めない形は真にしない」が落ちる事の確認。
+  // 対照が無いと、この関数を骨抜きにしても全部緑のままになりうる。
+  const alwaysTrue = () => true;
+  assert.equal(alwaysTrue({ items: [{ kind: "message" }] }), true); // = 検査が掴む差
+  assert.notEqual(readablePoll({ items: [{ kind: "message" }] }), alwaysTrue());
 });

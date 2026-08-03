@@ -148,12 +148,15 @@
 </section>
 
 <script type="module">
-import { backoffMs, createSseParser, decodeEvent } from "/frames.mjs";
+// ★`createSseParser` / `decodeEvent` は**もう読み込まない**(2026-08-04)。電話は SSE を
+//   使わなくなったので、置いたままにすると「使っている様に見える死んだ依存」になる。
+//   frames.mjs 側には残す — `/stream` と e2e / live-http-check がまだ使う(§2.36)。
+import { backoffMs } from "/frames.mjs";
 // ★判断は view.mjs 側にしか置かない。ここに書いた条件は単体検査にも変異検査にも
 //   掴めない = 間違っても緑のままになる(2026-08-02 に5箇所まとめて出した)。
 import {
   freshness, gapNotice, interruptResult, mergeHistory, nextAttempt, nextHistoryLimit,
-  relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,
+  readablePoll, relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,
 } from "/view.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -163,7 +166,7 @@ const KEY_STORE = "rc.key";
 // 会話は同時に1つだけ開く。開き直したら前の購読は必ず止める(=世代番号で無効化)。
 let key = localStorage.getItem(KEY_STORE) || "";
 let gen = 0;                 // 会話を開くたびに増える。古い購読の到着を捨てる為
-let conv = null;             // {id, title, history, live, truncated, lastEventId, abort, wake}
+let conv = null;             // {id, title, history, live, truncated, abort, wake}
 
 // ---- 通信 -------------------------------------------------------------------
 function headers(extra) {
@@ -280,7 +283,7 @@ async function openConv(s) {
   conv = {
     id: s.id, title: s.title || s.id, gen: myGen,
     history: [], live: [], historyLoaded: false, truncated: false,
-    lastEventId: "", abort: null, wake: null,
+    abort: null, wake: null,
     // ★一覧が知っている経路状態。`screen` 事象が来るまで、そして**来ない会話では最後まで**
     //   これが帯の中身になる(ペインの無い会話は購読がワーカー経路に落ちて screen が来ない)。
     state: s.live || null,
@@ -292,7 +295,7 @@ async function openConv(s) {
   show("s-conv");
   // ★購読を**先に**開く。履歴を先に撮ると、その隙間に書かれた発言がどちらにも入らない。
   //   先に開けば同じ隙間は「重なる」に変わり、mergeHistory が剥がせる(view.mjs)。
-  streamLoop(myGen);
+  pollLoop(myGen);
   loadHistory(myGen);
 }
 
@@ -366,50 +369,88 @@ function notice(kind, text) {
   $("conv-notice").replaceChildren(el("div", `notice ${kind}`, text));
 }
 
-// ---- 流れ(SSE を自前で読む。EventSource はヘッダを打てない。DESIGN §2.13) ----
-async function streamLoop(myGen) {
+// ---- 流れ(long-poll。DESIGN §2.36)-----------------------------------------
+//
+// ★逐次配信(SSE)は使わない。iPhone Safari が `fetch` の本文を逐次で渡すか溜め込むかを
+//   我々は測れず(§8-4 = 実機が要る人の門)、「溜め込みを検出して落ちる」判定器を書けば
+//   その判定器の正しさが**同じ測れない一点**に載る。`mutex.mjs` の見出しの通り、
+//   到達しない守りは守っている様に見えるだけで測れない。
+//   完了した応答は中継も browser も溜め込めないので、構造で正しい方を採る。
+//   サーバの `/stream` は残っているが、**この画面からは1度も呼ばない**(§2.36)。
+const POLL_WAIT_MS = 20000; // サーバ側の上限と同じ。これ以上待たせても切断通知が遅れるだけ
+const POLL_IDLE_FLOOR_MS = 1000; // 空応答が即返った時だけ挟む底。暴走を構造で止める
+
+async function pollLoop(myGen) {
   let attempt = 0;
+  let cursor = "";
+  let everOpened = false;
   while (conv && conv.gen === myGen) {
     const ac = new AbortController();
     conv.abort = ac;
     conv.refresh = false; // ★前面復帰による意図的な張り直しか(下の onForeground が立てる)
-    conv.reading = false; // ★今この瞬間、開いた流れを読んでいるか
-    let openedAt = 0;
+    conv.reading = true; // 保留中は「見に行っている最中」= onForeground の担当
+    const openedAt = Date.now();
     try {
-      const r = await fetch(`/api/sessions/${encodeURIComponent(conv.id)}/stream`, {
-        headers: headers(conv.lastEventId ? { "last-event-id": conv.lastEventId } : undefined),
-        signal: ac.signal,
+      const q = new URLSearchParams({ cursor, wait: String(POLL_WAIT_MS) });
+      const r = await fetch(`/api/sessions/${encodeURIComponent(conv.id)}/poll?${q}`, {
+        headers: headers(), signal: ac.signal,
       });
       if (r.status === 401) return toKey("鍵が通りませんでした。貼り直してください。");
-      if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
-      openedAt = Date.now();
-      band("live", stateText(conv && conv.gen === myGen ? conv.state : null, "つながっています"));
-      conv.reading = true;
-      const parser = createSseParser();
-      const reader = r.body.getReader();
-      const dec = new TextDecoder();
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (!conv || conv.gen !== myGen) return;
-        for (const ev of parser.push(dec.decode(value, { stream: true }))) onEvent(ev, myGen);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      if (!conv || conv.gen !== myGen) return;
+      // ★形が違う 200 を空の配信として飲まない(loadHistory / loadList と同じ規律)。
+      //   飲むと「繋がっているのに何も起きない」= いちばん見分けの付かない嘘になる。
+      //   ★中身まで検めるのは**適用の前**でなければ意味が無い。途中で投げると
+      //     `conv.live` に半分積んだまま栞が進まず、撃ち直しで同じ物をもう一度積む。
+      if (!readablePoll(d)) throw new Error("配信の形が読めません");
+      conv.reading = false;
+      attempt = 0;
+      everOpened = true;
+      // ---- 適用と栞の前進は**同じ同期ブロック**。間に await を1つも挟まない -----------
+      //   挟むと「適用の途中で失敗したのに栞だけ進んだ」が起こり得る = 取りこぼしが
+      //   二度と取り戻せない形で消える。順序も**適用が先**にする。
+      applyPoll(d, myGen);
+      if (typeof d.cursor === "string" && d.cursor) cursor = d.cursor;
+      // ------------------------------------------------------------------------------
+      if (!conv || conv.gen !== myGen) return;
+      band("live", stateText(conv.state, "つながっています"));
+      // 何も無い応答が**即**返った時だけ底を挟む。溜まっている時は `items` が埋まるので
+      // `empty` が偽 = 底は掛からず、待たずに次を撃つ。
+      // ★条件に `!d.more` を入れない。`more` は「積み切れなかった」の意なので `items` が
+      //   空の時に真になる道理が無い —— つまり足しても何も変わらないのに、サーバが
+      //   壊れて `more:true` + 空を返した瞬間だけ**底が外れて電話が空回りする**。
+      //   守りの条件を相手の正しさに載せない(fail-closed)。
+      const empty = d.items.length === 0 && !d.screen;
+      if (empty && Date.now() - openedAt < POLL_IDLE_FLOOR_MS) {
+        await sleepOrWake(POLL_IDLE_FLOOR_MS, myGen);
       }
+      continue;
     } catch (e) {
+      // ★世代で守る。`conv &&` だけでは足りない —— 会話を開き直すと `closeConv` が
+      //   前の保留を畳み、その catch は**新しい conv が入った後**に走る。素で書くと
+      //   新しい世代の `reading` を偽にしてしまい、次の前面復帰が
+      //   「待ち中(= sleepOrWake の担当)」と読まれて撃ち直されない。
+      if (conv && conv.gen === myGen) conv.reading = false;
       if (ac.signal.aborted) {
-        // 自分で閉じた。ただし**前面復帰による張り直し**だけは続行する。
+        // 自分で畳んだ。ただし**前面復帰による撃ち直し**だけは続行する。
         // ★根拠は iOS の内部挙動ではない(それは私が観測していない)。背面に居た後、
-        //   この流れが生きている証拠を私は何も持っていないのに、帯は「つながっています」と
-        //   断定し続ける。証拠の無い断定こそこの系が禁じているもの。張り直せば証拠が出る。
+        //   この保留が生きている証拠を私は何も持っていないのに、帯は「つながっています」と
+        //   断定し続ける。証拠の無い断定こそこの系が禁じているもの。撃ち直せば証拠が出る。
         if (!conv || conv.gen !== myGen || !conv.refresh) return;
         conv.refresh = false;
         band("off", "前面に戻ったのでつなぎ直しています。");
-        continue; // ★待たずに張り直す(backoff は「切れた」時のもので、これは切れていない)
+        continue; // 待たずに撃ち直す(backoff は「切れた」時のもので、これは切れていない)
       }
     }
     if (!conv || conv.gen !== myGen) return;
-    attempt = nextAttempt(attempt, openedAt, Date.now()); // ★判定は view.mjs
+    // ★`openedAt` は撃つ**直前**。20秒保留された後に切れたのは「健康な接続が落ちた」で、
+    //   即座に失敗するのは「そもそも届いていない」。nextAttempt はこの2つを分ける(view.mjs)。
+    attempt = nextAttempt(attempt, openedAt, Date.now());
     const ms = backoffMs(attempt);
-    band("off", `切れました。${Math.round(ms / 1000)}秒後につなぎ直します。`);
+    band("off", everOpened
+      ? `切れました。${Math.round(ms / 1000)}秒後につなぎ直します。`
+      : `つながりません。${Math.round(ms / 1000)}秒後に試します。`);
     await sleepOrWake(ms, myGen);
   }
 }
@@ -433,28 +474,39 @@ function sleepOrWake(ms, myGen) {
   });
 }
 
-function onEvent(ev, myGen) {
-  const d = decodeEvent(ev);
-  if (d.id) conv.lastEventId = d.id;
-  if (!d.ok) { notice("warn", "読めない通知が来ました(表示は続きます)。"); return; }
-  if (d.type === "screen") {
-    conv.state = d.body; // 以後の再接続でも同じ状態を出せる(帯が接続の話に戻らない)
-    band("live", stateText(conv.state, ""));
-    return;
+/**
+ * 1回の poll 応答を画面へ。**同期のみ**(呼び手が栞の前進と同じブロックに置いている)。
+ * `loadHistory` は投げっぱなしにする — await すると此処が非同期になり、栞との同期が崩れる。
+ */
+function applyPoll(d, myGen) {
+  let added = false;
+  let reread = false;
+  for (const it of d.items) {
+    if (it.kind === "gap") {
+      const g = gapNotice(it.why); // ★出す/出さないの判定は view.mjs
+      if (g) notice("warn", g);
+      // ★取りこぼしより後に**同じ応答で**届いた本文は捨てない。従来は gap のたびに
+      //   `conv.live = []` としていたが、poll は複数の出来事をまとめて運ぶので、
+      //   先頭の gap で消して後続を積むと順序は正しいまま残る。
+      conv.live = [];
+      added = false;
+      reread = true;
+      continue;
+    }
+    if (it.kind === "message") {
+      // 形は撃つ前に検めてある(view.mjs `readablePoll`)。
+      // ★ワーカー経路の item は `entries` を持たず `event`(子の NDJSON 1行)を運ぶ。
+      //   その live 描画は**まだ在らず**、SSE の頃から一度も画面に出た事が無い
+      //   (旧実装は `entries || []` で黙って捨てていた)。ここで捨てるのは同じ挙動だが、
+      //   **捨てていると書いてある**点だけが違う。埋める仕事は §2.36-e に積んだ。
+      if (!Array.isArray(it.entries) || it.entries.length === 0) continue;
+      conv.live.push(...it.entries);
+      added = true;
+    }
   }
-  if (d.type === "gap") {
-    const g = gapNotice(d.body && d.body.why); // ★出す/出さないの判定は view.mjs
-    if (g) notice("warn", g);
-    conv.live = [];
-    loadHistory(myGen);
-    return;
-  }
-  if (d.type === "message") {
-    const add = (d.body && d.body.entries) || [];
-    if (!add.length) return;
-    conv.live.push(...add);
-    renderConv();
-  }
+  if (d.screen) conv.state = d.screen; // 以後の撃ち直しでも同じ状態を出せる(帯が接続の話に戻らない)
+  if (added || reread) renderConv();
+  if (reread) loadHistory(myGen); // 投げっぱなし。此処を await しない事が栞の正しさの条件
 }
 
 // ---- 送る / 止める ----------------------------------------------------------

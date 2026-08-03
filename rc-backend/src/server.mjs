@@ -14,7 +14,7 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync } from "node:child_process";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord } from "./sessions.mjs";
-import { JsonlTail, resumeDecision } from "./tail.mjs";
+import { JsonlTail, formatPollCursor, pollDecision, resumeDecision } from "./tail.mjs";
 import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
 import { WorkerManager } from "./worker.mjs";
@@ -554,7 +554,35 @@ setInterval(() => manager.sweep(), 30_000).unref();
 
 // SSE 購読者: sessionId -> Set<res>
 const subscribers = new Map();
+// ワーカー経路で保留中の poll。tmux 経路の `f.wakers` と同じ役目だが、あちらは feed という
+// 器があるのに対しこちらは無いので、購読者と同じ形の Map で持つ。
+const workerWakers = new Map(); // sessionId -> Set<fn>
+/**
+ * 空になった器を Map から外す。`f.wakers` と違い此処は **feed という寿命の器を持たない**ので、
+ * 消さないと会話ID1つにつき空の Set が1つ永久に残る(電話が触った会話の数だけ増える)。
+ *
+ * ★同一性で守る: `workerWakers.get(...) === set` を確かめてから消す。確かめずに消すと、
+ *   後から来た poll が作った**新しい器**を巻き添えに外し、その待ち手が二度と起きない。
+ */
+function pruneWorkerWakers(sessionId, set) {
+  if (set.size === 0 && workerWakers.get(sessionId) === set) workerWakers.delete(sessionId);
+}
+function wakeWorkerPolls(sessionId) {
+  const set = workerWakers.get(sessionId);
+  if (!set || set.size === 0) return;
+  const woken = [...set];
+  set.clear();
+  pruneWorkerWakers(sessionId, set);
+  for (const w of woken) {
+    try {
+      w();
+    } catch {
+      /* 1本の失敗で他を起こさない */
+    }
+  }
+}
 function pushToSubscribers(sessionId, seq, data) {
+  wakeWorkerPolls(sessionId);
   const subs = subscribers.get(sessionId);
   if (!subs) return;
   const frame = `id: ${seq}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -591,22 +619,41 @@ const FEED_TICK_MS = 700;
 const FEED_SCREEN_EVERY = 2; // 2 tick(=1.4秒)ごとに画面を撮る。tmux を無駄に叩かない。
 const FEED_WORK_WINDOW = 4; // 直近4回の観測(≒5.6秒)を1つの窓として見る
 const feeds = new Map(); // sessionId -> feed
-let feedEpochSeq = 0;
+const POLL_MAX_WAIT_MS = 20_000; // トンネルで切断通知が遅れても待ち手を残さない上限
+const POLL_MAX_ITEMS = 64; // 1応答の頭打ち。ring 256 件を丸ごと返すと電話が潰れる
+const POLL_MAX_HELD = 4; // 同一会話で保留できる poll の本数
+const POLL_LEASE_MS = 30_000; // 最後の poll からこれだけは feed を止めない
+
+/**
+ * 世代の印。**連番にしない**。
+ * 連番だと process が再起動した時に最初の feed がまた同じ値を取り、再起動前の栞
+ * (`1.50`)が偶然一致して `ring.since(50)` が空 = 「追いついた」と黙って嘘をつく。
+ * ★これは poll を足して見つけた欠陥ではなく、**SSE 側に前から在った**もの
+ *   (`feedEpochSeq` は 0 起点の連番だった)。同じ穴を2本目に掘らない為に先に塞ぐ。
+ */
+function newEpochToken() {
+  return randomBytes(4).toString("hex"); // `.` を含まない = 栞の区切りと衝突しない
+}
 
 function getFeed(sessionId) {
   let f = feeds.get(sessionId);
   if (!f) {
-    // epoch は「この配信の世代」。購読が絶えて作り直された時に seq が 1 に戻るため、
-    // epoch を付けないと再接続の Last-Event-ID が偶然一致して**取りこぼしを黙って埋める**。
     f = {
-      epoch: ++feedEpochSeq,
+      epoch: newEpochToken(),
       ring: new EventRing(256),
       tail: null,
       timer: null,
       tick: 0,
       lastScreen: null,
+      // 画面は**順序を持たない最新値**なので ring に入れず1セルに置く。混ぜると 256 件の
+      // 保持枠を画面の写しが食い、本文が溢れて gap が増える = 最大 280MB の jsonl 読み直しが増える。
+      screen: null, // { rev, body }
+      screenRev: 0,
       work: [], // 直近の「生成中を観測したか」。1枚ごとの真偽をそのまま流さない為の窓
       subs: new Set(),
+      wakers: new Set(), // 保留中の poll。中身は「今すぐ返せ」の関数
+      pollLeaseUntil: 0,
+      leaseTimer: null, // feed あたり**1本**。poll ごとに積むと未発火の timer が溜まる
     };
     feeds.set(sessionId, f);
   }
@@ -615,6 +662,31 @@ function getFeed(sessionId) {
 
 function feedBroadcast(f, frame) {
   for (const res of f.subs) if (!sendEvent(res, frame)) f.subs.delete(res);
+  // ★保留中の poll を起こすのは**此処だけ**。message / gap / screen は全部この口を通るので、
+  //   起こし忘れの枝が生まれない(呼び口ごとに書けば、次に足した枝だけが静かに眠る)。
+  if (f.wakers.size) {
+    const woken = [...f.wakers];
+    f.wakers.clear();
+    for (const w of woken) {
+      try {
+        w();
+      } catch {
+        /* 1本の失敗で他を起こさないのは本末転倒 */
+      }
+    }
+  }
+}
+
+/**
+ * 取りこぼしの合図。**ring に seq を振って**流す。
+ *
+ * ★以前は id 無しで流していた。SSE の再接続でも poll でも**再生できない** = 購読が
+ *   切れている間に起きた gap は消えていた。「読み直せ」の合図が消えるという事は、
+ *   電話が古い履歴を正しいと思い込んだまま静かに走り続けるという事。
+ */
+function feedGap(f, why) {
+  const seq = f.ring.push({ kind: "gap", why });
+  feedBroadcast(f, { id: `${f.epoch}.${seq}`, event: "gap", data: { rereadHistory: true, why } });
 }
 
 /** 1 tick 分の観測。例外は握って配信を止めない(見に行けない事自体は screen で伝わる)。 */
@@ -631,7 +703,7 @@ function feedTick(sessionId, f, resolvePaneFn) {
       // この位置合わせまでの間に書かれた行は、差分にも履歴にも出ない = 黙って消える。
       // 継ぎ目が見えないのだから「繋がった」と言わず、一度だけ読み直させる。
       if (first.ok && f.tail.offset > 0) {
-        feedBroadcast(f, { event: "gap", data: { rereadHistory: true, why: "tail-attached" } });
+        feedGap(f, "tail-attached");
       }
     }
   }
@@ -639,12 +711,12 @@ function feedTick(sessionId, f, resolvePaneFn) {
     const r = f.tail.poll();
     if (r.reset) {
       // 差分では繋がらない(世代交代・切り詰め・印の不一致)。嘘の連続性を作らず読み直させる。
-      feedBroadcast(f, { event: "gap", data: { rereadHistory: true, why: r.error || "reset" } });
+      feedGap(f, r.error || "reset");
     }
     for (const rec of r.records) {
       const entries = entriesFromRecord(rec.obj);
       if (entries.length === 0) continue;
-      const seq = f.ring.push({ entries });
+      const seq = f.ring.push({ kind: "message", entries });
       feedBroadcast(f, { id: `${f.epoch}.${seq}`, event: "message", data: { entries } });
     }
   }
@@ -660,6 +732,10 @@ function feedTick(sessionId, f, resolvePaneFn) {
     const key = JSON.stringify(body);
     if (key !== f.lastScreen) {
       f.lastScreen = key;
+      // ★poll 経路は `screenBody()` を**呼べない**(あれは `f.work` を書き換えるので、
+      //   読みに来た者が観測窓を進めてしまう)。だから撮った物を此処で1セルに置いて、
+      //   poll は**それを読むだけ**にする。rev は「この画面を見たか」を栞で言う為の版。
+      f.screen = { rev: ++f.screenRev, body };
       feedBroadcast(f, { event: "screen", data: body }); // id は振らない = 再生対象ではない
     }
   }
@@ -709,12 +785,45 @@ function startFeed(sessionId, file, resolvePaneFn) {
 
 function stopFeedIfIdle(sessionId) {
   const f = feeds.get(sessionId);
-  if (!f || f.subs.size > 0) return;
+  if (!f) return;
+  // 見に来ている者が3種いる: SSE の購読・保留中の poll・**さっき poll して次を撃つ途中**の電話。
+  // 3番目が要るのは、poll は接続が繋がりっぱなしではないから —— 応答の度に止めると
+  // 電話が次を撃つ間に tail が外れ、毎回 `tail-attached` の gap が出る(= 履歴の読み直しが
+  // 永久に続く)。だから最後の poll から一定時間は**貸し出し中**として止めない。
+  if (f.subs.size > 0 || f.wakers.size > 0 || Date.now() < f.pollLeaseUntil) return;
   clearInterval(f.timer);
   f.timer = null;
   f.lastScreen = null;
+  // 画面は最新値の一時状態なので捨てる(次の tick で撮り直す)。ただし **rev は戻さない** ——
+  // 戻すと古い栞の screenRev と一致して「その画面は見た」と嘘になる。
+  f.screen = null;
+  if (f.leaseTimer) {
+    clearTimeout(f.leaseTimer);
+    f.leaseTimer = null;
+  }
   // ring / epoch / tail の位置は**残す**。捨てて作り直すと seq が 1 に戻り、
   // 再接続してきた電話に「追いついた」と嘘をつく経路ができる。
+}
+
+/**
+ * poll の貸し出しを延長し、切れる頃に**1本だけ**後始末を予約する。
+ * ★timer は feed あたり1本。poll ごとに `setTimeout` を積むと、電話が10秒に1回撃つだけで
+ *   未発火の timer が溜まり続ける(応答の度に積んで誰も消さない、この手の漏れの定番)。
+ */
+function renewPollLease(sessionId, f) {
+  f.pollLeaseUntil = Date.now() + POLL_LEASE_MS;
+  if (f.leaseTimer) return;
+  f.leaseTimer = setTimeout(function check() {
+    f.leaseTimer = null;
+    if (Date.now() < f.pollLeaseUntil && (f.timer || f.subs.size || f.wakers.size)) {
+      // まだ貸し出し中。切れる時刻に合わせて張り直す(= 常に1本)。
+      f.leaseTimer = setTimeout(check, Math.max(1000, f.pollLeaseUntil - Date.now()));
+      f.leaseTimer.unref();
+      return;
+    }
+    stopFeedIfIdle(sessionId);
+  }, POLL_LEASE_MS);
+  f.leaseTimer.unref();
 }
 
 // ---- HTTP -------------------------------------------------------------------
@@ -1111,6 +1220,178 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    if (action === "poll" && req.method === "GET") {
+      // 電話の**本線**(2026-08-04、DESIGN §2.36)。SSE ではなくこちらを使う理由は
+      // 「iPhone Safari が本文を溜め込むか」を我々が測れないから(§8-4 は人の門)。
+      // ★検出器は作らない。検出器の発火条件はその測れない端末でしか再現できず、
+      //   「到達しない守りは、守っている様に見えるだけで**測れない**」(mutex.mjs)に真向から反する。
+      //   完了した応答は中継も browser も溜め込めない —— 構造で正しい方を採る。
+      const rawCursor = String(url.searchParams.get("cursor") || "");
+      const rawWait = Number(url.searchParams.get("wait"));
+      const waitMs = Number.isFinite(rawWait) ? Math.min(Math.max(rawWait, 0), POLL_MAX_WAIT_MS) : 0;
+      const found = resolvePane();
+      const route = found.pane ? "tmux" : "worker";
+      markResult(res, { route });
+
+      // ★`cache-control: no-store` は全ての返り口に付ける。中継が poll の応答を握ると、
+      //   電話は**永久に同じ古い物**を受け取り続け、しかも 200 なので「繋がっている」と見える。
+      if (route === "tmux") {
+        const f = startFeed(sessionId, file, resolvePane);
+        renewPollLease(sessionId, f);
+        const d = pollDecision(rawCursor, "tmux", f.epoch);
+
+        // 状態を1回だけ読む純粋な組み立て。**保留の前後で同じ物を使う**ので写しを作らない。
+        const collect = () => {
+          const items = [];
+          let more = false;
+          let cutSeq = null;
+          if (d.kind === "resume") {
+            const missed = f.ring.since(d.seq);
+            if (missed.gap) items.push({ kind: "gap", why: "ring-overflow" });
+            const take = missed.slice(0, POLL_MAX_ITEMS);
+            more = missed.length > take.length;
+            for (const e of take) {
+              cutSeq = e.seq;
+              if (e.data.kind === "gap") items.push({ kind: "gap", why: e.data.why, seq: e.seq });
+              else items.push({ kind: "message", entries: e.data.entries, seq: e.seq });
+            }
+          } else if (d.kind === "gap") {
+            items.push({ kind: "gap", why: d.why });
+          }
+          // 栞の seq: 今回返した最後の物。1件も返していなければ据え置き(初回は今の先端)。
+          const seq = cutSeq !== null ? cutSeq : d.kind === "resume" ? d.seq : f.ring.nextSeq - 1;
+          // 画面は**読むだけ**。`screenBody()` は `f.work` を書き換えるので poll からは呼ばない。
+          const screenChanged = f.screen && f.screen.rev !== (d.kind === "resume" ? d.screenRev : -1);
+          return {
+            items,
+            screen: screenChanged ? f.screen.body : null,
+            route: "tmux",
+            cursor: formatPollCursor({
+              route: "tmux",
+              token: f.epoch,
+              seq,
+              screenRev: f.screen ? f.screen.rev : d.kind === "resume" ? d.screenRev : 0,
+            }),
+            more,
+          };
+        };
+
+        const first = collect();
+        if (first.items.length > 0 || first.screen || waitMs === 0 || f.wakers.size >= POLL_MAX_HELD) {
+          // ★上限を超えた時は 429 にせず**即座に返す**。電話が壊れるより遅い方がまし
+          //   (429 を返すと電話は「切れた」と読んで帯を赤くし、Tom は理由の無い障害を見る)。
+          res.setHeader("cache-control", "no-store");
+          return json(res, 200, first);
+        }
+
+        // ---- 保留(long-poll)。此処から下は `await` を1つも挟まない ----------------
+        // node は単一 thread なので、**待ち手の登録を先・状態の読み取りを後**にしておけば
+        // その隙間に起きた出来事は取りこぼせない。上の `collect()` は既に走っているので、
+        // 登録より前に起きた分は上で返っている。
+        let settled = false;
+        let timer = null;
+        const waker = () => finish();
+        const finish = () => {
+          if (settled) return; // 冪等。close / timeout / 起床 が同時に来ても1回しか返さない
+          settled = true;
+          if (timer) clearTimeout(timer);
+          f.wakers.delete(waker);
+          if (res.writableEnded || res.destroyed) return;
+          try {
+            res.setHeader("cache-control", "no-store");
+            json(res, 200, collect());
+          } catch {
+            /* 既に切れている */
+          }
+        };
+        f.wakers.add(waker);
+        timer = setTimeout(finish, waitMs);
+        timer.unref();
+        req.on("close", () => {
+          // 電話がトンネルに入った / 画面を閉じた。待ち手を必ず外す(残すと feed が止まらない)。
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          f.wakers.delete(waker);
+          stopFeedIfIdle(sessionId);
+        });
+        return;
+      }
+
+      // ---- ワーカー経路 --------------------------------------------------------
+      const d = pollDecision(rawCursor, "worker", manager.generation);
+      const collectW = () => {
+        const items = [];
+        let more = false;
+        let seq = d.kind === "resume" ? d.seq : 0;
+        if (d.kind === "gap") {
+          items.push({ kind: "gap", why: d.why });
+          // 読み直させた上で**先端**に合わせる。★「件数」を seq に使わない ——
+          //   リングが溢れた後は件数 < 先端 seq になり、既に消えた番号から再開する事になる。
+          const all = manager.eventsSince(sessionId, 0);
+          seq = all.length ? all[all.length - 1].seq : 0;
+        } else {
+          const from = d.kind === "resume" ? d.seq : 0;
+          const missed = manager.eventsSince(sessionId, from);
+          if (missed.gap) items.push({ kind: "gap", why: "ring-overflow" });
+          const take = missed.slice(0, POLL_MAX_ITEMS);
+          more = missed.length > take.length;
+          for (const e of take) {
+            seq = e.seq;
+            items.push({ kind: "message", event: e.data, seq: e.seq });
+          }
+          // ★初回(栞なし)は**先端に合わせず 0 から返す**。tmux 経路と違い、ワーカーの出来事は
+          //   我々が起こした物なので /history に載らない種類(worker_closed 等)が在る。
+        }
+        return {
+          items,
+          screen: null,
+          route: "worker",
+          cursor: formatPollCursor({ route: "worker", token: manager.generation, seq }),
+          more,
+        };
+      };
+
+      const firstW = collectW();
+      let wset = workerWakers.get(sessionId);
+      if (firstW.items.length > 0 || waitMs === 0 || (wset && wset.size >= POLL_MAX_HELD)) {
+        res.setHeader("cache-control", "no-store");
+        return json(res, 200, firstW);
+      }
+      if (!wset) {
+        wset = new Set();
+        workerWakers.set(sessionId, wset);
+      }
+      let settledW = false;
+      let timerW = null;
+      const wakerW = () => finishW();
+      const finishW = () => {
+        if (settledW) return;
+        settledW = true;
+        if (timerW) clearTimeout(timerW);
+        wset.delete(wakerW);
+        pruneWorkerWakers(sessionId, wset);
+        if (res.writableEnded || res.destroyed) return;
+        try {
+          res.setHeader("cache-control", "no-store");
+          json(res, 200, collectW());
+        } catch {
+          /* 既に切れている */
+        }
+      };
+      wset.add(wakerW);
+      timerW = setTimeout(finishW, waitMs);
+      timerW.unref();
+      req.on("close", () => {
+        if (settledW) return;
+        settledW = true;
+        clearTimeout(timerW);
+        wset.delete(wakerW);
+        pruneWorkerWakers(sessionId, wset);
+      });
+      return;
+    }
+
     if (action === "stream" && req.method === "GET") {
       // ★経路の判定を **`writeHead` より前**へ動かした(2026-08-03、§3-U)。理由は2つ:
       //   ① ログの1行に `route` を載せる為。行が出る合図は `writeHead` なので、判定が後だと
@@ -1150,7 +1431,15 @@ const server = createServer(async (req, res) => {
         } else if (d.kind === "resume") {
           const missed = f.ring.since(d.seq);
           if (missed.gap) sendEvent(res, { event: "gap", data: { rereadHistory: true, why: "ring-overflow" } });
-          for (const e of missed) sendEvent(res, { id: `${f.epoch}.${e.seq}`, event: "message", data: e.data });
+          // ★ring には本文と gap の**両方**が並ぶ(2026-08-04)。種別を見ずに `message` として
+          //   再生すると、取りこぼしの合図が「中身の無い本文」に化けて消える。
+          for (const e of missed) {
+            if (e.data.kind === "gap") {
+              sendEvent(res, { id: `${f.epoch}.${e.seq}`, event: "gap", data: { rereadHistory: true, why: e.data.why } });
+            } else {
+              sendEvent(res, { id: `${f.epoch}.${e.seq}`, event: "message", data: { entries: e.data.entries } });
+            }
+          }
         }
         // 今の画面は経路によらず必ず1件。履歴は /history が正なのでここでは流さない。
         sendEvent(res, { event: "screen", data: screenBody(f, found.pane) });

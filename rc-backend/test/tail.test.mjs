@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JsonlTail, resumeDecision, sliceCompleteLines } from "../src/tail.mjs";
+import { JsonlTail, formatPollCursor, pollDecision, resumeDecision, sliceCompleteLines } from "../src/tail.mjs";
 
 const L = (o) => `${JSON.stringify(o)}\n`;
 const user = (t) => L({ type: "user", message: { content: t } });
@@ -197,4 +197,47 @@ test("形が壊れた id は繋がない", () => {
   assert.equal(resumeDecision("3.", 3).kind, "gap");
   assert.equal(resumeDecision("3.x", 3).kind, "gap");
   assert.equal(resumeDecision("...", 3).kind, "gap");
+});
+
+// --- long-poll の栞 ---------------------------------------------------------
+// 電話の本線はこちら(SSE は互換用に残るだけで本番の利用者は0人、DESIGN §2.36)。
+test("栞は経路が読める形で組まれ、そのまま読み戻せる", () => {
+  assert.equal(formatPollCursor({ route: "tmux", token: "a1b2", seq: 7, screenRev: 3 }), "t.a1b2.7.3");
+  assert.equal(formatPollCursor({ route: "worker", token: "z9", seq: 4 }), "w.z9.4.0");
+  assert.deepEqual(pollDecision("t.a1b2.7.3", "tmux", "a1b2"), { kind: "resume", seq: 7, screenRev: 3 });
+  assert.deepEqual(pollDecision("w.z9.4.0", "worker", "z9"), { kind: "resume", seq: 4, screenRev: 0 });
+});
+
+test("栞を持たない初回は fresh(毎回 gap を出して gap を無意味にしない)", () => {
+  assert.deepEqual(pollDecision("", "tmux", "a1"), { kind: "fresh" });
+  assert.deepEqual(pollDecision(undefined, "tmux", "a1"), { kind: "fresh" });
+  assert.deepEqual(pollDecision(null, "worker", "z9"), { kind: "fresh" });
+});
+
+test("再起動を跨いだ栞は繋がない(token が変わる)", () => {
+  // ★これが `resumeDecision` 側に実在した欠陥の poll 版。連番 epoch だと再起動後も
+  //   同じ値が出て、古い栞が黙って「追いついた」になる。
+  assert.equal(pollDecision("t.a1b2.7.3", "tmux", "c3d4").kind, "gap");
+  assert.equal(pollDecision("t.a1b2.7.3", "tmux", "c3d4").why, "epoch-mismatch");
+});
+
+test("経路が入れ替わったら繋がない(seq の空間が別物)", () => {
+  // tmux で開いていた会話の pane が閉じられ worker 経路に落ちた場合。数字は有効に**見える**。
+  assert.equal(pollDecision("t.a1b2.7.3", "worker", "a1b2").why, "route-changed");
+  assert.equal(pollDecision("w.a1b2.7.0", "tmux", "a1b2").why, "route-changed");
+});
+
+test("形が壊れた栞・長すぎる栞は繋がない", () => {
+  assert.equal(pollDecision("t.a1.7", "tmux", "a1").why, "cursor-malformed"); // 節が3つ
+  assert.equal(pollDecision("t.a1.7.3.9", "tmux", "a1").why, "cursor-malformed"); // 節が5つ
+  assert.equal(pollDecision("t.a1.x.3", "tmux", "a1").why, "cursor-malformed");
+  assert.equal(pollDecision("t.a1.7.x", "tmux", "a1").why, "cursor-malformed");
+  assert.equal(pollDecision("t.a1.-1.0", "tmux", "a1").why, "cursor-malformed");
+  assert.equal(pollDecision(`t.a1.7.${"9".repeat(200)}`, "tmux", "a1").why, "cursor-too-long");
+});
+
+test("0 は有効な seq(`resumeDecision` の since=0 と違い、栞は空文字だけが初回)", () => {
+  // 栞は不透明で電話は自分で作らない。`0` を初回扱いにすると、seq 0 の直後の poll が
+  // **毎回**履歴読み直しになる。
+  assert.deepEqual(pollDecision("t.a1.0.0", "tmux", "a1"), { kind: "resume", seq: 0, screenRev: 0 });
 });
