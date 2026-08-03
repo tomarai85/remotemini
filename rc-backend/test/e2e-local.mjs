@@ -1418,6 +1418,47 @@ try {
   sseCtl.abort();
   await ssePromise;
 
+  // ---- 13-U. ★常設のログに 1リクエスト1行が**実際に**残る(DESIGN §3-U) ------
+  //
+  // なぜ e2e で測るか: `test/reqlog.test.mjs` は偽の `res` を通すので、**部品が正しい**事しか
+  // 言えない。§3-U が答えたい問いは「本番のログに残るか」で、それは本物のサーバの stdout を
+  // 読むまで判らない —— 仕掛け忘れ・try の中に入れた・launchd が stdout を捨てている、
+  // どれも部品の検査は全部緑のまま通る。ここまでの走行で数十本の要求を通してある。
+  const reqLines = svlog.split("\n").filter((l) => l.includes("[rc-backend] req "));
+  check("★ログに 1リクエスト1行が残っている", reqLines.length >= 10, `req 行=${reqLines.length}`);
+  check("送信の行に method / パスの型 / 結果コードが揃う",
+    reqLines.some((l) => / POST \/api\/sessions\/:id\/messages sid=\S+ route=\S+ code=\d+ reason=\S+ ms=\d+$/.test(l)),
+    reqLines.filter((l) => l.includes("/messages")).slice(-1)[0] || "(送信の行が無い)");
+  check("★ストリームの行に経路が乗る(§3-W が刺さった当の欄)",
+    reqLines.some((l) => /\/api\/sessions\/:id\/stream .*route=(tmux|worker) /.test(l)),
+    reqLines.filter((l) => l.includes("/stream")).slice(-1)[0] || "(ストリームの行が無い)");
+  // ★以下3つが本体。「1行残る」より「中身が残らない」の方が取り返しがつかない。
+  check("★送った本文がログに出ていない", !svlog.includes("テスト送信"), "本文がログに複製されている");
+  check("★sessionId は先頭8文字だけ(全部は出ない)",
+    !svlog.includes(SID1) && reqLines.some((l) => l.includes("sid=11111111")), "全長の sessionId がログに在る");
+  check("★問い合わせ文字列がログに出ていない",
+    !/req .*(scope=registered|limit=)/.test(svlog), "?以降がログに複製されている");
+  // ★断った行が**なぜ断ったか**を名乗る。空欄で断られた行はログとして最も無価値
+  //   —— 何が起きたかだけ判って、原因だけが判らない。単体検査は偽の `res` を通すので
+  //   「実装が名乗れる」までしか言えず、**枝が名乗り忘れている**形はここでしか出ない。
+  const mute409 = reqLines.filter((l) => / code=409 reason=- /.test(l));
+  check("★409 の行に理由が乗る(理由の欄が空の拒否が1本も無い)",
+    mute409.length === 0, mute409[0] || "");
+  check("壊れた本文の 400 も理由を名乗る(生の例外文は使わずに)",
+    reqLines.some((l) => /code=400 reason=bad-body/.test(l)), "bad-body が名乗られていない");
+  // 実際の見た目を人が確かめる口。既定では出さない(緑の走行に 5 行足す意味が無い)。
+  if (process.env.RC_E2E_SHOW_LOG === "1") {
+    // 末尾5行ではなく**形ごとに1本**。同じ形が何十本も出るので、末尾を見ても種類が判らない。
+    const seen = new Map();
+    for (const l of reqLines) {
+      const k = l.replace(/^.*req \S+ /, "").replace(/sid=\S+ /, "").replace(/ ms=\d+$/, "");
+      if (!seen.has(k)) seen.set(k, l);
+    }
+    console.log(`--- ログの実物(${reqLines.length}行 / 形は${seen.size}種)---`);
+    for (const l of seen.values()) console.log(l);
+    console.log("---");
+  }
+
   // ---- 14. ★SIGTERM で速やかに降りる(電話が SSE を1本張ったまま) ----------
   //
   // `server.close()` は**既存接続を切らない**。電話が `/stream` を開いているだけで

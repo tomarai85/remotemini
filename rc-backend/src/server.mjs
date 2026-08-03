@@ -28,6 +28,7 @@ import { psSnapshot } from "./procs.mjs";
 import { paneFaultReason, UNDECIDABLE, blockedMessage, blockedBody, WORKER_REFUSAL } from "./blocked.mjs";
 import { cwdVerdict } from "./trust.mjs";
 import { redact } from "./redact.mjs";
+import { attachRequestLog, markResult, noteBody, SESSION_ROUTE_RE } from "./reqlog.mjs";
 
 const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
@@ -659,6 +660,9 @@ function stopFeedIfIdle(sessionId) {
 // ---- HTTP -------------------------------------------------------------------
 function json(res, code, obj) {
   const body = JSON.stringify(obj);
+  // ★ログの欄は**応答を作る唯一の口**で拾う。呼び口40箇所に注記を配ると、次に足された枝が
+  //   黙って欄無しで通る(= 一覧を配ると必ず片方が古くなる、この案件で最も多い型)。
+  noteBody(res, obj);
   res.writeHead(code, { "content-type": "application/json; charset=utf-8" });
   res.end(body);
 }
@@ -682,6 +686,9 @@ async function readBody(req, limit = 64 * 1024) {
 }
 
 const server = createServer(async (req, res) => {
+  // ★try の**外**。中に入れると、URL の解釈で落ちた要求だけログに出ない
+  //   = 一番読みたい種類の要求が一番出ない。
+  attachRequestLog(req, res, { knownPaths: LOG_PATHS });
   try {
     const url = new URL(req.url, `http://${req.headers.host || "local"}`);
     const path = url.pathname;
@@ -799,7 +806,9 @@ const server = createServer(async (req, res) => {
       }
     }
 
-    const m = /^\/api\/sessions\/([^/]+)\/(history|messages|stream|interrupt|status)$/.exec(path);
+    // ★道の一覧は `reqlog.mjs` の1本だけ(写しを持たない)。振り分けとログが別々に持つと、
+    //   道を1本足した時に片方だけが古くなり、ログは新しい道を `(other)` と書き続ける。
+    const m = SESSION_ROUTE_RE.exec(path);
     if (!m) return json(res, 404, { error: "not found" });
     const [, sessionId, action] = m;
     const file = findSessionFile(sessionId);
@@ -862,6 +871,9 @@ const server = createServer(async (req, res) => {
       try {
         body = JSON.parse(await readBody(req));
       } catch (e) {
+        // ★ログの理由は定数で名乗る。`e.message` は構文解析器が**受け取った本文の断片**を
+        //   引用する事があるので、語彙に流すと本文がログへ漏れる経路になる。
+        markResult(res, { reason: "bad-body" });
         return json(res, 400, { error: `bad body: ${e.message}` });
       }
       const text = typeof body.text === "string" ? body.text.trim() : "";
@@ -988,6 +1000,13 @@ const server = createServer(async (req, res) => {
     }
 
     if (action === "stream" && req.method === "GET") {
+      // ★経路の判定を **`writeHead` より前**へ動かした(2026-08-03、§3-U)。理由は2つ:
+      //   ① ログの1行に `route` を載せる為。行が出る合図は `writeHead` なので、判定が後だと
+      //      「電話が繋がった」の行に**経路が入らない** = §3-W が刺さった当の欄が欠ける。
+      //   ② ここで例外が出た時、まだ SSE の頭を書いていないので外側の catch が 500 を返せる。
+      //      従来は 200 の SSE 頭を書いた後だったので、失敗が**無言の空ストリーム**に化けた。
+      const found = resolvePane();
+      markResult(res, { route: found.pane ? "tmux" : "worker" });
       res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache, no-transform",
@@ -1005,9 +1024,8 @@ const server = createServer(async (req, res) => {
         }
       }, 25_000);
 
-      // 経路は購読の時点で決める。机で開かれている会話(tmux)は画面と jsonl を見に行く。
-      // 開かれていなければ従来通りワーカーの出来事を流す。
-      const found = resolvePane();
+      // 経路は購読の時点で決める(判定は上の `found`)。机で開かれている会話(tmux)は
+      // 画面と jsonl を見に行く。開かれていなければ従来通りワーカーの出来事を流す。
       if (found.pane) {
         const f = startFeed(sessionId, file, resolvePane);
         f.subs.add(res);
@@ -1058,6 +1076,10 @@ const server = createServer(async (req, res) => {
     return json(res, 405, { error: "method not allowed" });
   } catch (e) {
     try {
+      // ★理由は `internal` と名乗るだけ。生の `e.message` をログの語彙に流さない ——
+      //   ここは自由書式が入りうる唯一の口で、中身が何であれ**欄に入れない**のが fail-closed。
+      //   電話へ返す本文は従来どおり(そちらは Tom 自身しか見ない面)。
+      markResult(res, { reason: "internal" });
       json(res, 500, { error: String(e?.message || e) });
     } catch {
       /* already sent */
@@ -1152,6 +1174,20 @@ const STATIC = new Map([
   ["/view.mjs",             [asset("view.mjs"),             "text/javascript; charset=utf-8"]],
   ["/manifest.webmanifest", [asset("manifest.webmanifest"), "application/manifest+json"]],
   ["/icon.png",             [asset("icon.png"),             "image/png"]],
+]);
+
+/**
+ * ログに**そのまま出してよいパス**(それ以外は `(other)` に畳む = 生のパスを disk に残さない)。
+ * ★配る表は写さずに `STATIC` から作る。固定の api 4本だけは此処に書くしか無いので、
+ *   `test/reqlog.test.mjs` が server.mjs の `path === "…"` を読んで**両方向**に突き合わせる
+ *   (足りない = 新しい道が `(other)` に化ける / 余る = 消えた道が一覧に残っている)。
+ */
+const LOG_PATHS = new Set([
+  ...STATIC.keys(),
+  "/healthz",
+  "/api/sessions",
+  "/api/account",
+  "/api/account/next",
 ]);
 
 // ★起動に失敗した時に**読める行**を残す(2026-08-02)。
