@@ -1268,11 +1268,67 @@ def suites(dst):
 LIVE = []
 atexit.register(lambda: [shutil.rmtree(d, ignore_errors=True) for d in LIVE])
 
+# ── 走る前に木を**凍らせる**(2026-08-03 に実際に壊れた形の是正)────────────────
+#
+# 何が起きたか: 197 件の走行は 3 時間半かかる。その間に私は同じ repo の `tools/` を
+# 10 回書き換えた。`copy_tree()` は変異1件ごとに**その時の** SRC を写していたので、
+# 走行の前半と後半で違う木を測っていた。しかも書き換えの1つが repo 自身の散文規則
+# (注釈が repo 外の file を行番号つきで引かない)に触れて `npm test` を赤にしたので、
+# **それ以降の変異は全部「検出」と記録された** —— 変異を殺したからではなく、
+# 変異と無関係な検査が落ちていたから。素通り(= 検査の穴)が丸ごと隠れる。
+#
+# ここが厄介なのは、壊れ方が**緑の方向**に出る事。要約は「素通り 0 件」と書く。
+# 走行の log を見ても、進捗行は同じ形のまま並んでいて、境目が見えない。
+#
+# 是正は2つ:
+#   (a) 開始時に一度だけ写して**凍結**し、以後の変異はその凍結から写す。
+#       = 走行中に手元を編集しても測定は汚れない(編集を禁じるのは非現実的)。
+#   (b) 終了時に手元の木が動いたかを見て、動いていたら**報告が何を説明する物か**を明示する。
+#       凍結してあるので結果は有効だが、それは「開始時の木」の話であって
+#       「今の木」の話ではない。ここを黙ると、読んだ人が今の木の緑として持ち帰る。
+#
+# ★指紋(hash)ではなく**変わった file 名**を出す。hash は「何かが動いた」しか言わない。
+#   名前が出れば、それが測定に効く変更かを人がその場で判断できる。
+_SCOPE = ("src", "test", "tools", "package.json")
+
+def _manifest(root):
+    """`_SCOPE` の下の全 file を (相対path -> (大きさ, mtime_ns)) で数え上げる。"""
+    man = {}
+    for s in _SCOPE:
+        p = os.path.join(root, s)
+        if os.path.isfile(p):
+            st = os.stat(p)
+            man[s] = (st.st_size, st.st_mtime_ns)
+            continue
+        for dirpath, dirnames, filenames in os.walk(p):
+            dirnames[:] = [d for d in dirnames if d not in ("node_modules", ".git")]
+            for fn in filenames:
+                full = os.path.join(dirpath, fn)
+                st = os.stat(full)
+                man[os.path.relpath(full, root)] = (st.st_size, st.st_mtime_ns)
+    return man
+
+START_MANIFEST = _manifest(SRC)
+
+_FROZEN_HOLDER = tempfile.mkdtemp(prefix="mut-frozen-")
+atexit.register(lambda: shutil.rmtree(_FROZEN_HOLDER, ignore_errors=True))
+FROZEN = os.path.join(_FROZEN_HOLDER, "rc")
+shutil.copytree(SRC, FROZEN, ignore=shutil.ignore_patterns("node_modules", ".git"))
+print(f"木を凍結した({len(START_MANIFEST)} file)。以降の変異はこの写しから作る"
+      f" —— 走行中に手元を編集しても測定は汚れない\n", flush=True)
+
+def tree_moved():
+    """走行中に**手元の**木が動いたか。動いた file 名を返す(空 = 動いていない)。"""
+    now = _manifest(SRC)
+    moved = sorted(set(k for k in set(now) | set(START_MANIFEST)
+                       if now.get(k) != START_MANIFEST.get(k)))
+    return moved
+
 def copy_tree():
     d = tempfile.mkdtemp(prefix="mut-")
     LIVE.append(d)
     dst = os.path.join(d, "rc")
-    shutil.copytree(SRC, dst, ignore=shutil.ignore_patterns("node_modules", ".git"))
+    shutil.copytree(FROZEN, dst)
     return d, dst
 
 # --- 対照2枚: 測る前に「この台本は赤を見分けられる」ことを証明する ---
@@ -1371,5 +1427,18 @@ if reachable:
         print(f"  - {n}")
 
 missed = [r[0] for r in rows if r[1] in ("★素通り", "対象行が無い")]
+
+# ★この報告が**どの木**を説明するかを、要約行より前に言う。凍結してあるので
+#   走行中の編集で結果が汚れる事は無いが、汚れない事と「今の木の話である」事は別。
+_moved = tree_moved()
+if _moved:
+    print(f"\n★走行中に手元の木が {len(_moved)} file 動いた。"
+          f"この報告が説明するのは**走行開始時の木**であって、今の木ではない。")
+    for k in _moved[:20]:
+        print(f"    {k}")
+    if len(_moved) > 20:
+        print(f"    …他 {len(_moved) - 20} file")
+    print("  今の木の判定が要るなら回し直す事(凍結のおかげで、この結果自体は有効)。")
+
 print("\n素通りした変異:", missed if missed else "なし")
 sys.exit(1 if missed else 0)

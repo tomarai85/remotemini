@@ -1,3 +1,32 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work/rc-backend
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019fc6e4-44b2-7450-b2ab-9d9ae72734b1
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+あなたは反論役です。同意・要約・褒め言葉は不要。**見落としと失敗経路だけ**を挙げてください。
+台本の全文を下に貼ります。**ファイルを読みに行かないでください**(全文はここに在ります)。
+
+背景: これは Mac mini (edith) 上で動く自作の常設 HTTP サーバ (rc-backend, launchd job
+com.edith.rc-backend, port 8787) を、手元の MacBook から配備する台本です。
+作者は 2026-08-20 に渡米し、その後 edith には**物理的に触れません**。壊れた時に
+手が届かないので、「配備が失敗した時に本番が前の版で生き残るか」が最重要です。
+
+すでに検討して**採らなかった案**(再提案は不要):
+- release ディレクトリ + symlink 貼り替え → 本番パスに他人所有の .git が居る、
+  plist が 2 枚あり bootout/bootstrap が要る、の 2 点で却下済み。
+- 戻し先を $TMPDIR に置く → 再起動で消えるので却下済み。
+- 変異走行中でも配備できる逃げ道を作る → 意図的に置かない。
+
+===== 台本ここから (tools/deploy-to-edith.sh 全文) =====
 #!/bin/bash
 # deploy-to-edith.sh — rc-backend を edith に置き、**その機械で緑を取ってから**入れ替える。
 #
@@ -132,58 +161,25 @@ say "0. 配備の錠を取る(= 二重配備を構造的に不可能にする)"
 #   `mkdir` は原子的なので、成功した側だけが錠を持つ(file の存在確認 → 作成、では競る)。
 #   fail-closed だが**詰まらせない**: 落ちた配備が残した錠は 2 時間で取り直す
 #   (mutation-run-live.sh で恒久的に塞がった時と同じ轍を踏まない)。
-#
-# ★★2026-08-03 の Codex 査読で**錠に持ち主が無い**事が出た。初版は次の 2 つが同時に壊れていた:
-#   ① 2 時間で「取り直す」のは `at` を上書きするだけ = 1 本目が**まだ生きている**時に
-#      2 本目が並走する。錠が防いでいる筈の物(複製が別の配備の後の木になる)がそのまま起きる。
-#   ② `release_lock` が持ち主を見ずに消す = 1 本目が終わる時に、**2 本目の錠を外す**。
-#      これは並走が 2 本で止まらず 3 本目まで入れる、という意味。
-#   → 錠に持ち主の札(`$LOCK/owner`)を入れ、**自分の札が入っている時だけ**外す。
-#     取り直しは札を書いてから読み直して、競り負けた側が降りる。
-OWNER="deploy-$(hostname -s 2>/dev/null || echo unknown)-$$-$(date +%s)"
-release_lock() {
-    # 自分の札でない錠は**絶対に触らない**。触る実装が上の ② そのものだった。
-    ssh "$EDITH" "test \"\$(cat '$LOCK/owner' 2>/dev/null)\" = '$OWNER' || exit 0
-                  rm -f '$LOCK/at' '$LOCK/owner' 2>/dev/null; rmdir '$LOCK' 2>/dev/null" >/dev/null 2>&1 || true
-}
-# 本番の木を書く段の直前に呼ぶ。2 時間の取り直しで錠を奪われていた場合、
-# ここで降りないと「錠を持っていない配備」が本番を書く。
-assert_lock_owner() {
-    local who=""
-    who="$(ssh "$EDITH" "cat '$LOCK/owner' 2>/dev/null" 2>/dev/null || true)"
-    [ "$who" = "$OWNER" ] && return 0
-    echo "★錠の持ち主が私($OWNER)ではなく ${who:-不明} になっている。" >&2
-    echo "  = 別の配備が割り込んだ。ここから先は本番の木を書くので進まない。" >&2
-    exit 1
-}
+release_lock() { ssh "$EDITH" "rm -f '$LOCK/at' 2>/dev/null; rmdir '$LOCK' 2>/dev/null" >/dev/null 2>&1 || true; }
 lock_rc=0
-ssh "$EDITH" bash -s -- "'$LOCK'" "'$LOCK_MAX_S'" "'$OWNER'" <<'REMOTE_LOCK' || lock_rc=$?
+ssh "$EDITH" bash -s -- "'$LOCK'" "'$LOCK_MAX_S'" <<'REMOTE_LOCK' || lock_rc=$?
 set -u
-lock="$1"; maxs="$2"; owner="$3"
+lock="$1"; maxs="$2"
 mkdir -p "$(dirname "$lock")"
 if mkdir "$lock" 2>/dev/null; then
-    printf '%s\n' "$owner" > "$lock/owner"
     date +%s > "$lock/at"
-    echo "錠を取った: $lock(持ち主 $owner)"
+    echo "錠を取った: $lock"
     exit 0
 fi
 at="$(cat "$lock/at" 2>/dev/null || echo 0)"
 age=$(( $(date +%s) - at ))
 if [ "$age" -lt "$maxs" ]; then
-    echo "★別の配備が走っている(${age} 秒前 / 持ち主 $(cat "$lock/owner" 2>/dev/null || echo 不明))。重ねない" >&2
+    echo "★別の配備が走っている(${age} 秒前に始まった)。重ねない" >&2
     exit 1
 fi
 echo "★錠が古い(${age} 秒 > ${maxs} 秒)= 前の配備が途中で落ちた跡。取り直す" >&2
-printf '%s\n' "$owner" > "$lock/owner"
 date +%s > "$lock/at"
-# 取り直しは 2 本が同時に来うる。書いた後に読み直して、**負けた側が降りる**。
-# 最後に書いた者が勝つので、勝者は必ず 1 人になる。
-sleep 2
-now="$(cat "$lock/owner" 2>/dev/null || echo '')"
-if [ "$now" != "$owner" ]; then
-    echo "★取り直しが競った(今の持ち主: ${now:-不明})。降りる" >&2
-    exit 1
-fi
 exit 0
 REMOTE_LOCK
 [ "$lock_rc" -eq 0 ] || exit 1
@@ -283,20 +279,13 @@ say "6. 複製を取ってから、仮置きを本番の木へ入れ替える"
 # ★複製は `.partial` に作ってから rename する(Codex 指摘)。途中で落ちた複製が
 #   `prev-*` の名前で残ると、**戻せない物を戻せる物として数える**事になる。
 #   rename は原子的なので、名前が付いている = 完成している、が構造的に保証される。
-assert_lock_owner
-SWAP_OUT="$(ssh "$EDITH" bash -s -- "'$LIVE'" "'$STAGE'" "'$RELEASES'" "'$MARK'" "'$OWNER'" <<'REMOTE_SWAP'
-# ★`set -e` を足した(Codex 2026-08-03)。初版は `set -u` だけで、**rsync の失敗を無視して
-#   先へ進んだ**。途中まで書けた木に対して「入れ替えた」と言い、刻印(DEPLOYED-REV)は
-#   名前順で早いので先に届いている事が多い = step 7 の刻印一致も通る。
-#   つまり「版の混ざった木」が緑で本番になる経路が、実際に開いていた。
-set -eu
-live="$1"; stage="$2"; releases="$3"; mark="$4"; owner="$5"
+SWAP_OUT="$(ssh "$EDITH" bash -s -- "'$LIVE'" "'$STAGE'" "'$RELEASES'" "'$MARK'" <<'REMOTE_SWAP'
+set -u
+live="$1"; stage="$2"; releases="$3"; mark="$4"
 
 mkdir -p "$(dirname "$mark")" "$releases"
-# 印も持ち主で守る。並走した配備が**他人の印**を外すと、外された側は
-# 「起こされない筈の窓」で launchd に起こされる。
-trap 'case "$(cat "$mark" 2>/dev/null)" in *" $owner") rm -f "$mark" ;; esac' EXIT
-printf '%s %s\n' "$(date +%s)" "$owner" > "$mark"
+trap 'rm -f "$mark"' EXIT
+date +%s > "$mark"
 echo "配備中の印を立てた: $mark"
 
 snapshot="NONE"
@@ -314,10 +303,7 @@ if [ -d "$live" ]; then
     mkdir -p "$base.partial"
     # `.git` と `.gitignore` は私の物ではないので複製にも入れない(戻す時にも書き戻さない為)。
     # `--delete` を付けるのは、万一 `.partial` が残っていても**混ざった複製**にしない為。
-    if ! rsync -a --delete --exclude '.git/' --exclude '.gitignore' "$live"/ "$base.partial"/; then
-        echo "★複製が途中で失敗した。名前を付けない(= 戻せる物として数えない)。配備しない" >&2
-        exit 1
-    fi
+    rsync -a --delete --exclude '.git/' --exclude '.gitignore' "$live"/ "$base.partial"/
     mv "$base.partial" "$base"
     snapshot="$base"
     echo "複製: $base"
@@ -325,38 +311,7 @@ else
     echo "初回配備(本番の木がまだ無い)= 複製は取らない"
 fi
 
-# ★ここだけは `set -e` に任せない。中断すると**版の混ざった木が本番に残る**ので、
-#   落ちた事を捕まえてその場で複製から戻すまでが 1 つの動作。
-#   `set -e` の下でも `|| swap_rc=$?` の形なら殺されない。
-swap_rc=0
-rsync -a --delete --exclude '.git/' --exclude '.gitignore' "$stage"/ "$live"/ || swap_rc=$?
-if [ "$swap_rc" -ne 0 ]; then
-    echo "★入れ替えの rsync が失敗した(rc=${swap_rc})= 本番の木が版の混ざった状態" >&2
-    if [ "$snapshot" = "NONE" ]; then
-        echo "★戻す複製が無い(初回配備)。木は混ざったまま。印は残す" >&2
-        trap - EXIT   # 印を外さない = launchd に起こさせない側へ倒す
-        exit 1
-    fi
-    # 戻しは3回まで試す。失敗の多くは一過性(相手が書いている最中 / 一時的な I/O)なので、
-    # 1 回で諦めると「直せた筈の混ざった木」を残す事になる。
-    back_rc=1
-    for _ in 1 2 3; do
-        back_rc=0
-        rsync -a --delete --exclude '.git/' --exclude '.gitignore' "$snapshot"/ "$live"/ || back_rc=$?
-        [ "$back_rc" -eq 0 ] && break
-        sleep 3
-    done
-    if [ "$back_rc" -eq 0 ]; then
-        echo "複製から戻した: $snapshot → $live(本番は前の版)" >&2
-        exit 1
-    fi
-    echo "★戻しも 3 回失敗した(rc=${back_rc})。木は混ざったまま。" >&2
-    # 印は外さない。ただし**印が守るのは 180 秒だけ**(launcher が
-    # `RC_DEPLOY_MARK_MAX_S` を過ぎた印を無視する)。つまりこれは
-    # 「起動を止める仕掛け」ではなく「人が気付く為の 3 分」でしかない。過信しない。
-    trap - EXIT
-    exit 1
-fi
+rsync -a --delete --exclude '.git/' --exclude '.gitignore' "$stage"/ "$live"/
 echo "入れ替えた: $stage → $live"
 echo "SNAPSHOT=$snapshot"
 REMOTE_SWAP
@@ -389,18 +344,13 @@ say "8. 常設(launchd)が在るなら、走っている物を新しい木に入
 #
 # ★2026-08-03 追加: ここが赤なら**複製から戻して、もう一度 kickstart する**。
 #   「配ったが動かない」で終わらせない = 戻す判断を人の手に残さない(戻す事自体は可逆)。
-assert_lock_owner
 restart_rc=0
-ssh "$EDITH" bash -s -- "'$SNAPSHOT'" "'$LIVE'" "'$MARK'" "'$SRC_REV'" "'$OWNER'" <<'REMOTE_RESTART' || restart_rc=$?
-# ★`set -e` は**足さない**。この段は `verify` が非零を返す事を前提に分岐しており、
-#   `lsof` や `sed` が空を返す場面も正常。`set -e` を足すと正常な分岐が中断に化ける。
-#   代わりに、黙って進んで良い所が 1 箇所も無い**戻しの rsync** を明示的に見る(下)。
-set -u
-snapshot="$1"; live="$2"; mark="$3"; want_rev="$4"; owner="$5"
+ssh "$EDITH" bash -s -- "'$SNAPSHOT'" "'$LIVE'" "'$MARK'" "'$SRC_REV'" <<'REMOTE_RESTART' || restart_rc=$?
+snapshot="$1"; live="$2"; mark="$3"; want_rev="$4"
 job=gui/501/com.edith.rc-backend
 jobpid() { launchctl print "$job" 2>/dev/null | awk -F'= *' '/^[[:space:]]*pid =/ {print $2; exit}'; }
-# 戻しの途中で launchd に起こされない為の印(step 6 と同じ物)。**自分が立てた印だけ**外す。
-trap 'case "$(cat "$mark" 2>/dev/null)" in *" $owner") rm -f "$mark" ;; esac' EXIT
+# 戻しの途中で launchd に起こされない為の印(step 6 と同じ物)。ここで死んでも必ず外す。
+trap 'rm -f "$mark"' EXIT
 
 if ! launchctl print "$job" >/dev/null 2>&1; then
     echo "常設なし(まだ plist を入れていない)。入れ替えだけで終わり = これは正常"
@@ -480,25 +430,8 @@ if [ "$snapshot" = "NONE" ] || [ ! -d "$snapshot" ]; then
 fi
 # 戻しの間も KeepAlive は生きている。印を立ててから書き戻す(でないと**戻している最中の
 # 混ざった木**で起動されうる = 前へ進む時と同じ危険が、戻る時にも在る)。
-printf '%s %s\n' "$(date +%s)" "$owner" > "$mark"
-# ★★Codex 2026-08-03: ここは初版で **rsync の終了状態を見ていなかった**。
-#   半分だけ戻った木でも `rm -f "$mark"` → `verify` へ進み、`DEPLOYED-REV` は名前順で
-#   早いので先に戻っている事が多い = `/healthz` が前の版を名乗り、**混ざった木が
-#   「安全側で止まっている(exit 2)」として報告される**。戻しの失敗を無視するという事は、
-#   この台本の唯一の逃げ道が黙って壊れているという事。
-back_rc=1
-for _ in 1 2 3; do
-    back_rc=0
-    rsync -a --delete --exclude '.git/' --exclude '.gitignore' "$snapshot"/ "$live"/ || back_rc=$?
-    [ "$back_rc" -eq 0 ] && break
-    sleep 3
-done
-if [ "$back_rc" -ne 0 ]; then
-    echo "★戻しの rsync が 3 回失敗した(rc=${back_rc})。本番の木は版が混ざっている。" >&2
-    echo "  ここから先の検査は意味を持たない(前の版を名乗る混ざった木を緑と読む)ので、進まない。" >&2
-    echo "  ログ: /Users/edith/Library/Logs/rc-backend/rc-backend.error.log" >&2
-    exit 3
-fi
+date +%s > "$mark"
+rsync -a --delete --exclude '.git/' --exclude '.gitignore' "$snapshot"/ "$live"/
 rm -f "$mark"
 echo "戻した: $snapshot → $live" >&2
 prev_rev="$(head -1 "$snapshot/DEPLOYED-REV" 2>/dev/null || true)"
@@ -532,41 +465,64 @@ say "9. tailnet 鍵の残り日数(**警告であって門ではない**)"
 #   ここで deploy を止めても被害は減らず、出来る仕事だけが止まる。止めるかは人が決める。
 ssh "$EDITH" "/bin/bash '$LIVE/tools/tailnet-key-expiry.sh'" || true
 
-say "9b. 停電で落ちた後、自分で戻って来られるか(**警告であって門ではない**)"
-# ★2026-08-03 の Codex 査読の Q5「一度も検査していない壊れ方」への答え。
-#   指摘そのもの(= 冷間再起動を検査していない)は当たっていたが、**結論は外れていた**:
-#   実測すると鎖は既に繋がっていた —— FileVault Off / autoLoginUser=edith /
-#   LaunchAgent は `~/Library/LaunchAgents/`(= edith の GUI login で load)/
-#   RunAtLoad=true / KeepAlive=true / pmset autorestart=1 / sleep 0。
-#   だから今日直す物は無い。問題は**誰も見張っていない事**の方で、
-#   この 6 つはどれか 1 つ落ちるだけで「停電 = 二度と戻らない」に変わる。
-#   2026-08-20 以降 edith に物理で触れないので、変わった事に気付ける場所が要る。
-#   ここは配備の度に必ず通るので、置き場所として一番安い。
-#   ★門にしない理由 = 自動ログインが切れている事は、コードを配る妨げにならない。
-#     ここで止めても停電への強さは増えず、出来る仕事だけが止まる。
-ssh "$EDITH" 'bash -s' <<'REMOTE_COLDBOOT' || true
-warn=0
-fv="$(/usr/bin/fdesetup status 2>/dev/null || echo '不明')"
-case "$fv" in *"is Off"*) echo "FileVault: Off(= 起動時に解錠を人に求めない)" ;;
-                       *) echo "★FileVault: ${fv} = 停電の後、解錠する人が居ないと戻らない" >&2; warn=1 ;; esac
-al="$(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null || echo '')"
-if [ "$al" = "edith" ]; then echo "自動ログイン: $al"
-else echo "★自動ログイン: ${al:-無効} = GUI の session が立たない → gui/501 の job も load されない" >&2; warn=1; fi
-p="$HOME/Library/LaunchAgents/com.edith.rc-backend.plist"
-if [ -f "$p" ]; then
-    ral="$(/usr/libexec/PlistBuddy -c 'Print :RunAtLoad' "$p" 2>/dev/null || echo false)"
-    [ "$ral" = "true" ] && echo "RunAtLoad: true" || { echo "★RunAtLoad が true でない($ral)= login しても起きない" >&2; warn=1; }
-else
-    echo "★plist が $p に無い = login 時に load される物が無い" >&2; warn=1
-fi
-ar="$(/usr/bin/pmset -g 2>/dev/null | awk '/autorestart/ {print $2}')"
-[ "$ar" = "1" ] && echo "autorestart: 1(通電で自動起動)" || { echo "★autorestart が 1 でない(${ar:-不明})= 停電後に電源が入らない" >&2; warn=1; }
-[ "$warn" -eq 0 ] && echo "→ 停電から自力で戻る鎖は繋がっている" || echo "★→ 鎖が切れている。渡米後は物理で直せない" >&2
-REMOTE_COLDBOOT
-
 say "10. 複製の在庫(**自動では消さない**)"
 # ★消す判断を台本に持たせない。1つ 2.7MB 程度で、消し間違いの害の方が大きい。
 #   数と合計だけ出して、減らすかは人が決める。
 ssh "$EDITH" "ls -1 '$RELEASES' 2>/dev/null | wc -l | tr -d ' ' | sed 's/^/複製の数: /'; du -sh '$RELEASES' 2>/dev/null | sed 's/^/合計: /'" || true
 
 say "完了"
+===== 台本ここまで =====
+
+以下を順に見て、**具体的な失敗シナリオ**(どの行が、どの状況で、何を壊すか)を挙げてください。
+
+Q1. 失敗時の巻き戻し (step 8)。複製から rsync で書き戻し → kickstart → verify、
+    という経路に穴はありますか。特に「戻したのに戻っていない」「戻す最中に落ちた」時に何が残るか。
+
+Q2. 配備の錠 (step 0)。mkdir による相互排除 + 7200 秒で強制取り直し。
+    2 本目が錠を奪った後、1 本目がまだ生きている場合に何が起きますか。
+    trap release_lock EXIT は 1 本目が終わる時に**2 本目の錠を消しませんか**。
+
+Q3. 配備中の印 (MARK)。step 6 と step 8 の remote スクリプトが**別々に** trap で消しています。
+    ssh が途中で切れた場合、remote 側の trap は走りますか。印が残ったまま/消えたままになる経路は。
+
+Q4. step 7 の刻印一致検査と step 8 の /healthz version 検査。
+    この 2 つが両方緑でも「配備が成功していない」状態は作れますか。
+
+Q5. この台本が**一度も検査していない**壊れ方は何ですか。1 つだけ、
+    最も起こりやすく、かつ渡米後に手が届かない物を挙げてください。
+
+各 Q に **3 行以内**。該当なしなら「該当なし」とだけ書いてください。全体で 25 行を超えないこと。
+2026-08-03T09:11:17.586264Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-03T09:11:17.754209Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-03T09:11:17.773159Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+Q1. `REMOTE_RESTART` に `set -e` がなく、戻しの `rsync` 失敗を無視して MARK を消し、混在した木を kickstart します。
+`DEPLOYED-REV` だけ先に戻れば、混在コードでも旧版を名乗って verify が緑になります。電源断なら MARK が残り、180秒後に部分復旧木が起動します。
+
+Q2. 7200秒後の処理は「奪取」ではなく同じ錠の `at` を上書きするだけなので、1本目と2本目が同時に走ります。
+1本目の `release_lock` は所有者確認なしで2本目の `at` とディレクトリを消し、3本目まで侵入可能にします。
+
+Q3. SSH切断時の remote `EXIT` trap 実行は保証できません。shell が終了処理できれば消え、SIGKILL・電源断なら残ります。
+消えれば部分 rsync 中でも起動可能、残れば180秒後に launcher が無視します。また trap は所有権なしで別配備の MARK も消せます。
+
+Q4. 作れます。step 6 の本番向け `rsync` も失敗を無視するため、刻印だけ転送済みの部分更新でも step 7へ進みます。
+新プロセスが起動できれば `/healthz` は同じ刻印を返すため、混在コードでも両方緑になります。
+
+Q5. 冷間再起動後の復旧です。現在ロード済みの `gui/501` job を kickstart するだけで、再起動後の自動ロードを検査していません。
+自動ログイン不成立や plist 登録不良なら、電源断後にサーバが戻らず、渡米後は物理復旧できません。
+tokens used
+24,769
+Q1. `REMOTE_RESTART` に `set -e` がなく、戻しの `rsync` 失敗を無視して MARK を消し、混在した木を kickstart します。
+`DEPLOYED-REV` だけ先に戻れば、混在コードでも旧版を名乗って verify が緑になります。電源断なら MARK が残り、180秒後に部分復旧木が起動します。
+
+Q2. 7200秒後の処理は「奪取」ではなく同じ錠の `at` を上書きするだけなので、1本目と2本目が同時に走ります。
+1本目の `release_lock` は所有者確認なしで2本目の `at` とディレクトリを消し、3本目まで侵入可能にします。
+
+Q3. SSH切断時の remote `EXIT` trap 実行は保証できません。shell が終了処理できれば消え、SIGKILL・電源断なら残ります。
+消えれば部分 rsync 中でも起動可能、残れば180秒後に launcher が無視します。また trap は所有権なしで別配備の MARK も消せます。
+
+Q4. 作れます。step 6 の本番向け `rsync` も失敗を無視するため、刻印だけ転送済みの部分更新でも step 7へ進みます。
+新プロセスが起動できれば `/healthz` は同じ刻印を返すため、混在コードでも両方緑になります。
+
+Q5. 冷間再起動後の復旧です。現在ロード済みの `gui/501` job を kickstart するだけで、再起動後の自動ロードを検査していません。
+自動ログイン不成立や plist 登録不良なら、電源断後にサーバが戻らず、渡米後は物理復旧できません。
