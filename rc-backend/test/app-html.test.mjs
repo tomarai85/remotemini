@@ -462,19 +462,46 @@ test("sendChoice が /choice へ {key, digest} を送る(静的)", () => {
 // 台は上の `mount` と同じ作り。`renderChoicePanel` の台を使い回さないのは、掴む器の id が
 // 違うからで、器を取り違えた実装(`conv-choice` に送信待ちを描く)を `$` の中で赤にしたい。
 
-/** app.html の `el` + `renderQueuePanel` を切り出して走らせる台。 */
+/**
+ * app.html の `el` + 送信待ちの面3本を切り出して走らせる台。
+ *
+ * ★時計(`Date` / `setInterval`)は**注入する**。本物を使うと「1分後にどう見えるか」を
+ *   1分待って測る事になり、しかも `setInterval` が試験の間じゅう走り続ける。注入すれば
+ *   時刻を進める操作そのものが検査になり、時計が**何本立ったか**も数えられる。
+ */
 function mountQueue(clearQueue) {
   const { node, doc } = fakeDoc();
   const box = node("div");
+  let nowMs = 1_700_000_000_000;
+  const ticks = []; // setInterval に渡された物。時計を増やしていない事の計器
   const factory = new Function(
-    "document", "$", "queueView", "clearQueue",
-    `${fnSource("el")}\n${fnSource("renderQueuePanel")}\nreturn renderQueuePanel;`,
+    "document", "$", "queueView", "clearQueue", "Date", "setInterval",
+    `let queueLast = null, queueFetchedAt = 0, queueAgeNode = null, queueClock = null;
+${fnSource("el")}
+${fnSource("renderQueuePanel")}
+${fnSource("paintQueueAge")}
+${fnSource("startQueueClock")}
+return { renderQueuePanel, paintQueueAge, ageNode: () => queueAgeNode };`,
   );
-  const render = factory(doc, (id) => {
-    assert.equal(id, "conv-queue", "送信待ちの面が別の器を掴んでいる");
-    return box;
-  }, queueView, clearQueue);
-  return { render, box };
+  const m = factory(
+    doc,
+    (id) => {
+      assert.equal(id, "conv-queue", "送信待ちの面が別の器を掴んでいる");
+      return box;
+    },
+    queueView,
+    clearQueue,
+    { now: () => nowMs },
+    (fn, ms) => { ticks.push({ fn, ms }); return ticks.length; },
+  );
+  return {
+    box, ticks,
+    ageNode: m.ageNode,
+    advance: (ms) => { nowMs += ms; },
+    // 既存の検査は時刻を渡さない ―― 台が「今取れた」を既定にする(applyPoll と同じ形)。
+    render: (d, fetchedAtMs) => m.renderQueuePanel(d, fetchedAtMs === undefined ? nowMs : fetchedAtMs),
+    tick: () => { for (const t of ticks) t.fn(); },
+  };
 }
 
 const queueBtn = (box) => box.children.find((n) => n.tag === "button");
@@ -483,7 +510,7 @@ test("★実行: 送信待ちが在れば、数の文と取り消しのボタン
   const { render, box } = mountQueue(() => {});
   render({ route: "worker", queued: 2, items: [] });
   const texts = box.children.filter((n) => n.tag === "div").map((n) => n.textContent);
-  assert.deepEqual(texts, ["送信待ち 2 件(まだ Claude に渡していません)"]);
+  assert.deepEqual(texts, ["送信待ち 2 件(まだ Claude に渡していません)", "0秒前の値"]);
   const b = queueBtn(box);
   assert.ok(b, "取り消しのボタンが出ていない");
   assert.equal(b.textContent, "2 件を取り消す");
@@ -551,9 +578,93 @@ test("clearQueue が /queue へ DELETE を送り、判定を view.mjs に置い�
   assert.doesNotMatch(bodyOnly, /renderQueuePanel\s*\(/, "応答から画面の数を作っている");
 });
 
-test("★applyPoll は毎回この面を描き直す(`d.screen` の様に条件を付けない)", () => {
+test("★applyPoll は毎回この面を描き直し、観測の時刻をその場で取る", () => {
   // 条件を付けると、行列が空になった時に面が消えない = 捌けた送信が待っている様に見える。
+  // ★時刻も此処で取る。応答が届いて適用する瞬間が、この数を観測した瞬間 ——
+  //   固定値や「開いた時刻」を渡すと、古さの行が**永遠に新しい**か**最初から古い**になる。
   const src = fnSource("applyPoll");
-  assert.match(src, /\n  renderQueuePanel\(d\);/,
-    "renderQueuePanel の呼び出しが applyPoll の最上層に無い(条件の中に入っている)");
+  assert.match(src, /\n  renderQueuePanel\(d, Date\.now\(\)\);/,
+    "renderQueuePanel の呼び出しが applyPoll の最上層に無い、または観測の時刻を渡していない");
+});
+
+// ---- 送信待ちの数の**古さ**(2026-08-04)--------------------------------------
+//
+// この面は poll が返った時にしか描き直されない = **返らなくなった時**に「送信待ち 2 件」を
+// 現在形で出し続ける。一覧(`paintListAge`)と同じ作法で、手元の時計だけで古さを刻む。
+
+test("★実行: 数の隣に「いつ測った値か」が出る(取れた直後は古くない)", () => {
+  const q = mountQueue(() => {});
+  q.render({ route: "worker", queued: 2 });
+  const age = q.ageNode();
+  assert.ok(age, "古さの節点が出ていない");
+  assert.ok(q.box.children.includes(age), "古さの節点が面に入っていない");
+  assert.equal(age.textContent, "0秒前の値");
+  assert.equal(age.className, "queue-age muted", "取れた直後なのに古い印が付いている");
+});
+
+test("★★実行: 網を叩かず、時計が進んだだけで古い印が付く", () => {
+  // これが直したかった穴そのもの。poll が返らなくなった時、面は描き直されない ——
+  // 古さを刻む口が此処に無いと、電話は 20 分前の数を現在形で出し続ける。
+  const q = mountQueue(() => {});
+  q.render({ route: "worker", queued: 2 });
+  q.advance(90_000);
+  q.tick();
+  assert.match(q.ageNode().textContent, /1分前の値/, "時計が進んでも文面が古いままになっていない");
+  assert.equal(q.ageNode().className, "queue-age muted stale", "古い印(色)が付いていない");
+  // ★数そのものは動かさない。古いのは**いつ測ったか**であって、値の書き換えではない。
+  assert.equal(q.box.children[0].textContent, "送信待ち 2 件(まだ Claude に渡していません)",
+    "電話が自分で数を書き換えている");
+});
+
+test("★実行: 時計は面を描き直すたびに増えない(1本だけ・1秒毎)", () => {
+  const q = mountQueue(() => {});
+  q.render({ route: "worker", queued: 2 });
+  q.render({ route: "worker", queued: 3 });
+  q.render({ route: "worker", queued: 1 });
+  assert.equal(q.ticks.length, 1, `時計が ${q.ticks.length} 本立っている(描画のたびに増えている)`);
+  assert.equal(q.ticks[0].ms, 1000);
+});
+
+test("★実行: 面を消したら、時計は外れた節点を描き直さない", () => {
+  const q = mountQueue(() => {});
+  q.render({ route: "worker", queued: 2 });
+  const orphan = q.ageNode();
+  // ★文面を決め打ちしない。此処が測るのは「時計が外れた節点を触らない」の**一点**で、
+  //   初回の描画がどう見えるかは別の検査の持ち物。決め打ちすると、初回描画を壊した変異が
+  //   此処を赤にして、名乗っている主張と赤くなった理由がずれる。
+  const before = orphan.textContent;
+  q.render({ route: "worker", queued: 0 }); // 行列が捌けた = 面ごと消える
+  assert.equal(q.ageNode(), null, "面を消したのに古さの節点への参照が残っている");
+  q.advance(600_000);
+  q.tick();
+  assert.equal(orphan.textContent, before, "画面から外れた節点を時計が描き直している");
+});
+
+test("★★実行: 時計が刻んでも、伏せたボタンは戻らない(面ごと描き直していない)", () => {
+  // 古さを `renderQueuePanel` の再実行で更新すると、押した直後に節点が作り直され、
+  // `disabled` が外れて**同じ物を2回捨てに行ける**。塗るのは古さの節点だけ。
+  const q = mountQueue(() => {});
+  q.render({ route: "worker", queued: 2 });
+  const b = queueBtn(q.box);
+  b.tap();
+  assert.equal(b.disabled, true);
+  q.advance(90_000);
+  q.tick();
+  assert.equal(queueBtn(q.box), b, "時計が面を作り直している(節点が別物になっている)");
+  assert.equal(queueBtn(q.box).disabled, true, "伏せたボタンが戻っている");
+});
+
+test("★静的: 古さを刻む時計は網を叩かず、判定を app.html に手書きしない", () => {
+  const paint = fnSource("paintQueueAge");
+  const clock = fnSource("startQueueClock");
+  assert.doesNotMatch(paint + clock, /fetch\(|\bapi\(/,
+    "1秒毎に相手を殴りに行っている(古さは手元の時計で刻む)");
+  assert.match(paint, /queueView\(/, "古さの判定が view.mjs に無い");
+  assert.doesNotMatch(paint, /\d{2,}/, "60 秒の境目が二つ目の実装として app.html に生えている");
+});
+
+test("★静的: 会話を開き直す時、数と一緒に観測の時刻も 0 に戻す", () => {
+  // 残すと、次の会話の最初の数が**前の会話を測った時刻**を名乗る。
+  assert.match(fnSource("openConv"), /renderQueuePanel\(null,\s*0\)/,
+    "開き直しで観測の時刻を捨てていない");
 });

@@ -572,16 +572,30 @@ export function choiceResult(status, body) {
  *   「観測して0だった」と「観測していない」を1つの枝に畳んだ瞬間、後から
  *   「机の会話でも 0 件と出しては?」という直し方が正しく見えてしまう。枝を分けて残す。
  *
- * @returns {{show:boolean, known:boolean, count:number, text:string, clearLabel:string}}
+ * ★この数も**観測した瞬間の値**で、その後は勝手に古くなる(2026-08-04)。面は poll が
+ *   返った時にしか描き直されない —— つまり **poll が返らなくなった時こそ**、電話は
+ *   「送信待ち 2 件」を現在形で出し続ける。一覧が `freshness` で古さを見せているのと
+ *   同じ穴が此処にも開いていた。古さの判定は一覧と**同じ関数**から取る(二つ目の境目を
+ *   作らない = 60 秒の意味が画面ごとにずれない)。
+ *
+ * @param fetchedAtMs この数が**取れた**時刻(ms)。0/未設定 = 分からない → 古い側へ倒す
+ * @param nowMs 今
+ * @returns {{show:boolean, known:boolean, count:number, text:string, clearLabel:string,
+ *            ageText:string, stale:boolean}}
  */
-export function queueView(d) {
+export function queueView(d, fetchedAtMs, nowMs) {
   const v = d || {};
   const q = v.queued;
   // 観測していない(tmux 経路 / 古いサーバ / 読めなかった本文)。断定しないので何も出さない。
   if (typeof q !== "number" || !Number.isFinite(q)) {
-    return { show: false, known: false, count: 0, text: "", clearLabel: "" };
+    return { show: false, known: false, count: 0, text: "", clearLabel: "", ageText: "", stale: false };
   }
-  if (q <= 0) return { show: false, known: true, count: 0, text: "", clearLabel: "" };
+  // ★出さない枝で古さを名乗らない。面が無いのに「2分前の値」だけ残ると、**何の**2分前かが
+  //   画面から消える(数が消えた後も古さの行だけ生きる、という見え方になる)。
+  if (q <= 0) {
+    return { show: false, known: true, count: 0, text: "", clearLabel: "", ageText: "", stale: false };
+  }
+  const f = freshness(fetchedAtMs, nowMs); // ★境目(60秒)は一覧と共有。此処に条件を書かない
   return {
     show: true,
     known: true,
@@ -589,6 +603,11 @@ export function queueView(d) {
     // ★「送信待ち」= まだ Claude へ**渡していない**。渡した番は取り消せない(止めるのは別の口)。
     text: `送信待ち ${q} 件(まだ Claude に渡していません)`,
     clearLabel: `${q} 件を取り消す`,
+    // ★文面も一覧と揃える。同じ「古さ」に画面ごとの言い回しを与えると、人は二つの規約を
+    //   覚える羽目になる。「更新してください」は此処でも実行できる(会話を開き直す /
+    //   前面へ戻る、どちらも張り直しの口になっている)。
+    ageText: f.text,
+    stale: f.stale,
   };
 }
 

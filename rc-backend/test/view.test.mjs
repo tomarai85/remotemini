@@ -621,7 +621,7 @@ test("断りと失敗の文面はサーバの物を出す(電話が言い換え�
 // ---- 送信待ち(2026-08-04)----------------------------------------------------
 
 test("送信待ちが1件以上なら、数と取り消しの札を出す", () => {
-  const v = queueView({ route: "worker", queued: 2 });
+  const v = queueView({ route: "worker", queued: 2 }, 1000, 1000);
   assert.equal(v.show, true);
   assert.equal(v.known, true);
   assert.equal(v.count, 2);
@@ -630,9 +630,61 @@ test("送信待ちが1件以上なら、数と取り消しの札を出す", () =
 });
 
 test("送信待ち0件は何も出さない(空の面を置かない)", () => {
-  const v = queueView({ route: "worker", queued: 0 });
+  const v = queueView({ route: "worker", queued: 0 }, 1000, 1000);
   assert.equal(v.show, false);
   assert.equal(v.known, true, "0 は**観測した結果**なので known は true");
+});
+
+// ---- 送信待ちの数の**古さ**(2026-08-04)--------------------------------------
+//
+// この面は poll が返った時にしか描き直されない。返らなくなった時に「送信待ち 2 件」を
+// 現在形で出し続けるのが、直したかった穴。判定は一覧と**同じ** `freshness` から取る。
+
+test("★取れたばかりの数には古さの警告を付けない", () => {
+  const T = 1_700_000_000_000;
+  const v = queueView({ route: "worker", queued: 2 }, T, T + 5_000);
+  assert.equal(v.stale, false);
+  assert.equal(v.ageText, "5秒前の値");
+});
+
+test("★60秒を跨いだ数は古いと言う ―― 面が描き直されていない事が見える", () => {
+  const T = 1_700_000_000_000;
+  const v = queueView({ route: "worker", queued: 2 }, T, T + 60_000);
+  assert.equal(v.stale, true, "1分前の数を現在形で出している");
+  assert.match(v.ageText, /1分前の値/);
+  // 数そのものは動かさない。古いのは**いつ測ったか**であって、値の書き換えではない。
+  assert.equal(v.count, 2);
+  assert.match(v.text, /2 件/);
+});
+
+test("★測った時刻が分からない数を『新しい』側へ倒さない(fail-closed)", () => {
+  const T = 1_700_000_000_000;
+  for (const bad of [0, undefined, null, NaN, "1700000000000"]) {
+    const v = queueView({ route: "worker", queued: 2 }, bad, T);
+    assert.equal(v.stale, true, `${String(bad)} を新しい側へ倒している`);
+    assert.equal(v.ageText, "いつ測った値か不明");
+  }
+});
+
+test("★古さの境目を一覧と共有する ―― 画面ごとの二つ目の 60 秒を作らない", () => {
+  // 此処が `freshness` と1文字でもずれたら、同じ「古い」が画面ごとに違う時刻で起きる。
+  const T = 1_700_000_000_000;
+  for (const d of [0, 59_000, 60_000, 3_600_000, 86_400_000]) {
+    const f = freshness(T, T + d);
+    const v = queueView({ queued: 1 }, T, T + d);
+    assert.equal(v.ageText, f.text, `${d}ms で文面が一覧とずれている`);
+    assert.equal(v.stale, f.stale, `${d}ms で古さの判定が一覧とずれている`);
+  }
+});
+
+test("★面を出さない枝は古さを名乗らない(数の消えた『2分前の値』を残さない)", () => {
+  const T = 1_700_000_000_000;
+  for (const d of [{ queued: 0 }, { queued: null }, {}, null]) {
+    const v = queueView(d, T - 600_000, T); // 10分前 = 出していれば必ず stale になる古さ
+    assert.equal(v.show, false);
+    assert.equal(v.ageText, "", `${JSON.stringify(d)} で古さの行だけ生き残っている`);
+    assert.equal(v.stale, false);
+  }
 });
 
 test("★`queued:null`(tmux 経路)は『0件』と同じ枝に落ちない ―― 観測していない", () => {
