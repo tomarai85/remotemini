@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/run-controls.sh
 # `tools/run-controls.sh` の対照 —— **対照を回す物そのもの**を測る。
 #
 # なぜ要るか(2026-08-03): この repo の対照 21 本は全部この1本から回る。

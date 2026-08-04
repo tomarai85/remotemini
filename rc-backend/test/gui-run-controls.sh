@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/edith-gui-run.sh
 # `tools/edith-gui-run.sh` が**計器として壊れていないか**を測る対照。
 #
 # ── なぜ要るか(2026-08-02、実物で踏んだ) ────────────────────────────────

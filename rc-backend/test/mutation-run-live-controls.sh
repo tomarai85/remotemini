@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/mutation-run-live.sh
 # `tools/mutation-run-live.sh` が「走行中か」を**正しく**見分ける事の確認。
 #
 # なぜ要るか(2026-08-02): この判定は3箇所(配備 / 的検査 / その対照)に複製されていて、

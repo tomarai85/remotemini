@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: test/mutation-controls.py
 # 変異台本が**中断された時に子を残さない**事の確認。
 #
 # なぜ要るか(実際に起きた事): 台本は変異1件ごとに `node test/e2e-local.mjs` を起こし、

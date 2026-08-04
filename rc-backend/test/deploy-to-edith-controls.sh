@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/deploy-to-edith.sh
 # `tools/deploy-to-edith.sh` の対照(第1弾 = **他人の成果物を消さない**回りだけ)。
 #
 # なぜ要るか(2026-08-03): この repo で一番賭け金が高い道具(本番の木を上書きする 600 行)に

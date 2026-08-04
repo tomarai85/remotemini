@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/mutation-verdict.sh
 # `tools/mutation-verdict.sh` の対照。
 #
 # この道具は「**長い測定を門の外へ出す**」為に在るので、壊れ方も1つに決まっている:

@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/live-fork-check.mjs
 # `tools/live-fork-check.mjs` が**計器として壊れていないか**を測る対照。
 #
 # ── なぜ要るか ──────────────────────────────────────────────────────────

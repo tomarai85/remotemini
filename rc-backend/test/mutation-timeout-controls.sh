@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: test/mutation-controls.py
 # mutation-timeout-controls.sh — 変異の脚が**時間切れ**になった時の処分の対照。
 #
 # 何を守っているか(2026-08-04):

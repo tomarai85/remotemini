@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: test/design-supersede.test.mjs
 # `test/design-supersede.test.mjs` の **世界の見分け**(`designOrSkip`)が、緑にも赤にも
 # なる事の確認。
 #

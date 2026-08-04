@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/prove-control.sh
 # `tools/prove-control.sh` 自身の対照。
 #
 # なぜ要るか: prove-control.sh は「対照が効いているか」を判定する道具なので、

@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/deploy-to-edith.sh test/rsync-exclude-controls.sh
 # `test/rsync-exclude-controls.sh` を **edith 側の rsync** で走らせる版。
 #
 # なぜ別 file か: 入れ替えと戻しの rsync は remote heredoc の中 = **edith の binary** が走る。

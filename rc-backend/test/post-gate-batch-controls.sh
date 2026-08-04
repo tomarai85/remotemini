@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/post-gate-batch.sh
 # post-gate-batch.sh の**門**が両方向に壊れていないかを、edith も上限も使わずに測る。
 #
 # なぜ要るか: この台本の値打ちは「明けていない間、絶対に撃たない」事だけにある。

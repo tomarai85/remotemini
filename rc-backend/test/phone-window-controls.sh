@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/ensure-phone-window.sh
 # phone-window-controls.sh — `tools/ensure-phone-window.sh`(鎖③)そのものへの対照。
 #
 # なぜ本物の tmux で回すか:

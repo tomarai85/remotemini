@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/*.plist tools/*.plist.example tools/*.example tools/health-observer.sh
 # 「見本(`*.example` / plist)が、据える瞬間に**初めて**壊れている事が判る」を潰す対照。
 #
 # ── なぜ要るか(2026-08-02、実物で踏んだ) ────────────────────────────────

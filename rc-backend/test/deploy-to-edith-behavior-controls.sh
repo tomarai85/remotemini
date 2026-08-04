@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/deploy-to-edith.sh
 # `tools/deploy-to-edith.sh` の対照・第2弾 —— **実際に走らせて**制御の流れを測る。
 #
 # 第1弾(`deploy-to-edith-controls.sh`)は台本の文字列を読む構造検査で、

@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: test/mutation-controls.py package.json
 # 単体スイートが**木の写しでも回る**か。
 #
 # ── なぜ要るか(2026-08-04、実際に踏んだ)────────────────────────────────────

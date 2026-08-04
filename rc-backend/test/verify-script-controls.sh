@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/verify-on-edith.sh
 # tools/verify-on-edith.sh **そのもの**に対する対照。
 #
 # 見張っている欠陥(2026-08-01 に実測):

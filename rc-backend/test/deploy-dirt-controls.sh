@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/deploy-dirt.sh
 # `tools/deploy-dirt.sh` が「汚れは実行コードか付随物か」を**両向きに**正しく答える事の確認。
 #   exit 0=綺麗 / 1=付随物のみ / 2=src|test が汚れている / 3=git で判らない
 #

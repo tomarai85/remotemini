@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: test/mutation-controls.py test/e2e-local.mjs
 # env-death-controls.sh — 「環境の都合で測れていない」を見分ける関門の対照。
 #
 # なぜ要るか(2026-08-02、同じ日に**両方向**の嘘を踏んだ):

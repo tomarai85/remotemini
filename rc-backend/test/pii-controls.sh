@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/check-no-pii.sh
 # check-no-pii.sh の対照。使い捨ての git repo を建てて、検査が **緑にも赤にもなる**事と、
 # 赤の時に**正しい物だけ**を名指しする事を確かめる。
 # 本題は2つ:

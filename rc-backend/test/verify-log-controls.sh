@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/verify-log.sh
 # `tools/verify-log.sh` の対照。
 #
 # 何を守るか: この包みは **survival の判定の途中に立つ**。判定を書き換えたら、repo 全体の

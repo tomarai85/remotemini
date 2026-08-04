@@ -1,4 +1,6 @@
 #!/bin/bash
+# controls-for: external:~/.claude/tools/remote-mini.sh
+#   (道具は repo の外に在る。staged な path からは選べないので `external:` を付ける)
 # remote-mini.sh の「宛先パス写像」対照。
 #
 # 何を守っているか(2026-08-03):

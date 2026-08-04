@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/check-mutation-targets.sh test/mutation-controls.py
 # `tools/check-mutation-targets.sh` が**緑にも赤にもなる**事の確認。
 #
 # なぜ書くか: この検査は普段いつも緑なので、**壊れていても緑**なら誰も気付けない。

@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/coldboot-chain.sh
 # `tools/coldboot-chain.sh` の対照。
 #
 # なぜ要るか: これは**渡米後に物理で直せない物**を見張る道具なので、一番危ない

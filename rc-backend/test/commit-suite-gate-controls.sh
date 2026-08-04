@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/commit-suite-gate.sh
 # `tools/commit-suite-gate.sh` の対照。
 #
 # なぜ要るか: これは commit を**止める**側の道具なので、一番危ない壊れ方は

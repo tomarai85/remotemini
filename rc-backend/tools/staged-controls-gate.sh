@@ -20,10 +20,35 @@
 #
 # 選び方(2 通り。どちらも file の実在を確かめてから回す):
 #   (a) `rc-backend/test/*-controls.sh` が staged → それを回す
-#   (b) `rc-backend/tools/<名前>.sh` が staged で `rc-backend/test/<名前>-controls.sh`
-#       が在る → それを回す(★②はこちら側。対照に触らず道具だけ直す事が在る)
-#   (c) 対照を導けない `tools/*.sh` は**黙って見逃さず、名前を出す**。止めはしない ——
-#       止めると対照の無い道具に触る commit が全部通らなくなる。見えれば足せる。
+#   (b) staged な file を「見張る」と**宣言している**対照 → それを回す
+#       (★②はこちら側。対照に触らず道具だけ直す事が在る)
+#   (c) 宣言している対照が1本も無い `tools/*` は**黙って見逃さず、名前を出す**。止めはしない
+#       —— 止めると対照の無い道具に触る commit が全部通らなくなる。見えれば足せる。
+#
+# ★★(b) を「名前から導く」から「対照が宣言する」へ替えた(2026-08-05、実測して塞いだ)。
+#   旧: `tools/<名前>.sh` → `test/<名前>-controls.sh` が在れば回す。
+#   これは **名前が一致した時だけ**当たる。実測した穴(`STAGED_LIST_CMD` で4通り撃った):
+#     staged: tools/deploy-to-edith.sh    → 1 本回って「触れた対照は全部緑(1/1)」
+#             …実際にこの道具を見張る対照は **4 本**在る(behavior / rsync-exclude /
+#               rsync-exclude-edith / deploy-to-edith)。3 本は回らないのに **1/1 の緑**
+#     staged: tools/check-no-pii.sh       → 0 本(対照は `pii-controls.sh`。名前が違う)
+#     staged: tools/live-fork-check.mjs   → 0 本、注記も出ない(`case` が `*.sh` だけ)
+#     staged: test/mutation-controls.py   → 0 本(5 本在る)。注記も出ない
+#   ここで一番悪いのは 3 本目でも 4 本目でもなく **1 本目**。0 本なら「触れた対照は無い」と
+#   出るので気付けるが、1/1 は**緑の顔で 3 本の欠落を隠す**。分母が「在る対照の数」でなく
+#   「導けた対照の数」だったので、導出が痩せると分母も一緒に痩せて、比は常に満点になる。
+#   —— 今夜3件目の同じ形(DESIGN §2.18-10「守りの届く範囲が、欠陥と一緒に縮む」)。
+#
+#   直し方も同じ = **欠陥の後も生き残る側から導く**。名前の一致は偶然なので、対照自身に
+#   「私は何を見張っているか」を書かせる(`# controls-for: <path> …`、rc-backend からの
+#   相対。glob 可、複数可)。宣言は対照の中に1箇所だけ在るので写しにならない。
+#   そして**宣言の無い対照を staged で止める**(下の `undecl`)—— 宣言を忘れた対照は
+#   「静かに回らない対照」そのもので、旧実装の穴と同じ物になる。書く瞬間に止めれば、
+#   corpus に穴の在る対照が入る道が塞がる。
+#
+# 残余リスク(承知の上): 既存の宣言が**道具の改名で古くなる**と、その対照は回らなくなる。
+#   改名は道具を staged にするので (c) の注記が出る = 見える。宣言先が実在しない対照は
+#   下で名前を出し、staged なら止める。
 #
 # 終了コード: 0=緑(または対象なし) / 1=赤 / **2=測れなかった**。
 #   2 を 0 に丸めない。hook は非ゼロで止まるので、測れない時は止まる側へ倒れる。
@@ -44,27 +69,101 @@ fi
 sel=""; orphan=""
 add_sel() { case " $sel " in *" $1 "*) ;; *) sel="$sel $1" ;; esac; }
 
+# ── 宣言の一覧を1度だけ作る(対照 → 見張る対象)────────────────────────────
+#   macOS の /bin/bash は 3.2 = 連想配列が無い。添字配列を2本、同じ位置で対にする。
+#   `${arr[@]}` は空の時 `set -u` で落ちるので、長さ `${#arr[@]}` と添字だけで回す。
+CTLS=(); DECLS=()
+for _c in "$ROOT"/rc-backend/test/*-controls.sh; do
+    [ -f "$_c" ] || continue
+    CTLS+=("rc-backend/test/${_c##*/}")
+    DECLS+=("$(/usr/bin/sed -n 's/^# *controls-for:[[:space:]]*//p' "$_c" | /usr/bin/tr '\n' ' ')")
+done
+NCTL=${#CTLS[@]}
+
+# ★ここから先は **path 展開を止める**(2026-08-05、S18 が実際に捕まえた)。
+#   宣言を単語に割る `for _d in ${DECLS[$i]}` は引用しない = 分割と同時に **glob 展開**も
+#   起きる。`tools/*.plist` と書いた宣言が、比較の前に**その時の cwd の実在 file 名**へ
+#   化けていた —— 砂場で測っているのに本物の repo の plist に展開されていた。
+#   `case` の右辺の pattern 照合は `set -f` の影響を受けないので、宣言側の glob は効いたまま。
+set -f
+
+# 宣言先が実在しない対照を拾う(glob は素通し = 何にも当たらない glob は判定しない)。
+stale=""
+i=0
+while [ "$i" -lt "$NCTL" ]; do
+    for _d in ${DECLS[$i]}; do
+        # `external:…` = repo の外に在る道具(`~/.claude/tools/remote-mini.sh` 等)。
+        #   staged な path からは原理的に選べないので、実在も照合もしない。**書かせる**のは
+        #   「宣言し忘れ」と「そもそも repo に無い」を区別する為 —— 空欄だと前者に見える。
+        case "$_d" in external:*|*[*?[]*) continue ;; esac
+        [ -e "$ROOT/rc-backend/$_d" ] || stale="$stale ${CTLS[$i]##*/}→${_d}"
+    done
+    i=$((i+1))
+done
+
+undecl=""
 while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in rc-backend/*) rel="${f#rc-backend/}" ;; *) continue ;; esac
+
+    hit=0
+    # (a) 対照そのものが staged
     case "$f" in
         rc-backend/test/*-controls.sh)
-            [ -f "$ROOT/$f" ] && add_sel "$f" ;;   # 削除された対照は回さない
-        rc-backend/tools/*.sh)
-            base="${f##*/}"; base="${base%.sh}"
-            cand="rc-backend/test/${base}-controls.sh"
-            if [ -f "$ROOT/$cand" ]; then add_sel "$cand"
-            elif [ -f "$ROOT/$f" ]; then orphan="$orphan $base"
+            if [ -f "$ROOT/$f" ]; then                 # 削除された対照は回さない
+                add_sel "$f"; hit=1
+                # ★宣言の無い対照は「静かに回らない対照」になる。書く瞬間に止める。
+                i=0
+                while [ "$i" -lt "$NCTL" ]; do
+                    if [ "${CTLS[$i]}" = "$f" ] && [ -z "${DECLS[$i]// /}" ]; then
+                        undecl="$undecl ${f##*/}"
+                    fi
+                    i=$((i+1))
+                done
             fi ;;
     esac
+
+    # (b) この file を見張ると宣言している対照(名前の一致には頼らない)
+    i=0
+    while [ "$i" -lt "$NCTL" ]; do
+        for _d in ${DECLS[$i]}; do
+            # `case` の右辺は**引用しない** = 宣言側の glob をそのまま効かせる為
+            case "$rel" in $_d) add_sel "${CTLS[$i]}"; hit=1; break ;; esac
+        done
+        i=$((i+1))
+    done
+
+    # (c) 見張る物が1本も無い道具は名前を出す(止めない)
+    if [ "$hit" -eq 0 ] && [ -f "$ROOT/$f" ]; then
+        case "$rel" in
+            tools/*|test/*.py) orphan="$orphan ${rel##*/}" ;;
+        esac
+    fi
 done <<EOF
 $staged
 EOF
+set +f   # 宣言の照合はここまで。以降は普通の展開に戻す
 
 if [ -n "$orphan" ]; then
     echo "staged-controls-gate: 注記 — 対照を導けない道具:$orphan"
     # ★ここを二重引用符 + backtick で書くと `test/...` が**命令として実行される**
     #   (しかも `<名前>` は「名前」という file からの入力の意味になる)。
     #   この repo で既に同じ形を踏んでいるので、注記は単一引用符で出す。
-    echo '  (test/<名前>-controls.sh が在れば自動で回る。止めはしない)'
+    echo '  (対照の頭に `# controls-for: <この道具の path>` を足せば自動で回る。止めはしない)'
+fi
+
+if [ -n "$stale" ]; then
+    echo "staged-controls-gate: 注記 — 宣言先が実在しない対照:$stale"
+    echo '  (道具を改名したなら宣言も付け替える事。宣言が外れた対照は誰にも呼ばれない)'
+fi
+
+if [ -n "$undecl" ]; then
+    echo "staged-controls-gate: ★commit しない: 見張る対象を宣言していない対照:$undecl"
+    echo '  対照の2行目あたりに1行足す(rc-backend からの相対。glob 可、複数可):'
+    echo '    # controls-for: tools/deploy-to-edith.sh'
+    echo '  宣言の無い対照は、その道具だけを直す commit で**静かに回らない**。'
+    echo '  2026-08-05 に実測した穴がこれ(名前が一致する時だけ当たっていた)。'
+    exit 1
 fi
 
 if [ -z "$sel" ]; then
@@ -72,7 +171,54 @@ if [ -z "$sel" ]; then
     exit 0
 fi
 
+# ── edith 側の対照は**此処では回さない**(2026-08-05、選び方を宣言へ替えた副作用)────
+#   宣言から選ぶ様にした結果、`test/mutation-controls.py` を触る commit が 6 本を選ぶ様に
+#   なった。その中に `env-death` が居る = **ssh が通らないと 2(未測定)= commit が止まる**。
+#   Tom は移動中に commit する(それがこの repo の目的そのもの)ので、機内で
+#   `test/e2e-local.mjs` を1行直すと commit できない、という形になる。
+#   だから edith 側は**名前を出して回さない**。黙って落とすと「触れた対照は全部緑」が
+#   また分母の痩せた緑になるので、落とした事を毎回書く(この repo の「上限を黙って
+#   掛けない」規則)。一覧の正本は `run-controls.sh` の `EDITH_CTLS` —— 写しを持たない。
+EDITH_LIST=""
+if [ -r "$ROOT/rc-backend/tools/run-controls.sh" ]; then
+    EDITH_LIST="$(/usr/bin/sed -n '/^EDITH_CTLS=(/,/^)/p' "$ROOT/rc-backend/tools/run-controls.sh" \
+        | /usr/bin/grep -oE '^ *test/[A-Za-z0-9._-]+\.sh' | /usr/bin/tr -d ' ' | /usr/bin/tr '\n' ' ')"
+fi
+deferred=""
+if [ -n "$EDITH_LIST" ]; then
+    keep=""
+    for c in $sel; do
+        case " $EDITH_LIST " in
+            *" ${c#rc-backend/} "*) deferred="$deferred ${c##*/}" ;;
+            *) keep="$keep $c" ;;
+        esac
+    done
+    sel="$keep"
+fi
+if [ -n "$deferred" ]; then
+    echo "staged-controls-gate: 此処では回さない(edith 側の対照):$deferred"
+    echo '  手元では測れない(ssh が要る)。commit は止めない代わりに、配備の前に'
+    echo '    bash rc-backend/tools/run-controls.sh --all'
+    echo '  で回す事。**回していない = 緑ではない**。'
+fi
+
+if [ -z "$sel" ]; then
+    echo "staged-controls-gate: 手元で回せる対照は無い"
+    exit 0
+fi
+
 n=0; for c in $sel; do n=$((n+1)); done
+
+# `--list` = **選び方だけ**を見せて回さない。選択の当たり外れを測る時に本体を回すと
+#   `copied-tree` が写した木で `npm test` を回す等で分単位になり、測りたい物(選択)と
+#   関係無い所で待たされる。選択の道は完全に共有しているので、`--list` の結果は
+#   本番の選択そのもの —— 別実装を持たない事がこの口の条件。
+if [ "${1:-}" = "--list" ]; then
+    echo "staged-controls-gate: 触れた対照 ${n} 本(--list = 回さない)"
+    for c in $sel; do echo "  SEL    ${c##*/}"; done
+    exit 0
+fi
+
 echo "staged-controls-gate: 触れた対照 ${n} 本を回す(長い物が在る。--no-verify は使わずに待つ事)"
 
 red=0; unm=0; green=0; red_names=""; unm_names=""
@@ -104,5 +250,9 @@ if [ "$unm" -gt 0 ]; then
 fi
 # ★緑の判定だけに出る綴りにする(「触れた対照 N 本を回す」の予告と**前置きを共有しない**)。
 #   共有していると、対照が「緑と言っていない事」を測れない —— 予告の方に当たってしまう。
-echo "staged-controls-gate: 触れた対照は全部緑(${green}/${green})"
+# ★分母は `$n`(= 選んだ本数)。旧版は `${green}/${green}` = **緑の数を緑の数で割って**
+#   いたので、赤が無ければ常に満点だった。導出が痩せた時に比が痩せないのが穴の本体で、
+#   宣言から選ぶ様にした今も、分母は「選んだ集合」であって「在る対照の総数」ではない
+#   —— そこは (c) の注記と `undecl` の門で守る。
+echo "staged-controls-gate: 触れた対照は全部緑(${green}/${n})"
 exit 0

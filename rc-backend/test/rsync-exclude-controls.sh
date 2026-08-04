@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/deploy-to-edith.sh
 # `tools/deploy-to-edith.sh` の対照・第3弾 = **旗が本当に効くか**を本物の rsync で測る。
 #
 # なぜ要るか(2026-08-03): 第1弾(構造検査)は「4つの脚に `--exclude '.git/'` が**書いてある**」

@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/staged-controls-gate.sh
 # `tools/staged-controls-gate.sh` の対照。
 #
 # なぜ要るか: これは「対照を回し忘れる」を塞ぐ門なので、壊れ方が **一段ぶん意地悪**に
@@ -30,15 +31,33 @@ trap '/bin/rm -rf "$SB" 2>/dev/null' EXIT INT TERM HUP
 # ── 偽の repo。本物と同じ木の形(rc-backend/{src,test,tools})にする ──────────
 R="$SB/repo"
 /bin/mkdir -p "$R/rc-backend/test" "$R/rc-backend/tools" "$R/rc-backend/src"
-mkctl() { # mkctl <相対パス> <終了コード> <最後の1行>
-  printf '#!/bin/bash\necho "%s"\nexit %s\n' "$3" "$2" > "$R/$1"; /bin/chmod +x "$R/$1"
+mkctl() { # mkctl <相対パス> <終了コード> <最後の1行> [<controls-for の中身>]
+  # ★2026-08-05: 偽の子も**宣言**を持つ。門が名前ではなく宣言から選ぶ様になったので、
+  #   宣言の無い偽の子を並べると「選び方が壊れている」のか「入力が古い」のか判らなくなる。
+  if [ -n "${4:-}" ]; then
+    printf '#!/bin/bash\n# controls-for: %s\necho "%s"\nexit %s\n' "$4" "$3" "$2" > "$R/$1"
+  else
+    printf '#!/bin/bash\necho "%s"\nexit %s\n' "$3" "$2" > "$R/$1"
+  fi
+  /bin/chmod +x "$R/$1"
 }
-mkctl rc-backend/test/aa-controls.sh 0 "--- 合計: PASS 5 / FAIL 0 ---"
-mkctl rc-backend/test/bb-controls.sh 1 "NG  B2 何かが倒れた"
-mkctl rc-backend/test/cc-controls.sh 2 "CC: 未測定(走行中)= **緑ではない**"
-mkctl rc-backend/test/dd-controls.sh 0 "--- 合計: PASS 2 / FAIL 0 ---"
-: > "$R/rc-backend/tools/dd.sh"          # dd.sh は対照を導ける
-: > "$R/rc-backend/tools/lonely.sh"      # lonely.sh は導けない
+mkctl rc-backend/test/aa-controls.sh 0 "--- 合計: PASS 5 / FAIL 0 ---" "tools/zz-odd-name.sh"
+mkctl rc-backend/test/bb-controls.sh 1 "NG  B2 何かが倒れた"          "tools/bb.sh"
+mkctl rc-backend/test/cc-controls.sh 2 "CC: 未測定(走行中)= **緑ではない**" "tools/cc.sh"
+mkctl rc-backend/test/dd-controls.sh 0 "--- 合計: PASS 2 / FAIL 0 ---" "tools/dd.sh"
+# ★同じ道具を見張る**2 本目**。旧実装(名前から導く)では原理的に届かなかった側。
+mkctl rc-backend/test/dd2-controls.sh 0 "--- 合計: PASS 3 / FAIL 0 ---" "tools/dd.sh"
+# glob の宣言 + 宣言先が実在しない宣言(注記に出るが止めない)
+mkctl rc-backend/test/ee-controls.sh 0 "--- 合計: PASS 1 / FAIL 0 ---" "tools/*.plist"
+mkctl rc-backend/test/ff-controls.sh 0 "--- 合計: PASS 1 / FAIL 0 ---" "tools/gone-away.sh"
+# 宣言を持たない対照(= 静かに回らない対照になる形)。staged になった時だけ止める
+mkctl rc-backend/test/nodecl-controls.sh 0 "--- 合計: PASS 1 / FAIL 0 ---"
+: > "$R/rc-backend/tools/dd.sh"          # dd.sh を見張る対照は 2 本
+: > "$R/rc-backend/tools/bb.sh"
+: > "$R/rc-backend/tools/cc.sh"
+: > "$R/rc-backend/tools/zz-odd-name.sh" # 名前が対照と一致しない道具
+: > "$R/rc-backend/tools/lonely.sh"      # 誰も宣言していない道具
+: > "$R/rc-backend/tools/a.plist"        # glob の宣言が当たる先
 : > "$R/rc-backend/src/server.mjs"
 : > "$R/rc-backend/test/plain.test.mjs"  # `npm test` 側の物。ここでは選ばない
 
@@ -78,9 +97,13 @@ chk "S7 対照の無い道具 -> 名前を出すが rc=0" 0 $? "対照を導け�
 chk "S8 ★その名前が実際に出ている" 0 0 "lonely" "" "$out"
 
 # ── S9 両方の道で同じ対照に届く時、二度回さない ────────────────────────────
+#     偽の dd.sh は 2 本(dd / dd2)に見張られているので、畳んだ結果は **2 本**。
+#     (逆引用符で囲まないのは砂場の偽物だから —— `no-linerefs` の検査は引いた名前が
+#      repo に実在する事を要求する。実際にここで1本捕まった)
+#     dd-controls.sh を足しても増えないのが「畳んでいる」の意味。
 out=$(run_gate 'rc-backend/tools/dd.sh
 rc-backend/test/dd-controls.sh')
-chk "S9 重複は 1 回に畳む" 0 $? "触れた対照 1 本" "" "$out"
+chk "S9 重複は 1 回に畳む" 0 $? "触れた対照 2 本" "" "$out"
 
 # ── S10 ★★staged の一覧が空 = 未測定。**素通りさせない** ──────────────────
 #      「何も触っていない」と「何を触ったか判らない」は別。前者は hook 側が先に
@@ -111,6 +134,63 @@ chk "S14 ★赤 + 未測定 -> 赤(1)。未測定に丸めない" 1 $? "commit �
 out=$(run_gate 'rc-backend/test/aa-controls.sh
 rc-backend/test/dd-controls.sh')
 chk "S15 陰性対照: 2 本 staged なら 2 本回る" 0 $? "触れた対照 2 本" "" "$out"
+
+# ══ S16-S23 ★選び方を「名前」から「宣言」へ替えた分(2026-08-05)════════════
+# 何を見張っているか: 旧実装は `tools/<名前>.sh` ↔ `test/<名前>-controls.sh` の
+# **名前の一致**でしか届かなかった。実測した穴 —— 本物の repo で
+#   tools/deploy-to-edith.sh を staged にすると 4 本在る対照の **1 本**だけが回り、
+#   出力は「触れた対照は全部緑(1/1)」。分母が「在る対照」でなく「導けた対照」なので、
+#   導出が痩せると比は満点のまま痩せる(DESIGN §2.18-10 と同じ族)。
+
+# ── S16 名前が一致しない道具でも、宣言していれば回る ───────────────────────
+out=$(run_gate 'rc-backend/tools/zz-odd-name.sh')
+chk "S16 ★名前が違っても宣言で届く" 0 $? "aa-controls.sh" "触れた対照は無い" "$out"
+
+# ── S17 ★★1つの道具を 2 本が見張るなら **2 本とも**回る + 分母が 2 ────────
+#     これが今夜の穴そのもの。旧実装ではここが 1/1 の緑になる。
+out=$(run_gate 'rc-backend/tools/dd.sh')
+chk "S17 ★2 本目の対照も回る"        0 $? "dd2-controls.sh" "" "$out"
+chk "S17b ★★分母が導出でなく本数(2/2)" 0 0 "全部緑(2/2)"   "全部緑(1/1)" "$out"
+
+# ── S18 glob の宣言が当たる ────────────────────────────────────────────────
+out=$(run_gate 'rc-backend/tools/a.plist')
+chk "S18 glob の宣言(tools/*.plist)で届く" 0 $? "ee-controls.sh" "触れた対照は無い" "$out"
+
+# ── S19 ★宣言の無い対照を staged にしたら**止める** ───────────────────────
+#     宣言を忘れた対照 = その道具だけを直す commit で静かに回らない対照。
+#     書いた瞬間(= staged になる唯一の機会)に止めれば、corpus に穴が入る道が塞がる。
+out=$(run_gate 'rc-backend/test/nodecl-controls.sh')
+chk "S19 ★宣言の無い対照 -> rc=1" 1 $? "宣言していない対照" "" "$out"
+# ★名前が「どこかに」出ているだけでは駄目 —— 旧版でも走行報告に名前は出る(実測で緑になった)。
+chk "S20 ★止めた文の中で名指しする" 1 1 "宣言していない対照: nodecl-controls.sh" "" "$out"
+
+# ── S21 宣言先が実在しない対照は**名前を出すが止めない** ──────────────────
+#     道具の改名で宣言が古くなる形。止めると無関係な commit が全部通らなくなる。
+out=$(run_gate 'rc-backend/src/server.mjs')
+chk "S21 宣言先が実在しない -> 注記のみ(rc=0)" 0 $? "宣言先が実在しない対照" "" "$out"
+chk "S22 ★その組を名指しする"                  0 0 "ff-controls.sh→tools/gone-away.sh" "" "$out"
+
+# ── S23 ★陰性対照: 宣言を消すと**選ばれなくなる** ─────────────────────────
+#     S16-S18 が緑なのは「宣言で選んでいる」からか、「何でも選んでいる」からか。
+#     同じ入力で宣言だけ抜いて、届かなくなる事を見せて初めて見分けたと言える。
+/usr/bin/sed -i '' '/^# controls-for: tools\/zz-odd-name.sh$/d' "$R/rc-backend/test/aa-controls.sh"
+out=$(run_gate 'rc-backend/tools/zz-odd-name.sh')
+chk "S23 ★宣言を消すと届かない(選び方が宣言に依っている)" 0 $? "触れた対照は無い" "aa-controls.sh" "$out"
+
+# ── S24 ★edith 側の対照は手元で回さず、**名前を出す** ─────────────────────
+#     宣言から選ぶ様にした副作用で `test/e2e-local.mjs` の commit が env-death を
+#     引き込み、ssh が無い所(= 移動中)では 2 = commit が止まる形になっていた。
+#     落とす事自体は正しいが、**黙って落とすと分母がまた痩せる**ので名前を出す。
+/bin/cat > "$R/rc-backend/tools/run-controls.sh" <<'RCEOF'
+EDITH_CTLS=(
+    test/cc-controls.sh
+)
+RCEOF
+out=$(run_gate 'rc-backend/test/cc-controls.sh')
+chk "S24 ★edith 側は回さない(未測定で止めない)" 0 $? "此処では回さない" "測れなかった対照" "$out"
+# 同上。旧版は cc を**回して** UNMEA 行に名前を出すので、素の名前では見分けない。
+chk "S25 ★落とした文の中で名指しする"           0 0 "回さない(edith 側の対照): cc-controls.sh" "" "$out"
+/bin/rm -f "$R/rc-backend/tools/run-controls.sh"
 
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]

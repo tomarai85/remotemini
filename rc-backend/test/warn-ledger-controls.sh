@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/warn-ledger.sh
 # `tools/warn-ledger.sh` の対照。
 #
 # なぜ要るか: この帳面は「門ではない検査の信号を捨てない」為に在るので、

@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: tools/health-observer.sh tools/health-step.mjs
 # `tools/health-observer.sh` + `tools/health-step.mjs` の**対照**(DESIGN §7-P の検査欄)。
 #
 # ここが測るのは「鳴る」ではなく **「鳴らないべき時に鳴らず、鳴るべき時に1回だけ鳴る」**。
