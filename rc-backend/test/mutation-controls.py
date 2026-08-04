@@ -1630,6 +1630,225 @@ if "--selftest-timeout" in sys.argv:
         print(f"測れた rc={_r.returncode} timed_out={len(TIMED_OUT)}")
     sys.exit(0)
 
+# ── 走行の**所有印**(lock/pid file)を立てる ─────────────────────────────────
+#
+# 何を直しているか(2026-08-04、DESIGN §2.38 の「まだ直っていない根」):
+#   「今この機械で変異走行が動いているか」は今まで `pgrep -f <正規表現>` の**推定**だった。
+#   argv 全体への文字列一致なので両方向に外れ、両方向とも実害を出している:
+#     - 偽陽性(8/02): 台本名を変数に持つだけの無関係な shell に当たり、配備が**恒久的に**塞がった
+#     - 偽陰性(8/02 夜): `python3 -u <台本>` の `-u` を正規表現が跨げず、走行中に**2本目**を
+#       起こした(2本が同じ log へ書いて混ざった)。配備の門も同じ判定なので黙って開いていた
+#   どちらも「その字が誰かのコマンド行に在るか」を訊いているから起きる。訊くべきは
+#   **「走行が自分で立てた印の主が、今も生きているか」** —— 推定ではなく観測である。
+#
+# 置き場所がこの行である理由は2つ、どちらも実測に基づく:
+#   - **これより上に置かない**: `--dry` / `--verdict` / `--env-death` / `--selftest-timeout` は
+#     木も触らず子も起こさない。上で印を立てると、pre-commit の `--dry` が走る間ずっと
+#     配備の門が塞がる(`tools/check-mutation-targets.sh` は毎コミット `--dry` を叩く)。
+#   - **これより下に置かない**: すぐ下の凍結は木まるごとの copytree で秒を食う。その後に
+#     立てると「走っているのに印が無い」窓がその秒数だけ開く = 2本目を起こせてしまう。
+MUTATION_LOCK = os.environ.get("RC_MUTATION_LOCK", "/tmp/rc-backend-mutation-run.lock")
+
+
+def _proc_started(pid):
+    """pid の起動時刻を1行で返す(居なければ空文字)。
+
+    ★pid だけでは足りない。印を残したまま SIGKILL された走行の pid が別のプロセスへ
+      再利用されると、`kill -0` は「生きている」と答える —— それは配備が二度と通らない
+      形であり、8/02 に pgrep 版で実際に起きた恒久的な詰まりと**同じ壊れ方**である。
+      起動時刻まで一致して初めて「同じプロセス」と言える。
+    ★読み手(`tools/mutation-run-live.sh`)と**同じ道具**(`ps -o lstart=`)で採る事。
+      書き手と読み手で採り方が違うと、書式の食い違いが「主が居ない」に化ける。
+    ★`TZ` と `LC_ALL` を固定する(2026-08-04、Codex 指摘 #4)。`lstart` は**呼び手の
+      時間帯と locale で描かれる**ので、書き手と読み手の環境が違うと —— たとえば片方が
+      launchd 由来で `TZ` を持たず、片方が shell から走る —— **同じプロセスが違う文字列に
+      なる**。読み手はそれを「pid の再利用」と読んで exit 1 を返し、走行中に門が**開く**。
+      印は環境を跨いで読まれる file なので、書かれる値は環境に依らない形でなければならない。
+    """
+    env = dict(os.environ, TZ="UTC", LC_ALL="C")
+    r = subprocess.run(["/bin/ps", "-o", "lstart=", "-p", str(pid)],
+                       capture_output=True, text=True, env=env)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _read_run_lock(path):
+    """印を dict で返す。無い・読めない・欠けている = None(= 主を確かめられない)。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            txt = f.read()
+    except OSError:
+        return None
+    d = {}
+    for line in txt.splitlines():
+        k, sep, v = line.partition("=")
+        if sep:
+            d[k.strip()] = v.strip()
+    if not d.get("pid", "").isdigit() or not d.get("started"):
+        return None
+    return d
+
+
+def _live_lock_owner(path):
+    """印の主が**今も生きている**なら dict、そうでなければ None(古い印も None)。"""
+    d = _read_run_lock(path)
+    if d is None:
+        return None
+    now = _proc_started(int(d["pid"]))
+    return d if now and now == d["started"] else None
+
+
+def _held_msg(d):
+    return (f"変異走行が既に動いている(pid={d['pid']}, 木={d.get('root', '?')})。\n"
+            f"  2本が同時に走ると囮と log が混ざる(2026-08-02 に実測)。\n"
+            f"  何が掴んでいるか: bash tools/mutation-run-live.sh --who\n"
+            f"  主が死んで印だけ残っている場合は、古い印として退けてから走る")
+
+
+def _steal_stale_lock():
+    """古い印を退ける。**退ける側どうしを一列にする**のが肝。
+
+    ★2026-08-04、対照(8本同時出発)が実測で捕まえた。`os.link` は原子的なのに
+      **3本が同時に走り出した**。原子的なのは「立てる」だけで、その手前の「退ける」が
+      競っていたから:
+
+        B が「古い印だ」と確かめる
+        C も「古い印だ」と確かめる
+        C が unlink して link  ← C が主になる
+        B が unlink            ← ★**C の生きた印**を消している
+        B が link              ← B も主になる = 2本走る
+
+      退ける操作だけを O_EXCL の門で一列にすると消える。門を持っている間、印は
+      「古いと確かめた、まさにその file」のままである —— 印が在る限り誰も link できず、
+      新しい主が現れる余地が無いから。門を取れなかった側は待ってから取り直す(門は
+      1ミリ秒級でしか握られない)。待っても空かない = 退ける途中で落ちた走行が在る、
+      という別の事象なので、そう名指しで言って**走らない**。
+    """
+    guard = f"{MUTATION_LOCK}.steal"
+    fd = None
+    for _ in range(200):        # 最大 ~2 秒
+        try:
+            fd = os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            break
+        except FileExistsError:
+            time.sleep(0.01)
+        except OSError as e:
+            die(f"古い印を退ける門を作れない({guard}): {e}")
+    if fd is None:
+        die(f"古い印を退ける門が塞がったままである({guard})。\n"
+            f"  退ける途中で落ちた走行が在る。手で消す: rm {guard}")
+    try:
+        os.write(fd, f"pid={os.getpid()}\n".encode())
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+    try:
+        # 門の中で**もう一度**確かめる。門の外で見た「古い」は、待っている間に
+        # 別の主へ入れ替わっている事が在る(それが上の B/C の筋書きそのもの)。
+        if _live_lock_owner(MUTATION_LOCK) is None:
+            try:
+                os.unlink(MUTATION_LOCK)
+            except FileNotFoundError:
+                pass            # 先に退けた者が居る。取り合いは link で決まる
+            except OSError as e:
+                die(f"古い印を消せない({MUTATION_LOCK}): {e}")
+    finally:
+        try:
+            os.unlink(guard)
+        except OSError:
+            pass
+
+
+def _take_run_lock():
+    """印を**原子的に**立てる。既に在る印は、主が死んでいる時だけ退ける。
+
+    ★`os.replace` で上書きするだけでは足りない(2026-08-04、自己指摘)。
+      上の `_live_lock_owner()` が「古い印だ」と答えてから書き込むまでの間に、別の走行が
+      同じ判断を下し得る —— 2本とも「自分が主だ」と思って進む。相互排他を名乗りながら、
+      稀に2本走る形で、**8/02 の偽陰性と結果が同じ**(log と囮が混ざる)。
+      `os.link` は宛先が在れば EEXIST で**失敗する** = 勝者が機械的に1本へ決まる。
+
+    ★退ける道が要る理由: 退けないと、SIGKILL された走行が残した印で**以後の全走行が
+      永久に止まる**。それは 8/02 の「配備が恒久的に塞がる」を、門ではなく走行側で
+      作り直す事になる。「原子的に取る」と「古い印を退ける」は両方要り、退ける前に
+      毎回**主の生死を確かめる**のがその安全弁。
+    """
+    started = _proc_started(os.getpid())
+    if not started:
+        die("自分の起動時刻(ps)が読めない = 印の主を後から確かめる手段が無い。走らない")
+    tmp = f"{MUTATION_LOCK}.tmp.{os.getpid()}"
+    try:
+        parent = os.path.dirname(MUTATION_LOCK)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(f"pid={os.getpid()}\nstarted={started}\nroot={SRC}\n")
+    except OSError as e:
+        die(f"走行の印を書けない({MUTATION_LOCK}): {e}")
+    try:
+        # 3 周まで。古い印を退けては取りに行く。多数が同時に出発すると、退けた直後の
+        # 一瞬を別の1本に取られる事が在り、その時は次の周で「相手が生きている」を見て
+        # 正しく死ぬ。周回を使い切っても取れない = 退けられない事情が在る。走らない。
+        for attempt in (1, 2, 3):
+            try:
+                # ★中途半端な姿を読み手に見せない。書き終えた file を link で**現れさせる**。
+                os.link(tmp, MUTATION_LOCK)
+                return
+            except FileExistsError:
+                held = _live_lock_owner(MUTATION_LOCK)
+                if held is not None:
+                    die(_held_msg(held))
+                if attempt == 3:
+                    die(f"古い印を退けられない({MUTATION_LOCK})。手で消してから走らせる事")
+                _steal_stale_lock()
+            except OSError as e:
+                die(f"走行の印を立てられない({MUTATION_LOCK}): {e}")
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _drop_run_lock():
+    # ★先に子を落としてから印を降ろす。順序が逆だと、子がまだ死んでいる最中に配備の門が
+    #   開く。atexit は登録の逆順に走るので、明示的に呼ぶのが順序を決める唯一の手
+    #   (`_reap_children` は `_CHILD_PGIDS` を空にするので、後から走る登録は素通りする)。
+    _reap_children()
+    # ★自分の印**だけ**を消す。他人の印を消すと、その走行の最中に門が開く。
+    d = _read_run_lock(MUTATION_LOCK)
+    if d is None or d.get("pid") != str(os.getpid()):
+        return
+    try:
+        os.unlink(MUTATION_LOCK)
+    except OSError:
+        pass
+
+
+# ★2本を同時に走らせない。8/02 に実際に起きた形 = 2本が同じ log へ tee して混ざり、
+#   片方の対照がもう片方の囮を見て赤くなった。今までこれを止めていたのは私の記憶だけで、
+#   機械は何も見ていなかった。判定は `_take_run_lock()` の**1箇所だけ**が下す。
+#
+#   以前は此処に「速い普通の道」として同じ判定の写しを置いていた(`_HELD`)。8/04 の変異で
+#   **緑のまま生き残った** = 壊しても振舞いが変わらない。取得が原子的になった時点で、
+#   生きた主を見つけて死ぬ役目は `os.link` の EEXIST 側へ完全に移っていたからである。
+#   同じ問いに答える場所が2つ在ると、片方だけ直して片方が腐る —— `tools/mutation-run-live.sh`
+#   の頭に書いた、判定を1箇所へ集めた理由そのものなので、写しの方を畳んだ。
+_take_run_lock()
+atexit.register(_drop_run_lock)
+print(f"走行の印を立てた: {MUTATION_LOCK}(pid={os.getpid()})", flush=True)
+
+# --- `--lock-selftest`: 印の**書き手と読み手が噛み合う事**を外から駆動する口 ---------
+#
+# `--verdict` / `--env-death` と同じ作法。此処に置いてあるのが肝で、上の `_take_run_lock()`
+# = **本走行が使うのと同じ呼び出し**を経てから止まる。対照が印を手で書く形にすると、
+# 書式が食い違った日に対照だけが緑のまま残る —— この repo が何度も踏んだ「写しを撃つ
+# 対照」そのものになる。
+if "--lock-selftest" in sys.argv:
+    print(f"LOCKED {MUTATION_LOCK} {os.getpid()}", flush=True)
+    time.sleep(float(os.environ.get("RC_LOCK_SELFTEST_S", "30")))
+    sys.exit(0)
+
 # 作業コピーは中断路(die / 対象行が無くて continue)でも必ず消す。
 # 木まるごとのコピーなので、放置すると /var/folders に何本も残る(実際に残っていた)。
 LIVE = []

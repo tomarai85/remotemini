@@ -9,291 +9,395 @@
 #     (b) `tools/deploy-to-edith.sh` はこの判定で配備を拒否するので、無関係なシェルが1本
 #         残っているだけで**配備が恒久的に塞がる**
 #
-# ★★2026-08-04 の作り直し。監査2本が独立に同じ首位を出した ——
-#   **この対照は本体を呼んでいなかった**。判定の正規表現を手で写して `pgrep` するだけで、
-#   5本中4本が `bash "$LIVE"` を一度も実行していない。つまり本体側だけが穴に戻っても
-#   この対照は緑のまま。本体の冒頭が「複製された判定は片方だけ直して片方が腐る」と
-#   書いている、その教訓が**対照そのものの形で再演されていた**。
-#   直した点は3つ:
-#     1. 正規表現を**本体から抜く**(写しを持たない。取り出せなければ赤で止まる)
-#     2. 各シナリオで **`bash "$LIVE"` を実際に呼ぶ**
-#     3. 囮は**一度に1つだけ**生かす。前は W/E/R/RU が同時に生きていて、旗なしの R が
-#        常に本物の一致を供給していたので、広すぎ/狭すぎの退行がその陰に隠れた
+# ★★★2026-08-04、本体が**推定から観測へ**替わったので、この対照も丸ごと書き直した。
+#   本体はもう argv を見ない。走行台本(`test/mutation-controls.py`)が印(lock/pid file)を
+#   立て、本体はその主の生死を訊く。よって:
+#     - 囮プロセスで「当たる/当たらない」を測る脚は**意味を失った**(全部捨てた)。
+#       残した囮は1つだけ、`--who` が argv を出さない事を撃つ為の物。
+#     - 代わりに測るのは印の**状態**: 無い / 生きている / 古い / pid 再利用 / 壊れている。
+#     - 印の path は `RC_MUTATION_LOCK` で砂場へ逃がす。この結果、**本物の変異走行と
+#       同時に回しても干渉しない** —— 旧版に在った「走行と同居していたら劣化版へ落ちて
+#       exit 2」という逃げ道が要らなくなった(`weak` / `MODE` を消したのはその為)。
 #
-# ★★★同日、Codex の査読で更に4点。**囮の判別しか測っていなかった**のが要点:
-#     4. 本体の**終了コードの作り方**を、`pgrep` の差し替え(下の ⑤)で直接撃つ。囮を使う
-#        (1)-(3b) は「一致するか」しか測れないので、`pgrep` が**失敗した**時に本体が何と
-#        答えるかを一度も見ていなかった。実際そこが最大の穴で、旧版は失敗を「居ない」に
-#        丸めており、配備の門が**判らない時に開いて**いた(同日 fail-closed へ是正)。
-#     5. `head -1` を捨てる。`PAT=` が2つある木では**先頭を黙って採る**ので、実際に使われる
-#        方と違う正規表現で全シナリオを測り得た。曖昧なら測らずに赤で止まる方が正しい。
-#     6. 各シナリオの前後で**一致集合そのもの**を撮る。知らない PID が湧いていたら、
-#        緑も赤も自分の囮の話ではない = 未測定として出す。
-#     7. 劣化版(member)の緑を `PASS` と印字しない。同じ語で出すと、後から読む人には
-#        「本体を実行して確かめた」と読める —— この作り直しが潰した嘘そのもの。
+# ★引き継いだ作法(旧版が作り直しで獲得した物。捨てない):
+#     1. 判定の材料を**本体から抜く**(写しを持たない。取り出せなければ赤で止まる)
+#     2. 各シナリオで **`bash "$LIVE"` を実際に呼ぶ**(写しを撃たない)
+#     3. 終了コードの契約は**計器を差し替えて**測る。囮では計器の失敗を起こせないし、
+#        最大の穴はいつも「判らなかった」を「居ない」に丸める所に在る
+#     4. `--who` が argv を出さない事を機械で押さえる(秘密を印字する診断は本末転倒)
 #
-# ★残る制約を隠さない: `$LIVE` は「今この機械で何か走っているか」しか答えない。
-#   本物の変異走行の最中はどの囮でも 0 を返すので、直接呼びでは discriminate できない。
-#   その時は **PID が一致集合に入るか**という劣化版へ落ちる —— ただし黙って落ちず、
-#   どちらの脚で測ったかを1行ずつ出し、**終了コードを 2(未測定)にする**
-#   (`tools/run-controls.sh` の規約)。劣化版の緑で 0 を返すと「本体を実行して確かめた」と
-#   読まれてしまい、この作り直しが潰した嘘がそのまま復活する。
+# ★新しく足した脚のうち、いちばん効くのは **pid 再利用**(下の D)。印を残したまま
+#   SIGKILL された走行の pid が別の物に再利用されると `kill -0` は「生きている」と答える
+#   —— それは 8/02 の「配備が恒久的に塞がる」と**同じ壊れ方**を新しい根で作り直す事で、
+#   起動時刻の照合はその為だけに在る。照合を外しても他の脚は全部緑のままなので、
+#   この脚が無ければ穴は見えない。
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # ★継ぎ目。`tools/prove-control.sh` が**直す前の版**を此処へ差し込んで、
 #   「その旧版でこの対照が本当に赤くなるか」を機械で確かめられる様にする(差替型)。
-#   手で壊して手で戻す証明は1回きりで、次に誰かが回す物が無い —— それが
-#   `tools/run-controls.sh` の頭に在る規則が一度守られなかった理由そのもの。
 LIVE="${MUTLIVE_SCRIPT:-$ROOT/tools/mutation-run-live.sh}"
+WRITER="$ROOT/test/mutation-controls.py"
 
-pass=0; fail=0; weak=0; unmeasured=0
-ok()   { pass=$((pass+1)); echo "PASS  $1"; }
-ng()   { fail=$((fail+1)); echo "FAIL  $1  ($2)"; }
-# ★劣化版の緑は `PASS` と書かない(Codex 指摘 7)。語が同じだと強さの違いが消える。
-weakly() { weak=$((weak+1)); echo "WEAK  $1  — 弱い一致。緑ではない"; }
+pass=0; fail=0; unmeasured=0
+ok()     { pass=$((pass+1)); echo "PASS  $1"; }
+ng()     { fail=$((fail+1)); echo "FAIL  $1  ($2)"; }
 unmeas() { unmeasured=$((unmeasured+1)); echo "UNMEA $1  ($2)"; }
 
-# --- 0) 判定の正規表現を**本体から抜く**(写しを持たない) ----------------------
-#   `test/mutation-target-controls.sh` の ALPHA と同じ作法。本体が置き場所を変えたら
-#   取り出しが空になって**此処で赤く止まる** = 以降の全判定が当てにならない事を明示する。
-#   ★`head -1` を使わない: 曖昧さを「先頭を採る」で消すと、**実際に効く方と違う版**で
-#     全シナリオを測ってしまう。丁度1本でなければ測らない。
-NPAT="$(/usr/bin/grep -c "^PAT='" "$LIVE" 2>/dev/null || true)"
-PAT="$(sed -n "s/^PAT='\(.*\)'\$/\1/p" "$LIVE")"
-if [ "$NPAT" != "1" ]; then
-    ng "正規表現の取り出し" "本体の \`^PAT='\` が ${NPAT} 本ある。1本でないと、どれが効くか判らない"
-    echo ""; echo "MUTATION-RUN-LIVE-CONTROLS: pass=$pass fail=$fail"; exit 1
-elif [ "${#PAT}" -ge 20 ]; then
-    ok "判定の正規表現を本体から丁度1本取り出せた(写しを持たない)"
-else
-    ng "正規表現の取り出し" "取れたのは「${PAT}」— 本体の書き方が変わった。以降は測れないので止める"
-    echo ""; echo "MUTATION-RUN-LIVE-CONTROLS: pass=$pass fail=$fail"; exit 1
-fi
-
-# ★囮は必ず stdout を切って起動する事(`>/dev/null 2>&1 &`)。
-#   切らないと、この対照を `out=$(bash ...)` の形で呼んだ親が**囮の sleep が終わるまで待つ**。
-#   コマンド置換は「書き手が全員 pipe を閉じる」まで返らないので、背景の子が pipe を
-#   握ったままだと親が固まる。実測: 1秒で終わる筈の対照が 31 秒かかった(2026-08-02)。
+SB="$(mktemp -d /tmp/mutlive-ctl.XXXXXX)"
 DECOY=""
-SB=""
+SELFTEST=""
 cleanup() {
-    [ -n "$DECOY" ] && kill "$DECOY" 2>/dev/null
+    [ -n "$DECOY" ]    && kill "$DECOY" 2>/dev/null
+    [ -n "$SELFTEST" ] && kill "$SELFTEST" 2>/dev/null
     # 中身は自分で置いた物だけなので、名指しで消す(`rm -rf` を使わない)。
-    if [ -n "$SB" ] && [ -d "$SB" ]; then
-        /bin/rm -f "$SB/test/mutation-controls.py" "$SB/bin/pgrep" "$SB/argv.txt"
-        /bin/rmdir "$SB/test" "$SB/bin" "$SB" 2>/dev/null
+    if [ -d "$SB" ]; then
+        for _i in 1 2 3 4 5 6 7 8; do /bin/rm -f "$SB/race-$_i.out"; done
+        /bin/rm -f "$SB/lock" "$SB/lock2" "$SB/lock3" "$SB/selftest.out" "$SB/bin/ps"
+        # 退ける門(`<印>.steal`)と書きかけ(`<印>.tmp.<pid>`)。正常に終われば残らないが、
+        # 途中で殺した脚の後始末として名指しで拾う(`rm -rf` を使わない方針のまま)。
+        for _f in "$SB"/lock*.steal "$SB"/lock*.tmp.*; do [ -e "$_f" ] && /bin/rm -f "$_f"; done
+        /bin/rmdir "$SB/bin" "$SB" 2>/dev/null
     fi
     return 0
 }
 trap cleanup EXIT INT TERM
 
-matched() {  # $1 = pid → その pid が一致集合に居れば 0
-    pgrep -f "$PAT" 2>/dev/null | grep -qx "$1"
+LOCK="$SB/lock"
+say() {  # $1=見出し $2=期待 exit $3=実際 exit $4=外れた時の意味
+    if [ "$3" = "$2" ]; then ok "$1 → exit=$2"; else ng "$1" "$4。期待 exit=$2 実際 exit=$3"; fi
 }
-# ★一致集合そのものの写し(Codex 指摘 6)。シナリオの前後で変わっていたら、
-#   その緑/赤は**自分の囮の話ではない**。知らない走行が湧いた木では判定を信じない。
-snapshot() { pgrep -f "$PAT" 2>/dev/null | sort | tr '\n' ' '; }
-
-# 囮の argv が実際に見える様になるまで待つ。固定 sleep は速い機械で早すぎ、
-# 混んだ機械で遅すぎる —— どちらも「測れていないのに緑」を作る。
-# ★待つ的は**最終形の argv**にする(Codex 指摘 5)。`&` で起こした子は exec の前後で
-#   argv が変わるので、途中の形に当たって先へ進むと「まだ python になっていない」
-#   プロセスを測ってしまう。だから台本の実パスなど、最終形にしか無い字を渡す事。
-wait_argv() {  # $1=pid $2,$3=argv に含まれる筈の文字列(全部含むまで待つ)
-    local pid="$1"; shift
-    local s
-    for _ in $(seq 1 60); do
-        local cmd; cmd="$(ps -o command= -p "$pid" 2>/dev/null)"
-        local all=1
-        for s in "$@"; do
-            case "$cmd" in *"$s"*) : ;; *) all=0 ;; esac
-        done
-        [ "$all" -eq 1 ] && return 0
+call() {  # 本体を砂場の印で呼ぶ。標準出力は捨てる(測るのは終了コード)
+    RC_MUTATION_LOCK="$LOCK" bash "$LIVE" >/dev/null 2>&1
+}
+# ★`TZ`/`LC_ALL` を固定する。`lstart` は呼び手の環境で描かれるので、ここを固定しないと
+#   この対照が**本体と違う方言**の印を書き、生きている主を「pid の再利用」に見せてしまう
+#   (実際に踏んだ: 本体を UTC 固定に直した直後、手書きの印を使う脚だけが赤くなった)。
+lstart() { TZ=UTC LC_ALL=C /bin/ps -o lstart= -p "$1" 2>/dev/null | /usr/bin/sed -e 's/^ *//' -e 's/ *$//'; }
+mklock() { printf 'pid=%s\nstarted=%s\nroot=%s\n' "$1" "$2" "${3:-$ROOT}" > "$LOCK"; }
+wait_gone() { for _ in $(seq 1 100); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done; return 1; }
+wait_argv() {  # $1=pid $2=argv に含まれる筈の文字列。固定 sleep は速い機械で早すぎ、
+    local pid="$1" want="$2" cmd   #   混んだ機械で遅すぎる —— どちらも「測れていないのに緑」
+    for _ in $(seq 1 100); do
+        cmd="$(/bin/ps -o command= -p "$pid" 2>/dev/null)"
+        case "$cmd" in *"$want"*) return 0 ;; esac
         sleep 0.1
     done
     return 1
 }
-wait_gone() {  # $1=pid → 消えるまで待つ。残ったまま次へ進むと囮が混ざる
-    for _ in $(seq 1 60); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done
-    return 1
-}
-drop_decoy() {
-    [ -z "$DECOY" ] && return 0
-    kill "$DECOY" 2>/dev/null
-    wait_gone "$DECOY" || ng "囮の後始末" "pid $DECOY が残っている — 次のシナリオが汚れる"
-    wait "$DECOY" 2>/dev/null
-    DECOY=""
-    # 撤収後の一致集合が基準線へ戻っているか。戻らなければ知らない走行が居る。
-    local now; now="$(snapshot)"
-    if [ -n "${BASE_SET+x}" ] && [ "$now" != "$BASE_SET" ]; then
-        unmeas "一致集合が基準線へ戻らない" "基準[${BASE_SET}] 今[${now}] — 知らない走行が湧いた"
-        BASE_SET="$now"   # 以降の比較が延々と鳴らない様に、新しい基準へ乗せ替える
-    fi
-    return 0
-}
 
-# --- baseline: 囮ゼロで本体を呼ぶ。ここが 0 なら**本物の走行が同居している** -----
-BASE_SET="$(snapshot)"
-bash "$LIVE"; BASE=$?
-if [ "$BASE" -eq 1 ]; then
-    MODE=direct
-    ok "基準線: 囮ゼロで本体が「動いていない」= 直接呼びで判別できる"
-elif [ "$BASE" -eq 0 ]; then
-    MODE=member
-    echo "NOTE  本物の変異走行が同居している(基準線 exit=0)。"
-    echo "NOTE  直接呼びでは囮を判別できないので、PID の所属で測る劣化版へ落ちる。"
+# --- 0) 既定の印の path を**両方の本体から抜いて**一致を見る -------------------------
+#   この既定値は sh と python の2箇所に書かれている(消せない: 言語が違う)。
+#   写しを持たない事より、**写しが割れた事を検出できる**事が大事 —— 割れると書き手と
+#   読み手が別の file を見るので、門は「走行していない」と答え続ける(静かな fail-open)。
+NSH="$(/usr/bin/grep -c '^LOCK="\${RC_MUTATION_LOCK:-' "$LIVE" 2>/dev/null || true)"
+NPY="$(/usr/bin/grep -c '^MUTATION_LOCK = os.environ.get("RC_MUTATION_LOCK"' "$WRITER" 2>/dev/null || true)"
+SHDEF="$(/usr/bin/sed -n 's/^LOCK="\${RC_MUTATION_LOCK:-\(.*\)}"$/\1/p' "$LIVE")"
+PYDEF="$(/usr/bin/sed -n 's/^MUTATION_LOCK = os.environ.get("RC_MUTATION_LOCK", "\(.*\)")$/\1/p' "$WRITER")"
+if [ "$NSH" != "1" ] || [ "$NPY" != "1" ]; then
+    ng "既定の印の path を取り出す" "読み手に ${NSH} 本 / 書き手に ${NPY} 本ある。1本ずつでないと、どれが効くか判らない"
+    echo ""; echo "MUTATION-RUN-LIVE-CONTROLS: pass=$pass fail=$fail"; exit 1
+elif [ -z "$SHDEF" ] || [ "$SHDEF" != "$PYDEF" ]; then
+    ng "書き手と読み手が同じ印を見ている" "読み手[${SHDEF}] 書き手[${PYDEF}] — 割れている。門は永久に「走行していない」と答える"
+    echo ""; echo "MUTATION-RUN-LIVE-CONTROLS: pass=$pass fail=$fail"; exit 1
 else
-    # 本体が「測れなかった」と答えた。囮の判別は全部当てにならない。
-    MODE=member
-    unmeas "基準線" "本体が exit=$BASE(測れなかった)を返した — pgrep 自体が動いていない"
+    ok "書き手と読み手の既定の印が丁度1本ずつ在り、同じ path を指している"
 fi
 
-# 各シナリオの本体。`want` = 「この囮は走行として数えられるべきか」
-judge() {  # $1=label $2=pid $3=want(yes|no) $4=失敗時の意味
-    local rc
-    if [ "$MODE" = direct ]; then
-        bash "$LIVE"; rc=$?
-        # direct: exit 0 = 走行中と判定 / exit 1 = 居ない / それ以外は測れていない
-        if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
-            unmeas "$1 [本体を実行して判定]" "本体が exit=$rc = 判定不能を返した"
-        elif { [ "$3" = yes ] && [ "$rc" -eq 0 ]; } || { [ "$3" = no ] && [ "$rc" -eq 1 ]; }; then
-            ok "$1 [本体を実行して判定]"
-        else
-            ng "$1 [本体を実行して判定]" "$4 — 本体の exit=$rc 期待=$([ "$3" = yes ] && echo 0 || echo 1)"
-        fi
-    else
-        if { [ "$3" = yes ] && matched "$2"; } || { [ "$3" = no ] && ! matched "$2"; }; then
-            weakly "$1 [劣化版: PID の所属だけ。本体は実行していない]"
-        else
-            ng "$1 [劣化版: PID の所属]" "$4"
-        fi
-    fi
-}
+# --- A) 印が無い = **確認できた「居ない」** ------------------------------------------
+#   呼ぶ側が進んでよい唯一の値。ここが 2 だと、走行していない平時に配備が塞がる。
+/bin/rm -f "$LOCK"
+call; rc=$?
+say "印が無い" 1 "$rc" "平時に配備が塞がる(または未測定に化ける)"
 
-# --- 1) 偽陽性(a): 待ち受け自身。文字列は含むが python ではない ---
-bash -c 'until ! pgrep -f mutation-controls.py >/dev/null 2>&1; do sleep 30; done' >/dev/null 2>&1 &
-DECOY=$!
-wait_argv "$DECOY" 'until ! pgrep -f mutation-controls.py' || ng "囮の起動(待ち受け)" "argv が見えない"
-judge "待ち受けを走行と誤認しない(自己参照しない)" "$DECOY" no \
-      "自己参照 — この判定を使う待ち受けは永久に終わらない"
-drop_decoy
+# --- B) 主が生きていて起動時刻も一致 = 走行中 ------------------------------------------
+#   ★囮を起こさない。この対照自身($$)が「確実に生きているプロセス」である。
+MY="$(lstart $$)"
+if [ -z "$MY" ]; then
+    unmeas "生きている印" "自分の起動時刻が ps から読めない — 以降の生死判定は測れない"
+else
+    mklock "$$" "$MY"
+    call; rc=$?
+    say "主が生きていて起動時刻も一致する印" 0 "$rc" "★守りが空振り — 走行中でも配備できてしまう"
+fi
 
-# --- 2) 偽陽性(b): 編集セッション相当。やはり python ではない ---
-bash -c 'V="vim test/mutation-controls.py"; sleep 30' >/dev/null 2>&1 &
-DECOY=$!
-wait_argv "$DECOY" 'V="vim test/mutation-controls.py"' || ng "囮の起動(編集)" "argv が見えない"
-judge "編集セッションを走行と誤認しない" "$DECOY" no \
-      "無関係なシェルで配備が塞がる"
-drop_decoy
+# --- C) 主が死んでいる = 古い印。走行していない ----------------------------------------
+#   SIGKILL された走行は印を降ろせない。古い印で門が永久に塞がってはいけない
+#   (8/02 の恒久的な詰まりと同じ形を、新しい根で作り直さない)。
+sleep 30 >/dev/null 2>&1 &
+D=$!
+DLS="$(lstart "$D")"
+kill "$D" 2>/dev/null
+if wait_gone "$D"; then
+    wait "$D" 2>/dev/null
+    mklock "$D" "$DLS"
+    call; rc=$?
+    say "主が死んだ古い印" 1 "$rc" "死んだ走行の印で配備が恒久的に塞がる"
+else
+    unmeas "古い印" "囮が消えない — 死んだ主を作れなかった"
+fi
 
-# --- 3) 真陽性: 本物の形。ここが緑でないと**守りごと効かない** ---
-#   (1)(2) だけ通す判定は「常に走行していない」と言えば作れてしまう。
-SB="$(mktemp -d /tmp/mutlive-ctl.XXXXXX)"
-mkdir -p "$SB/test" "$SB/bin"
-printf 'import time\ntime.sleep(30)\n' > "$SB/test/mutation-controls.py"
-python3 "$SB/test/mutation-controls.py" >/dev/null 2>&1 &
-DECOY=$!
-wait_argv "$DECOY" "$SB/test/mutation-controls.py" || ng "囮の起動(走行)" "argv が見えない"
-judge "本物の走行は捕まえる(守りが効いている)" "$DECOY" yes \
-      "★守りが空振り — 走行中でも配備できてしまう"
-drop_decoy
+# --- D) pid は生きているが起動時刻が違う = **pid の再利用** ---------------------------
+#   ★この脚がこの作り直しの肝。pid だけを見る実装は全部の脚を緑で通り抜け、
+#     再利用が起きた日にだけ「走行中」と言い続けて配備を永久に止める。
+mklock "$$" "Thu Jan  1 00:00:00 1970"
+call; rc=$?
+say "pid は生きているが起動時刻が違う印" 1 "$rc" "★pid 再利用を走行と誤認 — 配備が恒久的に塞がる"
 
-# --- 3b) 真陽性: **旗付き**の形。2026-08-02 夜に実際に漏れた形そのもの ---
-#   `python3 -u <台本>`。(3) が旗なしの形だけを囮にしていた為、`[^ ]*` が `-u` を跨げない
-#   という穴が**対照が全部緑のまま**残っていた。私はその穴に落ちて走行中に2本目を起動し、
-#   配備の門(`tools/deploy-to-edith.sh`)も同じ判定なので黙って開いていた。
-#   ★教訓の形: 偽陽性の対照だけ増やしても偽陰性は見えない。**門は両向きに撃つ**。
-#   ★2026-08-04: 此処が**囮を1つだけ生かして**測る様になった事が肝。前は (3) の旗なしが
-#     同時に生きていたので、旗付きを跨げない退行が (3) の一致に隠れて見えなかった。
-python3 -u "$SB/test/mutation-controls.py" >/dev/null 2>&1 &
-DECOY=$!
-wait_argv "$DECOY" "-u $SB/test/mutation-controls.py" || ng "囮の起動(旗付き走行)" "argv が見えない"
-judge "旗付き(python3 -u …)の走行も捕まえる" "$DECOY" yes \
-      "★偽陰性 — 走行中なのに「動いていない」と答える"
-drop_decoy
+# --- E) 壊れた印は「居ない」に丸めない(全部 2 = 測れなかった)------------------------
+#   ここを 1 にすると、印が中途半端な瞬間に門が**開く**(fail-open)。
+printf 'started=x\nroot=y\n' > "$LOCK"
+call; rc=$?; say "pid の欄が無い印" 2 "$rc" "★fail-open: 壊れた印を「走行していない」に丸めている"
 
-# --- ⑤ 終了コードの作り方そのもの(`pgrep` を差し替えて撃つ) -------------------
-#   (1)-(3b) は「一致するか」しか測れない。此処は層が違う: `pgrep` が**失敗した**時に
-#   本体が何と答えるか。旧版は `pgrep … && exit 0; exit 1` で、失敗(2=構文 / 3=致命 /
-#   127=不在)を全部「居ない」に丸めていた —— 配備の門は「居ない」で**開く**ので、
-#   判定不能の瞬間に黙って通る fail-open だった。
-#   ★この脚は囮を使わないので、本物の走行が同居していても測れる(direct/member 共通)。
-STUB="$SB/bin/pgrep"
+printf 'pid=%s\npid=%s\nstarted=%s\nroot=%s\n' "$$" "$$" "${MY:-x}" "$ROOT" > "$LOCK"
+call; rc=$?; say "pid の欄が2本ある印" 2 "$rc" "曖昧な印を先頭採りで黙って解釈している"
+
+printf 'pid=notanumber\nstarted=%s\n' "${MY:-x}" > "$LOCK"
+call; rc=$?; say "pid が数でない印" 2 "$rc" "数でない pid を黙って解釈している"
+
+: > "$LOCK"
+call; rc=$?; say "空の印" 2 "$rc" "★fail-open: 空の印を「走行していない」に丸めている"
+
+# --- F) 計器(ps)が失敗した時に何と答えるか -------------------------------------------
+#   囮では起こせない層。旧版の最大の穴もここに在った(pgrep の失敗を「居ない」に丸め、
+#   判定不能の瞬間に門が黙って通っていた)。
+/bin/mkdir -p "$SB/bin"
 {
     echo '#!/bin/bash'
-    echo 'printf "%s\n" "$@" > "${PGREP_ARGV_OUT:-/dev/null}"'
-    echo 'exit "${PGREP_RC:-1}"'
-} > "$STUB"
-/bin/chmod +x "$STUB"
-ARGVF="$SB/argv.txt"
-
-# pgrep の終了コード → 本体が返すべき値。0=走行中 / 1=居ないと確認 / それ以外=測れなかった
-for pair in "0 0" "1 1" "2 2" "3 2" "127 2"; do
-    set -- $pair
-    drv="$1"; want="$2"
-    PATH="$SB/bin:$PATH" PGREP_RC="$drv" PGREP_ARGV_OUT="$ARGVF" bash "$LIVE" >/dev/null 2>&1
-    got=$?
-    if [ "$got" -eq "$want" ]; then
-        ok "pgrep が exit=${drv} を返した時、本体は exit=${want}($([ "$want" = 2 ] && echo 測れなかった || echo 確定))"
-    else
-        ng "pgrep exit=${drv} → 本体 exit=${want}" \
-           "実際は ${got}。$([ "$drv" -ge 2 ] && echo '★fail-open: 判定不能を「居ない」に丸めると配備の門が開く' || echo '確定値の対応が壊れている')"
-    fi
-done
-
-# 本体が `pgrep` に渡す引数が、抜き出した正規表現**そのもの**である事。
-#   (別の物を渡していたら、上の (1)-(3b) は「本体が実際に使う判定」を測っていない)
-# `$(...)` は末尾の改行を落とすので、期待値も同じ作り方で作って比べる(片方だけ
-# 生の file 内容にすると、改行の有無で永久に赤くなる)。
-want_argv="$(printf -- '-f\n%s\n' "$PAT")"
-got_argv="$(/bin/cat "$ARGVF" 2>/dev/null)"
-if [ "$got_argv" = "$want_argv" ]; then
-    ok "本体は pgrep へ丁度 \`-f <抜き出した正規表現>\` を渡している"
+    echo 'exit "${STUB_PS_RC:-2}"'
+} > "$SB/bin/ps"
+/bin/chmod +x "$SB/bin/ps"
+if [ -n "$MY" ]; then
+    mklock "$$" "$MY"
+    for drv in 2 3 127; do
+        RC_MUTATION_LOCK="$LOCK" RC_PS_BIN="$SB/bin/ps" STUB_PS_RC="$drv" \
+            bash "$LIVE" >/dev/null 2>&1
+        rc=$?
+        say "ps が exit=${drv} で失敗した時" 2 "$rc" "★fail-open: 計器の失敗を「居ない」に丸めると門が開く"
+    done
+    # ps は「居ない」と言うのに signal は届く = 食い違い。どちらとも確定できないので 2。
+    RC_MUTATION_LOCK="$LOCK" RC_PS_BIN="$SB/bin/ps" STUB_PS_RC=1 bash "$LIVE" >/dev/null 2>&1
+    rc=$?
+    say "ps は居ないと言うのに signal は届く時" 2 "$rc" "同一性を確かめないまま確定している"
 else
-    ng "pgrep へ渡す引数" "期待[-f / ${PAT}] 実際[$(printf '%s' "$got_argv" | tr '\n' '|')]"
+    unmeas "計器の失敗" "自分の起動時刻が読めず、印を作れない"
 fi
 
-# --- ⑥ `--who` は**実行体の名前しか出さない**(引数を出さない) ----------------
-#   `--who` は塞がった人が「当たったのは本当に python か」を見る為の口。当たる相手は
-#   **無関係なコマンド行**であり得るので(`pgrep -f` は argv 全体に当たる)、そこに何が
-#   書かれているかは判らない。過去に `pgrep -lf` が OAuth の秘密を transcript へ吐いた事が
-#   あるので、この口が argv を出さない事を機械で押さえる。
-#   ★此処では「その囮に当たる事」は**主張しない**。当たる事自体が直したい欠陥なので、
-#     それを期待値にすると欠陥を仕様として固定してしまう。測るのは出力の形だけ。
+# --- G) 判定器は印を**書き換えない** ---------------------------------------------------
+#   検査が対象を変えると、次に読む人は検査の残した姿を見る。古い印を勝手に消すのも同じ罪
+#   (消した瞬間に、実はまだ生きていた走行の門が開く)。
+mklock "12345678" "Thu Jan  1 00:00:00 1970"
+before="$(/usr/bin/shasum "$LOCK" | /usr/bin/cut -d' ' -f1)"
+call >/dev/null 2>&1
+after="$(/usr/bin/shasum "$LOCK" 2>/dev/null | /usr/bin/cut -d' ' -f1)"
+if [ -e "$LOCK" ] && [ "$before" = "$after" ]; then
+    ok "判定しても印は変わらない(古い印を勝手に消さない)"
+else
+    ng "判定器が印を書き換えない" "読んだだけで印が変わった/消えた"
+fi
+
+# --- H) `--who` は argv を出さない ------------------------------------------------------
+#   印の主は**無関係なプロセス**であり得る(古い印 + pid 再利用)。そこに何が書かれて
+#   いるかは判らないので、実行体の名前だけを出す。過去に `pgrep -lf` が Google OAuth の
+#   client secret を会話へ印字している。
 CANARY='CANARY-MUST-NOT-BE-PRINTED'
 bash -c 'X="python3 -u /nowhere/test/mutation-controls.py CANARY-MUST-NOT-BE-PRINTED"; sleep 30' >/dev/null 2>&1 &
 DECOY=$!
 if wait_argv "$DECOY" "$CANARY"; then
-    who="$(bash "$LIVE" --who 2>/dev/null)"
-    if printf '%s' "$who" | grep -q "$CANARY"; then
-        ng "--who が argv を出さない" "★秘密が漏れる形 — 当たった相手のコマンド行をそのまま出している"
+    mklock "$DECOY" "$(lstart "$DECOY")"
+    who="$(RC_MUTATION_LOCK="$LOCK" bash "$LIVE" --who 2>/dev/null)"; wrc=$?
+    if printf '%s' "$who" | /usr/bin/grep -q "$CANARY"; then
+        ng "--who が argv を出さない" "★秘密が漏れる形 — 主のコマンド行をそのまま出している"
     else
-        ok "--who は argv を出さない(当たった相手の中身が何であっても安全)"
+        ok "--who は argv を出さない(主が何であっても安全に見せられる)"
     fi
-    bad="$(printf '%s\n' "$who" | grep -v '^[0-9][0-9]* ' | grep -c . || true)"
+    bad="$(printf '%s\n' "$who" | /usr/bin/tail -n +2 | /usr/bin/grep -v '^ *[0-9][0-9]* ' | /usr/bin/grep -c . || true)"
     if [ "$bad" = "0" ]; then
-        ok "--who の各行が「pid と実行体」の形をしている"
+        ok "--who の2行目以降が「pid と実行体」の形をしている"
     else
-        ng "--who の出力の形" "「pid 実行体」でない行が ${bad} 本ある"
+        ng "--who の出力の形" "pid と実行体でない行が ${bad} 本ある"
     fi
 else
-    unmeas "--who の出力" "囮の argv が見えない — 何も当たっていない状態では測れない"
+    unmeas "--who の出力" "囮の argv が見えない — 主を作れなかった"
 fi
-drop_decoy
+kill "$DECOY" 2>/dev/null; wait_gone "$DECOY"; wait "$DECOY" 2>/dev/null; DECOY=""
+
+# --- H2) `--who` は**どの状態でも** exit 0 -------------------------------------------
+#   ★2026-08-04、この脚は最初「生きている印」でしか撃っていなかった。それだと
+#     `exit "$VERDICT"` へ壊しても VERDICT=0 なので緑のまま通る —— 名乗った性質を
+#     一度も測っていない脚だった(変異 R11 が生き残って露見)。
+#     `--who` が要るのは**判定が 0 でない時**、つまり塞がれて理由を知りたい時である。
+#     そこで終了コードが立つと、`set -e` の下や `&&` で繋いだ診断が黙って落ちる。
+/bin/rm -f "$LOCK"
+RC_MUTATION_LOCK="$LOCK" bash "$LIVE" --who >/dev/null 2>&1; rc=$?
+say "--who: 印が無い状態(判定=1)でも成功する" 0 "$rc" "診断の口が終了コードで詰まる"
+printf 'started=x\n' > "$LOCK"
+RC_MUTATION_LOCK="$LOCK" bash "$LIVE" --who >/dev/null 2>&1; rc=$?
+say "--who: 印が壊れた状態(判定=2)でも成功する" 0 "$rc" "★詰まるのが「塞がれて理由を知りたい時」に一致する"
+if [ -n "$MY" ]; then
+    mklock "$$" "$MY"
+    RC_MUTATION_LOCK="$LOCK" bash "$LIVE" --who >/dev/null 2>&1; rc=$?
+    say "--who: 走行中(判定=0)でも成功する" 0 "$rc" "診断の口が終了コードで詰まる"
+fi
+
+# --- I) 書き手と読み手が**噛み合う**(end-to-end)----------------------------------------
+#   ここまでの印は全部この対照が手で書いた物 = 書式の写しである。本物の走行台本に
+#   同じ呼び出し(`_take_run_lock`)で印を立てさせ、本体がそれを読めるかを見る。
+#   書式が食い違った日に「対照だけ緑」を作らない為の唯一の脚。
+LOCK2="$SB/lock2"
+# ★古い印を**先に置いておく**。書き手は印を原子的に取る(`os.link`)ので、退ける道が
+#   無いと SIGKILL された走行の印で**以後の全走行が永久に止まる** —— 8/02 の
+#   「恒久的に塞がる」を、門ではなく走行側で作り直す事になる。ここはその退け道を撃つ:
+#   下で LOCKED が出れば退けられたという事で、印は新しい主を名乗っている筈。
+printf 'pid=%s\nstarted=%s\nroot=%s\n' "12345678" "Thu Jan  1 00:00:00 1970" "/nowhere" > "$LOCK2"
+RC_MUTATION_LOCK="$LOCK2" RC_LOCK_SELFTEST_S=60 \
+    python3 "$WRITER" --lock-selftest > "$SB/selftest.out" 2>&1 &
+SELFTEST=$!
+locked=0
+for _ in $(seq 1 300); do
+    /usr/bin/grep -q '^LOCKED ' "$SB/selftest.out" 2>/dev/null && { locked=1; break; }
+    kill -0 "$SELFTEST" 2>/dev/null || break
+    sleep 0.1
+done
+if [ "$locked" -ne 1 ]; then
+    unmeas "本物の走行台本が立てた印" "台本が印を立てなかった: $(/usr/bin/tail -3 "$SB/selftest.out" 2>/dev/null | /usr/bin/tr '\n' ' ')"
+else
+    ok "古い印が残っていても、退けて走り出せる(走行側で恒久的に詰まらない)"
+    newpid="$(/usr/bin/sed -n 's/^pid=//p' "$LOCK2")"
+    if [ "$newpid" = "$SELFTEST" ]; then
+        ok "退けた後の印は**新しい主**を名乗っている"
+    else
+        ng "退けた後の印の主" "印の pid=${newpid} が走り出した台本(${SELFTEST})と違う"
+    fi
+    RC_MUTATION_LOCK="$LOCK2" bash "$LIVE" >/dev/null 2>&1; rc=$?
+    say "本物の走行台本が立てた印を読める" 0 "$rc" "★書き手と読み手の書式が割れている — 門は走行中に開く"
+
+    # ★時間帯と locale を跨いでも同じ印を読めるか(Codex 指摘 #4)。
+    #   `lstart` は**呼び手の環境で描かれる**ので、書き手と読み手が違う環境に居ると
+    #   同じプロセスが違う文字列になる。読み手はそれを「pid の再利用」と読み、
+    #   判定 1 = **走行中に門が開く**(fail-open)。ここは実際に環境をずらして撃つ。
+    #   ★この脚は本物の書き手が立てた印にだけ意味がある(手書きの印だと、対照自身が
+    #     読み手と同じ環境で作るので永久に一致してしまう)。
+    for _tz in "Asia/Tokyo" "America/New_York" "UTC"; do
+        TZ="$_tz" LC_ALL="C" RC_MUTATION_LOCK="$LOCK2" bash "$LIVE" >/dev/null 2>&1; rc=$?
+        say "読み手が TZ=${_tz} で走っても同じ印を読める" 0 "$rc" "★時間帯で pid 再利用に化ける — 走行中に門が開く"
+    done
+    TZ="Asia/Tokyo" LC_ALL="ja_JP.UTF-8" RC_MUTATION_LOCK="$LOCK2" bash "$LIVE" >/dev/null 2>&1; rc=$?
+    say "読み手が別の locale で走っても同じ印を読める" 0 "$rc" "★locale で pid 再利用に化ける — 走行中に門が開く"
+
+    # --- J) 2本目は走らない(相互排他)---------------------------------------------
+    #   8/02 に実際に起きた形 = 2本が同じ log へ書いて混ざり、片方の対照がもう片方の
+    #   囮を見て赤くなった。今までこれを止めていたのは私の記憶だけで、機械は何も
+    #   見ていなかった。
+    out2="$(RC_MUTATION_LOCK="$LOCK2" RC_LOCK_SELFTEST_S=1 python3 "$WRITER" --lock-selftest 2>&1)"
+    rc2=$?
+    if [ "$rc2" -eq 0 ]; then
+        ng "走行中に2本目を起こさない" "★2本目が走った — 同じ木を2本で測ると log も囮も混ざる"
+    elif printf '%s' "$out2" | /usr/bin/grep -q '既に動いている'; then
+        ok "走行中に2本目を起こそうとすると、理由を言って止まる"
+    else
+        ng "走行中に2本目を起こさない" "止まったが理由が違う: $(printf '%s' "$out2" | /usr/bin/tail -1)"
+    fi
+
+    kill "$SELFTEST" 2>/dev/null
+    if wait_gone "$SELFTEST"; then
+        wait "$SELFTEST" 2>/dev/null; SELFTEST=""
+        RC_MUTATION_LOCK="$LOCK2" bash "$LIVE" >/dev/null 2>&1; rc=$?
+        say "台本が落ちた後は印が降りている" 1 "$rc" "★終わった走行の印が残り、配備が恒久的に塞がる"
+        if [ -e "$LOCK2" ]; then
+            ng "台本は自分の印を片付ける" "SIGTERM で降ろせていない(file が残っている)"
+        else
+            ok "台本は SIGTERM でも自分の印を片付ける"
+        fi
+    else
+        unmeas "印の後始末" "台本が落ちない"
+    fi
+fi
+
+# --- J2) 同時に出発した 8 本のうち、印を取れるのは丁度1本 ------------------------------
+#   ★上の J は**順番に**起こした2本目を見ている。それだけだと「確かめてから書く」実装
+#     (`os.replace`)でも緑を通る —— 古い印だと**同時に**判断した2本が、どちらも
+#     「自分が主だ」と思って進む窓が残るからである。相互排他を名乗りながら稀に2本走る形で、
+#     結果は 8/02 の偽陰性と同じ(log と囮が混ざる)。
+#   古い印を先に置いて 8 本を同時に出発させると、差が確率でなく**個数**で出る:
+#     - `os.link` (今の形): 全員が EEXIST で弾かれ、退けた後に丁度1本だけ勝つ → LOCKED 1
+#     - `os.replace` (確かめてから書く): 全員が「古い印」と判断して進む → LOCKED 8
+#   ★保持時間(`RC_LOCK_SELFTEST_S`)は飾りでなく**この脚の判定そのもの**である。
+#     此処は「同時に何本**取れたか**」を数えていて、「同時に何本**握っていたか**」は数えて
+#     いない。勝者が保持を終えて降ろした後に、待っていた別の本が**正しく**取れば、それも
+#     `LOCKED` 2行として現れる —— 引き継ぎであって同時ではないのに、赤が出る。
+#     退ける門の待ちは 1回あたり最大 200*10ms = 2秒(`test/mutation-controls.py` の
+#     `_steal_stale_lock()` 内 `for _ in range(200)`)で、取得は 3 回まで試み、その合間に
+#     退ける道へ 2 回入る(同 `_take_run_lock()` の `for attempt in (1, 2, 3)`)ので、
+#     **正しい実装でも最悪 4 秒待たされてから勝ち得る**。保持がそれ以下だと、2行が
+#     「重なった」の証拠にならない。
+#     実測(8/04、8本同時 x 30回): 保持 1秒 → 30回中1回が2行(= 引き継ぎ、偽の赤)。
+#                                 保持 8秒 → 30回とも丁度1行。
+#     よって 4秒より長い所に置く。8 = 最悪待ち 4秒の 2倍。**下げるなら上の算術ごと直す事**。
+#     `RC_RACE_HOLD_S` は繰り返し実験(同じ形を N 回回す)用の口。短くすると偽の**赤**が
+#     出るだけで、偽の緑にはならない —— 取得が原子的でなければ保持の長さに関わらず 8本
+#     全部が `LOCKED` を出すので、この口から緩める事はできない。
+LOCK3="$SB/lock3"
+printf 'pid=%s\nstarted=%s\nroot=%s\n' "12345679" "Thu Jan  1 00:00:00 1970" "/nowhere" > "$LOCK3"
+RACE=""
+for i in 1 2 3 4 5 6 7 8; do
+    RC_MUTATION_LOCK="$LOCK3" RC_LOCK_SELFTEST_S="${RC_RACE_HOLD_S:-8}" \
+        python3 "$WRITER" --lock-selftest > "$SB/race-$i.out" 2>&1 &
+    RACE="$RACE $!"
+done
+for p in $RACE; do wait "$p" 2>/dev/null; done
+won=0
+for i in 1 2 3 4 5 6 7 8; do
+    /usr/bin/grep -q '^LOCKED ' "$SB/race-$i.out" 2>/dev/null && won=$((won+1))
+done
+if [ "$won" = "1" ]; then
+    ok "同時に出発した 8 本のうち、印を取れたのは丁度1本"
+elif [ "$won" = "0" ]; then
+    unmeas "同時出発の決着" "1本も走り出せなかった = 古い印を退ける道が塞がっている"
+else
+    ng "同時出発の決着" "★${won}本が同時に走り出した — 印の取得が原子的でない(確かめてから書いている)"
+fi
+
+# --- J3) 退ける門が開いたまま残っていたら、走り出さずに**理由と直し方**を言って止まる ----
+#   ★これは私が入れた退行である。門(`<印>.steal`)は普通は数マイクロ秒しか握らないが、
+#     その隙に SIGKILL されると誰も消さない。門自体には古さの判定が無い —— 付けようと
+#     すると「門が古いか」を2本が同時に判断して2本とも入れるので、門を守る門が要る形に
+#     戻る(亀の塔)。なので**直さず、閉じる側に倒して**、人が消せる様に道を名指しさせる。
+#   ここで測るのは 2つ: (1) 開かない事(= 古い印が在っても勝手に進まない)、
+#   (2) 止まる時に**消すべき path を言う**事。理由を言わない fail-closed は、次に踏んだ
+#   人にとって原因不明の停止と区別が付かない。
+LOCK4="$SB/lock4"
+printf 'pid=%s\nstarted=%s\nroot=%s\n' "12345679" "Thu Jan  1 00:00:00 1970" "/nowhere" > "$LOCK4"
+printf 'pid=%s\n' "999999" > "$LOCK4.steal"      # 落ちた走行が置き去りにした門
+jrc=0
+RC_MUTATION_LOCK="$LOCK4" RC_LOCK_SELFTEST_S=1 \
+    python3 "$WRITER" --lock-selftest > "$SB/stuckguard.out" 2>&1 || jrc=$?
+if [ "$jrc" = "0" ]; then
+    ng "門が残っている時の振舞い" "★門を無視して走り出した — 落ちた走行と競って古い印を取り合う"
+elif /usr/bin/grep -q '^LOCKED ' "$SB/stuckguard.out" 2>/dev/null; then
+    ng "門が残っている時の振舞い" "★印を取ってから落ちた — 門の中に入れてしまっている"
+elif /usr/bin/grep -qF "$LOCK4.steal" "$SB/stuckguard.out" 2>/dev/null; then
+    ok "退ける門が残っていたら、走り出さずに消すべき path を名指しして止まる"
+else
+    ng "門が残っている時の理由" "止まりはしたが ${LOCK4}.steal を名指ししていない — 人が直せない"
+fi
+/bin/rm -f "$LOCK4" "$LOCK4.steal" "$SB/stuckguard.out"
+
+# --- K) 静的: 本体が**推定へ戻っていない** ---------------------------------------------
+#   argv への文字列一致は、精密にしても推定のままである。実行行に一つでも戻っていたら、
+#   8/02 の両方向の穴が一緒に戻って来る。
+pg="$(/usr/bin/grep -n 'pgrep' "$LIVE" 2>/dev/null | /usr/bin/grep -v '^[0-9]*: *#' | /usr/bin/grep -c . || true)"
+if [ "$pg" = "0" ]; then
+    ok "本体の実行行に pgrep が無い(argv への文字列一致へ戻っていない)"
+else
+    ng "本体が推定へ戻っていない" "実行行に pgrep が ${pg} 本ある — 誤検出と引数の揺れが戻る"
+fi
 
 echo ""
-echo "MUTATION-RUN-LIVE-CONTROLS: pass=$pass fail=$fail weak=$weak unmeasured=$unmeasured mode=$MODE"
+echo "MUTATION-RUN-LIVE-CONTROLS: pass=$pass fail=$fail unmeasured=$unmeasured"
 # 終了コードは `tools/run-controls.sh` の規約に合わせる: 0=緑 / 1=赤 / **2=測っていない**。
-#   劣化版で緑になった時に 0 を返すと、「本体を実行して確かめた」と読まれる —— それは
-#   まさにこの作り直しが潰した嘘なので、区別を終了コードにも持たせる。
 if [ "$fail" -gt 0 ]; then exit 1; fi
 if [ "$unmeasured" -gt 0 ]; then
     echo "  未測定(緑ではない): 上の UNMEA を読む事。測れなかった脚が ${unmeasured} 本ある。"
-    exit 2
-fi
-if [ "$MODE" != direct ]; then
-    echo "  未測定(緑ではない): 本物の変異走行と同居していて、本体を実行しての判別ができなかった。"
-    echo "  走行が終わってから回し直す事。"
     exit 2
 fi
 exit 0

@@ -205,7 +205,16 @@ measure() {
     #   作業コピー(mkdtemp)を残す —— 既定の TMPDIR に置くと、この対照自身が
     #   「消し忘れた木」を撒く事になる。砂場の中に落としておけば片付けで一緒に消える。
     #   合図の照合(owned_by_sandbox)もこの配置に依存している。
-    ( cd "$work" && export TMPDIR="$SB/tmp-$label" && exec python3 test/mutation-controls.py --only R5 ) >/dev/null 2>&1 &
+    # ★走行の印も砂場へ向ける(2026-08-04)。ここで走るのは**模擬**の走行 —— 写した木の
+    #   中の、しかも信号処理を剥がした版である。既定の `/tmp/rc-backend-mutation-run.lock`
+    #   を掴ませると2つ困る:
+    #     - 測定中の 90 秒、本物の配備が「模擬の走行」に塞がれる(安全側だが意味が嘘)
+    #     - 負の対照は SIGKILL 相当で落ちるので atexit が走らず、**印が /tmp に残る**。
+    #       対照が自分の外へ痕跡を撒く事になる(この file の TMPDIR の教訓と同じ形)。
+    #   本物の走行が2本同時に立たない事は `test/mutation-run-live-controls.sh` が
+    #   本物の書き手で測っている。ここはその性質を測る場所ではない。
+    ( cd "$work" && export TMPDIR="$SB/tmp-$label" RC_MUTATION_LOCK="$SB/mut-$label.lock" \
+        && exec python3 test/mutation-controls.py --only R5 ) >/dev/null 2>&1 &
     local py=$!
 
     # e2e の子が実際に上がるまで待つ(最大 90 秒)。上がる前に殺したら何も測っていない。

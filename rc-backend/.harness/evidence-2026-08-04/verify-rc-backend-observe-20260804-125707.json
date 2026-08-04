@@ -1,0 +1,14 @@
+{
+  "service": "com.edith.rc-backend",
+  "host": "Edith",
+  "mode": "observe",
+  "plist_present": true,
+  "deployed_rev": "b9d4326-dirty",
+  "deployed_at": "2026-08-04T12:06:13+09:00",
+  "node": "v25.9.0",
+  "snapshots": [{"phase":"running","at":"2026-08-04T12:57:08+09:00","launchd_job_present":true,"launchd_pid":"80051","port8787_listener_pid":"80051","server_mjs_pids":"80051","http_code":"401","tailscale_serve_to_8787":true}],
+  "layers_agree_running": true,
+  "disagreement": "",
+  "verdict": "全層が RUNNING で一致",
+  "note": "応答コードだけでは同一性を証明しない。pid の一致まで見ている。"
+}

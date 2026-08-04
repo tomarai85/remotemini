@@ -55,7 +55,10 @@ cd "$ROOT" || exit 2
 
 PROBE="$ROOT/tools/_freeze-probe.sh"
 OUT="$(/usr/bin/mktemp -t freeze-ctl)" || exit 2
-cleanup() { /bin/rm -f "$PROBE" "$OUT"; }
+# 模擬の走行に掴ませる印(下の注記を読む事)。片付けで一緒に消す。
+MUTLOCK="$(/usr/bin/mktemp -t freeze-mutlock)" || exit 2
+/bin/rm -f "$MUTLOCK"   # 走行自身に作らせる。空 file が先に在ると「壊れた印」に見える
+cleanup() { /bin/rm -f "$PROBE" "$OUT" "$MUTLOCK"; }
 trap cleanup EXIT
 
 pass=0; fail=0
@@ -127,7 +130,11 @@ PROG_RE='^\[[0-9]+/[0-9]+\]'
 # ★`-u` が要る。stdout を file へ向けると Python は既定でブロックバッファリングになり、
 #   走行の出す行がバッファに座ったまま出てこない。合図で待ち合わせる以上、
 #   「まだ来ない」と「もう過ぎた」が区別できない状態にしてはいけない。
-/usr/bin/python3 -u test/mutation-controls.py --only M85 > "$OUT" 2>&1 &
+# ★走行の印は砂場へ(2026-08-04)。ここで走らせるのは凍結の窓を覗く為の**模擬**で、
+#   しかも give_up は途中で畳む。既定の印を掴むと、測っている間だけ本物の配備が
+#   塞がり、畳み方によっては印が /tmp に残る。
+RC_MUTATION_LOCK="$MUTLOCK" \
+    /usr/bin/python3 -u test/mutation-controls.py --only M85 > "$OUT" 2>&1 &
 RUN=$!
 
 give_up() {   # give_up <理由>  —— 走行を畳んで未測定で出る
