@@ -193,10 +193,18 @@ test("★会話の道の正規表現は1本しか無い(server.mjs は写しを�
 });
 
 test("★`json()` が拾い口を通る(呼び口40箇所ではなく唯一の口で拾っている事)", () => {
+  const m = /function json\(res, code, obj\) \{([\s\S]{0,900}?)res\.writeHead\(code,/.exec(SERVER_SRC);
+  assert.ok(m, "json() の本体が writeHead に届く前に見つからない");
+  // ★以前は `noteBody(res, obj);` と**変数名を書き写して**いた。名前は「送った物」の
+  //   代理でしかなく、`json()` が `display` を足す様になった時に、名前が合わなくなっただけで
+  //   落ちた(2026-08-05)。測るべきは名前ではなく**同一性** —— 本文に組んだ物と、ログに
+  //   渡した物が同じ値である事。こう書くと、ログだけが送信前の姿を保存する欠陥も掴める。
+  const sent = /const body = JSON\.stringify\((\w+)\);/.exec(m[1]);
+  assert.ok(sent, "本文を組む行が writeHead より前に無い");
   assert.match(
-    SERVER_SRC,
-    /function json\(res, code, obj\) \{[\s\S]{0,400}?noteBody\(res, obj\);[\s\S]{0,80}?res\.writeHead\(code,/,
-    "json() が noteBody を writeHead より前に呼んでいない",
+    m[1],
+    new RegExp(`noteBody\\(res, ${sent[1]}\\);`),
+    `json() が「実際に送った物」(${sent ? sent[1] : "?"})を writeHead より前に拾っていない`,
   );
 });
 

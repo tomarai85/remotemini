@@ -34,6 +34,14 @@ import { readHead as readBranchHead, writeHead as writeBranchHead, readAllHeads 
 import { psSnapshot } from "./procs.mjs";
 import { paneFaultReason, UNDECIDABLE, blockedMessage, blockedBody, WORKER_REFUSAL } from "./blocked.mjs";
 import { cwdVerdict } from "./trust.mjs";
+// ★向きは server -> view の一方向だけ(view.mjs は node の API を一切 import しない)。
+//   ここで view.mjs を呼ぶのは、ネイティブの器が `import "/view.mjs"` を**できない**為
+//   (DESIGN §2.13「view.mjs は電話に配られている」)。web は今まで通り自分で import して
+//   計算するので、実装は1本のまま = 判断の写しは増えない。
+import {
+  routeLabel, subtitleOf, scanLine, whoOf, gapNotice, choiceView,
+  sendResult, interruptResult, choiceResult, clearQueueResult,
+} from "./view.mjs";
 import { redact } from "./redact.mjs";
 import { attachRequestLog, markResult, noteBody, SESSION_ROUTE_RE } from "./reqlog.mjs";
 
@@ -595,7 +603,29 @@ function pushToSubscribers(sessionId, seq, data) {
   }
 }
 
+/**
+ * SSE の本文に語を足す口。**此処が唯一の口**。
+ *
+ * ★`json()` の `speaks`/`DISPLAY` と同じ理由でここに置く: `sendEvent` の呼び口は今6箇所
+ *   あり(gap 4 / message 1 / screen 1)、呼び口ごとに語を配ると**次に足された枝だけが
+ *   黙って欄無しで通る**。`reqlog.mjs` の `noteBody` が同じ轍で学んだ形。
+ * ★`data` を書き換えない。message の `data` は ring に入っている**その物**なので、
+ *   その場で足すと保持中の過去イベントに後から語が生えて、再生が撮った時と変わる。
+ */
+const SSE_SPEAKS = {
+  gap: (d) => ({ ...d, display: { notice: gapNotice(d.why) } }),
+  message: (d) => (Array.isArray(d.entries) ? { ...d, entries: d.entries.map(withWho) } : d),
+  // screen の `data` は画面の本体そのもの。poll 側が `choiceView(f.screen.body)` に渡す物と
+  // 同じ材料を、同じ関数に渡している。SSE では**変わった時しか流れない**ので、poll のような
+  // 「変わっていない = null」の作法は要らない —— イベントが来た事自体が変化の合図。
+  screen: (d) => ({ ...d, display: { choice: choiceView(d) } }),
+};
+
 function sendEvent(res, { id, event, data }) {
+  const speak = SSE_SPEAKS[event];
+  if (speak && data && typeof data === "object" && !Array.isArray(data) && !("display" in data)) {
+    data = speak(data);
+  }
   let frame = "";
   if (id !== undefined) frame += `id: ${id}\n`;
   if (event) frame += `event: ${event}\n`;
@@ -827,13 +857,57 @@ function renewPollLease(sessionId, f) {
 }
 
 // ---- HTTP -------------------------------------------------------------------
+/**
+ * この応答の「画面語」を作る `view.mjs` の関数を、**枝に入る前に1回だけ**宣言する。
+ *
+ * ★`noteBody` と同じ理由で口を1つにする(直下の注記): 送信の応答は `messages` だけで
+ *   8枝あり、呼び口ごとに `display` を書くと**次に足された枝が黙って欄無しで通る**。
+ *   欄が無い応答は電話側で「確認できませんでした」に落ちる = 成功しているのに warn が出る。
+ *   宣言を枝の外に置けば、後から枝が増えても勝手に付く。
+ */
+const DISPLAY = Symbol("display-formatter");
+function speaks(res, fn) {
+  res[DISPLAY] = fn;
+}
+
 function json(res, code, obj) {
-  const body = JSON.stringify(obj);
+  const fn = res[DISPLAY];
+  // ★既に `display` を持つ本文には触らない。一覧のように**枝の中で**組み立てる応答が
+  //   在るので、ここで上書きすると出所が2つになる(どちらが勝つかを読む人が追う羽目になる)。
+  const out =
+    fn && obj && typeof obj === "object" && !Array.isArray(obj) && !("display" in obj)
+      ? { ...obj, display: fn(code, obj) }
+      : obj;
+  const body = JSON.stringify(out);
   // ★ログの欄は**応答を作る唯一の口**で拾う。呼び口40箇所に注記を配ると、次に足された枝が
   //   黙って欄無しで通る(= 一覧を配ると必ず片方が古くなる、この案件で最も多い型)。
-  noteBody(res, obj);
+  noteBody(res, out);
   res.writeHead(code, { "content-type": "application/json; charset=utf-8" });
   res.end(body);
+}
+
+/**
+ * 流れの切れ目1件。**帯に出す文面まで**をここで決める(S 群)。
+ *
+ * ★`gapNotice` は `tail-attached`(購読を張った瞬間の正直な継ぎ目)に `null` を返す =
+ *   「出さない」。`null` を空文字に化かさない —— 「出す物が無い」と「文面が空」は別で、
+ *   後者は帯に空の警告を出す。`why` は消さずに残す(電話が理由で分岐する道を塞がない)。
+ */
+function gapItem(why, seq) {
+  const item = { kind: "gap", why, display: { notice: gapNotice(why) } };
+  return seq === undefined ? item : { ...item, seq };
+}
+
+/**
+ * 履歴・ライブの1発言に**表示語だけ**を足す(DESIGN §2.13 の S 群)。
+ *
+ * ★`role` は消さない。ネイティブは `display.who` を描くが、`app.html` は今まで通り
+ *   自分で `whoOf(role)` を呼ぶ。片方だけが読む鍵を消すと、追加のみという条件が壊れる。
+ * ★発言そのもの(`text`)には触らない。ここは**語を足す**層で、丸める層ではない。
+ */
+function withWho(entry) {
+  if (!entry || typeof entry !== "object") return entry;
+  return { ...entry, display: { who: whoOf(entry.role) } };
 }
 
 async function readBody(req, limit = 64 * 1024) {
@@ -939,10 +1013,15 @@ const server = createServer(async (req, res) => {
           : UNDECIDABLE.has(r.reason)
             ? blockedBody(r)
             : { route: "worker", ...manager.status(s.id) };
-        return { ...s, live };
+        // ★`display` = **計算済み**と一目で分かる名前空間。生データの兄弟キーとして
+        //   `routeLabelText` の様に散らすと、電話側が「これは観測値か表示語か」を
+        //   毎回思い出す羽目になる。追加のみ = 既存の鍵は1つも動かさないので、
+        //   `app.html` は無改修のまま(自分で view.mjs を呼び続ける)。
+        return { ...s, live, display: { route: routeLabel(live), subtitle: subtitleOf(s) } };
       });
       // 何本見て何本開いたかを毎回名乗る。★「速い」を主張する側が計器を持たないと、
       // 遅くなった時に「気のせい」で片付く(この置き換え自体、測って初めて見つかった)。
+      const scanBody = { scope: requestedScope, limit, files: scan.files, read: scan.read, cached: scan.cached, examined: scan.examined };
       return json(res, 200, {
         sessions: listing,
         // `examined` = 実際に開いて中身を見た file 数。`files` は候補の総数。
@@ -950,7 +1029,11 @@ const server = createServer(async (req, res) => {
         //   (a) ページが埋まって止めた(`examined < files`) (b) 全部見た上でこれだけ
         //   (`examined === files` = これ以上は無い)。区別できないと「以前を読む」が
         //   押しても何も起きないボタンになる(変異 M65 と同じ形)。
-        scan: { scope: requestedScope, limit, files: scan.files, read: scan.read, cached: scan.cached, examined: scan.examined },
+        scan: scanBody,
+        // ★`scanLine` は `scan` **本体**を受ける(行ごとの値ではない)。ここを取り違えても
+        //   「関数を呼んだか」を見る検査は緑のままなので、検査は期待値を独立に組む
+        //   (DESIGN §2.13 の訂正3)。
+        display: { scan: scanLine(scanBody) },
         // ★故障を一覧の本文に載せる。行が全部 blocked になった時、原因が「机で開いていない」
         //   なのか「サーバが tmux を読めない」なのかは電話から区別できない。
         //   reason まで載せるのは、直す先が違うから(書式/locale か、tmux 自体かソケットか)。
@@ -1013,7 +1096,7 @@ const server = createServer(async (req, res) => {
       try {
         const h = readHistoryFromPath(target, limit);
         // truncated = これより前がある。電話側が「以前を読む」を出せる様に名乗る。
-        return json(res, 200, { history: h.history, truncated: h.truncated });
+        return json(res, 200, { history: h.history.map(withWho), truncated: h.truncated });
       } catch (e) {
         if (e.code === "ENOENT") return json(res, 200, { history: [], truncated: false });
         return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", code: String(e.code || e.message) });
@@ -1036,6 +1119,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (action === "messages" && req.method === "POST") {
+      speaks(res, sendResult);
       let body;
       try {
         body = JSON.parse(await readBody(req));
@@ -1130,6 +1214,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (action === "interrupt" && req.method === "POST") {
+      speaks(res, interruptResult);
       const r = resolvePane();
       if (UNDECIDABLE.has(r.reason)) {
         // 止める先を確定できない = 別の会話を止めうる。何もしない。
@@ -1167,6 +1252,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (action === "queue" && req.method === "DELETE") {
+      speaks(res, clearQueueResult);
       // 「待っている送信を捨てる」(2026-08-04)。**走っている番は止めない** ——
       // 止めるのは `interrupt` の側。2つを1つのボタンに畳むと、人が「取り消す」と読んだ操作が
       // 生成中の turn を殺す事になる。取り消せるのは**まだワーカーへ書いていない**分だけ。
@@ -1201,6 +1287,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (action === "choice" && req.method === "POST") {
+      speaks(res, choiceResult);
       let body;
       try {
         body = JSON.parse(await readBody(req));
@@ -1281,16 +1368,16 @@ const server = createServer(async (req, res) => {
           let cutSeq = null;
           if (d.kind === "resume") {
             const missed = f.ring.since(d.seq);
-            if (missed.gap) items.push({ kind: "gap", why: "ring-overflow" });
+            if (missed.gap) items.push(gapItem("ring-overflow"));
             const take = missed.slice(0, POLL_MAX_ITEMS);
             more = missed.length > take.length;
             for (const e of take) {
               cutSeq = e.seq;
-              if (e.data.kind === "gap") items.push({ kind: "gap", why: e.data.why, seq: e.seq });
-              else items.push({ kind: "message", entries: e.data.entries, seq: e.seq });
+              if (e.data.kind === "gap") items.push(gapItem(e.data.why, e.seq));
+              else items.push({ kind: "message", entries: e.data.entries.map(withWho), seq: e.seq });
             }
           } else if (d.kind === "gap") {
-            items.push({ kind: "gap", why: d.why });
+            items.push(gapItem(d.why));
           }
           // 栞の seq: 今回返した最後の物。1件も返していなければ据え置き(初回は今の先端)。
           const seq = cutSeq !== null ? cutSeq : d.kind === "resume" ? d.seq : f.ring.nextSeq - 1;
@@ -1299,6 +1386,13 @@ const server = createServer(async (req, res) => {
           return {
             items,
             screen: screenChanged ? f.screen.body : null,
+            // ★`screen` と**同じ規則**で運ぶ(変わった時だけ載る / `null` = 据え置き)。
+            //   ここを毎回載せると、画面が変わっていない poll が `show:false` を運んで
+            //   **電話が持っている選択待ちの面を消す**。`choiceView` は「サーバの payload の
+            //   純関数」だが、その payload は**毎回来るとは限らない** —— 添える先を
+            //   `screen` に揃える事で初めて S 群として正しくなる(2026-08-05、`readablePoll` を
+            //   C へ戻したのと同じ検討で見つけた)。
+            display: { choice: screenChanged ? choiceView(f.screen.body) : null },
             route: "tmux",
             // ★`null` であって `0` ではない(2026-08-04)。机で開かれている会話の送信待ちは
             //   Claude Code の TUI が自分で持っていて(`Press up to edit queued messages`)、
@@ -1365,7 +1459,7 @@ const server = createServer(async (req, res) => {
         let more = false;
         let seq = d.kind === "resume" ? d.seq : 0;
         if (d.kind === "gap") {
-          items.push({ kind: "gap", why: d.why });
+          items.push(gapItem(d.why));
           // 読み直させた上で**先端**に合わせる。★「件数」を seq に使わない ——
           //   リングが溢れた後は件数 < 先端 seq になり、既に消えた番号から再開する事になる。
           const all = manager.eventsSince(sessionId, 0);
@@ -1373,11 +1467,14 @@ const server = createServer(async (req, res) => {
         } else {
           const from = d.kind === "resume" ? d.seq : 0;
           const missed = manager.eventsSince(sessionId, from);
-          if (missed.gap) items.push({ kind: "gap", why: "ring-overflow" });
+          if (missed.gap) items.push(gapItem("ring-overflow"));
           const take = missed.slice(0, POLL_MAX_ITEMS);
           more = missed.length > take.length;
           for (const e of take) {
             seq = e.seq;
+            // ★ワーカー経路の item は `entries` ではなく `event`(我々が起こした子の NDJSON
+            //   1行)。`whoOf` の材料になる `role` を持たないので**語を足さない** ——
+            //   ここに `display` を足すと、無い物から作った名前が付く。
             items.push({ kind: "message", event: e.data, seq: e.seq });
           }
           // ★初回(栞なし)は**先端に合わせず 0 から返す**。tmux 経路と違い、ワーカーの出来事は

@@ -14,6 +14,13 @@ import { fileURLToPath } from "node:url";
 import { createSseParser, decodeEvent } from "../src/frames.mjs";
 import { PANE_SEP } from "../src/inject.mjs";
 import { readHead, writeHead } from "../src/heads.mjs";
+// ★13-D で使う。サーバと**同じ関数**を読むが、渡す引数は検査が自分で名指しする。
+//   同じ関数を使う事自体は恒真ではない —— 恒真になるのは「サーバが渡した物」を期待値の
+//   材料にした時。掴みたい欠陥は「呼んでいない」ではなく「**違う物を渡した**」。
+import {
+  routeLabel, subtitleOf, scanLine, whoOf, gapNotice, choiceView,
+  sendResult, interruptResult, choiceResult, clearQueueResult,
+} from "../src/view.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SB = mkdtempSync(join(tmpdir(), "rc-e2e-"));
@@ -699,7 +706,13 @@ try {
 
   // 3. history
   const hist = await (await fetch(`${B}/api/sessions/${SID1}/history`, { headers: H })).json();
-  check("history has user+assistant+tool", JSON.stringify(hist.history) ===
+  // ★`display` だけ落として、**残りは丸ごと**比べる(2026-08-05)。Sprint 1 で
+  //   `display.who` が足された時、この行は「全体の一致」を見ていたので落ちた —— 中身は
+  //   正しいのに検査だけが赤い形。落とす対象を `display` に限るのは、迷子の欄が他に生えたら
+  //   ここで捕まえ続ける為。`display` の中身は 13-D が**引数まで**測るので、此処で一緒に
+  //   書き写すと同じ期待値が2箇所に増えて、片方が必ず古くなる。
+  const histShape = (hist.history || []).map(({ display, ...rest }) => rest);
+  check("history has user+assistant+tool", JSON.stringify(histShape) ===
     JSON.stringify([
       { role: "user", text: "最初の質問" },
       { role: "assistant", text: "最初の答え" },
@@ -1803,6 +1816,282 @@ try {
     check("★§3-T 罠1 陽性対照: その時も頭そのものは行として出ない",
       !lreg.sessions.some((s) => s.id === SID_FORK_HEAD),
       JSON.stringify(lreg.sessions.map((s) => s.id)));
+  }
+
+  // ---- 13-D. ★サーバが語を持つ(`display`)= Sprint 1 の継ぎ目 --------------
+  //
+  // 出所: DESIGN §2.13「器」+ .harness/spec-native-shell-2026-08-05.md の Sprint 1。
+  // 電話の器をネイティブにすると `view.mjs` は移植できない(JS と Swift)。移植せずに
+  // 済ませる為に、**画面に出す語をサーバが組んで応答に足す**(S 群)。此処で測るのは
+  // その継ぎ目 —— 単体は `view.mjs` の中だけ、静的検査は文字列だけを見ていて、
+  // 「サーバが**何を渡したか**」には原理的に届かない。
+  //
+  // ★測るのは「呼んだか」ではなく「**正しい引数を渡したか**」(spec の訂正3)。
+  //   だから各項目に対照を付ける: **間違えやすい方の引数**では同じ値にならない事。
+  //   対照が同値で赤が出たら、疑うのは実装ではなく此の検査 —— その fixture では
+  //   本命の比較が何も測っていない(= 恒真)という意味。
+  {
+    const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const strip = (o) => {
+      const r = { ...(o || {}) };
+      delete r.display; // サーバが `fn(code, obj)` に渡したのは `display` を足す**前**の本文
+      return r;
+    };
+    // 本命(期待と一致)と対照(間違った引数では一致しない)を1本にまとめる。
+    // 分けて書くと、対照だけが緑で本命が落ちた時と、その逆とで読み手が数を数える羽目になる。
+    const argCheck = (name, actual, expected, wrongs) => {
+      const same = eq(actual, expected);
+      const vacuous = wrongs.filter(([, v]) => eq(actual, v)).map(([n]) => n);
+      check(
+        name,
+        same && vacuous.length === 0,
+        same
+          ? `★対照が同値(この fixture では何も測れていない): ${vacuous.join(" / ")}`
+          : `actual=${JSON.stringify(actual)} expected=${JSON.stringify(expected)}`,
+      );
+    };
+
+    // --- 一覧 ---
+    const dl = await (await fetch(`${B}/api/sessions`, { headers: H })).json();
+    const rowTmux = dl.sessions.find((s) => s.live && s.live.route === "tmux");
+    check("13-D 土台: 一覧に tmux 経路の行が居る(赤なら以下の行の検査は空)",
+      Boolean(rowTmux), JSON.stringify(dl.sessions.map((s) => s.live?.route)));
+    if (rowTmux) {
+      argCheck("★行の `display.route` は **`row.live`** から組む(行を丸ごと渡していない)",
+        rowTmux.display?.route, routeLabel(rowTmux.live),
+        [["行を丸ごと", routeLabel(rowTmux)], ["引数なし", routeLabel(undefined)]]);
+    }
+    const rowSaid = dl.sessions.find((s) => s.lastPrompt);
+    check("13-D 土台: 発言の在る行が居る(`subtitleOf` の枝を分ける材料)",
+      Boolean(rowSaid), String(dl.sessions.filter((s) => s.lastPrompt).length));
+    if (rowSaid) {
+      argCheck("★行の `display.subtitle` は **行そのもの**から組む(`live` ではない)",
+        rowSaid.display?.subtitle, subtitleOf(rowSaid),
+        [["live", subtitleOf(rowSaid.live)], ["引数なし", subtitleOf(undefined)]]);
+    }
+    argCheck("★一覧の `display.scan` は **走査の計器**から組む(行ではない = 会話ごとに配らない)",
+      dl.display?.scan, scanLine(dl.scan),
+      [["行", scanLine(dl.sessions[0])], ["引数なし", scanLine(undefined)]]);
+
+    // --- 履歴 ---
+    const dh = await (await fetch(`${B}/api/sessions/${SID1}/history`, { headers: H })).json();
+    const eUser = (dh.history || []).find((e) => e.role === "user");
+    check("13-D 土台: 履歴に user の行が居る", Boolean(eUser), JSON.stringify(dh.history).slice(0, 160));
+    if (eUser) {
+      argCheck("★履歴の `display.who` は **`entry.role`** から組む(entry を丸ごと渡していない)",
+        eUser.display?.who, whoOf(eUser.role),
+        [["entry を丸ごと", whoOf(eUser)], ["引数なし", whoOf(undefined)]]);
+    }
+
+    // --- poll: gap ---
+    const pollD = async (sid, q) =>
+      (await (await fetch(`${B}/api/sessions/${sid}/poll?${new URLSearchParams(q)}`, { headers: H })).json());
+    // 世代の合わない栞 = 必ず gap(12-g で実測済み)。`tail-attached` と違って**文面が出る**側
+    // なので、`null` を返す枝と取り違えずに済む。
+    const pg = await pollD(SID_FRESH, { cursor: "t.deadbeef.99.0", wait: "0" });
+    const gapIt = (pg.items || []).find((it) => it.kind === "gap");
+    check("13-D 土台: 文面の出る gap が1件来る",
+      Boolean(gapIt) && gapIt.why !== "tail-attached", JSON.stringify(pg.items));
+    if (gapIt) {
+      argCheck("★gap の `display.notice` は **`why`** から組む(item を丸ごと渡していない)",
+        gapIt.display?.notice, gapNotice(gapIt.why),
+        [["item を丸ごと", gapNotice(gapIt)], ["引数なし", gapNotice(undefined)]]);
+    }
+    // ★SSE 側の gap も撃つ(2026-08-05、変異検査で穴が出た)。初版は poll の gap しか
+    //   測っていなくて、`SSE_SPEAKS.gap` を丸ごと消す変異が**緑のまま生き残った**。
+    //   `sendEvent` の gap の呼び口は4箇所あり、そこが黙って欄無しになる = 電話が
+    //   `undefined` を出す。張り直しに古い印を渡すと必ず gap が1本来るので、それで撃つ。
+    {
+      const gctl = new AbortController();
+      const gres = await fetch(`${B}/api/sessions/${SID_FRESH}/stream`, {
+        headers: { ...H, "last-event-id": "deadbeef.99" }, signal: gctl.signal,
+      });
+      const gp = createSseParser();
+      const gEvents = [];
+      const grd = gres.body.getReader();
+      const gdec = new TextDecoder();
+      const gdone = (async () => {
+        for (;;) {
+          const { done, value } = await grd.read();
+          if (done) break;
+          gEvents.push(...gp.push(gdec.decode(value)));
+          if (gEvents.some((e) => e.type === "gap")) break;
+        }
+      })().catch(() => {});
+      await gdone;
+      gctl.abort();
+      const gb = gEvents.filter((e) => e.type === "gap").map(decodeEvent).filter((d) => d.ok).map((d) => d.body)[0];
+      check("13-D 土台: 古い印で張り直すと SSE が gap を1本返す",
+        Boolean(gb) && typeof gb.why === "string", JSON.stringify(gb));
+      if (gb) {
+        argCheck("★SSE の gap にも `display.notice` が載る(呼び口4箇所を口1つで賄っている)",
+          gb.display?.notice, gapNotice(gb.why),
+          [["本文を丸ごと", gapNotice(gb)], ["引数なし", gapNotice(undefined)]]);
+      }
+    }
+
+    // --- poll と SSE: 選択待ちの面 ---
+    // ★登録に依る検査を**先に**置く(2026-08-05、実測して並べ替えた)。登録簿は mtime が
+    //   心拍で、読み側は `HEARTBEAT_TTL_MS = 15_000` を超えた登録を死んだ物として扱う。
+    //   初版はこの下の「転写に足して待つ」節を先に置いていて、其処が最悪 8×1500ms 待つ
+    //   ので、余裕が3秒しか無かった。実際に1回、`SID_CHOICE` が `unregistered` に落ちて
+    //   選択の面の検査が赤くなった(同じ回で 12-h の行列も崩れた)。以後の3回は緑だが、
+    //   **緑が続いた事は余裕が在る証明ではない**ので、待つ節を後ろに回して依存を消した。
+    const pc1 = await pollD(SID_CHOICE, { wait: "0" });
+    check("13-D 土台: 選択待ちの画面が1枚来る",
+      Boolean(pc1.screen) && pc1.screen.screen === "CHOICE", JSON.stringify(pc1.screen).slice(0, 160));
+    if (pc1.screen) {
+      argCheck("★poll の `display.choice` は **画面の本体**から組む(poll の本文ではない)",
+        pc1.display?.choice, choiceView(pc1.screen),
+        [["poll の本文", choiceView(pc1)], ["引数なし", choiceView(undefined)]]);
+    }
+    const pc2 = await pollD(SID_CHOICE, { cursor: pc1.cursor, wait: "0" });
+    // ★これが訂正2の本体。`choiceView` は純関数だが、**その材料が毎回来るとは限らない**。
+    //   毎回 `show:false` を載せると、画面が変わっていない poll が電話の持っている
+    //   選択待ちの面を消す —— 承認待ちが黙って画面から消えるのが最悪の形。
+    check("★★画面が変わっていない poll は `choice` も `null`(電話が持つ選択待ちの面を消さない)",
+      pc2.screen === null && Boolean(pc2.display) && pc2.display.choice === null,
+      JSON.stringify({ screen: pc2.screen, display: pc2.display }));
+
+    {
+      const cctl = new AbortController();
+      const cchunks = [];
+      const cres = await fetch(`${B}/api/sessions/${SID_CHOICE}/stream`, { headers: H, signal: cctl.signal });
+      const cpump = (async () => {
+        const rd = cres.body.getReader();
+        const dec = new TextDecoder();
+        for (;;) {
+          const { done, value } = await rd.read();
+          if (done) break;
+          cchunks.push(dec.decode(value));
+        }
+      })().catch(() => {});
+      const cScreens = () => {
+        const p = createSseParser();
+        const out = [];
+        for (const c of cchunks) out.push(...p.push(c));
+        return out.filter((e) => e.type === "screen").map(decodeEvent).filter((d) => d.ok).map((d) => d.body);
+      };
+      await waitFor(() => cScreens().length > 0, 3000);
+      const sb = cScreens()[0] || {};
+      check("13-D 土台: SSE の screen が1件来る(選択待ち)", sb.screen === "CHOICE", JSON.stringify(sb).slice(0, 160));
+      argCheck("★SSE の `screen` にも `display.choice` が載る(poll と同じ材料・同じ関数)",
+        sb.display?.choice, choiceView(strip(sb)),
+        [["引数なし", choiceView(undefined)]]);
+      cctl.abort();
+      await cpump;
+    }
+
+    // --- 応答そのものが語を持つ4口 ---
+    // 対照は3種: **status を渡していない** / **本文を渡していない** / **別の口の関数**。
+    // 3つ目が要るのは、4本とも 409 では文面が `b.error` で揃ってしまい、口を取り違えても
+    // 気付けない形が実在するから(此処の fixture はその形を避けて選んである)。
+    const rSend = await fetch(`${B}/api/sessions/${SID_CHOICE}/messages`, {
+      method: "POST", headers: { ...H, "content-type": "application/json" },
+      body: JSON.stringify({ text: "display 検査(選択待ちなので断られる)" }),
+    });
+    const jSend = await rSend.json();
+    argCheck("★`POST …/messages` の `display` は **その応答の status と本文**から組む",
+      jSend.display, sendResult(rSend.status, strip(jSend)),
+      [["status 違い", sendResult(599, strip(jSend))],
+       ["本文違い", sendResult(rSend.status, { ...strip(jSend), error: "★対照★" })],
+       ["別の口の関数", interruptResult(rSend.status, strip(jSend))]]);
+
+    const rIntrD = await fetch(`${B}/api/sessions/${SID_READY}/interrupt`, { method: "POST", headers: H });
+    const jIntrD = await rIntrD.json();
+    argCheck("★`POST …/interrupt` の `display` も同じ",
+      jIntrD.display, interruptResult(rIntrD.status, strip(jIntrD)),
+      [["status 違い", interruptResult(599, strip(jIntrD))],
+       ["本文なし", interruptResult(rIntrD.status, null)],
+       ["別の口の関数", sendResult(rIntrD.status, strip(jIntrD))]]);
+
+    const rChD = await choose(SID_CHOICE, { key: "1" }); // 指紋なし = 400。send-keys は0件
+    const jChD = await rChD.json();
+    argCheck("★`POST …/choice` の `display` も同じ",
+      jChD.display, choiceResult(rChD.status, strip(jChD)),
+      [["status 違い", choiceResult(599, strip(jChD))],
+       ["本文違い", choiceResult(rChD.status, { ...strip(jChD), error: "★対照★" })],
+       ["別の口の関数", interruptResult(rChD.status, strip(jChD))]]);
+
+    // ★此処だけ **200** の口を撃つ。最初は `SID_FRESH` の 409(`queue-not-ours`)で書いて
+    //   いて、それは赤くなった —— 409 では `clearQueueResult` も `interruptResult` も
+    //   `{kind:"refused", text: b.error}` に潰れるので、**口を取り違えても同じ値**になる。
+    //   赤は実装ではなく fixture の欠陥の報せで、直すのは対照ではなく撃つ場所の方。
+    //   200 なら「取り消す送信は残っていませんでした。」対「止める対象がありませんでした。」で
+    //   割れる。既に空にしてある行列をもう一度捨てるだけなので、他の検査の状態も動かさない。
+    const rQD = await fetch(`${B}/api/sessions/${SID_SLOW}/queue`, { method: "DELETE", headers: H });
+    const jQD = await rQD.json();
+    check("13-D 土台: 行列の取り消しが 200 で返る(409 だと下の対照が効かない)",
+      rQD.status === 200, `status=${rQD.status} ${JSON.stringify(jQD)}`);
+    argCheck("★`DELETE …/queue` の `display` も同じ",
+      jQD.display, clearQueueResult(rQD.status, strip(jQD)),
+      [["status 違い", clearQueueResult(599, strip(jQD))],
+       ["本文違い", clearQueueResult(rQD.status, { ...strip(jQD), dropped: 7 })],
+       ["別の口の関数", interruptResult(rQD.status, strip(jQD))]]);
+
+    // --- poll と SSE: message の `who`。転写に1行足して、同じ追記を両方で受ける ---
+    // ★**待つ節はこの block の最後**。上の注記の通り、待っている間に他の会話の登録が
+    //   心拍の窓から落ちる。ここまで来れば登録に依る検査は済んでいるので、待って良い。
+    const sctl = new AbortController();
+    const schunks = [];
+    const sres = await fetch(`${B}/api/sessions/${SID_FRESH}/stream`, { headers: H, signal: sctl.signal });
+    const spump = (async () => {
+      const rd = sres.body.getReader();
+      const dec = new TextDecoder();
+      for (;;) {
+        const { done, value } = await rd.read();
+        if (done) break;
+        schunks.push(dec.decode(value));
+      }
+    })().catch(() => {});
+    const sseOf = (type) => {
+      const p = createSseParser();
+      const out = [];
+      for (const c of schunks) out.push(...p.push(c));
+      return out.filter((e) => e.type === type).map(decodeEvent).filter((d) => d.ok).map((d) => d.body);
+    };
+
+    const freshPath = join(PROJ, `${SID_FRESH}.jsonl`);
+    let curD = (await pollD(SID_FRESH, { wait: "0" })).cursor; // tail を取り付けてから足す
+    writeFileSync(freshPath, `${readFileSync(freshPath, "utf8").replace(/\n?$/, "\n")}${JSON.stringify({
+      type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "display 検査の返事" }] },
+    })}\n`);
+    let msgIt = null;
+    let tailGap = null;
+    // 追記は**張る前**に済ませてあるので、普通は1回目で来る。回数を8から4へ、待ちを
+    // 1500 から 800 へ落としても取りこぼさない(実測 4回中4回が1回目)。最悪 3.2 秒。
+    for (let i = 0; i < 4 && !msgIt; i++) {
+      const p = await pollD(SID_FRESH, { cursor: curD, wait: "800" });
+      curD = p.cursor;
+      for (const it of p.items || []) {
+        if (it.kind === "message" && Array.isArray(it.entries)) msgIt = it;
+        if (it.kind === "gap" && it.why === "tail-attached") tailGap = it;
+      }
+    }
+    check("13-D 土台: poll が message を1件運ぶ", Boolean(msgIt), JSON.stringify(msgIt).slice(0, 160));
+    if (msgIt) {
+      const e0 = msgIt.entries[0];
+      argCheck("★poll の message も `display.who` を **`role`** から組む",
+        e0.display?.who, whoOf(e0.role),
+        [["entry を丸ごと", whoOf(e0)], ["引数なし", whoOf(undefined)]]);
+    }
+    if (tailGap) {
+      // ★`gapNotice` は此処だけ `null` を返す。**欄ごと消えていない**事まで測る ——
+      //   欄が無い事と「出す文面が無い」事は別で、前者は電話側で `undefined` を踏む。
+      check("★`tail-attached` は欄を持ったまま文面が `null`(出さないと欄が無いを混ぜない)",
+        "display" in tailGap && tailGap.display.notice === null, JSON.stringify(tailGap));
+    }
+    await waitFor(() => sseOf("message").length > 0, 3000);
+    const sMsg = sseOf("message")[0];
+    check("13-D 土台: SSE も同じ追記を message として運ぶ", Boolean(sMsg), JSON.stringify(sMsg).slice(0, 160));
+    if (sMsg && Array.isArray(sMsg.entries)) {
+      const s0 = sMsg.entries[0];
+      argCheck("★SSE の message にも `display.who` が載る(口は `sendEvent` の1つだけ)",
+        s0.display?.who, whoOf(s0.role),
+        [["entry を丸ごと", whoOf(s0)], ["引数なし", whoOf(undefined)]]);
+    }
+    sctl.abort();
+    await spump;
   }
 
   // ---- 13-b. ★二重起動は「読める一行」を残して落ちる ----------------------
