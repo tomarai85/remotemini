@@ -1,0 +1,6 @@
+# Everything here is derived from project.yml by `xcodegen generate`.
+# Committing it would create a second source of truth that drifts silently:
+# a hand-edit in Xcode would survive review while project.yml stayed innocent.
+RemoteMini.xcodeproj/
+Info.plist
+build/
