@@ -1,13 +1,41 @@
 import SwiftUI
 
-/// 骨格。画面の中身は `.harness/spec-native-shell-2026-08-05.md` の確定後に入る。
-/// この版が存在する理由は1つだけ ---- ビルドから実機インストールまでの経路が
-/// 通る事を、画面を作る前に実測で確かめる為。
+/// Sprint 1 wires only Key-entry; List/Conversation arrive in Sprint 2-3 per
+/// `.harness/spec-native-shell-2026-08-05.md` §6. The placeholder shown after a
+/// successful Key-entry is intentionally minimal -- building List here would be
+/// scope creep into Sprint 2's deliverable.
 struct RootView: View {
+    @StateObject private var appState = AppState()
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if appState.isLoadingCredentials {
+                    ProgressView()
+                } else if let credentials = appState.credentials {
+                    SignedInPlaceholderView(baseURL: credentials.baseURL)
+                } else {
+                    KeyEntryView(onSaved: appState.setCredentials)
+                }
+            }
+        }
+        .task { await appState.loadStoredCredentials() }
+    }
+}
+
+private struct SignedInPlaceholderView: View {
+    let baseURL: URL
+
     var body: some View {
         VStack(spacing: 12) {
-            Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Remote Mini")
+            Text("接続済み")
                 .font(.title2.weight(.semibold))
+            Text(baseURL.absoluteString)
+                .font(.footnote.monospaced())
+                .foregroundStyle(.secondary)
+            Text("一覧画面は Sprint 2 で実装")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             Text(BuildInfo.line)
                 .font(.footnote.monospaced())
                 .foregroundStyle(.secondary)
