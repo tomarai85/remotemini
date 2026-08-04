@@ -8,6 +8,73 @@
 ★**時刻は書く前に `date` を実行して入れる**(2026-08-03 04:3x に、8/03 の見出しの時刻が
 **実時刻より最大 6.5 時間先**へ流れていたのを発見した為。下の対照表を見る事)。
 
+## 2026-08-05 05:51 — Sprint 1 の評定は PASS。指摘された隙間を「既定値」から「型の制約」へ移した
+
+**何をした**
+
+Sprint 1 の Evaluator(harness Mode 3)が `.harness/feedback/sprint-1.md` を書いた。
+**PASS**、5軸 4/4/3/4/5、退行 0。事前に私が「確かめた」と書いた7点を全部攻めて1つも折れず、
+その上で変異を3本植えて殺せる事まで見ている(`ReadablePoll` の短絡 → 9本赤 /
+`HealthzClient` の N6 の順序逆転 → 1本赤 / `Backoff` の上限撤去 → 2本赤)。
+
+出た指摘 Finding 1 = **守られたセッションが制約でなく既定値だった**。
+`init(session: URLSession = BackendSession.shared.session)` の形だと、呼ぶ側が素の
+`URLSession` を渡せば N5(3xx を追わない)が黙って消える。そして実際にそう渡していたのは
+Sprint 1 のテスト自身で、モックが delegate 無しのセッションを返していた。
+
+  - `RedirectRefusalTests` は「`BackendSession` が delegate を付ける」事を測っていた
+  - `HealthzClientTests` / `SessionsAuthProbeTests` は delegate **無し**の道を測っていた
+
+両方緑で、その間 —— production の client が拒否の道を実際に通る事 —— は一度も踏まれていない。
+★**緑が2つ在る事は、その間が繋がっている証拠にならない。**
+
+直しは2段:
+1. **型で縛る**。client の引数を `BackendSession` に。この型の初期化子は configuration しか
+   取らず delegate は自分で付けるので、持っている事が N5 の証明になる。副産物として
+   モックも `BackendSession` を返し、ネットワーク層16本が本物の delegate 越しに走るようになった。
+2. **綴りの側に見張り**(`test/session-guard.test.mjs`)。型は既存の client にしか効かず、
+   Sprint 2-6 が足す**新しい** client には一切かからない。poll と送信は bearer 鍵を載せるので、
+   そこで転送を追うのは N5 が防ぐつもりだった漏洩そのもの。規則は
+   「`ios/Sources/` で `URLSession` と書いてよいのは `BackendSession.swift` だけ」。
+
+Evaluator の案(a)(test 専用の注入口)は単一モジュールでは可視性が同一で作れず、
+(b)(3xx の統合テスト1本)は将来の呼び出し口の穴が残るので、どちらも採らなかった。
+
+**道具の欠陥も1つ直した** —— `build.sh --sim` の `| tail -3` が、コンパイル失敗とテスト失敗を
+潰していた(`xcodebuild test` はどちらも `** TEST FAILED **` / exit 65)。見た目の問題ではなく、
+**変異走行で「殺した」と「コンパイルが通らなかった」が同じ顔になる**。見分ける印は列番号
+(swiftc = `file:line:col:`、XCTest = `file:line:`)。★同じ夜に自分でも踏んだ:
+変異の集計に `grep -c 'error: '` と手で書いて XCTest の assertion 行を数え、
+「compile error 2件」と表示した(実際は 0)。Evaluator が道具を捨てた理由を、道具を迂回して再現した。
+
+**証拠**
+
+| 何を | 結果 |
+|---|---|
+| `ios/tools/build.sh --sim` | `Executed 55 tests, with 0 failures`, rc=0 |
+| `npm test`(rc-backend) | 654 / 0 |
+| `tools/run-controls.sh` | green=**31** red=0 未測定=0 |
+| `test/session-guard-controls.sh` | PASS 5 / FAIL 0(①違反で赤 ②素で緑 ③注釈は緑 ④部分木は緑 ⑤錨が消えると赤) |
+| 型の制約の対照 | 素の `URLSession` を渡すと `cannot convert value of type 'URLSession'...` で rc=65 |
+| `SessionsAuthProbe` 変異2本 | 2件赤 / 3件赤 —— Evaluator が予算で残した UNVERIFIED を1つ閉じた |
+| `build.sh --sim` の分類 | 3通り実測(緑 / コンパイル error / assertion 落ち)で見分ける |
+
+★対照④は**初回 FAIL した**。砂場に `ios/Sources` を先に作ってしまい、「木が居ない」ではなく
+「錨が居ない」を測っていた = 別の物を測って緑を貰う形。対照が段取りの誤りを捕まえた。
+
+artifact = `.harness/feedback/check-2026-08-05-2-session-guard.md`、commit `189674e` / `f2ffad0`。
+
+**次の一手**
+
+Sprint 2(Day 2 = 一覧)。本番は `e74c50e` で現行版が走っているので、電話側の作業は
+初めて検証済みのサーバに対して積める。
+
+閉じていない = 実機 DoD(`devicectl … --console` で `healthz ok:true pid:<n>` を見る。Tom の iPhone が要る)。
+3xx の実応答で N5 を end-to-end に踏む検査は**書いていない** —— 置いたのは「拒否する」証明ではなく
+「拒否しない道が作れない」証明であり、別物である事は自覚している。
+
+---
+
 ## 2026-08-05 05:19 — 本番を現行版へ入れ替えた(`434e292` → `e74c50e`)。電話が読む `display` が本番に無かった
 
 **何をした**
