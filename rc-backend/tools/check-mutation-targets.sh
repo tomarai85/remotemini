@@ -69,6 +69,56 @@ if [ "$_mrl" -ne 1 ]; then
     echo "  commit 自体は木を変えないので止めない。検査は続行する。" >&2
 fi
 
+# ★★的が「外れる」方だけを見ていた(2026-08-05、実測して塞いだ)。
+#
+#   `--dry` は的が**当たるか**しか数えない。並びから的を1件削除して回すと
+#     「的の照合: 240件 / 当たらない 0件」exit=0
+#   で素通りする(241 から1件消して実測)。つまり **欠陥を見張る検査を、欠陥と一緒に
+#   消せる**。改名で的が静かに外れるのを捕まえる為に作った門が、的そのものが静かに
+#   消えるのは通していた —— 同じ「静かに見張りが減る」の裏返しの側。
+#   commit 文に貼る「的は減っていない」の一行が、この穴のせいで**実際には何も
+#   保証していなかった**(私自身が今夜それを証拠として引いた)。
+#
+#   数の写しは持たない。`test/mutation-target-controls.sh` の 3-3 が既に裁いている
+#   通り、同じ一覧が2箇所に居ると足す作業が必ず片方を置き去りにする。正本は並びその物
+#   なので、**HEAD の同じ file を数え直して**比べる。族の頭文字も命名規則も本体から
+#   取り出すので、規則が変わっても両側に同じ訳が当たって差し引き0になる。
+_targets_of() {  # stdin = mutation-controls.py の中身 → 並びの件数
+    local body; body="$(cat)"
+    local fam; fam="$(printf '%s\n' "$body" | sed -n 's/^FAM = "\([A-Z][A-Z]*\)".*/\1/p' | head -1)"
+    [ "${#fam}" -ge 3 ] || return 2
+    printf '%s\n' "$body" | grep -cE "^ *\(\"[${fam}][0-9]+[a-z]?[ (]"
+}
+_rel="$(cd "$ROOT" && git ls-files --full-name test/mutation-controls.py 2>/dev/null)"
+_now=""; _was=""
+[ -n "$_rel" ] && _now="$(_targets_of < "$ROOT/test/mutation-controls.py" 2>/dev/null)"
+[ -n "$_now" ] && _was="$(cd "$ROOT" && git show "HEAD:$_rel" 2>/dev/null | _targets_of 2>/dev/null)"
+if [ -z "$_was" ] || [ -z "$_now" ]; then
+    # 測れなかった(git 外 / 初回 commit / file の改名 / FAM の置き場所が変わった)。
+    # 黙って緑にはしない —— 但し commit 自体は木を変えないので止めない(上と同じ判断)。
+    echo "注意: 的の**件数**を HEAD と比べられなかった(消えた的は今回検出できない)。" >&2
+elif [ "$_now" -lt "$_was" ]; then
+    # ★展開は `if` の**外**で済ませる(2026-08-05 に踏んだ)。最初 `${#VAR:-}` と書いたが
+    #   長さ `#` と既定値 `:-` は併用できず bad substitution になる。`set -e` が無いので
+    #   script は死なず、**`if` が両方の枝を走らせないまま素通りして exit 0** —— 門が
+    #   黙って消えた上で「的の照合: 240件 / 当たらない 0件」の緑だけが出た。
+    #   門の中で落ちると fail-open になるので、落ちうる式は門の手前に置く。
+    _ok="${RC_TARGETS_SHRINK_OK:-}"
+    if [ "${#_ok}" -ge 10 ]; then
+        echo "的が ${_was} → ${_now} 件に減る事を承知で通す: ${RC_TARGETS_SHRINK_OK}" >&2
+    else
+        echo "★commit しない: 的が ${_was} → ${_now} 件に**減っている**。" >&2
+        echo "  消えた的が見張っていた欠陥は、これ以降**誰も見ていない**。" >&2
+        # ★この行も**一重引用**でなければならない(上の 63 行目と同じ罠。二重引用の中の
+        #   逆引用符はコマンド置換として走り、`--dry` が消えて文が壊れる)。書いた直後に踏んだ。
+        echo '  `--dry` は当たるかしか見ないので、この減りは 0件 の緑として出る。' >&2
+        echo '  意図して見張りを降ろすなら、何を降ろすのか書いて通す事:' >&2
+        echo '    RC_TARGETS_SHRINK_OK="W98 は field ごと消えたので見張らないと決めた" git commit …' >&2
+        echo '  (10文字以上。文言はこの出力に残るので、後から理由を辿れる)' >&2
+        exit 1
+    fi
+fi
+
 out="$(cd "$ROOT" && python3 test/mutation-controls.py --dry 2>&1)"
 rc=$?
 if [ "$rc" -ne 0 ]; then

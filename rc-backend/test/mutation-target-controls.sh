@@ -130,6 +130,70 @@ python3 "$SRC_ROOT/test/mutation-controls.py" --dry --only __NO_SUCH_TARGET__ >/
 if [ "$?" -ne 0 ]; then ok "当たらない語は exit≠0(測れていない事を隠さない)"
 else ng "当たらない語で止まる" "exit=0 — 0件を緑として報告している"; fi
 
+# --- 5) 的が**消えた**時にも赤になる事(2026-08-05 追加)---
+#
+# 2) が見ているのは的が**外れる**方(本文と合わなくなる)。的そのものを並びから
+# **削除**する方は、2026-08-05 まで素通りしていた —— 241 件から1件消して回すと
+# 「的の照合: 240件 / 当たらない 0件」exit=0。欠陥を見張る検査を、欠陥と一緒に消せる。
+#
+# ★門は HEAD と比べるので、複製の中に**使い捨ての git**を建てて測る。本物の repo には
+#   一切触らない(この file の中心の約束)。git が無い所では門は「測れなかった」と言って
+#   止めないので、ここで git を建てなければこの対照は**素通りして緑**になる = 空振り。
+GB="$SB/gitrepo"
+mkdir -p "$GB/test" "$GB/tools" && cp -R "$SRC_ROOT/src" "$GB/src"
+cp "$SRC_ROOT/test/mutation-controls.py" "$GB/test/"
+cp "$SRC_ROOT/tools/check-mutation-targets.sh" "$SRC_ROOT/tools/mutation-run-live.sh" "$GB/tools/"
+GIT() { git -c user.email=c@local -c user.name=c -c commit.gpgsign=false -C "$GB" "$@"; }
+if GIT init -q >/dev/null 2>&1 && GIT add test/mutation-controls.py >/dev/null 2>&1 &&
+   GIT commit -q -m base >/dev/null 2>&1; then
+    ok "使い捨ての git を建てた(件数の比較先 = HEAD が在る)"
+
+    # 5-0) 建てただけでは緑である事(下の赤が「git を建てた所為」ではない事)
+    if bash "$GB/tools/check-mutation-targets.sh" >/dev/null 2>&1; then
+        ok "件数が同じなら緑(比較その物は commit を止めない)"
+    else
+        ng "件数が同じなら緑" "exit!=0 — 比較の側が常に赤い。下の 5-1 は何も測れていない"
+    fi
+
+    # 5-1) 的を1件**消す**と赤(本体)
+    python3 - "$GB/test/mutation-controls.py" <<'PY'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
+i = s.index("MUT = ["); j = s.index("\n", i)
+lines = s[j+1:].split("\n")
+start = next(k for k, l in enumerate(lines) if l.strip().startswith("("))
+depth = 0
+for k in range(start, len(lines)):
+    depth += lines[k].count("(") + lines[k].count("[") - lines[k].count(")") - lines[k].count("]")
+    if depth <= 0:
+        end = k; break
+del lines[start:end+1]
+p.write_text(s[:j+1] + "\n".join(lines), encoding="utf-8")
+PY
+    if bash "$GB/tools/check-mutation-targets.sh" >/dev/null 2>&1; then
+        ng "的を消したら赤" "exit=0 — **消えた的を見ていない**(2026-08-05 に塞いだ穴が開き直った)"
+    else
+        ok "的を消したら赤(欠落そのものを捕まえる)"
+    fi
+
+    # 5-2) 承知の栓は**言い分の長さを要る**(`=1` の様な空文句で降ろせない)
+    if RC_TARGETS_SHRINK_OK=1 bash "$GB/tools/check-mutation-targets.sh" >/dev/null 2>&1; then
+        ng "空文句では通らない" "exit=0 — 栓が長さを見ていない。「1」で見張りを降ろせる"
+    else
+        ok "空文句(1文字)では通らない"
+    fi
+
+    # 5-3) 言い分を書けば通る(降ろす道が**塞がりきって**いない事。塞がると人は門ごと消す)
+    if RC_TARGETS_SHRINK_OK="対照: わざと1件消している" \
+       bash "$GB/tools/check-mutation-targets.sh" >/dev/null 2>&1; then
+        ok "言い分を書けば通る(意図した引退の道が在る)"
+    else
+        ng "言い分を書けば通る" "exit!=0 — 正当な引退まで塞いでいる"
+    fi
+else
+    ng "使い捨ての git" "建てられなかった — 5) の全部が**測れていない**(緑ではない)"
+fi
+
 # --- 4) 本物の木を一切触っていない事(この対照自身の安全性) ---
 if [ -s "$SRC_ROOT/test/mutation-controls.py" ] && \
    [ "$(wc -c < "$SRC_ROOT/test/mutation-controls.py")" -gt 1000 ]; then
