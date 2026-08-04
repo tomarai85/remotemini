@@ -165,13 +165,26 @@ test("★形の違う 200 を「0件」という断定にしない(一覧・履�
   assert.doesNotMatch(SCRIPT, /d\.history\s*\|\|\s*\[\]/, "`|| []` が戻っている");
 });
 
-test("★判断を HTML 側に書き戻していない(移した関数名が定義として復活していない)", () => {
+test("★判断を HTML 側に書き戻していない(移した関数名が定義として復活していない)", async () => {
   // 「引き剥がした」を主張し続けられる様にする関門。同名の関数を app.html に
   // 定義し直すと import は死に文になり、検査は view.mjs の方を測り続ける =
   // **緑のまま実物と乖離する**。名前が戻ってきた時点で赤にする。
-  const moved = ["scanLine", "whoOf", "gapNotice", "nextAttempt", "nextHistoryLimit",
+  // ★手書きの一覧は**網の届く範囲がそこで止まる**(M14 と同じ型: 呼び口が増えても
+  //   一覧が増えないので、新しく移した関数だけ守られない)。
+  // ★★何から導くかを2026-08-05に測り直した。最初は **import 文**から導いたが、
+  //   それだと「import を消して同名を app.html に定義し直す」= 引き戻しそのものの形で
+  //   網が一緒に縮み、**両方緑のまま通る**(実測: 変更前後どちらも 47/0)。上の
+  //   「import せず使っている名前」も `local.has(name)` で除外するので捕らない。
+  //   なので導出元は **module がディスク上で export している名前** —— 引き戻しても
+  //   view.mjs 側の export は残るので、網は縮まない。手書き側は床として残す。
+  const floor = ["scanLine", "whoOf", "gapNotice", "nextAttempt", "nextHistoryLimit",
                  "sendResult", "interruptResult", "mergeHistory", "routeLabel", "subtitleOf", "relTime",
                  "freshness", "readablePoll"];
+  const exported = [];
+  for (const p of Object.keys(DISK)) exported.push(...Object.keys(await import(DISK[p])));
+  const moved = [...new Set([...floor, ...exported])];
+  assert.ok(moved.length > floor.length,
+    "export 側から1つも増えていない(導出が効いていない = 手書き一覧に戻っている)");
   for (const n of moved) {
     const re = new RegExp(`(?:function|const|let|var)\\s+${n}\\b`);
     assert.ok(!re.test(SCRIPT), `${n} が app.html の中で再定義されている(import が死に文になる)`);
@@ -593,6 +606,12 @@ test("★★実行: 机の会話(`queued:null`)には何も出さない ―― �
   assert.deepEqual(box.children, []);
   render(null);                          // 会話を開き直した時の初期化
   assert.deepEqual(box.children, []);
+  // ★恒真でない事の担保(2026-08-05)。上は全部「何も出ない」しか主張していないので、
+  //   `render` が何もしない実装でも満点になる。出る筈の入力を1つ通して、この検査が
+  //   **出る/出ないを分けている**事を同じ検査の中で見せる。
+  render({ route: "worker", queued: 3 });
+  assert.notDeepEqual(box.children, [],
+    "出る筈の入力でも空 = この検査は『何も出ない』を測れていない(render が死んでいる)");
 });
 
 test("★実行: 押すと、送信より**前**に同期でボタンが伏せられ、取り消しが1回だけ呼ばれる", () => {

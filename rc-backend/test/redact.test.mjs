@@ -56,4 +56,11 @@ test("1行に2つ在っても両方伏せる", () => {
   const out = redact("mail-redacted@example.invalid と ghp_AAAAAAAAAAAAAAAAAAAA");
   assert.ok(!out.includes("mail-redacted@example.invalid"));
   assert.ok(!out.includes("ghp_AAAA"));
+  // ★②の側(2026-08-05 に足した)。此処だけ①しか無く、file 冒頭の但し書きと食い違っていた。
+  //   欠けていたのは「複数一致の時だけ壊れる形」—— 網が最初の一致から最後の一致まで
+  //   丸ごと飲むと、生の秘密は消えるので上の2行は緑のまま通る。飲まれるのは間の
+  //   「と」と印の片方で、それを見ているのは此処しか無い(他の検査は1行1件しか渡さない)。
+  assert.ok(out.includes("と"), `間の本文まで飲んだ: ${out}`);
+  assert.equal(out.match(/<mail>/g)?.length, 1, `メールの印が1つ出ていない: ${out}`);
+  assert.equal(out.match(/<秘匿>/g)?.length, 1, `token の印が1つ出ていない: ${out}`);
 });
