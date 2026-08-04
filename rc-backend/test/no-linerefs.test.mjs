@@ -25,30 +25,63 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SCAN_DIRS = ["src", "test", "tools"];
-const SCAN_EXT = [".mjs", ".sh", ".py"];
+const REPO = dirname(ROOT);
+const SCAN_EXT = [".mjs", ".sh", ".py", ".swift"];
+
+// ── 木は2つ在る ────────────────────────────────────────────────────────
+// 2026-08-05: 電話側(`ios/`)の注釈が backend の code を行番号で引いていて、
+// **16件が別の行を指していた**。この検査は既に在ったのに1件も捕まえていない。
+// 走査していたのが `rc-backend/` だけで、`ios/` は隣の木だったから。
+//
+// ★守りの**届く範囲**が、守られる側の木構造から自動で決まっていなかった、という事。
+//   同じ夜に別の形で3回踏んでいる(DESIGN §2.18-10)。名前や場所の一致で対象を
+//   導出すると、新しい木は**元から一覧に居ない**ので、緑のまま素通りする。
+const TREES = [
+  { name: "rc-backend", root: ROOT, dirs: ["src", "test", "tools"], floor: 20,
+    bare: ["src", "test", "tools", "test/fixtures", "."] },
+  { name: "ios", root: join(REPO, "ios"), dirs: ["Sources", "Tests", "tools"], floor: 15,
+    bare: ["Sources", "Tests", "tools", "."] },
+];
+/** 実在する木だけ走る。**居ない事は下の検査が必ず名指しで報告する**(黙って減らさない)。 */
+const present = (t) => existsSync(t.root) && statSync(t.root).isDirectory();
+const LIVE_TREES = TREES.filter(present);
+const MISSING_TREES = TREES.filter((t) => !present(t)).map((t) => t.name);
 
 /**
  * 走査の対象。**この file 自身も含む**(上の注釈の理由)。
+ *
+ * ★木ごとに下限を持つ。合計で持つと、片方の walk が丸ごと空振りしても
+ *   もう片方の件数で下限を越えてしまい、**0件が緑の下に隠れる**。
+ *   これは今夜4回踏んだ欠陥そのもの(分母を実在する集合から取る)。
  */
 function scanFiles() {
   const out = [];
-  const walk = (d) => {
-    for (const e of readdirSync(d, { withFileTypes: true })) {
-      const p = join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (SCAN_EXT.some((x) => e.name.endsWith(x))) out.push(p);
-    }
-  };
-  for (const d of SCAN_DIRS) walk(join(ROOT, d));
-  assert.ok(out.length >= 20, `走査の対象が少なすぎる(${out.length}件)= 数え方が壊れている`);
+  for (const t of LIVE_TREES) {
+    const before = out.length;
+    const walk = (d) => {
+      if (!existsSync(d)) return;
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const p = join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (SCAN_EXT.some((x) => e.name.endsWith(x))) out.push(p);
+      }
+    };
+    for (const d of t.dirs) walk(join(t.root, d));
+    const n = out.length - before;
+    assert.ok(n >= t.floor, `${t.name} の走査が少なすぎる(${n}件 < ${t.floor})= 数え方が壊れている`);
+  }
   return out;
 }
 
-const rel = (p) => p.slice(ROOT.length + 1);
+const rel = (p) => (p.startsWith(REPO + "/") ? p.slice(REPO.length + 1) : p);
 
 // ── 綴りは全部ここで組み立てる。生の literal をこの file に置かない為 ──────────
-const EXT_NUM = "(?:mjs|sh|py|json)";
+const EXT_NUM = "(?:mjs|sh|py|json|swift)";
+// ★`swift` を**引用の側には足していない**。今日 `ios/` に在る backtick 引用 18件は
+//   全部 backend の file 名で、`.swift` の名前を引いている物は**0件**(実測)。
+//   足すには bare 名の解決を `Sources/Core` `Screens/KeyEntry` の入れ子まで
+//   降ろす必要が在り、**現に1件も無い物の為に解決規則を複雑にする**事になる。
+//   取らなかった上限として、黙らせずにここに書いておく。1件でも書かれたら足す。
 const EXT_CITE = "(?:mjs|sh|py)";
 /** `名前.拡張子:行番号` の形。これが1件でも在れば赤。 */
 const numRe = () => new RegExp("[A-Za-z0-9_.-]+" + "\\." + EXT_NUM + ":" + "[0-9]+", "g");
@@ -68,13 +101,33 @@ const OUT_OF_REPO = [
 ];
 const outOfRepo = (c) => OUT_OF_REPO.find(([pre]) => c.startsWith(pre));
 
-/** repo の中で解決するか。**宿主側には一切 stat をかけない**。 */
+/**
+ * repo の中で解決するか。**宿主側には一切 stat をかけない**。
+ *
+ * ★木が2つ在るので、**引いた側の木から先に**探す。同じ綴りが別の実体を指すから:
+ *   両方の木が持つ名前(例えば tools/ の下に同名の台本が在る時)は、ios の file から
+ *   引けば ios 側、backend の file から引けば backend 側である。引いた側を先に
+ *   見ないと、**実在はするが別物**を掴んで緑になる —— 名前の一致で対象を決める、
+ *   今夜の欠陥と同じ形。その後に隣の木も見るのは、ios の注釈が backend の
+ *   `tail.mjs` 等を引くのが正常だから(現に 18件全部がその向き)。最後に repo 直下を
+ *   見るのは、木の名前ごと path に書いた引用の為。
+ *
+ * ★ここに**実在する file 名を backtick で例示しない**事。この検査は自分自身も走査
+ *   するので、例示が引用として数えられる。2026-08-05 に一度踏んだ: 例に書いた2件は
+ *   完全な木では解決して緑、**ios の居ない作業コピーでだけ赤**になった。つまり
+ *   commit の門は通り、変異走行の中でだけ落ちる —— `test/mutation-controls.py` の
+ *   凍結の節に在る、以降の変異が全部「検出」に化ける事故と同じ入口だった。
+ */
 function resolves(cite, fromFile) {
   if (cite.startsWith("./") || cite.startsWith("../")) {
     return isFile(resolve(dirname(fromFile), cite));
   }
-  if (cite.includes("/")) return isFile(join(ROOT, cite));
-  return ["src", "test", "tools", "test/fixtures", "."].some((d) => isFile(join(ROOT, d, cite)));
+  const own = LIVE_TREES.find((t) => fromFile.startsWith(t.root + "/"));
+  const order = [own, ...LIVE_TREES.filter((t) => t !== own)].filter(Boolean);
+  if (cite.includes("/")) {
+    return order.some((t) => isFile(join(t.root, cite))) || isFile(join(REPO, cite));
+  }
+  return order.some((t) => t.bare.some((d) => isFile(join(t.root, d, cite))));
 }
 const isFile = (p) => existsSync(p) && statSync(p).isFile();
 
@@ -110,6 +163,13 @@ test("陰性対照: 行番号を1件混ぜれば見つかる(検査が空振り�
   assert.deepEqual(findLinerefs("// 出所は server.mjs の `screenOf()` を見よ"), []);
 });
 
+test("陰性対照: **電話側の綴り**でも見つかる(2026-08-05 に素通りした形そのもの)", () => {
+  // `.swift` を EXT_NUM に足した事の直接の証拠。足す前はこの1行が空配列を返した
+  // —— そして実際、`ios/` の 16件はその空配列の下で1件も報告されずに commit された。
+  const swiftRef = "Backend" + "Session" + "." + "swift" + ":" + "42";
+  assert.deepEqual(findLinerefs("// see " + swiftRef), [swiftRef]);
+});
+
 // ── ② 引いたファイル名は実在する ──────────────────────────────────────
 test("★backtick で引いたファイル名が全部実在する(改名の置き去りを捕まえる)", () => {
   const bad = [];
@@ -129,6 +189,26 @@ test("陰性対照: 実在しない名前を1件混ぜれば見つかる", () =>
   assert.deepEqual(findBrokenCites(planted, join(ROOT, "tools", "x.sh")), [ghost]);
   assert.deepEqual(findBrokenCites("# 出し先は `tools/health-observer.sh` を見る",
     join(ROOT, "tools", "x.sh")), []);
+});
+
+// ── 走査した範囲を**毎回名乗る** ──────────────────────────────────────
+// 検査名に木の名前を入れてあるので、`npm test` の出力を読むだけで
+// 「今回どこまで届いたか」が判る。部分木(変異の作業コピー / edith の配備先)で
+// 走ると名前が `rc-backend` だけになり、**減った事が log に残る**。
+//
+// ★黙って減らす形にしなかった理由が実測で在る: `test/mutation-controls.py` の
+//   凍結の節に、この検査が変異走行中に赤くなった結果、**以降の変異が全部
+//   「検出」と記録された**事故が書いてある。壊れ方が緑の方向に出るので、
+//   要約は「素通り 0件」と書く。走査漏れも同じ向きに壊れる。
+test(`★走査した木: ${LIVE_TREES.map((t) => t.name).join(" + ")}` +
+  (MISSING_TREES.length ? ` / 居なかった木: ${MISSING_TREES.join(",")}(部分木)` : ""), () => {
+  // rc-backend だけは**欠けてよい木ではない**。ここが欠けるのは走査の起点が
+  // 壊れた時なので、部分木として黙認せず赤にする。
+  assert.deepEqual(
+    MISSING_TREES.filter((n) => n !== "ios"), [],
+    "起点の木が見つからない = ROOT の求め方が壊れている(部分木の話ではない)",
+  );
+  assert.ok(LIVE_TREES.length >= 1);
 });
 
 // ── 免除の側も腐る。使われていない前置きは畳む ──────────────────────────

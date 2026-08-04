@@ -52,6 +52,12 @@ LOCAL_CTLS=(
                                      # repo(RC_ROOT)で測定経路まで通す
     test/verify-script-controls.sh
     test/deploy-dirt-controls.sh
+    test/no-linerefs-controls.sh     # ★2026-08-05 に此処へ入れた。検査の**届く範囲**を測る。
+                                     # 電話側の木(`ios/`)に行番号を1件植えて赤になるかを見る
+                                     # ので、走査が届いていない事は緑で隠せない。実測1秒未満、
+                                     # live の木には**足すだけ**で既存 file には触らない。
+                                     # ★部分木(変異の作業コピー)でも緑である事を測る項が本体 ——
+                                     # 此処が赤い造りだと変異走行の**全件**が「検出」に化ける
     test/child-reaping-controls.sh   # 実際に変異台本を起こして殺す。実測10秒だが e2e の子が
                                      # 上がるまで待つので状況で伸びる(上限90秒で測定不成立)
     test/health-observer-controls.sh # 本物の HTTP サーバを立てて probe を測る。実測3秒
