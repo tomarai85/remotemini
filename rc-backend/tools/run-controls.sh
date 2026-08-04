@@ -41,6 +41,9 @@ ALL=0
 [ "${1:-}" = "--all" ] && ALL=1
 
 LOCAL_CTLS=(
+    test/design-supersede-world-controls.sh   # ★2026-08-04 に此処へ入れた。世界の見分け
+                                              # (designOrSkip)の対照。差し替え口だけ在って
+                                              # 使う側が居らず、其処が実際に配備を止めた
     test/mutation-run-live-controls.sh
     test/mutation-target-controls.sh
     test/pii-controls.sh

@@ -19,6 +19,7 @@
 //   「植えた source なら真」「注釈だけなら偽」の両方向を下で撃つ。
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,21 +37,123 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 //
 // だから読みを**遅らせず、無い事を許す**形にする。ただし「無ければ飛ばす」だけだと
 // fail-open になる —— repo の中で DESIGN.md を消しても緑になってしまう。
-// 飛ばしてよいのは「そもそも木の外が存在しない = repo から写した木」の時だけなので、
-// `.git` の有無でその2つの世界を見分け、repo の中に居るなら**読めない事を赤にする**。
+// 飛ばしてよいのは「そもそも木の外が存在しない = repo から写した木」の時だけである。
+//
+// ── ★世界を2つだと思っていた(2026-08-04、配備が此処で止まって判明)────────────
+// 初版はその見分けを **`.git` が1つ上に在るか**という代理で書いていた。代理は性質では
+// ない —— 答えているのは「**何かの** repo が上に在るか」であって、「**自分の** repo の
+// 中に居るか」ではない。実際に外したのは想定していなかった**3つ目の世界**:
+//
+//   `tools/deploy-to-edith.sh` は edith の `/Users/edith/rc-staging` へ木を写して
+//   其処で `npm test` を回す。親は `/Users/edith` で、2026-08-03 の艦隊衛生作業が
+//   其処に `.git` を作っていた。代理は「repo の中に居る」と答え、DESIGN.md は無いので
+//   赤 —— **12 commit が電話に届かないまま配備が止まった**。
+//
+// なので代理をやめ、**性質そのもの**を git に訊く: 「囲む repo は、**此処に在る**
+// DESIGN.md を版管理しているか」。実測(4 世界、2026-08-04):
+//
+//   | 世界                                   | ls-files --error-unmatch | 判定     |
+//   |----------------------------------------|--------------------------|----------|
+//   | 本物の repo                            | exit 0                   | 要求     |
+//   | 版管理下だが作業木の実体を消した       | exit 0                   | **要求** |
+//   | edith の配備用の写し(`.git` だけ在る) | 非 0                     | 飛ばす   |
+//   | 変異走行の写し(どちらも無い)         | 非 0                     | 飛ばす   |
+//
+// 2行目が要点 —— `ls-files` は**索引**を見るので、`rm DESIGN.md` しても版管理下のままで
+// 赤が保たれる(= fail-closed が生きている)。`git rm` すれば飛ぶが、版管理から外すのは
+// 事故ではなく決定なので、それでよい。
+//
+// ★環境変数を落とす理由も実測。`npm test` は git の pre-commit の中でも走り、其処では
+//   `GIT_INDEX_FILE=.git/index` が渡ってくる(使い捨ての repo で commit して観測)。
+//   更に `GIT_DIR` が他の repo を指していると、**素の temp dir が「版管理下」と答える** ——
+//   変異走行の写しは正に素の temp dir なので、これは 241 件の変異を丸ごと殺した事故と
+//   同じ向きの誤判定になる。だから子には `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` を
+//   渡さない。
+//
+// ★`git` 自体が起動できない時は**飛ばす**(= 世界を見分けられないなら写し側に倒す)。
+//   逆に倒すと、git の無い機械で変異走行が丸ごと死ぬ —— 前科のある方の事故である。
+//   代償は「repo の中で git を失い、かつ DESIGN.md も消えた」時に見逃す事。両機械に
+//   `git` が在る事は実測済みなので、この取引を選ぶ。
+//   撃っているのは `test/design-supersede-world-controls.sh` の 7 本目
+//   (`PATH=/nonexistent` を前置きして走らせる)。取引を変えるなら其処も一緒に直す事。
 const REPO = process.env.RC_DESIGN_REPO || join(ROOT, "..");   // ← 対照の差し替え口
-const IN_REPO = existsSync(join(REPO, ".git"));
 const DESIGN_PATH = join(REPO, "DESIGN.md");
 const DESIGN = existsSync(DESIGN_PATH) ? readFileSync(DESIGN_PATH, "utf8") : null;
+
+// ── ★「非 0 は全部 写し」も代理だった(2026-08-04、Codex 査読 + 実測)───────────
+// 上の版は `catch { return false }` = **git の全ての失敗を「写しだ」と読んで飛ばして**いた。
+// 終了コードは3種類あり、意味が違う(実測):
+//
+//   | 状況                                   | exit | stderr                                  |
+//   |----------------------------------------|------|-----------------------------------------|
+//   | repo が有効で、その名が索引に在る       | 0    | —                                       |
+//   | repo が有効で、その名が索引に**無い**   | 1    | —                                       |
+//   | そもそも repo が無い(世界 B / C)      | 128  | `fatal: not a git repository …`         |
+//   | repo は在るが git が拒んだ / 壊れている | 128  | `fatal: .git/index: index file smaller…`|
+//
+// 最後の行が問題だった。索引が壊れた・`safe.directory` に拒まれた等は
+// 「**判定できなかった**」であって「写しだ」ではない。写し側に倒すと、本物の repo で
+// DESIGN.md が消えていても静かに飛ぶ = この門が守る当のものが抜ける。
+// なので **128 のうち `not a git repository` だけを写し**と読み、それ以外は
+// `"undetermined"` を返す。`designOrSkip` は `false` 以外を全部赤にするので、
+// 判らない時は赤へ倒れる(fail-closed)。module 読み込み時に throw はしない ——
+// throw にすると DESIGN.md が読める健全な木でも、git の一時的な lock で
+// この file が丸ごと落ちる。判断が要る所だけで倒す。
+//
+// ★索引だけでは足りない事も査読で出た: `git rm --cached DESIGN.md` = **staged deletion**
+//   は索引から消えるので `ls-files` は 1 を返し、本物の repo が静かに飛ぶ。だから
+//   索引で見付からなければ `HEAD` も見る。commit が1つも無い repo では `HEAD` が
+//   無いので、その時は索引の答えのまま(対照の世界 A' がそれ)。
+//
+// ★`LC_ALL=C` を渡すのは、上の stderr 照合を訳文で壊さない為。`--literal-pathspecs` と
+//   `--` は `DESIGN.md` が pathspec の魔法として解釈される道を塞ぐ。
+//
+// ★採らなかった助言も残す: Codex は `rev-parse --show-toplevel` が REPO と一致する事も
+//   要求せよと言った(祖先の repo が同名を版管理していると誤検出する、という理由)。
+//   採らない。此処で測りたい性質は「**この DESIGN.md が版管理されているか**」であって
+//   「此処が repo の根か」ではない。祖先の repo が版管理しているなら、それは本当に
+//   版管理されている。逆に根の一致を要求すると、package をもう一段深くした時に
+//   **黙って全部飛ぶ**新しい fail-open が生まれる。edith の `/Users/edith` が
+//   `rc-staging/DESIGN.md` を版管理していない事は実測済みで、この助言が防ぐ誤検出は
+//   現存しない。実例が出たら考え直す。
+//   `git` が起動できない時に throw せよ、も採らない —— 上の取引(対照 7)を壊す。
+
+/**
+ * 囲む repo が `dir` の DESIGN.md を版管理しているか。代理ではなく関係そのものを訊く。
+ * @returns {true | false | "undetermined"} `false` だけが「飛ばしてよい」。
+ */
+export function repoTracksDesign(dir) {
+  const env = { ...process.env, LC_ALL: "C" };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_INDEX_FILE;
+  const git = (args) =>
+    spawnSync("git", ["--literal-pathspecs", "-C", dir, ...args], { env, encoding: "utf8" });
+
+  const idx = git(["ls-files", "--error-unmatch", "--", "DESIGN.md"]);
+  if (idx.error) return false;            // git を起動できない -> 取引どおり写し側へ倒す
+  if (idx.status === 0) return true;
+
+  // 索引に無い。staged deletion を「版管理外」と読み違えない様に HEAD も見る。
+  const head = git(["cat-file", "-e", "HEAD:DESIGN.md"]);
+  if (head.status === 0) return true;
+
+  if (idx.status === 1) return false;     // repo は有効、その名は本当に版管理外
+  if (idx.status === 128 && /^fatal: not a git repository\b/m.test(idx.stderr || "")) return false;
+  return "undetermined";                  // 判らない -> designOrSkip が赤にする
+}
+
+const TRACKED = repoTracksDesign(REPO);
 
 /** DESIGN.md が読めない時、飛ばしてよいかを判定する。よくないなら**この場で赤にする**。 */
 function designOrSkip(t) {
   if (DESIGN !== null) return true;
   assert.equal(
-    IN_REPO, false,
-    "repo の中に居る(.git が在る)のに DESIGN.md が読めない。これは飛ばしてよい不在ではない",
+    TRACKED, false,
+    `DESIGN.md が読めないのに、飛ばしてよい根拠が無い(版管理の判定 = ${JSON.stringify(TRACKED)})。`
+    + " true = 版管理されている / \"undetermined\" = git が答えられなかった。どちらも飛ばしてよい不在ではない",
   );
-  t.skip("木の外に DESIGN.md が無い(= repo から写した木。変異走行の写しがこれ)");
+  t.skip("囲む repo が此処の DESIGN.md を版管理していない(= repo から写した木。変異走行と配備の写しがこれ)");
   return false;
 }
 
