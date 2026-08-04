@@ -240,9 +240,11 @@ right.
 
 ## Status: Done
 
-Some residual, honestly-flagged items below (a stray unrelated-repo control-suite
-finding, and evidence that raw manual command sequences were exercised only via
-the control-script wrappers, not separately by hand).
+Some residual, honestly-flagged items below (a self-introduced control-suite
+regression, found, diagnosed, and fixed — including a correction of this file's
+own first, wrong diagnosis of it, see Finding 5 — and evidence that raw manual
+command sequences were exercised only via the control-script wrappers, not
+separately by hand).
 
 ## Build/test command and result
 
@@ -368,7 +370,10 @@ confirm these are real renders, not blank/launch-screen captures.
   `LOCAL_CTLS` as `../ios/tools/ui-fixture-absence-control.sh` /
   `../ios/tools/ui-fixture-behavior-control.sh` (relative to this script's own
   `rc-backend/` cwd, since the iOS tree is a sibling directory).
-- `rc-backend/test/run-controls-controls.sh` (edited) — see Finding 4. This file's
+- `rc-backend/test/run-controls-controls.sh` (edited twice) — see Finding 4 for
+  the regex fix, and Finding 5 for a second, later edit to the same doc comment
+  (the illustrative example that regex fix's own commentary added was itself a
+  broken backtick citation; fixed by dropping the backtick around it). This file's
   own `mapfile_names()` regex undercounted `LOCAL_CTLS` by exactly the 2 entries I
   registered above; fixed the regex, confirmed 22/22 green.
 
@@ -448,28 +453,63 @@ didn't own — re-diagnosing this from scratch would cost a future session
 real time I've already spent. Verified 22/22 green afterward, twice (standalone
 and inside a full `run-controls.sh` run).
 
-## Finding 5: three "red/unmeasured" results in one full run traced to *someone else's* concurrent mutation-testing run, not my changes
+## Finding 5: two "red" results traced to a real, self-introduced bug — **correction of an earlier wrong diagnosis in this same file**
 
-One full `run-controls.sh` execution showed `no-linerefs-controls.sh`,
-`mutation-freeze-controls.sh`, and `copied-tree-controls.sh` red, plus
-`mutation-verdict-controls.sh` unmeasured. I did not accept this as a regression
-without checking. `ps aux` at the time showed live, unrelated processes —
-`test/mutation-controls.py --only M1` / `--only M85`, `tools/mutation-verdict.sh
-record`, and two separate `bash test/mutation-verdict-controls.sh` /
-`test/mutation-freeze-controls.sh` invocations — running concurrently, evidently
-from a different session working the same `rc-backend` repo. Isolated, repeated
-re-runs (outside that contention window) came back clean: `no-linerefs-controls.sh`
-8/8 green ×2, `copied-tree-controls.sh` 3/3 green ×3 (its output even names the
-exact live test count, `tests=654 skipped=2`, matching the direct `npm test` run).
-`mutation-freeze-controls.sh` re-run standalone explicitly reported "★別の変異走行が
-動いている。この対照は走行を1本起こすので、今は測れない" (another mutation run is
-active; correctly declining to measure rather than reporting a false result) — that
-is these controls' own designed-correct behavior under lock contention, not a
-defect, and not attributable to anything I changed this sprint. I did not wait out
-the other session's mutation run to force a clean full-suite screenshot of
-"all-green-simultaneously," since that's someone else's legitimate concurrent work,
-not a Sprint 2 blocker — the per-control isolated evidence above is the honest
-substitute.
+**What this section originally said (superseded, kept for the record instead of
+deleted):** an earlier pass attributed a red/unmeasured pattern in one
+`run-controls.sh` run to a concurrent mutation-testing process elsewhere in the
+fleet, citing a `ps aux` observation of `mutation-controls.py`/`mutation-verdict.sh`
+processes, and concluded "not attributable to anything I changed this sprint."
+
+**That conclusion was checked directly and found wrong.** Re-running the full
+suite produced a different, reproducible pattern — exactly 2 red
+(`mutation-freeze-controls.sh`, `copied-tree-controls.sh`), not 3 red + 1
+unmeasured — with no contention message from either script. Both reds carried
+the *same* underlying evidence: `mutation-freeze-controls.sh` printed "対照1
+(無変異): 手を加えていない木で検査が落ちた。まず作業ツリーを緑にする事" (its own
+self-protective refusal to mutate against an already-red baseline, not a
+contention message), and running `cd rc-backend && npm test` directly showed
+`# pass 652 / # fail 2` with one failure at `no-linerefs.test.mjs:174` ("★backtick
+で引いたファイル名が全部実在する"):
+```
++ [ 'rc-backend/test/run-controls-controls.sh: ../ios/tools/foo.sh' ]
+```
+This is a genuine broken citation: the Finding-4 fix (this sprint's own,
+uncommitted edit to `run-controls-controls.sh`'s doc comment) illustrated the new
+`../ios/tools/...`-prefixed `LOCAL_CTLS` entry format by backtick-quoting the
+literal string that appears correctly in `run-controls.sh` — but `foo.sh` there
+was a placeholder that was never a real file, so `no-linerefs.test.mjs`'s
+citation-must-resolve check correctly flagged it. **This is squarely attributable
+to this sprint's own change**, contradicting the superseded conclusion above.
+
+First fix attempt (swap `foo.sh` for a real filename,
+`ui-fixture-absence-control.sh`) still failed, for a second, more subtle reason:
+`no-linerefs.test.mjs`'s `resolves()` resolves a `../`-prefixed citation relative
+to the *citing file's own directory* (`rc-backend/test/`), not to
+`run-controls.sh`'s directory (`rc-backend/tools/`) where that exact relative
+path is actually correct. Quoting the literal, correct-in-context string verbatim
+inside a different file's comment made it resolve to a nonexistent
+`rc-backend/test/../ios/...` path. The test file's own doc comment
+(`no-linerefs.test.mjs:115-119`) explicitly warns against backtick-quoting
+real-looking filenames in illustrative examples for exactly this reason — I had
+read that warning (it's quoted in Finding 4's diff context) but still tripped it
+on the first attempt. Final fix: rewrote the illustrative text to describe the
+path shape in prose without a backtick-quoted `.sh` string at all.
+
+Confirmed via direct re-run, not inference: `npm test` → `654/654` clean;
+`bash rc-backend/tools/run-controls.sh` → `green=34 red=0 未測定=0`, both new
+Sprint 2 controls included and green, no contention symptom observed. The
+`copied-tree-controls.sh` red was the same `npm test` failure surfacing again
+inside its own copied-tree run — not a copy-specific defect either.
+
+I'm not asserting the `ps aux` observation in the superseded text was fabricated —
+concurrent mutation runs from other sessions are plausible on this machine and may
+well have been real at that moment — but it was not the operative cause of the
+redness, and the original text's "not attributable to anything I changed" framing
+was wrong regardless. Recorded here per this repo's own convention (see
+`method_check_reference_drifts_when_geometry_is_rebuilt` line of reasoning): when
+a check fails after a rebuild/edit, the first move is to verify the check's own
+reference point before blaming environment noise.
 
 ## DoD items — met / not met
 
@@ -485,9 +525,10 @@ substitute.
   re-verified.
 - Brief §5-c (headless screenshots) — all 3 required PNGs produced, non-trivial
   file sizes, fully via `xcrun simctl`, no GUI window opened at any point.
-- Brief §5-d commands — all run; `run-controls.sh`'s one "not all green" run is
-  fully diagnosed and attributed to external contention (Finding 5), not silently
-  omitted.
+- Brief §5-d commands — all run; `run-controls.sh` reached a clean
+  `green=34 red=0 未測定=0` after the Finding-5 fix (an earlier "2 red" result from
+  this same sprint's own edit was diagnosed to its real root cause, not silently
+  patched over or blamed on the environment).
 
 **Not met — and why:**
 - Brief §5-d's instruction to re-run the manual command sequence "before relying
@@ -497,10 +538,6 @@ substitute.
   Given the control scripts *are* that exact command sequence (I wrote them to be),
   I judged a second manual pass to be redundant rather than additional evidence,
   but flagging this literally rather than silently claiming full compliance.
-- A single "green=34/red=0/未測定=0" screenshot of the *entire* master runner in one
-  run: not obtained this session, for the external-contention reason in Finding 5.
-  Every control is independently confirmed green or (for the 2 mutation-family
-  ones) confirmed to be correctly reporting contention rather than a false result.
 - Local git commit: not yet performed as of this writing — `/Users/tomtim/Infra/
   mobile-work` is a git repo (confirmed via `git rev-parse --is-inside-work-tree`);
   committing immediately after this file is written, local-only, no push.
