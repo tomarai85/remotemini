@@ -20,6 +20,18 @@ team-lead から届いた S/C 分割の binding ruling を本文に折り込み�
 から「§8-4(Tom の実機でしか測れない事)が未回答である限りどちらの答えでも long-poll は成立する」
 という client 非依存の論拠へ差し替え。
 
+**訂正4(2026-08-05 03:35、Codex `gpt-5.6-sol` xhigh の設計レビュー由来)**: 訂正1で
+`readablePoll` を fail-closed にした結果、**その fail-closed が無言だった**。旧 §5-3 は
+「判定が偽 → 変更しない(画面を白くしない)」だけで、画面に何も出さない。壊れた形を返す回帰が
+本番へ出た場合、電話には**もっともらしく見える古い画面が永久に残る**一方、操作している人は
+ライブを見ているつもりでいる。しかも §5-4 の「backend unreachable」は HTTP 失敗の連続回数で
+数えるので、**200 で返る読めない応答は1回も数に入らない** = 既存の計器では絶対に検知できない。
+「止まっている」と「もう受け取れていない」を人が区別できないのは、Tom の要件
+「返答待ちであれ作業中であれいつでも見て、干渉できればいい」の正面からの違反。§3-3 / §5-3 /
+新設 §5-5 / §3-9 / Sprint 4 の DoD を改訂した。**判定を緩めた訂正ではない** — 読めない応答を
+適用しない事も、cursor を進めない事も、そのまま維持している(飛ばすと介入が必要な状態そのものを
+黙って捨てる)。足したのは可視化と、明示的な復帰路。
+
 ## Design Decisions
 
 has_design_decisions: **true**
@@ -356,7 +368,9 @@ D-A(CHOICE 画面全般)は D4 の「許可プロンプト」除外とは別物:
    なるだけで、client が実際に受け取り merge した後の構造を検める事にならない — §0-4 参照)。
    `view.mjs:412-425`(`readablePoll`/`isPlainEvent`)の判定ロジックをそのまま Swift へ移植し、
    受信直後・merge 直前の payload に対して適用する。判定が偽の時は**適用せず**画面を最後の正常値の
-   まま維持し、次の poll を続ける。
+   まま維持し、次の poll を続ける。**ただし黙って維持しない** — 下の 3-3a に従い、画面を
+   「古い」と名乗らせる。cursor は**進めない**(進めると、介入が必要な状態そのものを黙って
+   捨てる。訂正4)。
 4. `items` を `kind` ごとに処理。`kind:"message"` は経路で形が違う: tmux = `entries`(整形済み配列)、
    worker = `event`(生の NDJSON 1行)。型を分けて扱う(enum ケースを分ける等)。
 5. `screen` フィールドは `null` でなければ最新値として置き換え(順序付き履歴配列には混ぜない)。
@@ -364,6 +378,50 @@ D-A(CHOICE 画面全般)は D4 の「許可プロンプト」除外とは別物:
    `wait:20000` 保留 poll に戻る(`POLL_MAX_ITEMS = 64`、`server.mjs:623`)。
 7. `queued` は v1 では未使用(§0-4、queue 表示は v1 スコープ外)。将来 v2 で使う時のため、
    `null`(観測不能)と `0`(実数)を混同しない事だけここに記録しておく。
+
+### 3-3a. 「読めない応答」の可視化と復帰(訂正4、2026-08-05)
+
+**問題**: 3-3 の step 2/3 は fail-closed に**維持する**とだけ書いてあり、画面に何も出さなかった。
+サーバが壊れた形を返す回帰が出た時、電話には古い画面がそのまま残る。§5-4 の
+「backend unreachable」は HTTP 失敗の連続回数で数えるので、**200 で返る読めない応答は
+1回も数に入らない** = 既存の計器では原理的に検知できない。
+
+**別の計器を持つ**。poll actor は2つの状態を持つ:
+
+| 名前 | 型 | 更新 |
+|---|---|---|
+| `unreadableStreak` | `Int` | 200 のデコード失敗、または `readablePoll(d) == false` で +1。**読めた応答を merge できた時に 0 へ戻す** |
+| `lastReadableAt` | `Date?` | merge が成功する度に上書き |
+
+`unreadableStreak` は §3-6 の HTTP 失敗回数(`attempt`)と**別の変数**。片方に混ぜると、
+読めない 200 が「接続は健全」として扱われ続ける(混ぜた瞬間にこの節の意味が消える)。
+
+段階は2つ。閾値は初期値・調整可(§3-9 と同じ扱い):
+
+| `unreadableStreak` | 表示 | 操作 |
+|---|---|---|
+| 0 | 通常(ライブ) | 通常 |
+| 1-2 | 画面上端に**静かな**1行(赤バナーではない): 「最新の配信を読めませんでした。`<HH:mm:ss>`(= `lastReadableAt`)時点の画面です。再試行中…」。画面自体は**古い**と名乗る | composer / interrupt とも有効のまま |
+| 3 以上、または `unreadableStreak >= 1` のまま `lastReadableAt` から 10 秒経過(先に来た方) | 「配信の形が読めません — 更新が止まっています」+ `[再試行]` `[読み直す]` | 同上 |
+
+**cursor は全段階で進めない**。N 回拒否したら飛ばす、はやらない —— 飛ばした窓の中身は
+「今まさに介入が必要な状態」である可能性が最も高く、黙って捨てるのは fail-open。
+復帰は**飛ばす**のではなく**取り直す**(下)。
+
+**自動の取り直しは1エピソードにつき1回だけ**。段階2へ入った瞬間に、§3-5(N4 復帰)と
+**同じ**手順を1回だけ自動実行する — `GET …/history` を撮り直し、cursor を空文字列へ戻して
+画面を再構築してから poll を再開。1回に上限を置く理由: サーバの形そのものが壊れている場合、
+取り直しても同じ壊れた形が返る。上限を置かないと、移動中の細い回線で history 再取得の
+ループになる(Tom の実測前提 §3-4 と正面衝突)。2回目以降は `[読み直す]` を人が押した時のみ。
+`unreadableStreak` が 0 に戻った時点でエピソード終了、自動取り直しの権利も回復する。
+
+**composer と interrupt は止めない。** 「見えない = 送らせない」にしない理由は2つ:
+(1) Tom の要件は「いつでも見て、**干渉できれば**いい」。読めない配信で干渉を封じるのは要件の
+反対側。(2) 送信可否の判定は**サーバが送信の瞬間に自分でペインを読み直して**行っており
+(`inject.mjs:886` = `CHOICE`/`UNKNOWN` なら `sent:false` を返す、`inject.mjs:912` = 送信直前に
+モーダルが出たら中止)、client の古い `screen` に依存していない。つまり composer を開けたままでも
+**fail-closed はサーバ側で成立している**。結果は `display.sendResult` /
+`display.interruptResult` がそのまま語る。
 
 ### 3-4. connection ownership(N3)/ D-C の反映
 
@@ -412,6 +470,7 @@ Keychain の値は自動では消さない(一時的障害と鍵ローテーシ�
 | `PollCursor` | 中身を解釈しない事(bit-for-bit 往復) | パースして再構築するコードに戻すと、未知形式の cursor で壊れる回帰を固定 |
 | `backoffMs`/`nextAttempt` | 上限15秒張り付き、5秒未満切断は reset しない | 上限の `min` を外すと発散する検査を先に red で確認 |
 | `readablePoll`(C群、Swift 移植) | `view.mjs:412-425` の判定と1件ずつ入力を揃えて出力一致(正常系 + ワーカー経路の `event`/`entries` 取り違えを含む異常系)。判定が偽の時 poll 処理側が**適用しない**事も別途検査 | 移植側の判定ロジックを緩めると、`view.mjs` 側の期待値との不一致で赤くなる。「適用しない」分岐自体を消すと壊れた応答が画面を上書きする回帰を固定 |
+| `unreadableStreak` の段階遷移(§3-3a、訂正4) | 読めない 200 を 1/2/3 回連続で流した時の段階(0→1→1→2)、`lastReadableAt` から10秒での段階2への昇格、読めた応答1回での 0 復帰、cursor が全段階で不変、自動取り直しが**1エピソードに1回だけ**発火する事。**負の対照**: `unreadableStreak` を §3-6 の `attempt` と同じ変数に繋ぐ改変を入れると赤くなる検査を1本置く | 訂正4 の本体は「別の計器を持つ」事なので、計器を1本に畳む改変が緑のまま通るなら何も測っていない。段階表示だけを検査すると、表示を出しつつ数え口を共有する実装が通ってしまう |
 | N5 redirect 拒否 | スタブサーバの 302 に Authorization 付きで追随しない事 | delegate 実装を消すと自動追随してしまう回帰を1本で掴む |
 
 ---
@@ -497,7 +556,7 @@ ViewModel は届いた `kind`(`ok`/`warn`/`refused`/`error`)で色とアイコ�
 | `screen==="CHOICE"` | 無効(固定文言、§2-3) | **有効**(`interrupt` ハンドラは `screen` を
   条件にしない、`server.mjs:1132-1167`) | 固定文言 |
 | `screen==="UNKNOWN"` | 無効 | 有効(理由は同上) | 「画面の状態を読めていません」 |
-| poll 応答が Swift 側 `readablePoll` 判定で偽(C群、§0-4 訂正1) | 変更しない | 変更しない | 変更しない(画面を白くしない) |
+| poll 応答が Swift 側 `readablePoll` 判定で偽、または 200 のデコード失敗(C群、§0-4 訂正1 / 訂正4) | **有効のまま**(送信可否はサーバが送信の瞬間に判定、`inject.mjs:886`) | **有効のまま**(同上) | 画面本体は変更しない(白くしない)。**ただし §5-5 の段階表示を必ず出す** — 古い画面をライブとして見せない |
 | poll が3回連続失敗 | 直前の状態を維持 | 直前の状態を維持 | 「backend unreachable」赤バナー |
 | 401(表示中に発生) | — | — | Key-entry へ強制遷移 |
 
@@ -506,6 +565,23 @@ ViewModel は届いた `kind`(`ok`/`warn`/`refused`/`error`)で色とアイコ�
 接続不可・タイムアウト・5xx が**連続3回**発生した状態(§3-6 と統一)。List/Conversation 共通の
 コンポーネントとして文言・見た目を1箇所にまとめる。復帰(1回でも成功)したら即座に消す。手動で
 「消す」操作は用意しない。
+
+### 5-5. 共通: 「配信が読めない」の定義(訂正4、§5-4 とは**別物**)
+
+§5-4 は**届かない**状態(HTTP が失敗する)。こちらは**届いているのに読めない**状態(200 が返り、
+`readablePoll` が偽 / デコードが失敗する)。同じ計器で数えられないので、表示も別に持つ:
+
+| | §5-4 backend unreachable | §5-5 配信が読めない |
+|---|---|---|
+| 数える物 | HTTP の失敗回数(§3-6 `attempt`) | `unreadableStreak`(§3-3a) |
+| 典型の原因 | 電波・edith 停止・tailnet 切断 | サーバ側の形の回帰(deploy 事故)、版ずれ |
+| 見た目 | 赤バナー | 段階1 = 静かな1行 / 段階2 = 警告 + `[再試行]` `[読み直す]` |
+| 消える条件 | 1回でも HTTP 成功 | 1回でも**merge まで**成功 |
+
+2つが同時に立つ事はある(表示は両方出してよい)。**片方をもう片方で代用しない** ——
+代用した瞬間、200 で返る壊れた配信が「接続は健全」に見える。文言・見た目は §5-4 と同じく
+1箇所のコンポーネントにまとめ、`lastReadableAt` を必ず時刻として出す(「いつの画面か」が
+言えないと、人は古い画面をライブと読む)。
 
 ---
 
@@ -533,7 +609,7 @@ S群10関数すべて配線、評価は `.harness/feedback/check-2026-08-05-1-di
 | 1 | 1 | Core モジュール雛形: `PollCursor`、`backoffMs`/`nextAttempt`、`readablePoll` の Swift 移植(C群、§0-4 訂正1。`view.mjs:412-425` から純関数として移植、UI 依存なしでこの段で先に作れる)、Keychain 保存層、`/healthz` 疎通クライアント。Key-entry 画面実装 | 単体: `PollCursor` 不透明性検査・`backoffMs` 上限検査・`readablePoll` 移植の `view.mjs` 出力一致検査(正常系+ワーカー経路の `event`/`entries` 取り違え異常系)green。実機: `devicectl device process launch --console` のログに自前の診断ログ `healthz ok:true pid:<n>` を出力させ `grep` で確認 |
 | 2 | 2 | List 画面: `GET /api/sessions` クライアント、行UI、`display.subtitle`/`display.scanLine`/`freshness`/`relTime`、pull-to-refresh、§5-2 の3分岐 | 単体: `freshness` 閾値(60秒)検査 green。Simulator: fixture 応答での `paneFault` あり/なし/空一覧3状態のスクリーンショット、バナー文字列を Accessibility identifier 経由で XCUITest 確認 |
 | 3 | 3 | Conversation 画面: `GET …/history` クライアント、吹き出しUI、`mergeHistory`、`truncated`+「以前を読む」 | 単体: `mergeHistory` 重複剥がし検査(正常系+「同じ発言2回で剥がしすぎる」既知限界の検査)。Simulator: fixture 応答スクリーンショット |
-| 4 | 4 | poll ループ(§3全体): 単一owner の poll actor、Sprint 1 で作った `readablePoll` 移植を受信直後・merge直前に適用(§3-3 step 3、C群)、gap処理(§4-3訂正版)、N4フォアグラウンド復帰時fresh fetch、`more:true` 即時再poll | 単体: スタブ `URLProtocol` で駆動する poll状態機械の検査群(正常/gap/screen-only/`readablePoll` 判定偽の4分岐、最後は負の対照込み)。実機: edith上の1会話にpollを張り、バックグラウンド→フォアグラウンド遷移後に「history refetched before poll resumed」ログが1行出る事を確認 |
+| 4 | 4 | poll ループ(§3全体): 単一owner の poll actor、Sprint 1 で作った `readablePoll` 移植を受信直後・merge直前に適用(§3-3 step 3、C群)、**§3-3a の `unreadableStreak`/`lastReadableAt` と §5-5 の段階表示・1回限りの自動取り直し(訂正4)**、gap処理(§4-3訂正版)、N4フォアグラウンド復帰時fresh fetch、`more:true` 即時再poll | 単体: スタブ `URLProtocol` で駆動する poll状態機械の検査群(正常/gap/screen-only/`readablePoll` 判定偽の4分岐、最後は負の対照込み)+ **§3-9 の `unreadableStreak` 段階遷移検査(計器を `attempt` に畳む改変で赤くなる負の対照を含む)**。Simulator: 読めない 200 を返す fixture で段階1・段階2のスクリーンショットを撮り、`lastReadableAt` の時刻文字列が画面に出ている事を Accessibility identifier 経由で確認。実機: edith上の1会話にpollを張り、バックグラウンド→フォアグラウンド遷移後に「history refetched before poll resumed」ログが1行出る事を確認 |
 | 5 | 5 | composer(送信): `POST …/messages`、`display.sendResult` 描画、CHOICE/UNKNOWN時の無効化 | 単体: `sendResult` 全分岐(202+verified/202+unverified/202+worker/409/400/401/5xx/本文なし)テーブル駆動検査。実機: edithのテストセッションへ実送信、`delivered:"verified"` 観測 + `ssh edith` で対象jsonl末尾行増加を確認 |
 | 6 | 6 | interrupt + ネットワーク堅牢化: `POST …/interrupt`、`display.interruptResult`描画、N5 redirect拒否の負の対照検査、backend-unreachableバナー(§5-4)全画面適用 | 単体: `interruptResult` 4分岐 + N5 検査。実機: 生成中セッションへinterrupt送信、`stopped:"verified"` 観測 |
 | 7 | 6.5 | 統合仕上げ: 4機能を実回線(Wi-Fi→セルラー切替、機内モード往復、rc-backend再起動を挟む)で通し。REQUIREMENTS §5 のうちv1該当分(#1-3,#5-7,#9。#4は push不可のため対象外、#8はアカウント切替除外のため対象外)を証跡付きで確認 | チェックリスト+証跡(スクリーンショット/ログ抜粋)を `.harness/evidence-2026-08-1x/sprint6-acceptance.md` に記録(Evaluator/Generator の成果物。本spec はその期待値を定義するのみ) |
@@ -569,6 +645,7 @@ REQUIREMENTS §5-4 が求める「ロック中/非フォアグラウンドでも
 | cursor形式・定数 | `tail.mjs:78-107`、`server.mjs:622-625` |
 | S/C判断分割・境界テストの訂正・再導出(2026-08-05訂正1) | `DESIGN.md` §2.13 内2026-08-05追記、team-lead ruling メッセージ、`view.mjs`各関数(本文中に行番号記載、`readablePoll`は`view.mjs:412-425`) |
 | `readablePoll` を C群へ戻した経緯・`choiceView`のscreen連動条件 | `server.mjs:1386-1395`(コメント含む、`server.mjs:1393`付近) |
+| 訂正4(fail-closed が無言だった / §3-3a・§5-5) | Codex `gpt-5.6-sol` xhigh 2026-08-05 の設計レビュー全文 = `.harness/evidence-2026-08-05/codex-readablepoll-stall-2026-08-05.txt`。composer を止めない根拠 = `inject.mjs:886`(`CHOICE`/`UNKNOWN` で `sent:false`)、`inject.mjs:912`(送信直前のモーダル検知で中止) |
 | Sprint 0.5 完了済み・S群10関数の配線(2026-08-05訂正2) | `server.mjs:41-44`(import一覧)、commit `7f3641f`、`.harness/feedback/check-2026-08-05-1-display-wiring.md`(M14含む15変異の記録) |
 | `ios/`骨格が実機到達済み | `ios/tools/build.sh`、`ios/project.yml`、`ios/Sources/RootView.swift`のコメント |
 | block理由・文言 | `blocked.mjs`全体、`server.mjs:369-423` |

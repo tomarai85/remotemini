@@ -1,0 +1,65 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019fce0a-5119-74a0-ae84-6c58a7c3d122
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Design review, one decision. Answer in <=250 words.
+
+CONTEXT (self-contained):
+A self-hosted backend lets a phone app watch and steer Claude Code sessions running on a Mac mini. Transport is HTTP long-poll (not SSE). Each poll returns {items:[...], screen, display:{...}, cursor}. The client keeps an append-only array of items and advances a cursor.
+
+There is a pure function readablePoll(d) that the CLIENT computes on the payload it received, immediately before merging into its array. It returns false if the payload shape is unusable (e.g. an item with kind:'message' carrying neither an 'entries' array nor a plain 'event' object). It is deliberately computed by the receiver, not trusted from a server-supplied display.readablePoll field, so a malformed/hostile payload cannot vouch for itself.
+
+THE DECISION UNDER REVIEW: when readablePoll(d) is false, the spec says the client must NOT change the screen — do not merge, do not clear, do not advance the cursor, keep showing what is already there, and poll again.
+
+The product requirement it must serve, verbatim from the owner: 'whether it is waiting for a reply or working, I want to be able to see it and interrupt it at any time.'
+
+QUESTIONS:
+1. Does 'freeze and keep polling' create an undetectable stall? If the server begins emitting a shape the client always rejects (a regression after deploy), the phone shows a plausible-looking but permanently stale screen with no visible signal, while the operator believes they are watching live. Is that a worse failure than showing an explicit error?
+2. If the cursor never advances on reject, the client re-fetches the same rejected window forever. Is that correct, or should it advance past a poisoned window after N rejects?
+3. Name the minimum observable signal the client must surface so a human can tell 'nothing is happening' apart from 'I am no longer receiving'. Be concrete about what the UI shows and after how long.
+
+Answer with a verdict on the current spec (keep / amend / replace) plus the concrete amendment if any.
+2026-08-04T18:30:11.642022Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-04T18:30:11.757039Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-04T18:30:11.766845Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+**Verdict: amend.**
+
+1. Yes. Silent “freeze and keep polling” creates an undetectable stall and violates the requirement to know whether Claude is waiting or working. Preserving the last valid screen is correct; presenting it as live is not. An explicit degraded-state signal is safer.
+
+2. Do not blindly advance past a poisoned window after N rejects. That would silently discard events and could hide the exact state requiring intervention. Keep the last accepted cursor. After repeated rejection, enter a protocol-error state and request an explicit full resync/snapshot through a defined recovery path. Any server-authorized skip must be visible and auditable.
+
+3. Minimum observable signal:
+
+- Immediately after an unreadable payload: show a persistent banner: **“Live updates invalid — showing last valid screen from 14:32:08. Retrying…”**
+- Mark the screen **STALE**, not live.
+- After either 3 consecutive rejected polls or 10 seconds, whichever comes first: change it to **“Connection/protocol error — updates have stopped”** and expose **Retry / Resync**.
+- Keep the interrupt control available if its command channel still works; show its delivery status separately.
+
+Concrete amendment: on `readablePoll(d) === false`, preserve items, screen, and cursor; record the rejection; visibly mark the view stale; continue bounded retries; then trigger explicit resynchronization without silently skipping data. Clear the warning only after a readable poll is successfully merged.
+tokens used
+15,627
+**Verdict: amend.**
+
+1. Yes. Silent “freeze and keep polling” creates an undetectable stall and violates the requirement to know whether Claude is waiting or working. Preserving the last valid screen is correct; presenting it as live is not. An explicit degraded-state signal is safer.
+
+2. Do not blindly advance past a poisoned window after N rejects. That would silently discard events and could hide the exact state requiring intervention. Keep the last accepted cursor. After repeated rejection, enter a protocol-error state and request an explicit full resync/snapshot through a defined recovery path. Any server-authorized skip must be visible and auditable.
+
+3. Minimum observable signal:
+
+- Immediately after an unreadable payload: show a persistent banner: **“Live updates invalid — showing last valid screen from 14:32:08. Retrying…”**
+- Mark the screen **STALE**, not live.
+- After either 3 consecutive rejected polls or 10 seconds, whichever comes first: change it to **“Connection/protocol error — updates have stopped”** and expose **Retry / Resync**.
+- Keep the interrupt control available if its command channel still works; show its delivery status separately.
+
+Concrete amendment: on `readablePoll(d) === false`, preserve items, screen, and cursor; record the rejection; visibly mark the view stale; continue bounded retries; then trigger explicit resynchronization without silently skipping data. Clear the warning only after a readable poll is successfully merged.
