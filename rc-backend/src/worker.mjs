@@ -234,6 +234,20 @@ export class WorkerManager {
     return dropped.length;
   }
 
+  /**
+   * 電話からの「待っている送信を取り消す」(2026-08-04)。**走っている番には触れない** ——
+   * それは `interrupt` の仕事で、2つを1つの操作に畳むと「取り消す」が生成を殺す事になる。
+   *
+   * ★`_dropQueued` を外へ晒さずに此処を足したのは、あちらが **entry を引数で受け取る**から。
+   *   呼び手が `workers` から引いた物と違う entry を渡せてしまい、その時に出る
+   *   `user_dropped` は**別の会話の番号**を名乗る。引く場所を1つに閉じる。
+   */
+  dropQueued(sessionId, reason) {
+    const e = this.workers.get(sessionId);
+    if (!e) return 0; // ワーカーが居ない = 積める場所が無い。0 は「無かった」で嘘ではない
+    return this._dropQueued(sessionId, e, reason);
+  }
+
   _write(sessionId, entry, text) {
     const msg = {
       type: "user",

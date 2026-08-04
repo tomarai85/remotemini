@@ -109,6 +109,11 @@
   /* 縦に積む。横並びだと選択肢の本文(「Opus 5 …」)が省略され、**押す物の名前が読めなくなる** */
   .choice-keys { display: flex; flex-direction: column; gap: 8px; padding-bottom: 8px; }
   .choice-keys button { text-align: left; }
+  /* 送信待ちの面。選択待ちと同じく composer の真上 = 「その送信はまだ届いていない」と、
+     取り消す手段が、打ち込む所の隣に在る */
+  #conv-queue:empty { display: none; }
+  #conv-queue { border-top: 1px solid var(--line); background: var(--panel); padding: 10px; }
+  .queue-text { font-size: 13px; color: var(--dim); padding: 0 4px 8px; }
   .muted { color: var(--dim); }
   /* 古い値である事は**色でも**言う。文だけだと一覧の下端に埋もれる */
   .muted.stale { color: var(--warn); }
@@ -149,6 +154,8 @@
   <div id="conv-notice"></div>
   <!-- 選択待ちの操作面。中身は renderChoicePanel が毎回作り直す(空 = 選択待ちでない) -->
   <div id="conv-choice"></div>
+  <!-- 送信待ちの面。中身は renderQueuePanel が毎回作り直す(空 = 待っていない、または数を知らない) -->
+  <div id="conv-queue"></div>
   <div class="composer">
     <textarea id="conv-input" rows="1" placeholder="打ち込む" autocapitalize="sentences"></textarea>
     <button id="conv-send" class="primary">送る</button>
@@ -164,8 +171,9 @@ import { backoffMs } from "/frames.mjs";
 // ★判断は view.mjs 側にしか置かない。ここに書いた条件は単体検査にも変異検査にも
 //   掴めない = 間違っても緑のままになる(2026-08-02 に5箇所まとめて出した)。
 import {
-  choiceResult, choiceView, freshness, gapNotice, interruptResult, mergeHistory, nextAttempt,
-  nextHistoryLimit, readablePoll, relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,
+  choiceResult, choiceView, clearQueueResult, freshness, gapNotice, interruptResult, mergeHistory,
+  nextAttempt, nextHistoryLimit, queueView, readablePoll, relTime, routeLabel, scanLine, sendResult,
+  subtitleOf, whoOf,
 } from "/view.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -301,6 +309,9 @@ async function openConv(s) {
   $("conv-body").replaceChildren(el("div", "center", "読み込んでいます…"));
   $("conv-notice").replaceChildren();
   renderChoicePanel(conv.state); // ★前の会話の操作面を残さない(一覧の `live` は文字列なので普通は空になる)
+  // ★同じ理由で送信待ちの面も消す。前の会話の「送信待ち 2 件」を残すと、**別の会話の数**を
+  //   この会話の数として見せる事になる。次の poll が来るまで何も知らないのが正しい。
+  renderQueuePanel(null);
   band("", stateText(conv.state, "つないでいます…"));
   show("s-conv");
   // ★購読を**先に**開く。履歴を先に撮ると、その隙間に書かれた発言がどちらにも入らない。
@@ -514,6 +525,9 @@ function applyPoll(d, myGen) {
       added = true;
     }
   }
+  // ★毎回描き直す。`d.screen` と違って **poll は毎回この欄を載せる**ので、条件を付けると
+  //   「行列が空になった」時に面が消えない。空になった事を見せるのは数を見せるのと同じ仕事。
+  renderQueuePanel(d);
   if (d.screen) {
     conv.state = d.screen; // 以後の撃ち直しでも同じ状態を出せる(帯が接続の話に戻らない)
     // ★画面が変わった時にだけ来る(サーバは同じ本文を再送しない)= 操作面を描き直す唯一の口。
@@ -628,6 +642,38 @@ async function sendChoice(key, digest) {
     //   次の poll が新しい画面を描き、人がもう一度押す。
   } catch (e) {
     if (String(e.message) !== "unauthorized") notice("error", `押せませんでした(${e.message})`);
+  }
+}
+
+// ---- 送信待ちの取り消し(2026-08-04)-----------------------------------------
+//
+// 判断は全て `queueView` / `clearQueueResult` (view.mjs)。ここは節点を並べるだけ。
+//
+// ★数は**サーバが載せた物をそのまま**出す。押した直後に自分で減らさない ——
+//   減らすと、取り消しが 409 で断られた時に「0 件」と出たまま実際は積まれている、が起きる。
+//   取り消しは `user_dropped` を出す = 保留中の poll が即座に起きて、次の描画で本当の数になる。
+function renderQueuePanel(d) {
+  const box = $("conv-queue");
+  const v = queueView(d);
+  if (!v.show) { box.replaceChildren(); return; }
+  const btn = el("button", "", v.clearLabel);
+  btn.type = "button"; // ★renderChoicePanel と同じ理由(将来 composer が form に包まれた時の暴発)
+  btn.addEventListener("click", () => {
+    btn.disabled = true; // fetch より前に、同期で伏せる。二度押しは同じ物を2回捨てに行く
+    clearQueue();
+  });
+  box.replaceChildren(el("div", "queue-text", v.text), btn);
+}
+
+async function clearQueue() {
+  if (!conv) return;
+  try {
+    const r = await api(`/api/sessions/${encodeURIComponent(conv.id)}/queue`, { method: "DELETE" });
+    const body = await r.json().catch(() => null); // ★send() と同じ。読めない事を値にしない
+    const v = clearQueueResult(r.status, body); // ★判定は view.mjs
+    notice(v.kind, v.text);
+  } catch (e) {
+    if (String(e.message) !== "unauthorized") notice("error", `取り消せませんでした(${e.message})`);
   }
 }
 

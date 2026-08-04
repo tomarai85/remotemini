@@ -558,3 +558,63 @@ export function choiceResult(status, body) {
   if (status >= 500) return { kind: "error", text: `サーバ側で失敗しました(HTTP ${status})。` };
   return { kind: "error", text: `想定していない応答でした(HTTP ${status})。` };
 }
+
+/**
+ * 送信待ち(まだワーカーへ書いていない番)の面を出すか、出すなら何と書くか。
+ *
+ * ★数は poll の本文が運ぶ(`server.mjs` の `collectW`)。**事象からは復元できない**:
+ *   積む時は `user_queued` が出るが、降ろす時は `entry.queue.shift()` して書くだけで
+ *   何も出ない(`worker.mjs` の `result` 処理)。事象を数えると増える一方の数になる。
+ *
+ * ★`null` と `0` を混ぜない。tmux 経路の送信待ちは Claude Code の TUI が持っていて
+ *   (`Press up to edit queued messages`)、我々はその数を観測できないので `queued:null` が来る。
+ *   これを `0` と同じ枝へ落とすと表示は同じ「何も出さない」で済むが、**判定の意味が変わる** ——
+ *   「観測して0だった」と「観測していない」を1つの枝に畳んだ瞬間、後から
+ *   「机の会話でも 0 件と出しては?」という直し方が正しく見えてしまう。枝を分けて残す。
+ *
+ * @returns {{show:boolean, known:boolean, count:number, text:string, clearLabel:string}}
+ */
+export function queueView(d) {
+  const v = d || {};
+  const q = v.queued;
+  // 観測していない(tmux 経路 / 古いサーバ / 読めなかった本文)。断定しないので何も出さない。
+  if (typeof q !== "number" || !Number.isFinite(q)) {
+    return { show: false, known: false, count: 0, text: "", clearLabel: "" };
+  }
+  if (q <= 0) return { show: false, known: true, count: 0, text: "", clearLabel: "" };
+  return {
+    show: true,
+    known: true,
+    count: q,
+    // ★「送信待ち」= まだ Claude へ**渡していない**。渡した番は取り消せない(止めるのは別の口)。
+    text: `送信待ち ${q} 件(まだ Claude に渡していません)`,
+    clearLabel: `${q} 件を取り消す`,
+  };
+}
+
+/**
+ * 「取り消す」の応答をどう読むか。`interruptResult` と同じ規律 ——
+ * 読めなかった本文を「無かった」に丸めない。
+ *
+ * @returns {{kind:"ok"|"warn"|"refused"|"error", text:string}}
+ */
+export function clearQueueResult(status, body) {
+  const b = body || {};
+  if (status === 200) {
+    if (body == null) {
+      return { kind: "warn", text: "取り消せたかどうか確認できませんでした。画面を見て確かめてください。" };
+    }
+    const n = b.dropped;
+    // 200 は必ず `dropped` を載せる(`server.mjs`)。載っていないのは「0件」ではなく「不明」。
+    if (typeof n !== "number" || !Number.isFinite(n)) {
+      return { kind: "warn", text: "取り消せたかどうか確認できませんでした。画面を見て確かめてください。" };
+    }
+    if (n <= 0) return { kind: "ok", text: "取り消す送信は残っていませんでした。" };
+    // ★走っている番は止まらない事を必ず書く。ここを省くと「取り消した = 全部止まった」と読める。
+    return { kind: "ok", text: `${n} 件の送信を取り消しました(いま動いている番は止まりません)。` };
+  }
+  if (status === 409) return { kind: "refused", text: b.error || "取り消せませんでした。" };
+  if (status === 401) return { kind: "error", text: "鍵が通りませんでした。" };
+  if (status >= 500) return { kind: "error", text: `サーバ側で失敗しました(HTTP ${status})。` };
+  return { kind: "error", text: `想定していない応答でした(HTTP ${status})。` };
+}

@@ -1166,6 +1166,40 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { interrupted: had, route: "worker" });
     }
 
+    if (action === "queue" && req.method === "DELETE") {
+      // 「待っている送信を捨てる」(2026-08-04)。**走っている番は止めない** ——
+      // 止めるのは `interrupt` の側。2つを1つのボタンに畳むと、人が「取り消す」と読んだ操作が
+      // 生成中の turn を殺す事になる。取り消せるのは**まだワーカーへ書いていない**分だけ。
+      const r = resolvePane();
+      if (UNDECIDABLE.has(r.reason)) {
+        // 割り込みと同じ理由。宛先を確定できない = 別の会話の行列を捨てうる。何もしない。
+        return json(res, 409, { error: blockedMessage(r), ...blockedBody(r) });
+      }
+      if (r.pane) {
+        // 机で開かれている会話の行列は **Claude Code の TUI が持っている**。数も中身も
+        // 観測できないし、捨てるには打鍵が要る = 電話からは撃たない。
+        // ★ここで 200 + `dropped: 0` を返さない。それは「無かった」という**観測の主張**で、
+        //   我々が観測していない事の反対を言う事になる。断る方が正しい。
+        markResult(res, { reason: "queue-not-ours" });
+        return json(res, 409, {
+          error: "この会話は机で開かれています。待っている送信は Claude Code 自身が持っているので、電話からは取り消せません。",
+          route: "tmux", reason: "queue-not-ours", pane: r.pane,
+        });
+      }
+      const dropped = manager.dropQueued(sessionId, "user_cleared");
+      // ★**捨てた時だけ**起こす。初版は無条件に起こしていて、自分の diff を読み直して
+      //   欠陥だと分かった(2026-08-04):
+      //     ・捨てた時 → `_dropQueued` の `user_dropped` が listener を通って
+      //       `pushToSubscribers` → `wakeWorkerPolls` を既に呼んでいる。**二度目は空振り**。
+      //     ・捨てなかった時(行列が空 / ワーカーが居ない)→ 出来事が1つも無いのに保留を
+      //       起こす事になり、電話は**空の 200 を受けて即座に張り直す**。長待ち受けを
+      //       選んだ理由(§2.36 = 短周期のポーリングは電池と回線を食う)を自分で壊す。
+      //   残してあるのは**保険**であって主経路ではない —— 主経路が emit 側に在る事を
+      //   此処で言っておかないと、次に読む人が emit を消しても平気だと読む。
+      if (dropped > 0) wakeWorkerPolls(sessionId);
+      return json(res, 200, { dropped, route: "worker" });
+    }
+
     if (action === "choice" && req.method === "POST") {
       let body;
       try {
@@ -1266,6 +1300,12 @@ const server = createServer(async (req, res) => {
             items,
             screen: screenChanged ? f.screen.body : null,
             route: "tmux",
+            // ★`null` であって `0` ではない(2026-08-04)。机で開かれている会話の送信待ちは
+            //   Claude Code の TUI が自分で持っていて(`Press up to edit queued messages`)、
+            //   我々はその数を**観測できない**。`0` と書けば「待っていない」という断定になる ——
+            //   この系が禁じている「観測できなかったを静かと書かない」そのもの。
+            //   電話側(`queueView`)は数でない値を「知らない」として何も出さない。
+            queued: null,
             cursor: formatPollCursor({
               route: "tmux",
               token: f.epoch,
@@ -1347,6 +1387,11 @@ const server = createServer(async (req, res) => {
           items,
           screen: null,
           route: "worker",
+          // ★数は**持ち主から貰う**。ring からは復元できない —— 積む時は `user_queued` が
+          //   出るが、降ろす時は `entry.queue.shift()` して書くだけで**何も出ない**
+          //   (worker.mjs の `result` 処理)。事象を数えれば増える一方の数になる。
+          //   `collectW` は保留の前後で同じ物を使うので、起きた時点の値が返る。
+          queued: manager.status(sessionId).queued,
           cursor: formatPollCursor({ route: "worker", token: manager.generation, seq }),
           more,
         };

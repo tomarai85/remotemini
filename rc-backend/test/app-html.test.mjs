@@ -113,7 +113,8 @@ test("★読めなかった応答を `{}` に捏造していない(catch の既�
   assert.doesNotMatch(SCRIPT, /\.catch\(\s*\(\)\s*=>\s*\(\{\s*\}\)\s*\)/,
     "応答が読めなかった時に空の本文を作っている(null を渡して判定層に決めさせる)");
   const nulls = SCRIPT.match(/\.catch\(\s*\(\)\s*=>\s*null\s*\)/g) || [];
-  assert.equal(nulls.length, 3, "send() / interrupt() / sendChoice() の3箇所が null を渡している");
+  assert.equal(nulls.length, 4,
+    "send() / interrupt() / sendChoice() / clearQueue() の4箇所が null を渡している");
 });
 
 test("★前面へ戻った時に流れを張り直す配線が居る(帯の断定に証拠を付ける)", () => {
@@ -297,7 +298,7 @@ test("★CSS 側の上限も同じ物差しを見る(片方だけ直すと『直
 // (真似した瞬間、この偽物自体が正しさを要求される第二の実装になる)。
 //
 // ★依存ゼロは崩さない。jsdom は入れない。
-import { choiceView } from "../src/view.mjs";
+import { choiceView, queueView } from "../src/view.mjs";
 
 /** SCRIPT から `function <name>(…) {…}` を1本切り出す。文字列とコメントを跨いで数えない。 */
 function fnSource(name) {
@@ -454,4 +455,105 @@ test("sendChoice が /choice へ {key, digest} を送る(静的)", () => {
   const bodyOnly = src.slice(src.indexOf("{") + 1);
   assert.doesNotMatch(bodyOnly, /sendChoice\s*\(/, "自分を呼び直している = 自動再送の芽");
   assert.doesNotMatch(bodyOnly, /\bbody\.digest\b/, "サーバが返した指紋で撃ち直す道が生えている");
+});
+
+// ---- 送信待ちの面(2026-08-04)-----------------------------------------------
+//
+// 台は上の `mount` と同じ作り。`renderChoicePanel` の台を使い回さないのは、掴む器の id が
+// 違うからで、器を取り違えた実装(`conv-choice` に送信待ちを描く)を `$` の中で赤にしたい。
+
+/** app.html の `el` + `renderQueuePanel` を切り出して走らせる台。 */
+function mountQueue(clearQueue) {
+  const { node, doc } = fakeDoc();
+  const box = node("div");
+  const factory = new Function(
+    "document", "$", "queueView", "clearQueue",
+    `${fnSource("el")}\n${fnSource("renderQueuePanel")}\nreturn renderQueuePanel;`,
+  );
+  const render = factory(doc, (id) => {
+    assert.equal(id, "conv-queue", "送信待ちの面が別の器を掴んでいる");
+    return box;
+  }, queueView, clearQueue);
+  return { render, box };
+}
+
+const queueBtn = (box) => box.children.find((n) => n.tag === "button");
+
+test("★実行: 送信待ちが在れば、数の文と取り消しのボタンが1つだけ出る", () => {
+  const { render, box } = mountQueue(() => {});
+  render({ route: "worker", queued: 2, items: [] });
+  const texts = box.children.filter((n) => n.tag === "div").map((n) => n.textContent);
+  assert.deepEqual(texts, ["送信待ち 2 件(まだ Claude に渡していません)"]);
+  const b = queueBtn(box);
+  assert.ok(b, "取り消しのボタンが出ていない");
+  assert.equal(b.textContent, "2 件を取り消す");
+  assert.equal(b.type, "button", "form に包まれた時に入力欄の Enter で発火する");
+  assert.equal(box.children.filter((n) => n.tag === "button").length, 1);
+});
+
+test("★実行: 0 件になったら面を消す(空になった事も見せる仕事のうち)", () => {
+  const { render, box } = mountQueue(() => { throw new Error("消えた筈の物が押された"); });
+  render({ route: "worker", queued: 2 });
+  assert.ok(box.children.length > 0);
+  render({ route: "worker", queued: 0 });
+  assert.deepEqual(box.children, [], "行列が捌けたのに古い数が残っている");
+});
+
+test("★★実行: 机の会話(`queued:null`)には何も出さない ―― 数を観測していない", () => {
+  // 出すと「送信待ち null 件」や「0 件」になる = 観測していない事の反対を電話が断定する。
+  const { render, box } = mountQueue(() => { throw new Error("出ない筈の物が押された"); });
+  render({ route: "tmux", queued: null, screen: { screen: "IDLE" } });
+  assert.deepEqual(box.children, []);
+  render({ route: "worker" });          // 欄そのものが無い応答(古いサーバ)
+  assert.deepEqual(box.children, []);
+  render(null);                          // 会話を開き直した時の初期化
+  assert.deepEqual(box.children, []);
+});
+
+test("★実行: 押すと、送信より**前**に同期でボタンが伏せられ、取り消しが1回だけ呼ばれる", () => {
+  let seenDisabled = null;
+  let calls = 0;
+  const { render, box } = mountQueue(() => { calls++; seenDisabled = queueBtn(box).disabled; });
+  render({ route: "worker", queued: 3 });
+  const b = queueBtn(box);
+  assert.equal(b.disabled, false);
+  b.tap();
+  assert.equal(calls, 1);
+  assert.equal(seenDisabled, true, "送信の時点でまだ押せる = 同じ物を2回捨てに行ける");
+});
+
+test("★実行: 押した数を電話が自分で減らさない(サーバが載せた数をそのまま出す)", () => {
+  // 減らすと、409 で断られた時に「0 件」と出たまま実際は積まれている、が起きる。
+  const { render, box } = mountQueue(() => {});
+  render({ route: "worker", queued: 2 });
+  queueBtn(box).tap();
+  assert.equal(box.children.filter((n) => n.tag === "div")[0].textContent,
+    "送信待ち 2 件(まだ Claude に渡していません)", "押しただけで表示上の数が動いている");
+});
+
+test("★陰性対照: 偽 DOM が送信待ちの面でも差を見分けるか(常に緑ではない事)", () => {
+  const calls = [];
+  const { render, box } = mountQueue(() => calls.push("tap"));
+  render({ route: "worker", queued: 1 });
+  assert.ok(box.children.length >= 2, "偽 DOM に節点が積まれていない = 何も測れていない");
+  queueBtn(box).tap();
+  assert.deepEqual(calls, ["tap"], "押下が呼び手に届いていない = 上の押下検査は空振り");
+});
+
+test("clearQueue が /queue へ DELETE を送り、判定を view.mjs に置いている(静的)", () => {
+  const src = fnSource("clearQueue");
+  assert.match(src, /\/queue`/, "取り消しの宛先が /queue ではない");
+  assert.match(src, /method:\s*"DELETE"/, "DELETE で撃っていない");
+  assert.match(src, /clearQueueResult\(r\.status,\s*body\)/, "判定を view.mjs に置いていない");
+  // ★取り消した直後に自分で poll を撃ち直さない。サーバが `user_dropped` を出す =
+  //   保留中の poll が起きて次の描画で本当の数になる。撃ち直しは二重の描画を生むだけ。
+  const bodyOnly = src.slice(src.indexOf("{") + 1);
+  assert.doesNotMatch(bodyOnly, /renderQueuePanel\s*\(/, "応答から画面の数を作っている");
+});
+
+test("★applyPoll は毎回この面を描き直す(`d.screen` の様に条件を付けない)", () => {
+  // 条件を付けると、行列が空になった時に面が消えない = 捌けた送信が待っている様に見える。
+  const src = fnSource("applyPoll");
+  assert.match(src, /\n  renderQueuePanel\(d\);/,
+    "renderQueuePanel の呼び出しが applyPoll の最上層に無い(条件の中に入っている)");
 });

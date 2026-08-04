@@ -691,3 +691,48 @@ test("★陰性対照: 現役の子の error では、ちゃんと Map から外
   // ★これが無いと「常に stale と言う」実装でも上の検査は緑になる。
   assert.equal(lastError(mgr, "s1").stale, false, "現役の失敗を先代扱いしている");
 });
+
+// ---- 電話からの「送信待ちを取り消す」(2026-08-04)-----------------------------
+
+test("dropQueued は積んだ番だけを捨て、走っている番には触れない", () => {
+  const { mgr, spawned } = makeMgr();
+  const events = [];
+  mgr.send("s1", "a", { onEvent: (seq, d) => events.push(d) });
+  mgr.send("s1", "b");
+  mgr.send("s1", "c");
+  assert.equal(mgr.status("s1").queued, 2);
+  const n = mgr.dropQueued("s1", "user_cleared");
+  assert.equal(n, 2);
+  assert.equal(mgr.status("s1").queued, 0);
+  // ★走っている番は生きたまま。書いた物を取り消していない事を、書き込み数で固定する。
+  assert.equal(spawned[0].written.length, 1, "捨てる操作が既に書いた番に触っている");
+  assert.equal(mgr.status("s1").state, "busy", "取り消しが生成を止めている(それは interrupt の仕事)");
+  const dropped = events.filter((d) => d.type === "user_dropped");
+  assert.deepEqual(dropped.map((d) => d.text), ["b", "c"]);
+  assert.deepEqual([...new Set(dropped.map((d) => d.reason))], ["user_cleared"]);
+});
+
+test("★捨てた事は EventRing に残る(電話が切れている間に捨てても後から拾える)", () => {
+  const { mgr } = makeMgr();
+  mgr.send("s1", "a"); // onEvent を渡さない = 電話が繋がっていない体
+  mgr.send("s1", "b");
+  assert.equal(mgr.dropQueued("s1", "user_cleared"), 1);
+  const types = mgr.eventsSince("s1", 0).map((e) => e.data.type);
+  assert.ok(types.includes("user_dropped"), "捨てた事が揮発している = 繋ぎ直した電話に届かない");
+});
+
+test("★積んでいない / ワーカーが居ない時は 0(捨てた事にしない)", () => {
+  const { mgr } = makeMgr();
+  assert.equal(mgr.dropQueued("居ない会話", "user_cleared"), 0);
+  mgr.send("s1", "a");
+  assert.equal(mgr.dropQueued("s1", "user_cleared"), 0, "走っている1番を捨てたと数えている");
+  assert.equal(mgr.eventsSince("s1", 0).filter((e) => e.data.type === "user_dropped").length, 0,
+    "捨てる物が無いのに user_dropped を出している");
+});
+
+test("★陰性対照: dropQueued を呼ばなければ行列は残る(上の3本が常に緑ではない事)", () => {
+  const { mgr } = makeMgr();
+  mgr.send("s1", "a");
+  mgr.send("s1", "b");
+  assert.equal(mgr.status("s1").queued, 1, "偽 spawn では最初から積まれていない = 何も測れていない");
+});

@@ -95,6 +95,13 @@ const SID_DEATH_LATE = "aaaaaaaa-0000-0000-0000-000000000040"; // 孫が stdout 
 const SID_DEATH_PART = "aaaaaaaa-0000-0000-0000-000000000041"; // 最後の行が**改行の前**で切れて死ぬ
 const CWD_DEATH_LATE = join(SB, "death-late");
 const CWD_DEATH_PART = join(SB, "death-part");
+// ★「送信待ちが実在する会話」を**作れる様にする**為の1本(2026-08-04、送信待ちの取り消し)。
+//   偽ワーカーは既定では即座に echo を返すので、busy の窓が数 ms しか無く、そこへ2本目を
+//   届けようとすると**運で結果が変わる検査**になる。運で緑になる検査は、赤にもなる。
+//   遅らせる栓(`RC_E2E_WORKER_DELAY_MS`)は**全会話に効く**ので、他の 30 本以上の検査の
+//   待ち時間をこの1本の都合で伸ばす事になる。だから死に方と同じく **cwd で分ける**。
+const SID_SLOW = "aaaaaaaa-0000-0000-0000-000000000042"; // 応答が遅い = 送信待ちを積める
+const CWD_SLOW = join(SB, "slow-queue");
 // H2(DESIGN §2.18-10)の継ぎ目用。頭が**未登録**の会話と、**登録済み**の会話。
 const SID_H2_NEW  = "aaaaaaaa-0000-0000-0000-000000000020"; // 頭なし -> fork する筈
 const SID_H2_HEAD = "aaaaaaaa-0000-0000-0000-000000000021"; // 頭あり -> その先端へ resume
@@ -153,12 +160,13 @@ fixture(SID_MISMATCH, CWD_REG, "居場所不一致"); // 会話は CWD_REG。登
 //   H2 の転写を未信頼の cwd で上書きして H2 の検査2本を落とした(2026-08-03)。
 const SID_NOTRUST  = "aaaaaaaa-0000-0000-0000-000000000030";
 const SID_CWD_GONE = "aaaaaaaa-0000-0000-0000-000000000031";
-for (const d of [CWD_WORK, CWD_SHELL, CWD_NOTRUST, CWD_DEATH_LATE, CWD_DEATH_PART]) mkdirSync(d, { recursive: true });
+for (const d of [CWD_WORK, CWD_SHELL, CWD_NOTRUST, CWD_DEATH_LATE, CWD_DEATH_PART, CWD_SLOW]) mkdirSync(d, { recursive: true });
 writeFileSync(TRUST_FILE, JSON.stringify({ projects: {
   [CWD_WORK]:  { hasTrustDialogAccepted: true },
   [CWD_SHELL]: { hasTrustDialogAccepted: true },
   [CWD_DEATH_LATE]: { hasTrustDialogAccepted: true },
   [CWD_DEATH_PART]: { hasTrustDialogAccepted: true },
+  [CWD_SLOW]: { hasTrustDialogAccepted: true },
   [CWD_GONE]:  { hasTrustDialogAccepted: true },   // 承諾はしたが dir はもう無い
   [join(SB, "declined")]: { hasTrustDialogAccepted: false }, // 項は在るが false(通してはいけない)
 } }));
@@ -166,6 +174,7 @@ fixture(SID_NOTRUST, CWD_NOTRUST, "信頼されていない場所");
 fixture(SID_CWD_GONE, CWD_GONE, "消えた場所");
 fixture(SID_DEATH_LATE, CWD_DEATH_LATE, "死の順序:孫が握る");
 fixture(SID_DEATH_PART, CWD_DEATH_PART, "死の順序:改行なし");
+fixture(SID_SLOW, CWD_SLOW, "応答が遅い:送信待ち");
 
 const PANES = [
   `%10${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys010${PANE_SEP}${CWD_READY}`,
@@ -406,6 +415,9 @@ DELAY=float(os.environ.get("RC_E2E_WORKER_DELAY_MS","0"))/1000.0
 #   realpath で /private/var 等に化けても末尾は変わらないので endswith で見る。
 CWD=os.getcwd()
 DEATH="late" if CWD.endswith("death-late") else ("part" if CWD.endswith("death-part") else "")
+# ★答えるのを**わざと遅らせる**1本(送信待ちを積める会話)。既定 1200ms。
+#   DELAY と別物なのは効く範囲が違うから: DELAY は走行中の全会話、これは cwd で選んだ1本だけ。
+SLOW=(float(os.environ.get("RC_E2E_SLOW_MS","1200"))/1000.0) if CWD.endswith("slow-queue") else 0.0
 # ★argv を丸ごと残す。継ぎ目(サーバが組む argv)を測る唯一の窓。
 LOG=os.environ.get("RC_E2E_ARGV_LOG")
 if LOG:
@@ -426,6 +438,7 @@ for line in sys.stdin:
     try: msg=json.loads(line)
     except Exception: continue
     if DELAY: time.sleep(DELAY)
+    if SLOW: time.sleep(SLOW)
     if DEATH=="late":
         # 孫に stdout を**継承**させてから親だけ先に死ぬ。pipe は孫が握ったままなので
         # \`close\` は来ず \`exit\` だけが来る = §2.18-10(2) が \`exit\` を死の合図に選んだ形。
@@ -881,6 +894,10 @@ try {
     JSON.stringify(jGen));
   check("★生成中でも本文と Enter が出る", sentKeys().slice(beforeGen).length === 2,
     JSON.stringify(sentKeys().slice(beforeGen)));
+  // ★この2本が言っているのは「**この経路には我々の行列が無い**」であって、
+  //   「行列という概念が無い」ではない(2026-08-04 に足した §12-h と読み違えない為)。
+  //   ワーカー経路には我々の行列が在り、`poll` はその数を載せる。机の会話の `poll` が
+  //   載せるのは `null` = **Claude Code 自身が持っている数を観測していない**、という別の事。
   check("キューは存在しない(queued を返さない)", jGen.queued === undefined, JSON.stringify(jGen));
   const stGen = await (await fetch(`${B}/api/sessions/${SID_GEN}/status`, { headers: H })).json();
   check("status は送信可否と進行中を別項目で返す",
@@ -1500,6 +1517,121 @@ try {
     check("★保留中の poll が出来事で起きる(時間切れ待ちではない)",
       (hp.j.items || []).length > 0 && elapsed < 7000, `elapsed=${elapsed} items=${(hp.j.items || []).length}`);
 
+  }
+
+  // 12-h. ★送信待ちの取り消し(2026-08-04)。
+  //
+  //   単体検査は `queueView` / `dropQueued` を**別々に**測っている。此処で初めて測るのは
+  //   その2つの継ぎ目 —— poll が載せる数と、DELETE が捨てる数が**同じ物を指しているか**。
+  //   継ぎ目が外れていても、単体はどちらも緑のまま通る(数の出所が server、捨てる側が
+  //   worker なので、片方だけ直すと気付けない)。
+  //
+  //   ★いちばん大事な1行は「捨てても**走っている番は生き残る**」。此処が壊れると、人が
+  //   「取り消す」と読んだボタンが生成中の turn を殺す —— しかも電話には成功と出る。
+  {
+    const qUrl = (sid) => `${B}/api/sessions/${sid}/queue`;
+    const pollOf = async (sid) => (await (await fetch(`${B}/api/sessions/${sid}/poll?wait=0`, { headers: H })).json());
+
+    // --- 机で開かれている会話(tmux 経路)---
+    const pt = await pollOf(SID_FRESH);
+    // ★`null` である事を測る。`=== null` でなく `!= null` で書くと **欄そのものが無い**
+    //   場合も通ってしまい、「知らない」を運ぶ器が消えた事に気付けない。
+    check("★机の会話の送信待ちは `null`(0 ではない = 観測していない事を数にしない)",
+      "queued" in pt && pt.queued === null, `queued=${JSON.stringify(pt.queued)} route=${pt.route}`);
+    const dt = await fetch(qUrl(SID_FRESH), { method: "DELETE", headers: H });
+    const dtj = await dt.json();
+    check("★机の会話の送信待ちは電話から捨てない(409 / queue-not-ours)",
+      dt.status === 409 && dtj.reason === "queue-not-ours", `${dt.status} ${JSON.stringify(dtj).slice(0, 160)}`);
+
+    // --- ワーカー経路。応答が遅い会話へ3本送って、2本を待たせる ---
+    const s1 = await (await send(SID_SLOW, "走る番")).json();
+    check("送信待ちの土台: 1本目はワーカー経路で受理される",
+      s1.accepted === true && s1.route === "worker", JSON.stringify(s1).slice(0, 160));
+    await send(SID_SLOW, "待つ番A");
+    await send(SID_SLOW, "待つ番B");
+
+    const pw = await pollOf(SID_SLOW);
+    // ★ここが「数の出所は持ち主」の実測。事象を数える実装だと `user_queued` が2件出た後も
+    //   降ろした時に何も出ないので、捨てた後まで 2 のまま張り付く。
+    check("★ワーカー経路の poll が送信待ちの数を載せる(1本走り、2本待つ)",
+      pw.route === "worker" && pw.queued === 2, `queued=${JSON.stringify(pw.queued)}`);
+
+    const d1 = await fetch(qUrl(SID_SLOW), { method: "DELETE", headers: H });
+    const d1j = await d1.json();
+    check("★待っている送信を捨てられる(捨てた数を名乗る)",
+      d1.status === 200 && d1j.dropped === 2 && d1j.route === "worker",
+      `${d1.status} ${JSON.stringify(d1j)}`);
+
+    const pw2 = await pollOf(SID_SLOW);
+    check("★捨てた後の数は 0(電話が自分で引き算していない = server が言い直す)",
+      pw2.queued === 0, `queued=${JSON.stringify(pw2.queued)}`);
+
+    const d2 = await fetch(qUrl(SID_SLOW), { method: "DELETE", headers: H });
+    const d2j = await d2.json();
+    check("★空の行列を捨てても失敗にしない(0 は「無かった」で嘘ではない)",
+      d2.status === 200 && d2j.dropped === 0, `${d2.status} ${JSON.stringify(d2j)}`);
+
+    // ★捨てた事は EventRing に残る。電話が繋ぎ直した時に「その turn は届かなかった」と
+    //   名指しで拾える為 —— 揮発させると、切断中に捨てた分が誰にも知られず消える。
+    const ringQ = (await pollOf(SID_SLOW)).items || [];
+    const dropped = ringQ.filter((it) => it.kind === "message" && it.event?.type === "user_dropped");
+    check("★捨てた turn は1件ずつ名指しで残る(切断中でも後から拾える)",
+      dropped.length === 2 && dropped.every((it) => it.event.reason === "user_cleared")
+      && dropped.map((it) => it.event.text).join(",") === "待つ番A,待つ番B",
+      JSON.stringify(dropped.map((it) => [it.event.text, it.event.reason])));
+
+    // ★★走っている番は**生きている**。取り消しは行列だけを触る(止めるのは interrupt)。
+    let echoed = false;
+    await waitFor(async () => {
+      const items = (await pollOf(SID_SLOW)).items || [];
+      echoed = items.some((it) => it.kind === "message"
+        && String(it.event?.message?.content?.[0]?.text ?? "") === "echo:走る番");
+      return echoed;
+    });
+    check("★★取り消しても走っている番は死なない(取り消す ≠ 止める)", echoed,
+      `echo:走る番 が出たか=${echoed}`);
+
+    const g = await fetch(qUrl(SID_SLOW), { headers: H });
+    check("GET /queue は 405(行列は消す口しか無い。数は poll が載せる)", g.status === 405, String(g.status));
+
+    // --- 12-h-2. 保留中の poll を**起こす条件**。自分の diff を読み直して出た欠陥の的 ---
+    //   初版は捨てた件数に関わらず `wakeWorkerPolls` を呼んでいた。捨てた時は emit 側が
+    //   既に起こしているので二度目は空振り、捨てなかった時は**出来事ゼロで保留を起こす**
+    //   = 電話が空の 200 を受けて即座に張り直す。長待ち受けを選んだ理由を自分で壊す形。
+    //   ★両側を測る。片側(起きる事)だけだと、無条件へ戻す変更が緑のまま通る。
+    const holdPoll = (sid, cursor, wait) =>
+      fetch(`${B}/api/sessions/${sid}/poll?cursor=${encodeURIComponent(cursor)}&wait=${wait}`, { headers: H })
+        .then((r) => r.json());
+
+    await send(SID_SLOW, "走る番2");
+    await send(SID_SLOW, "待つ番C");
+    const curHeld = (await pollOf(SID_SLOW)).cursor;
+    const tWake = Date.now();
+    const heldQ = holdPoll(SID_SLOW, curHeld, 6000);
+    await sleep(150); // 保留が登録されるまで
+    const d3 = await (await fetch(qUrl(SID_SLOW), { method: "DELETE", headers: H })).json();
+    const hq = await heldQ;
+    const wakeMs = Date.now() - tWake;
+    check("★捨てた事で保留中の poll が起きる(電話は張り直さずに知る)",
+      d3.dropped === 1 && wakeMs < 5000
+      && (hq.items || []).some((it) => it.kind === "message" && it.event?.type === "user_dropped"),
+      `dropped=${d3.dropped} ms=${wakeMs} items=${JSON.stringify((hq.items || []).map((it) => it.event?.type))}`);
+
+    // 走っている番が終わるまで待つ。待たずに次を測ると、echo が保留を**正当に**起こして
+    // 「起きなかった筈」が偶然赤くなる —— 測っている物と違う理由で色が変わる検査になる。
+    await waitFor(async () => ((await pollOf(SID_SLOW)).items || []).some((it) =>
+      String(it.event?.message?.content?.[0]?.text ?? "") === "echo:走る番2"));
+
+    const curIdle = (await pollOf(SID_SLOW)).cursor;
+    const tIdle = Date.now();
+    const heldIdle = holdPoll(SID_SLOW, curIdle, 700);
+    await sleep(150);
+    const d4 = await (await fetch(qUrl(SID_SLOW), { method: "DELETE", headers: H })).json();
+    const hi = await heldIdle;
+    const idleMs = Date.now() - tIdle;
+    check("★★捨てる物が無い時は保留を起こさない(空の 200 で電話に張り直させない)",
+      d4.dropped === 0 && (hi.items || []).length === 0 && idleMs >= 600,
+      `dropped=${d4.dropped} ms=${idleMs} items=${JSON.stringify(hi.items)}`);
   }
 
   // 12-e. 登録簿にも jsonl にも居ない ID は今まで通り 404

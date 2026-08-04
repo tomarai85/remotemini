@@ -32,7 +32,7 @@
  *   ログは新しい道を `(other)` と書き続ける。しかも**ログが静かなだけ**なので誰も気づかない。
  *   一覧は1箇所に集める。置き場を此処にしたのは「パスの型」を決める責任が此処だから。
  */
-export const SESSION_ROUTE_RE = /^\/api\/sessions\/([^/]+)\/(history|messages|stream|poll|interrupt|status|choice)$/;
+export const SESSION_ROUTE_RE = /^\/api\/sessions\/([^/]+)\/(history|messages|stream|poll|interrupt|status|choice|queue)$/;
 
 /**
  * 語彙 = 小文字で始まり、小文字/数字/ハイフン/下線だけ、24字まで。

@@ -6,8 +6,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WIRE_REASONS } from "../src/blocked.mjs";
 import {
-  choiceResult, choiceView, freshness, gapNotice, interruptResult, mergeHistory, nextAttempt,
-  nextHistoryLimit, readablePoll, relTime, routeLabel, scanLine, sendResult, subtitleOf, whoOf,
+  choiceResult, choiceView, clearQueueResult, freshness, gapNotice, interruptResult, mergeHistory,
+  nextAttempt, nextHistoryLimit, queueView, readablePoll, relTime, routeLabel, scanLine, sendResult,
+  subtitleOf, whoOf,
 } from "../src/view.mjs";
 
 const e = (role, text) => ({ role, text });
@@ -615,4 +616,63 @@ test("断りと失敗の文面はサーバの物を出す(電話が言い換え�
   assert.equal(choiceResult(401, {}).kind, "error");
   assert.equal(choiceResult(503, null).kind, "error");
   assert.match(choiceResult(418, null).text, /418/);
+});
+
+// ---- 送信待ち(2026-08-04)----------------------------------------------------
+
+test("送信待ちが1件以上なら、数と取り消しの札を出す", () => {
+  const v = queueView({ route: "worker", queued: 2 });
+  assert.equal(v.show, true);
+  assert.equal(v.known, true);
+  assert.equal(v.count, 2);
+  assert.match(v.text, /2 件/);
+  assert.equal(v.clearLabel, "2 件を取り消す");
+});
+
+test("送信待ち0件は何も出さない(空の面を置かない)", () => {
+  const v = queueView({ route: "worker", queued: 0 });
+  assert.equal(v.show, false);
+  assert.equal(v.known, true, "0 は**観測した結果**なので known は true");
+});
+
+test("★`queued:null`(tmux 経路)は『0件』と同じ枝に落ちない ―― 観測していない", () => {
+  // 机の会話の行列は Claude Code の TUI が持っていて、数は観測できない。
+  // 表示はどちらも「出さない」で同じだが、**判定の意味が違う**。畳むと、後から
+  // 「机の会話でも 0 件と出しては?」という直し方が正しく見えてしまう。
+  const unknown = queueView({ route: "tmux", queued: null });
+  assert.equal(unknown.show, false);
+  assert.equal(unknown.known, false, "観測していない事が known に出ていない");
+  // 欄そのものが無い応答(古いサーバ / 読めなかった本文)も同じ扱い。
+  assert.equal(queueView({ route: "worker" }).known, false);
+  assert.equal(queueView(null).known, false);
+  // 数でない物を数として飲まない。
+  for (const bad of ["2", NaN, Infinity, true, {}, []]) {
+    assert.equal(queueView({ queued: bad }).known, false, `${String(bad)} を数として飲んでいる`);
+  }
+});
+
+test("取り消しの応答: 件数はサーバの物、走っている番は止まらないと必ず書く", () => {
+  const v = clearQueueResult(200, { dropped: 3, route: "worker" });
+  assert.equal(v.kind, "ok");
+  assert.match(v.text, /3 件/);
+  assert.match(v.text, /止まりません/, "『取り消した = 全部止まった』と読める文になっている");
+  assert.equal(clearQueueResult(200, { dropped: 0 }).kind, "ok");
+  assert.match(clearQueueResult(200, { dropped: 0 }).text, /残っていません/);
+});
+
+test("★読めない 200 / `dropped` の無い 200 を『0件だった』に丸めない", () => {
+  // interruptResult と同じ誤り。「無かった」は観測した結果であって既定値ではない。
+  assert.equal(clearQueueResult(200, null).kind, "warn");
+  assert.equal(clearQueueResult(200, {}).kind, "warn");
+  assert.equal(clearQueueResult(200, { dropped: "3" }).kind, "warn", "文字列を件数として飲んでいる");
+});
+
+test("断りと失敗の文面はサーバの物を出す(取り消し)", () => {
+  assert.deepEqual(
+    clearQueueResult(409, { error: "この会話は机で開かれています。", reason: "queue-not-ours" }),
+    { kind: "refused", text: "この会話は机で開かれています。" },
+  );
+  assert.equal(clearQueueResult(401, {}).kind, "error");
+  assert.equal(clearQueueResult(503, null).kind, "error");
+  assert.match(clearQueueResult(418, null).text, /418/);
 });
