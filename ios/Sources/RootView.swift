@@ -1,47 +1,78 @@
 import SwiftUI
 
-/// Sprint 1 wires only Key-entry; List/Conversation arrive in Sprint 2-3 per
-/// `.harness/spec-native-shell-2026-08-05.md` §6. The placeholder shown after a
-/// successful Key-entry is intentionally minimal -- building List here would be
-/// scope creep into Sprint 2's deliverable.
+/// Sprint 1 wired only Key-entry; Sprint 2 adds the List screen per
+/// `.harness/spec-native-shell-2026-08-05.md` §6 / `.harness/sprint-2-brief.md`.
+/// Conversation (Sprint 3) still does not exist -- successful Key-entry leads
+/// straight to List now.
 struct RootView: View {
     @StateObject private var appState = AppState()
 
     var body: some View {
         NavigationStack {
             Group {
-                if appState.isLoadingCredentials {
-                    ProgressView()
-                } else if let credentials = appState.credentials {
-                    SignedInPlaceholderView(baseURL: credentials.baseURL)
+                #if DEBUG
+                if let fixtureState = SessionsListingFactory.fixtureState {
+                    // RemoteMiniUITests path (brief §5-b): bypasses Key-entry and
+                    // `AppState` entirely -- the fixture needs no stored credential
+                    // and must never touch the Keychain.
+                    ListView(viewModel: ListViewModel(
+                        client: SessionsListingFixture(state: fixtureState),
+                        baseURL: Self.fixtureBaseURL,
+                        apiKey: "ui-fixture-key",
+                        onUnauthorized: {}
+                    ))
                 } else {
-                    KeyEntryView(onSaved: appState.setCredentials)
+                    normalFlow
                 }
+                #else
+                normalFlow
+                #endif
             }
         }
-        .task { await appState.loadStoredCredentials() }
-    }
-}
-
-private struct SignedInPlaceholderView: View {
-    let baseURL: URL
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Text("接続済み")
-                .font(.title2.weight(.semibold))
-            Text(baseURL.absoluteString)
-                .font(.footnote.monospaced())
-                .foregroundStyle(.secondary)
-            Text("一覧画面は Sprint 2 で実装")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            Text(BuildInfo.line)
-                .font(.footnote.monospaced())
-                .foregroundStyle(.secondary)
+        .task {
+            #if DEBUG
+            if let fixtureState = SessionsListingFactory.fixtureState {
+                // Sprint 2 DoD diagnostic line -- same convention as Sprint 1's
+                // `KeyEntryViewModel.swift` `print("healthz ok:...")` line, grepped
+                // for via `xcrun simctl launch --console` instead of `devicectl`
+                // (no physical iPhone; the simulator is fully headless-controllable
+                // via `simctl`). No key, no host -- only the fixture name, and this
+                // whole branch (including this line) is `#if DEBUG`, so it cannot
+                // print from a Release binary regardless of what `RC_UI_FIXTURE` is
+                // set to. See `ios/tools/ui-fixture-behavior-control.sh`.
+                print("root flow:fixture state:\(fixtureState)")
+                return
+            }
+            #endif
+            print("root flow:normal")
+            await appState.loadStoredCredentials()
         }
-        .padding()
     }
+
+    @ViewBuilder
+    private var normalFlow: some View {
+        if appState.isLoadingCredentials {
+            ProgressView()
+        } else if let credentials = appState.credentials {
+            ListView(viewModel: ListViewModel(
+                client: SessionsClient(),
+                baseURL: credentials.baseURL,
+                apiKey: credentials.apiKey,
+                onUnauthorized: { appState.clearCredentials() }
+            ))
+        } else {
+            KeyEntryView(onSaved: appState.setCredentials)
+        }
+    }
+
+    #if DEBUG
+    /// Never dereferenced for networking -- `SessionsListingFixture` returns canned
+    /// data regardless of what it's called with. An RFC 2606 reserved TLD anyway
+    /// (same convention `MockURLProtocol`'s tests use), so a wiring mistake here
+    /// could not reach a live host even by accident. Not a hardcoded *server* host:
+    /// this is inert filler for a parameter the fixture ignores.
+    private static let fixtureBaseURL = URL(string: "https://ui-fixture.invalid")!
+    #endif
 }
 
 enum BuildInfo {

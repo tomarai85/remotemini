@@ -41,9 +41,24 @@ trap '/usr/bin/find "$SANDBOX" -type f -print0 2>/dev/null | /usr/bin/xargs -0 /
 /bin/cp "$RUNNER" "$SANDBOX/tools/run-controls.sh" || { echo "★継ぎ目の台本が読めない: $RUNNER"; exit 2; }
 
 # ★一覧は測る台本から取る(規則 (1))。手書きしない。
+# ★2026-08-05 に相対パスの許容範囲を広げた: 電話側(`ios/tools/`)の対照は
+#   `rc-backend/` の外に居るので、`LOCAL_CTLS` の項目は「..(スラッシュ)ios(スラッシュ)
+#   tools(スラッシュ)実ファイル名」の形になる(`run-controls.sh` の cwd が
+#   `rc-backend/` の為)。※この形をそのまま backtick で書かない事 --
+#   引用元がこの file(`rc-backend/test/`)だと相対パスの起点がずれて実在しない
+#   引用と誤判定される(no-linerefs.test.mjs の解決規則: `../` 始まりは
+#   引用元ファイルの dirname から解決するので、`run-controls.sh` の中で正しい
+#   相対パスをここへそのまま貼ると壊れる)。旧正規表現は
+#   行頭が文字通り `test/` か `tools/` で始まる項目しか拾えず、`../` で始まる
+#   この2項目を無言で数え落としていた(実測: 34本中32本しか拾えず、この台本
+#   自身の R13/R16 が `$N_LOCAL` の値で赤になった —— 本物の `run-controls.sh`
+#   は regex を使わず配列をそのまま回すので2本とも正しく実行・緑になっていたのに、
+#   **測る側の再集計だけ**が古い前提のまま止まっていた)。コメント継続行は
+#   この配列ブロック内では必ず行頭が `#` なので、`test|tools` の縛りを外しても
+#   誤って拾う行は無い(確認済み: 新旧の抽出結果の差分は追加した2項目のみ)。
 mapfile_names() { # mapfile_names <配列名>
   /usr/bin/sed -n "/^$1=(/,/^)/p" "$SANDBOX/tools/run-controls.sh" \
-    | /usr/bin/grep -oE '^ *(test|tools)/[A-Za-z0-9._-]+\.(sh|py)' \
+    | /usr/bin/grep -oE '^ *[A-Za-z0-9._/-]+\.(sh|py)' \
     | /usr/bin/tr -d ' '
 }
 LOCAL_NAMES=$(mapfile_names LOCAL_CTLS)

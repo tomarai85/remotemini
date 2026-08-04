@@ -21,4 +21,15 @@ final class AppState: ObservableObject {
     func setCredentials(_ credentials: Credentials) {
         self.credentials = credentials
     }
+
+    /// Brief §4-b: on a 401 from the List screen, drop credentials from both the
+    /// Keychain and memory, returning `RootView` to Key-entry. `try?` here mirrors
+    /// `KeyEntryViewModel.submit()`'s existing tolerance of a Keychain failure --
+    /// even if the durable copy can't be removed, the in-memory credentials are
+    /// cleared regardless, so the app does not keep *using* a key the server just
+    /// rejected.
+    func clearCredentials() {
+        try? store.clear()
+        credentials = nil
+    }
 }
