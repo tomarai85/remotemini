@@ -73,12 +73,26 @@ targets:
         # had one (it didn't need one while unsigned).
         GENERATE_INFOPLIST_FILE: YES
 
+  RemoteMiniUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: RemoteMini
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: RemoteMini
+
 schemes:
   RemoteMini:
     build:
       targets:
         RemoteMini: all
         RemoteMiniTests: [test]
+        RemoteMiniUITests: [test]
     test:
       targets:
         - RemoteMiniTests
+        - RemoteMiniUITests

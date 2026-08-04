@@ -213,6 +213,35 @@ LOCAL_CTLS=(
                                      # 上の緑は「守っている」でなく「元々消えない」を見ている)。
                                      # ★ここで測るのは**手元の** rsync。入れ替え/戻しは edith 側で
                                      # 走るので、向こうの実測は EDITH_CTLS の姉家族が持つ。実測1秒。
+    ../ios/tools/ui-fixture-absence-control.sh # ★2026-08-05 に此処へ入れた。Sprint 2 の
+                                     # `RC_UI_FIXTURE`(List 画面の UI テスト用 fixture 切替口、
+                                     # `ios/Sources/Core/SessionsListingFixture.swift`)が
+                                     # Release バイナリの文字列表に一切残っていない事の対照。
+                                     # `#if DEBUG` を信じるだけでは確認にならない(条件コンパイルで
+                                     # 落ちたはずの文字列が最適化で残る事がある)ので、実際に
+                                     # Release/Debug 両方の iphonesimulator ビルドを起こし、
+                                     # `strings | grep -c` で直接見る。Debug 側は錨(anchor):
+                                     # 検索方法そのものが壊れて常に0を返す病気だと、Release の
+                                     # 「漏れていない」0 と見分けが付かない。`grep -c` は0件の時
+                                     # 終了コード1を返すので、この対照は `set -e` を使わず件数を
+                                     # 変数へ受けてから比較する(brief 本文が名指しで警告した罠)。
+                                     # ビルド自体の失敗は2(未測定)、漏れの検出は1(赤)と、
+                                     # 「まだ測っていない」と「測って赤」を同じ籠に入れない。
+                                     # 実測: xcodebuild を2構成分走らせるので数十秒〜数分掛かる。
+    ../ios/tools/ui-fixture-behavior-control.sh # 同・第2弾 = **挙動検査**。第1弾(文字列走査)は
+                                     # brief 本文が「脆い」と名指しした通り、バイナリに文字が
+                                     # 無くても別経路で同じ状態に落ちるバグは拾えない。ここでは
+                                     # Release の .app を headless simulator へ実際に install/launch
+                                     # し(`SIMCTL_CHILD_RC_UI_FIXTURE=list-empty`)、Sprint 1 の
+                                     # `KeyEntryViewModel.swift` の診断 print と同じ convention で
+                                     # `RootView.swift` に足した `"root flow:normal"` /
+                                     # `"root flow:fixture state:..."` を `simctl launch --console`
+                                     # 越しに読む(鍵もホストも書かない、通った経路の名前だけ)。
+                                     # 期待: "normal" は出る・"fixture" は一切出ない、の両方が
+                                     # 揃って初めて緑 -- 片方だけでは「たまたま今回は退避した」を
+                                     # 緑と誤読しかねない。`open -a Simulator` は使わない
+                                     # (Tom の GUI を奪わない禁則、この repo 全体の方針)。
+                                     # 実測: install + 起動待ち4秒 + ビルドで1分前後。
     test/verify-log-controls.sh      # `tools/verify-log.sh`(検査の出力と終了コードを残す包み)。
                                      # ★据えた理由は実害から: `loop-replan-gate.sh survival` が
                                      # `choice-reply` に赤を出したのに**出力を捨てる**ので、赤の
