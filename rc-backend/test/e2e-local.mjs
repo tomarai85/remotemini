@@ -109,6 +109,10 @@ const CWD_DEATH_PART = join(SB, "death-part");
 //   待ち時間をこの1本の都合で伸ばす事になる。だから死に方と同じく **cwd で分ける**。
 const SID_SLOW = "aaaaaaaa-0000-0000-0000-000000000042"; // 応答が遅い = 送信待ちを積める
 const CWD_SLOW = join(SB, "slow-queue");
+// ★この会話の turn が**終わる時刻を検査が持つ**為の合図(2026-08-05)。`<この path>.<turn番号>`
+//   を置くと、偽ワーカーの その turn が答える。理由は 12-h の頭に書いた。
+const SLOW_GATE = join(SB, "slow-gate");
+const releaseSlowTurn = (n) => writeFileSync(`${SLOW_GATE}.${n}`, "");
 // H2(DESIGN §2.18-10)の継ぎ目用。頭が**未登録**の会話と、**登録済み**の会話。
 const SID_H2_NEW  = "aaaaaaaa-0000-0000-0000-000000000020"; // 頭なし -> fork する筈
 const SID_H2_HEAD = "aaaaaaaa-0000-0000-0000-000000000021"; // 頭あり -> その先端へ resume
@@ -425,6 +429,12 @@ DEATH="late" if CWD.endswith("death-late") else ("part" if CWD.endswith("death-p
 # ★答えるのを**わざと遅らせる**1本(送信待ちを積める会話)。既定 1200ms。
 #   DELAY と別物なのは効く範囲が違うから: DELAY は走行中の全会話、これは cwd で選んだ1本だけ。
 SLOW=(float(os.environ.get("RC_E2E_SLOW_MS","1200"))/1000.0) if CWD.endswith("slow-queue") else 0.0
+# ★★合図待ち(2026-08-05)。此方が既定で、上の SLOW は合図が無い時の落ち処。
+#   時計で待つと「走っている番がまだ走っている」が**壁時計の賭け**になる —— 詳細は
+#   検査側 12-h の頭に書いた。合図なら turn の終わりを検査が持つので賭けが消える。
+#   file の**存在**が合図(中身は見ない)ので、書きかけを読む競合が原理的に無い。
+#   30秒で諦めるのは、合図の付け忘れを**固まらせずに赤くする**為。
+GATE=os.environ.get("RC_E2E_SLOW_GATE","") if CWD.endswith("slow-queue") else ""
 # ★argv を丸ごと残す。継ぎ目(サーバが組む argv)を測る唯一の窓。
 LOG=os.environ.get("RC_E2E_ARGV_LOG")
 if LOG:
@@ -436,6 +446,7 @@ if CWDLOG:
 # 本物の claude は起動直後に system/init で自分のセッション ID を名乗る。
 # --fork-session なら**新しい ID**、そうでなければ --resume した ID をそのまま名乗る。
 argv=sys.argv[1:]
+turn=0
 resumed=argv[argv.index("--resume")+1] if "--resume" in argv else ""
 mine=os.environ.get("RC_E2E_FORK_ID","f0000000-0000-4000-8000-000000000001") if "--fork-session" in argv else resumed
 print(json.dumps({"type":"system","subtype":"init","session_id":mine}),flush=True)
@@ -445,7 +456,12 @@ for line in sys.stdin:
     try: msg=json.loads(line)
     except Exception: continue
     if DELAY: time.sleep(DELAY)
-    if SLOW: time.sleep(SLOW)
+    turn+=1
+    if GATE:
+        deadline=time.time()+30.0
+        while not os.path.exists(GATE+"."+str(turn)) and time.time()<deadline:
+            time.sleep(0.02)
+    elif SLOW: time.sleep(SLOW)
     if DEATH=="late":
         # 孫に stdout を**継承**させてから親だけ先に死ぬ。pipe は孫が握ったままなので
         # \`close\` は来ず \`exit\` だけが来る = §2.18-10(2) が \`exit\` を死の合図に選んだ形。
@@ -512,6 +528,11 @@ const sv = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
     //   4000ms = 1.8s の倍以上。丸ごと待つのは「止まらないペイン」(%26)の1本だけ。
     RC_E2E_INTERRUPT_BUDGET_MS: "4000",
     RC_E2E_FORK_ID: H2_FORK_ID,
+    // ★`RC_E2E_NO_SLOW_GATE` は**対照専用の栓**。立てると合図を外して昔の時計待ちへ戻る。
+    //   `RC_E2E_NO_SLOW_GATE=1 RC_E2E_SLOW_MS=50` で 12-h が赤くなる = 検査が本当に
+    //   「走っている番がまだ走っている」に依っていた事の実証。既定(合図あり)では
+    //   同じ `RC_E2E_SLOW_MS=50` でも緑のまま = 依存が消えた事の実証。
+    RC_E2E_SLOW_GATE: process.env.RC_E2E_NO_SLOW_GATE ? "" : SLOW_GATE,
     // ★`RC_E2E_FORCE_PORT` は**対照専用の栓**。本番経路では絶対に立てない。
     //   これが在るのは、環境死の関門(下)を**本物の bind 失敗**で駆動できる様にする為。
     //   手で書いた文字列で関門を試すと、私が想像した出力しか試せない
@@ -1541,6 +1562,14 @@ try {
   //
   //   ★いちばん大事な1行は「捨てても**走っている番は生き残る**」。此処が壊れると、人が
   //   「取り消す」と読んだボタンが生成中の turn を殺す —— しかも電話には成功と出る。
+  //
+  //   ★★2026-08-05 の根治。此処は一度 `queued=1`(期待 2)で崩れて原因未特定のまま置いて
+  //   あった。真因は**壁時計の賭け**: 初版は「走っている番は 1200ms 走り続ける」を暗黙の
+  //   前提にして、その窓の中に 3往復の HTTP と node の間合いを全部入れていた。窓を跨ぐと
+  //   worker の `entry.queue.shift()` が行列から1本引き出すので `queued` が 2 -> 1 -> 0 と減る。
+  //   実測(`RC_E2E_SLOW_MS=50`)で 12-h だけが赤くなり、この形である事を確かめた。
+  //   直し方は定数を大きくする事**ではない**(それは賭け金を増やしただけ)。turn が終わる
+  //   時刻を検査の側が持つ —— `releaseSlowTurn(n)` を置くまで偽ワーカーは答えない。
   {
     const qUrl = (sid) => `${B}/api/sessions/${sid}/queue`;
     const pollOf = async (sid) => (await (await fetch(`${B}/api/sessions/${sid}/poll?wait=0`, { headers: H })).json());
@@ -1594,6 +1623,9 @@ try {
       JSON.stringify(dropped.map((it) => [it.event.text, it.event.reason])));
 
     // ★★走っている番は**生きている**。取り消しは行列だけを触る(止めるのは interrupt)。
+    //   此処まで来て初めて1本目を放す。上の数の検査は全部「まだ走っている」が前提なので、
+    //   放す位置がこの検査の意味を決める(前へ動かすと数の検査が測れなくなる)。
+    releaseSlowTurn(1);
     let echoed = false;
     await waitFor(async () => {
       const items = (await pollOf(SID_SLOW)).items || [];
@@ -1632,6 +1664,7 @@ try {
 
     // 走っている番が終わるまで待つ。待たずに次を測ると、echo が保留を**正当に**起こして
     // 「起きなかった筈」が偶然赤くなる —— 測っている物と違う理由で色が変わる検査になる。
+    releaseSlowTurn(2); // 上の 12-h-2 も「走る番2 がまだ走っている」に依っていた
     await waitFor(async () => ((await pollOf(SID_SLOW)).items || []).some((it) =>
       String(it.event?.message?.content?.[0]?.text ?? "") === "echo:走る番2"));
 
