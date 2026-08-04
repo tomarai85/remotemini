@@ -242,6 +242,64 @@ test("★一覧の古さ: 刻む時計は網を叩かない(電池と相手の�
     "時計から網を叩いている = 一覧1回0.75秒を延々と載せる事になる(§2.19 の判断と逆)");
 });
 
+// ---- 古さを**描く**側(2026-08-05 に足した。それまで1本も無かった)-------------
+//
+// 上の3本が測っているのは「時刻を進める場所」「網を叩かない事」「前面復帰の配線」で、
+// 描く関数 `paintListAge` そのものは**素通し**だった。此処が外れた時に出るのは白紙でも
+// 赤でもない —— **古い一覧が「たった今の値」を名乗る画面**が出る。`freshness` は差が負なら
+// 「たった今の値」+ `stale:false` を返すので、引数を入れ替えるだけでそうなる。
+// つまり §2.19 が丸ごと守ろうとしている物が、静かに裏返る形が1つ残っていた。
+//
+// 静的一致(regex)では掴めない。呼んでいる事は書いてあり、**何を渡したか**が問題だから。
+// なので原文を切り出して**実際に実行する**。browser も DOM も要らない: 節点・`freshness`・
+// `Date` は全部この検査が渡す(仮引数が module 側の名前を覆う)。
+const paintListAgeSrc = SCRIPT.match(/function paintListAge\(\)\s*\{[\s\S]*?\n\}/);
+const mkPaint = (fakeFreshness, node, fetchedAt, nowMs) =>
+  new Function("freshness", "listAgeNode", "listFetchedAt", "Date",
+    `${paintListAgeSrc ? paintListAgeSrc[0] : ""}\nreturn paintListAge;`)(
+    fakeFreshness, node, fetchedAt, { now: () => nowMs });
+
+test("★★古さを描く側: freshness へ (取得時刻, 今) の順で渡している", () => {
+  assert.ok(paintListAgeSrc, "paintListAge を切り出せない(検査自身が壊れている)");
+  assert.match(paintListAgeSrc[0], /freshness\(/,
+    "切り出しに freshness の呼び口が無い(検査自身が壊れている)");
+  const calls = [];
+  const node = { isConnected: true, textContent: "", className: "" };
+  // ★2つの値は**わざと遠く離す**。同値だと入れ替えても同じ結果になり、
+  //   何も測れていない検査が緑で通る(13-D で実際に踏んだ型)。
+  mkPaint((a, b) => { calls.push([a, b]); return { text: "T", stale: false }; },
+    node, 111, 999)();
+  assert.deepEqual(calls, [[111, 999]],
+    "引数の順が違う = 差が負になり freshness が『たった今の値』を返す。" +
+    "20分前の一覧が現在形で出続ける画面になり、しかも警告は消える");
+});
+
+test("★★古さを描く側: 文言と stale の印を取り違えていない", () => {
+  const mk = (stale) => {
+    const node = { isConnected: true, textContent: "", className: "" };
+    mkPaint(() => ({ text: "FRESHNESS-TEXT", stale }), node, 111, 999)();
+    return node;
+  };
+  const fresh = mk(false);
+  const old = mk(true);
+  assert.equal(fresh.textContent, "FRESHNESS-TEXT",
+    "節点へ書いているのが freshness の text ではない");
+  assert.doesNotMatch(fresh.className, /\bstale\b/, "新しい値に古さの印が付いている");
+  assert.match(old.className, /\bstale\b/,
+    "stale の印を落としている = 古い事が**目に見えない**(text だけが頼りになる)");
+  // ★恒真でない事の担保: 2つが同じ class になるなら、この検査は何も分けていない
+  assert.notEqual(fresh.className, old.className,
+    "stale の真偽で class が変わっていない(この検査は何も測れていない)");
+});
+
+test("★古さを描く側: 外れた節点には書かない(描き直しで作り直す為)", () => {
+  let called = 0;
+  const node = { isConnected: false, textContent: "", className: "" };
+  mkPaint(() => { called++; return { text: "T", stale: true }; }, node, 111, 999)();
+  assert.equal(called, 0, "外れた節点にも freshness を呼んでいる(捨てる値を作っている)");
+  assert.equal(node.textContent, "", "外れた節点へ書いている = 画面に出ない所を更新している");
+});
+
 // ---- §2.19 U4: 入力欄の上限が「今見えている高さ」を基準にしているか ----
 // ★ここも測れるのは**原文がそう書かれている事**だけ。U3 と同じ格。
 //   ただし「上限が2箇所に在る」事自体は原文で数えられるので、**片方だけ直した状態**は掴める。
