@@ -1,0 +1,70 @@
+Codex sanity — Sprint 2 ブリーフの3裁定への反論
+2026-08-05 06:23 JST / gpt-5.6-sol / reasoning effort: xhigh / sandbox: read-only
+session id: 019fcea8-c545-7f10-a4dc-7f1158535590
+呼び出し: ~/.claude/tools/codex-quick.sh (標準入力でプロンプトを渡す)
+
+★この記録は `.harness/sprint-2-brief.md` §8 の出所。判定と私の応答は §8 の表に在る。
+★除いたもの: rmcp transport の認証エラー行3本(MCP を使わない問い合わせなので無関係)と、
+  同じ本文が末尾で二重に印字されている分。本文は一字も変えていない。
+
+────────────────── 送ったプロンプト(全文) ──────────────────
+
+DO NOT read any files or run any commands — answer purely from this prompt; everything you
+need is inline. Be concise and direct.
+I am about to hand an implementation brief to a code-generating agent. Attack my three rulings;
+say which is wrong and why. Be concise, no praise.
+
+CONTEXT. A native SwiftUI iPhone app talks to a self-hosted backend over a private tailnet.
+Sprint 2 builds the "session list" screen only. GET /api/sessions returns (observed live, 39 rows):
+sessions[]: id, project?, cwd, title, lastPrompt?, turns?, metadataIncomplete, updatedAt,
+fromRegistryOnly (present in only 1 of 39), live (a 3-way union keyed on `route`:
+tmux / worker / blocked), display{ route{kind,short,text,screen}, subtitle }
+top level: scan{...}, display{ scan: string }, paneFault: null | {reason, detail}
+The list row renders ONLY: title, display.subtitle, relative time from updatedAt,
+display.route.short, display.route.text. It does not render anything from `live`.
+
+RULING 1 — do not decode `live` at all in Sprint 2. Rationale: we don't render it; a union
+decoded as a flat struct of optionals decodes successfully and silently mis-routes; Sprint 4
+(which needs it) should model the union against the shape observed at that time.
+Counter-argument I'm aware of: leaving it undecoded means no test pressure on the union until
+Sprint 4.
+
+RULING 2 — the spec defines "backend unreachable" as 3 CONSECUTIVE failures (connection refused /
+timeout / 5xx), but elsewhere says to show a red banner when "the fetch fails". I ruled: keep a
+consecutive-failure counter, reset to 0 on any success; failures 1-2 keep the previous list
+visible with a quiet retry affordance and NO red banner; failure 3+ shows the red banner and
+grays the list. Neither state ever substitutes an empty list. Note: Sprint 2 has NO polling loop
+— fetches happen only on first load, pull-to-refresh, and foreground return, so the counter only
+advances on explicit user action.
+
+RULING 3 — for XCUITest fixtures, do NOT stand up a localhost HTTP server (that would force an
+App Transport Security exception into the production Info.plist). Instead ship a `#if DEBUG`-only
+implementation of a data-source protocol, selected at launch by an env var RC_UI_FIXTURE=<state>,
+carrying no host/URL at all, plus a mandatory control asserting the string RC_UI_FIXTURE is
+absent from a Release-configuration binary and present in the Debug one.
+
+Also: is there a 4th thing a careful reviewer would flag as missing from a list-screen brief of
+this shape?
+
+────────────────── 返ってきた答え(全文) ──────────────────
+
+- **Ruling 1: Keep.** Omitting `live` is safer than inventing a knowingly incorrect model. Add
+  one decoding test proving sessions still decode when `live` is missing or has any observed
+  route.
+
+- **Ruling 2: Wrong as written.** On a cold-start failure there is no previous list to preserve,
+  so failures 1–2 produce an undefined screen. Separate initial-load failure—show an immediate
+  full-screen retry state—from refresh failure with stale data. Also, foreground fetches are not
+  explicit user retries, and cancellations must not increment the counter.
+
+- **Ruling 3: Core approach is sound; justification and control are weak.** A localhost server
+  does not inherently require a production ATS exception; test-specific build settings are
+  possible. Use a dedicated `UI_TESTING` compilation condition instead of generic `DEBUG`. Binary
+  string scanning is brittle; the required control should verify that a Release build ignores
+  `RC_UI_FIXTURE` and cannot instantiate the fixture source.
+
+- **Missing fourth ruling:** define `paneFault`. A `200` response with sessions plus
+  `paneFault != nil` is neither a transport failure nor clean success. Specify whether it resets
+  the failure counter and what warning, if any, appears while retaining the list.
+
+tokens used: 14,884
