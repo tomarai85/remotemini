@@ -1213,9 +1213,25 @@ D1(PWA か native か)は「**触ってから決める**」で Tom 承認済み�
 v1 の4機能(一覧 / 履歴+ライブ / 打つ / 割り込む)はどれも該当しないので、**v1 は制約に当たらない**。
 push を後で入れる時だけ Tom の Apple ID が1回要る —— その時が初めての Tom ゲート。
 
-**bundle ID に `com.tomarai.orosu` を使わない**。それは Tom の既存 App ID で、
-かつ今 iPhone に入っている Blink がその ID で署名されている(`blink-selfbuild` が借用している)。
-再利用すると**実機の Blink が上書きで消える** = 移動中作業の足そのものを折る。新規 ID を切る。
+**bundle ID は新規に切る**(`com.tomarai.remotemini`)。既存 ID の再利用はしない。
+
+> ★上の1行、最初は「`com.tomarai.orosu` を使うと実機の Blink が消えるから」と書いていた。**その理由は誤り**。
+> `blink-selfbuild/build.sh:20` を読んだら Blink の bundle は `com.tomarai.blink` で、`orosu` とは別物だった。
+> 私は「ワイルドカードが在るのに明示 profile も在る」→「Blink は明示 profile を借りている」と**推測**し、
+> 推測を理由として書いた。結論(新規 ID を切る)は変わらないが、**理由が観測でなく推測だった**。
+> 使うべき profile はこれ ↓ で、Blink も同じ物で署名されている:
+
+| 実測値 | 内容 |
+|---|---|
+| profile 名 | `iOS Team Provisioning Profile: *`(= ワイルドカード) |
+| 失効 | 2027-06-06 |
+| 付いてくる entitlement | `application-identifier` / `com.apple.developer.team-identifier` / `get-task-allow` / **`keychain-access-groups`** |
+| Blink の実績 | `blink-selfbuild/build.sh` が同じ profile + `--entitlements`(profile の部分集合)で署名し、実機で動いている |
+
+`keychain-access-groups` が入っているのが効く —— **API 鍵を Keychain に置く設計がそのまま通る**
+(entitlement 追加のための Portal 作業が要らない)。
+署名時の鉄則は build.sh のコメントどおり: **entitlements は profile が持つ権限の部分集合**でなければ
+`installd` が `0xe8008015` で撥ねる。余計なキーを1つ足すだけで実機に入らない。
 
 #### Codex sanity(2026-08-05 01:2x、architectural 判断のため必須)
 
@@ -1238,6 +1254,42 @@ Codex が挙げた期限側の失敗モード4件のうち、**私が握れる�
 ネイティブ化に合わせて機能を足さない。**v1 は4機能のまま**(Tom の verbatim スコープと同じ)。
 残り3件(SSE 再接続の欠落/重複・回線切替の詰め・日常利用しないまま出発)は**実機で使って初めて出る**ので、
 Codex の配分どおり **7日で4機能を実機完成 → 残り8日を実運用と修正**に充てる(出発 2026-08-20)。
+
+#### ★native 化が突き付けた本当の問題: `view.mjs` は電話に**配られている**
+
+ネイティブ化の最大の作業は SwiftUI でも SSE でもなかった。実測(2026-08-05 01:4x):
+
+| 実測値 | 内容 |
+|---|---|
+| `src/view.mjs` | **639 行 / `export` された判断関数 17 本** |
+| その検査 | `test/view.test.mjs` に約74本 + `test/app-html.test.mjs` に約44本 + 変異の的 |
+| `app.html:179` | **`import { … } from "/view.mjs"`** —— サーバが `STATIC` で `/view.mjs` を配り、電話の JS がそれを読んでいる |
+| `app.html` 側の規律 | 「★判断は view.mjs 側にしか置かない」「ここに条件を書かない」が本文中に**何度も**書いてある |
+
+つまり現状は **判断の実装が1つしか無い**構造で、それを規律ではなく `import` が保証している。
+Swift は `view.mjs` を import できない。素直に移植すると **17本の判断が2言語に住む** ——
+この repo が明示的に禁じている形を、私自身が作る事になる。**これが native 化の主コストであり、
+SwiftUI でも署名でもない。**
+
+**決定: 全部は移植しない。関数の入力が何かで2群に割る。**
+
+| 群 | 中身 | 置き場所 |
+|---|---|---|
+| **S** = サーバ自身が作った payload の純関数 | `routeLabel` / `subtitleOf` / `whoOf` / `scanLine` / `gapNotice` / `readablePoll` / `choiceView` / `sendResult` / `interruptResult` / `choiceResult` / `clearQueueResult` | **サーバが `view.mjs` を呼んで、結果を JSON に足す**(追加のみ)。実装は今のまま1本。`app.html` は**1行も触らない**ので既存検査がそのまま実装を固定し続ける。電話はただ描く |
+| **C** = client の時計 / 取得時刻 / client が持つ状態に依存 | `mergeHistory` / `relTime` / `freshness` / `queueView` / `nextAttempt`(+ `frames.mjs` の `backoffMs`)/ `nextHistoryLimit` | **他に住む場所が無いので Swift 側に書く**。単体検査も Swift 側に持つ |
+
+この割り方の効き目: Swift 側に書く判断が **17本 → 6本**。しかも残る6本は
+「今何分前か」「どこまで繋ぎ直すか」= **本来クライアントのもの**で、二重化ではない。
+
+追加フィールドに課す条件(これが無いとサーバ側の写しが腐る):
+- **追加のみ**。既存フィールドの意味を変えない・消さない。`app.html` が無改修で動く事が検査。
+- 計算済みだと分かる名前空間に入れる(生データに紛れる兄弟キーとして散らさない)。
+- **各フィールドに「同じ入力に対する `view.mjs` の戻り値と一致する」検査を1本ずつ**付ける。
+- 2つの器が食い違いうるのは **C 群だけ**、と明記する。将来の読み手が drift の在り処を1箇所で知れる。
+
+★転移する形: **移植の重さは画面の数でなく「判断がどこに住んでいるか」で決まる。**
+`app.html` は 808 行あるが**判断を持たない**ので移植コストはほぼゼロで、
+639 行の `view.mjs` が本体だった。器を替える判断をする前に、**判断の在処を数える**。
 
 ### ★決定: SSE を `EventSource` で開かない(認証と正面衝突する)
 

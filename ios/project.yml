@@ -1,0 +1,67 @@
+name: RemoteMini
+options:
+  bundleIdPrefix: com.tomarai
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    # Signing is done out-of-band by tools/build.sh against the wildcard
+    # provisioning profile. xcodebuild always produces an unsigned .app.
+    CODE_SIGN_IDENTITY: ""
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGN_ENTITLEMENTS: ""
+
+targets:
+  RemoteMini:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Remote Mini
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # The backend is reachable only inside the tailnet over HTTPS with a
+        # real cert, so no ATS exception is needed. Keep it that way: an
+        # exception here would silently permit plaintext to anywhere.
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tomarai.remotemini
+        TARGETED_DEVICE_FAMILY: "1"
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+
+  RemoteMiniTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: RemoteMini
+    settings:
+      base:
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/RemoteMini.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/RemoteMini"
+
+schemes:
+  RemoteMini:
+    build:
+      targets:
+        RemoteMini: all
+        RemoteMiniTests: [test]
+    test:
+      targets:
+        - RemoteMiniTests
