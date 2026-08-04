@@ -736,3 +736,90 @@ test("★陰性対照: dropQueued を呼ばなければ行列は残る(上の3�
   mgr.send("s1", "b");
   assert.equal(mgr.status("s1").queued, 1, "偽 spawn では最初から積まれていない = 何も測れていない");
 });
+
+// ---- 死ぬ間際の「改行の無い最後の行」(DESIGN §2.45 → §2.48) ----------------
+//
+// `worker.mjs` は改行でしか行を切らないので、改行の手前で死ぬと最後の行は `entry.buf` に
+// 残ったまま捨てられていた。stderr には `flushStderr` が在るのに stdout には何も無い
+// = 非対称の抜け。落ちるのが `result` だと電話は「まだ生成中」のまま永久に止まる。
+//
+// ★3本目は e2e では**捕まらない**事を実測してから足した(2026-08-04)。
+//   `live` を無視して死後も行列を進める変異を入れても e2e は 242/242 緑のままだった。
+//   個々に赤にできる対照が揃っていても、集合として穴が在れば意味が無い(§2.47)。
+
+/** 改行の付かない stdout の断片を送り込む。 */
+function emitPartial(proc, obj) {
+  proc.stdout.emit("data", Buffer.from(JSON.stringify(obj))); // ★改行を付けない
+}
+
+test("★改行の無い最後の行も、死ぬ時に流れて電話へ届く", () => {
+  const { mgr, spawned } = makeMgr();
+  const events = [];
+  mgr.send("s1", "a", { onEvent: (seq, d) => events.push(d) });
+  emitPartial(spawned[0], { type: "result", result: "最後の一行" });
+  assert.equal(events.filter((d) => d.type === "result").length, 0,
+    "まだ死んでいないのに流している(改行を待つ約束が壊れている)");
+  spawned[0].exit(0);
+  const got = events.filter((d) => d.type === "result");
+  assert.equal(got.length, 1, "改行の無い最後の行が捨てられている");
+  assert.equal(got[0].result, "最後の一行");
+});
+
+test("★その行は死の合図より**前**に出る(畳んだ後に本文が生えない)", () => {
+  const { mgr, spawned } = makeMgr();
+  const seen = [];
+  mgr.send("s1", "a", { onEvent: (seq, d) => seen.push(d.type) });
+  emitPartial(spawned[0], { type: "result", result: "x" });
+  spawned[0].exit(0);
+  const iLine = seen.indexOf("result");
+  const iDead = seen.indexOf("worker_closed");
+  assert.ok(iLine >= 0 && iDead >= 0, `どちらかが出ていない: ${seen.join(",")}`);
+  assert.ok(iLine < iDead, `死の合図の後に本文が生えている: ${seen.join(",")}`);
+});
+
+test("★死んだ後の `result` で行列を進めない(死んだ stdin へ書きに行かない)", () => {
+  const { mgr, spawned } = makeMgr();
+  const events = [];
+  mgr.send("s1", "a", { onEvent: (seq, d) => events.push(d) });
+  mgr.send("s1", "b"); // busy なので積まれる
+  assert.equal(mgr.status("s1").queued, 1);
+  emitPartial(spawned[0], { type: "result", result: "最後の一行" });
+  spawned[0].exit(0);
+  // ★本命。`live` を見ずに行列を進めると、死んだ子の stdin に "b" を書きに行く。
+  assert.equal(spawned[0].written.length, 1,
+    "死んだ子の stdin へ次の番を書いている(_ingestLine の live を見ていない)");
+  assert.equal(spawned.length, 1, "死んだ後に spawn し直している");
+  // 積まれていた番は**捨てられた事が言われる**(黙って消えない)。
+  const dropped = events.filter((d) => d.type === "user_dropped");
+  assert.deepEqual(dropped.map((d) => d.text), ["b"]);
+  assert.equal(dropped[0].reason, "worker_died");
+});
+
+test("★陰性対照: 半端な JSON / 空の buf では何も出さない", () => {
+  const { mgr, spawned } = makeMgr();
+  const events = [];
+  mgr.send("s1", "a", { onEvent: (seq, d) => events.push(d) });
+  spawned[0].stdout.emit("data", Buffer.from('{"type":"resu')); // 途中で切れた
+  spawned[0].exit(0);
+  assert.equal(events.filter((d) => d.type === "result").length, 0,
+    "半端な JSON を事象として流している");
+  const { mgr: m2, spawned: s2 } = makeMgr();
+  const ev2 = [];
+  m2.send("s2", "a", { onEvent: (seq, d) => ev2.push(d) });
+  s2[0].exit(0); // buf が空のまま死ぬ
+  assert.ok(ev2.some((d) => d.type === "worker_closed"), "死の合図が出ていない");
+  assert.equal(ev2.filter((d) => d.type === "result").length, 0, "空の buf から事象が生えている");
+});
+
+test("★`_flushStdout` は2度呼んでも1度しか出さない(buf を空にしている)", () => {
+  const { mgr, spawned } = makeMgr();
+  const events = [];
+  mgr.send("s1", "a", { onEvent: (seq, d) => events.push(d) });
+  emitPartial(spawned[0], { type: "result", result: "一度だけ" });
+  // ★死の経路を通さず**直に**呼ぶ。`entry.dead` の畳みが exit/close を1回にしているので、
+  //   死の経路から測ると此処は永久に緑 = 測っていないのと同じ(2026-08-04、変異 D で実測)。
+  const entry = mgr.workers.get("s1");
+  assert.equal(mgr._flushStdout("s1", entry), true, "1度目が出ていない");
+  assert.equal(mgr._flushStdout("s1", entry), false, "2度目も出ている(buf が空になっていない)");
+  assert.equal(events.filter((d) => d.type === "result").length, 1, "同じ行が二重に届いている");
+});

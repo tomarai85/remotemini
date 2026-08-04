@@ -304,26 +304,9 @@ export class WorkerManager {
       entry.buf += chunk.toString("utf8");
       let idx;
       while ((idx = entry.buf.indexOf("\n")) !== -1) {
-        const line = entry.buf.slice(0, idx).trim();
+        const line = entry.buf.slice(0, idx);
         entry.buf = entry.buf.slice(idx + 1);
-        if (!line) continue;
-        let ev;
-        try {
-          ev = JSON.parse(line);
-        } catch {
-          continue; // NDJSON でない行(verbose の混入等)は流さない
-        }
-        this._commitHead(sessionId, entry, ev);
-        this._emit(sessionId, ev);
-        if (ev.type === "result") {
-          entry.lastActive = this.now();
-          if (entry.queue.length > 0) {
-            const next = entry.queue.shift();
-            this._write(sessionId, entry, next.text);
-          } else {
-            entry.state = "ready";
-          }
-        }
+        this._ingestLine(sessionId, entry, line, true);
       }
     });
     // claude-work の account= 行や `--resume` の失敗理由がここに来る。**捨てない**。
@@ -357,6 +340,14 @@ export class WorkerManager {
     const onDeath = (code, signal) => {
       if (entry.dead) return;
       entry.dead = true;
+      // ★改行の付かなかった最後の一行を、**死の合図より先に**流す(DESIGN §2.45)。
+      //   `worker.mjs` は改行でしか行を切らないので、改行の手前で死ぬと最後の行は
+      //   `entry.buf` に残ったまま捨てられていた。stderr には `flushStderr` が在るのに
+      //   stdout には何も無い —— 取引ではなく**非対称の抜け**。落ちるのが `result` だと
+      //   電話は「まだ生成中」のまま永久に止まる(idle 回収の kill / 上限 / クラッシュで起きる)。
+      // ★退役した entry でも流す。中身はその子が**実際に書いた**出力であり、
+      //   黙らせない(§2.16)。`_commitHead` 側は同一性で自衛しているので此処では抑えない。
+      this._flushStdout(sessionId, entry);
       this._confirmDeath(sessionId, entry);
       // interrupt(kill)による終了は interrupt() 側で後始末済み。まだ Map に**この entry が**
       // 居る = 予期しない終了。同一性で見る(名前で見ると、既に別の子に差し替わった後の
@@ -393,6 +384,52 @@ export class WorkerManager {
    *   同一性の検査で必ず捕まる = `retired` が判定を分ける場面が1つも無い。
    *   冗長(§2.18-8 の M102 型 = 両方が実際に効く)ではなく、**一度も効かない**守りだった。
    */
+  /**
+   * stdout の1行を電話へ流す。行の**切り出し**は呼ぶ側の仕事。
+   *
+   * @param {boolean} live 生きている子からの行か。`false` = 死んだ後の流し込み
+   *   (= 改行の付かなかった最後の行)。★`result` を拾っても**行列を進めない**:
+   *   進めると死んだ `stdin` へ次の一件を書きに行く。届く物は届け、
+   *   次の一手は死の処理(`_dropQueued`)に任せる。
+   * @returns {boolean} 事象を1本出したか
+   */
+  _ingestLine(sessionId, entry, raw, live) {
+    const line = raw.trim();
+    if (!line) return false;
+    let ev;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      return false; // NDJSON でない行(verbose の混入等)は流さない
+    }
+    this._commitHead(sessionId, entry, ev);
+    this._emit(sessionId, ev);
+    if (ev.type === "result" && live) {
+      entry.lastActive = this.now();
+      if (entry.queue.length > 0) {
+        const next = entry.queue.shift();
+        this._write(sessionId, entry, next.text);
+      } else {
+        entry.state = "ready";
+      }
+    }
+    return true;
+  }
+
+  /**
+   * 死ぬ間際、改行の付かなかった最後の1行を流す。stderr 側の `flushStderr` と同じ形。
+   *
+   * ★必ず `entry.buf` を空にしてから出す。`exit` と `close` は両方来るのが普通で、
+   *   `entry.dead` の畳みが将来外れても二重には出ない様にしておく。
+   * @returns {boolean} 実際に1本出したか(半端な JSON / 空なら false)
+   */
+  _flushStdout(sessionId, entry) {
+    const rest = entry.buf;
+    entry.buf = "";
+    if (!rest) return false;
+    return this._ingestLine(sessionId, entry, rest, false);
+  }
+
   _commitHead(sessionId, entry, ev) {
     if (!this.heads || !entry.forked || entry.headWritten) return;
     const newId = typeof ev?.session_id === "string" ? ev.session_id : "";

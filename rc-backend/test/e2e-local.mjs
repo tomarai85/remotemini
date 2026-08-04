@@ -1963,11 +1963,12 @@ try {
     check("★改行なし: その手前の行はちゃんと届いている(子は確かに書いた)",
       (ringPart || []).some((e) => textOf(e) === "ANCHOR-BEFORE"), shapeP);
     check("★改行なし: 死んだ事は届く", (ringPart || []).some((e) => e?.ev?.type === "worker_closed"), shapeP);
-    // ★**現状の記録**。改行の無い最後の行は entry.buf に残ったまま捨てられる = 電話には
-    //   永久に届かない。落ちるのが `result` だと、電話は「まだ生成中」のまま止まる。
-    //   ★此処が赤くなったら **直った**合図。直す時は此処の期待値ごと書き換える事
-    //     (`worker.mjs` の死の処理で buf を流す = stderr 側と同じ形にするのが筋)。
-    //   今日直さないのは範囲の話であって、正しいからではない。
+    // ★2026-08-04 に**直した**。以前は此処が「載らない」を記録する検査で、
+    //   §2.45 が「赤くなったら直った合図。直す時は期待値ごと書き換える事」と書いていた。
+    //   当ては §2.45 が名指しした形そのもの: `worker.mjs` の死の処理で `entry.buf` を流す
+    //   (= stderr 側の `flushStderr` と同じ形)。`WorkerManager._flushStdout` が其れ。
+    //   流し込みは**死の合図より先**に出す —— 順序が逆だと、電話は `worker_closed` を見て
+    //   会話を畳んだ後に本文を受け取る事になる。
     //
     // ★空振り防止(§2.44 の O1/O2 と同じ対): 「無い」を測る前に、**同じ当て方で
     //   「在る」を捉えられる**事を先に言う。ここを対にしないと、欄の名前を書き間違えた
@@ -1977,8 +1978,13 @@ try {
     check("★空振り防止: 同じ当て方で、改行付きで届いた `result` は**捉えられる**",
       seer(ringLate, "ANCHOR-PARENT"), shape);
     const lostLine = seer(ringPart, "ANCHOR-NONEWLINE");
-    check("★実測(現状の記録): 改行の無い最後の行は ring に**載らない**= 電話に永久に届かない",
-      lostLine === false, `届いてしまっている(= 直った?) ${shapeP}`);
+    check("★実測: 改行の無い最後の行も ring に**載る**(死の間際に buf を流す)",
+      lostLine === true, `落ちている(= 直りが効いていない) ${shapeP}`);
+    // ★順序まで見る。「載る」だけなら、死の合図の**後**に生えても緑になってしまう。
+    const iLine = (ringPart || []).findIndex((e) => e?.ev?.result === "ANCHOR-NONEWLINE");
+    const iDead = (ringPart || []).findIndex((e) => e?.ev?.type === "worker_closed");
+    check("★実測: その行は `worker_closed` より**前**に載る(畳んだ後に本文が生えない)",
+      iLine >= 0 && iDead >= 0 && iLine < iDead, `line=${iLine} closed=${iDead} ${shapeP}`);
   }
 
   // ---- 14. ★SIGTERM で速やかに降りる(電話が SSE を1本張ったまま) ----------
