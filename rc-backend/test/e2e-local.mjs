@@ -87,6 +87,14 @@ const CWD_UNREG = "/Users/Shared/dev/unreg";
 const SID_FRESH = "aaaaaaaa-0000-0000-0000-00000000000f"; // 登録あり・ペイン %23 が生きている
 const SID_GONE  = "aaaaaaaa-0000-0000-0000-000000000010"; // 登録あり・そのペインはもう無い
 const CWD_FRESH = "/Users/Shared/dev/fresh";
+// ★ワーカーが**死ぬ瞬間**と最後の一行の順序を、本物の子で測る為の2本(2026-08-04、
+//   DESIGN §2.35 の未測定の懸念)。ペインは**わざと置かない** —— SID1 と同じで
+//   「机の上に開かれていない会話」= ワーカー経路。cwd は信頼一覧に載せて実在させる。
+//   分岐の鍵は **cwd**。会話 ID は `--fork-session` / `--resume` で書き換わるが cwd は不変。
+const SID_DEATH_LATE = "aaaaaaaa-0000-0000-0000-000000000040"; // 孫が stdout を握ったまま親が先に死ぬ
+const SID_DEATH_PART = "aaaaaaaa-0000-0000-0000-000000000041"; // 最後の行が**改行の前**で切れて死ぬ
+const CWD_DEATH_LATE = join(SB, "death-late");
+const CWD_DEATH_PART = join(SB, "death-part");
 // H2(DESIGN §2.18-10)の継ぎ目用。頭が**未登録**の会話と、**登録済み**の会話。
 const SID_H2_NEW  = "aaaaaaaa-0000-0000-0000-000000000020"; // 頭なし -> fork する筈
 const SID_H2_HEAD = "aaaaaaaa-0000-0000-0000-000000000021"; // 頭あり -> その先端へ resume
@@ -145,15 +153,19 @@ fixture(SID_MISMATCH, CWD_REG, "居場所不一致"); // 会話は CWD_REG。登
 //   H2 の転写を未信頼の cwd で上書きして H2 の検査2本を落とした(2026-08-03)。
 const SID_NOTRUST  = "aaaaaaaa-0000-0000-0000-000000000030";
 const SID_CWD_GONE = "aaaaaaaa-0000-0000-0000-000000000031";
-for (const d of [CWD_WORK, CWD_SHELL, CWD_NOTRUST]) mkdirSync(d, { recursive: true });
+for (const d of [CWD_WORK, CWD_SHELL, CWD_NOTRUST, CWD_DEATH_LATE, CWD_DEATH_PART]) mkdirSync(d, { recursive: true });
 writeFileSync(TRUST_FILE, JSON.stringify({ projects: {
   [CWD_WORK]:  { hasTrustDialogAccepted: true },
   [CWD_SHELL]: { hasTrustDialogAccepted: true },
+  [CWD_DEATH_LATE]: { hasTrustDialogAccepted: true },
+  [CWD_DEATH_PART]: { hasTrustDialogAccepted: true },
   [CWD_GONE]:  { hasTrustDialogAccepted: true },   // 承諾はしたが dir はもう無い
   [join(SB, "declined")]: { hasTrustDialogAccepted: false }, // 項は在るが false(通してはいけない)
 } }));
 fixture(SID_NOTRUST, CWD_NOTRUST, "信頼されていない場所");
 fixture(SID_CWD_GONE, CWD_GONE, "消えた場所");
+fixture(SID_DEATH_LATE, CWD_DEATH_LATE, "死の順序:孫が握る");
+fixture(SID_DEATH_PART, CWD_DEATH_PART, "死の順序:改行なし");
 
 const PANES = [
   `%10${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys010${PANE_SEP}${CWD_READY}`,
@@ -387,8 +399,13 @@ const fakeWork = join(SB, "fake-claude-work");
 // RC_E2E_WORKER_DELAY_MS = 応答を意図的に遅らせる栓。既定 0。
 // これは対照実験用: 遅延を入れても緑のままなら「待ち方」が直っている証拠になる。
 writeFileSync(fakeWork, `#!/usr/bin/env python3
-import sys, json, os, time
+import sys, json, os, time, subprocess
 DELAY=float(os.environ.get("RC_E2E_WORKER_DELAY_MS","0"))/1000.0
+# ★死に方を **cwd で** 分ける(2026-08-04、DESIGN §2.35 を実測にする為)。
+#   会話 ID は --fork-session / --resume で書き換わるので鍵に使えない。cwd は不変。
+#   realpath で /private/var 等に化けても末尾は変わらないので endswith で見る。
+CWD=os.getcwd()
+DEATH="late" if CWD.endswith("death-late") else ("part" if CWD.endswith("death-part") else "")
 # ★argv を丸ごと残す。継ぎ目(サーバが組む argv)を測る唯一の窓。
 LOG=os.environ.get("RC_E2E_ARGV_LOG")
 if LOG:
@@ -409,6 +426,27 @@ for line in sys.stdin:
     try: msg=json.loads(line)
     except Exception: continue
     if DELAY: time.sleep(DELAY)
+    if DEATH=="late":
+        # 孫に stdout を**継承**させてから親だけ先に死ぬ。pipe は孫が握ったままなので
+        # \`close\` は来ず \`exit\` だけが来る = §2.18-10(2) が \`exit\` を死の合図に選んだ形。
+        # その代償(exit の後にも本文が届く)が本当に起きるかを、此処で本物の子で測る。
+        subprocess.Popen([sys.executable,"-u","-c",
+            "import time,sys,json;time.sleep(0.35);"
+            "sys.stdout.write(json.dumps({'type':'assistant','message':{'role':'assistant',"
+            "'content':[{'type':'text','text':'ANCHOR-GRANDCHILD'}]}})+chr(10));"
+            "sys.stdout.flush()"])
+        print(json.dumps({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ANCHOR-PARENT"}]}}),flush=True)
+        print(json.dumps({"type":"result","result":"ANCHOR-PARENT"}),flush=True)
+        sys.stdout.flush()
+        os._exit(0)
+    if DEATH=="part":
+        print(json.dumps({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ANCHOR-BEFORE"}]}}),flush=True)
+        # ★最後の1行を**改行なし**で置いて即死。worker.mjs は改行でしか行を切らないので、
+        #   この行は entry.buf に残ったまま死を迎える。stderr には flushStderr が在るが
+        #   stdout には無い —— 落ちるならその非対称が落とす。
+        sys.stdout.write(json.dumps({"type":"result","result":"ANCHOR-NONEWLINE"}))
+        sys.stdout.flush()
+        os._exit(0)
     txt=msg.get("message",{}).get("content",[{}])[0].get("text","")
     print(json.dumps({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"echo:"+txt}]}}),flush=True)
     print(json.dumps({"type":"result","result":"echo:"+txt}),flush=True)
@@ -1718,6 +1756,97 @@ try {
     console.log(`--- ログの実物(${reqLines.length}行 / 形は${seen.size}種)---`);
     for (const l of seen.values()) console.log(l);
     console.log("---");
+  }
+
+  // ---- 13-W. ★ワーカーの死と「最後の一行」の**順序**を本物の子で測る ---------
+  //
+  // DESIGN §2.35 が「懸念だが未測定」として残していた問い:
+  //   **`worker_closed` は、最後の本文が電話に届く前に着き得るか。**
+  // 単体検査では出ない。偽のワーカーは同期に流れるので、順序が構造ではなく
+  // 台本で決まってしまう。だから e2e に**本物の OS の子を起こす台**を作る。
+  //
+  // 測る先は ring の seq。electron でも SSE でもなく此処なのは、**電話が実際に読む物**が
+  // `eventsSince`(= poll の items)だから。UI の見た目ではなく届く順序そのものを見る。
+  //
+  // ★先に素の `child_process` で測った(2026-08-04、探り 52 回):
+  //   平坦な子(書いて即 `os._exit`)では 1MB 積んでも事象ループを 120ms 塞いでも
+  //   **逆転は 0/52**。libuv は読める stdio を先に流してから `exit` を出す。
+  //   つまり §2.35 が想定していた「単純な取りこぼし」は**起きない**。
+  //   起きるのは下の2つ —— どちらも想定とは別の機構だった。
+  {
+    const ringOf = async (sid) => {
+      const r = await fetch(`${B}/api/sessions/${sid}/poll?wait=0`, { headers: H });
+      const j = await r.json();
+      return (j.items || []).filter((it) => it.kind === "message").map((it) => ({ seq: it.seq, ev: it.event }));
+    };
+    const textOf = (e) => String(e?.ev?.message?.content?.[0]?.text ?? "");
+    const seqOfText = (ring, t) => (ring.find((e) => textOf(e) === t) || {}).seq;
+    const seqOfType = (ring, t) => (ring.find((e) => e?.ev?.type === t) || {}).seq;
+
+    // --- 13-W-a. 孫が pipe を握ったまま親が先に死ぬ ---------------------------
+    const jLate = await (await send(SID_DEATH_LATE, "死の順序を測る")).json();
+    check("★死の順序(孫): ワーカー経路で受理される", jLate.accepted === true && jLate.route === "worker",
+      JSON.stringify(jLate));
+    // 孫は 0.35 秒後に書く。**その行が来るまで**待つ(固定待ちにしない)。
+    const ringLate = await waitFor(async () => {
+      const r = await ringOf(SID_DEATH_LATE);
+      return r.some((e) => textOf(e) === "ANCHOR-GRANDCHILD") ? r : false;
+    });
+    const sParent = seqOfText(ringLate || [], "ANCHOR-PARENT");
+    const sGrand  = seqOfText(ringLate || [], "ANCHOR-GRANDCHILD");
+    const sClosed = seqOfType(ringLate || [], "worker_closed");
+    const asShape = (r) => (r || []).map((e) => `${e.seq}:${e.ev?.type}${textOf(e) ? "/" + textOf(e) : ""}`).join(" ")
+      || "(ring が空 = 待っていた行が来なかった)";
+    const shape = asShape(ringLate);
+    check("★死の順序(孫): 死んだ事は `worker_closed` として届く",
+      typeof sClosed === "number", shape);
+    // (1) 親自身の最後の行は**死の前**に届く。= 平坦な取りこぼしは起きていない。
+    check("★実測: 親が書いた最後の行は worker_closed より**前**(平坦な取りこぼしは無い)",
+      typeof sParent === "number" && typeof sClosed === "number" && sParent < sClosed, shape);
+    // (2) だが孫の行は**死の後**に届く。§2.35 の懸念は「此処でだけ」現実になる。
+    //   ★これは欠陥ではなく**明示した取引**。`close` を死の合図にすれば順序は守れるが、
+    //     孫が pipe を握っている限り `close` は永久に来ない(§2.18-10(2))ので、
+    //     電話は死んだ会話を「生成中」のまま見続ける事になる。順序より死の検知を採った。
+    //     此処が赤くなる = その取引を誰かが黙って裏返した合図。理由ごと読み直す事。
+    check("★実測: 孫が pipe を握ると本文は worker_closed の**後**に届く(採った取引の代償)",
+      typeof sGrand === "number" && typeof sClosed === "number" && sGrand > sClosed, shape);
+    // (3) 順序は崩れても**中身は落ちない**。此処が守られている限り、電話は栞を
+    //   進め直せば必ず読める(表示の並べ替えは view 側の仕事 = 判断は view にしか置かない)。
+    check("★死の後に届いた本文も ring から**失われない**(栞で必ず拾える)",
+      sGrand > 0 && (ringLate || []).some((e) => textOf(e) === "ANCHOR-GRANDCHILD"), shape);
+
+    // --- 13-W-b. 最後の行が**改行の前**で切れて死ぬ ---------------------------
+    //
+    // 本物で起き得る形: idle 回収の kill / 上限で落とされる / クラッシュ。
+    // `worker.mjs` は改行でしか行を切らないので、改行の無い最後の行は entry.buf に残る。
+    // stderr には死の時に `flushStderr` が在るのに、stdout には**何も無い**。
+    const jPart = await (await send(SID_DEATH_PART, "改行の前で死ぬ")).json();
+    check("★死の順序(改行なし): ワーカー経路で受理される", jPart.accepted === true && jPart.route === "worker",
+      JSON.stringify(jPart));
+    const ringPart = await waitFor(async () => {
+      const r = await ringOf(SID_DEATH_PART);
+      return r.some((e) => e?.ev?.type === "worker_closed") ? r : false;
+    });
+    const shapeP = asShape(ringPart);
+    check("★改行なし: その手前の行はちゃんと届いている(子は確かに書いた)",
+      (ringPart || []).some((e) => textOf(e) === "ANCHOR-BEFORE"), shapeP);
+    check("★改行なし: 死んだ事は届く", (ringPart || []).some((e) => e?.ev?.type === "worker_closed"), shapeP);
+    // ★**現状の記録**。改行の無い最後の行は entry.buf に残ったまま捨てられる = 電話には
+    //   永久に届かない。落ちるのが `result` だと、電話は「まだ生成中」のまま止まる。
+    //   ★此処が赤くなったら **直った**合図。直す時は此処の期待値ごと書き換える事
+    //     (`worker.mjs` の死の処理で buf を流す = stderr 側と同じ形にするのが筋)。
+    //   今日直さないのは範囲の話であって、正しいからではない。
+    //
+    // ★空振り防止(§2.44 の O1/O2 と同じ対): 「無い」を測る前に、**同じ当て方で
+    //   「在る」を捉えられる**事を先に言う。ここを対にしないと、欄の名前を書き間違えた
+    //   だけでこの検査は永久に緑 —— 直した日にも緑のまま通り、直った事に誰も気付かない。
+    //   見る先は 13-W-a 側の `result`(改行付きで確かに届いた1本)。
+    const seer = (r, v) => (r || []).some((e) => e?.ev?.result === v);
+    check("★空振り防止: 同じ当て方で、改行付きで届いた `result` は**捉えられる**",
+      seer(ringLate, "ANCHOR-PARENT"), shape);
+    const lostLine = seer(ringPart, "ANCHOR-NONEWLINE");
+    check("★実測(現状の記録): 改行の無い最後の行は ring に**載らない**= 電話に永久に届かない",
+      lostLine === false, `届いてしまっている(= 直った?) ${shapeP}`);
   }
 
   // ---- 14. ★SIGTERM で速やかに降りる(電話が SSE を1本張ったまま) ----------
