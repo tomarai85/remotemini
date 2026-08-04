@@ -9,6 +9,22 @@ import Foundation
 /// backend is never something the client should chase automatically -- it is either
 /// a misconfiguration or something worth surfacing as an unexpected response (spec:
 /// "3xx が来たら想定外の応答に分類").
+///
+/// ## Why clients take this type and not a bare `URLSession`
+///
+/// This initializer takes a *configuration*, never a delegate: it installs
+/// `RedirectRefusingDelegate` itself. So possessing a `BackendSession` IS the proof
+/// that N5 holds for every request made through it -- the compiler enforces what a
+/// default argument only suggested.
+///
+/// The shape being replaced (2026-08-05, Sprint 1 evaluator Finding 1) was
+/// `init(session: URLSession = BackendSession.shared.session)` on each client. That
+/// made redirect refusal a *default*, not a constraint: any call site could pass a
+/// plain `URLSession` and silently lose N5. The Sprint 1 tests were themselves that
+/// call site -- `MockURLProtocol.makeSession()` returned a delegate-less session, so
+/// `HealthzClientTests`/`SessionsAuthProbeTests` never exercised redirect refusal
+/// even once, while `RedirectRefusalTests` proved only that *this* type wires the
+/// delegate. Both halves were green and the gap between them was invisible.
 final class BackendSession {
     static let shared = BackendSession()
 
@@ -24,6 +40,13 @@ final class BackendSession {
     init(configuration: URLSessionConfiguration = .default) {
         configuration.timeoutIntervalForRequest = Self.requestTimeout
         self.session = URLSession(configuration: configuration, delegate: RedirectRefusingDelegate(), delegateQueue: nil)
+    }
+
+    /// The one call clients make. Kept here rather than having each client reach for
+    /// `.session` so that "which session did this request actually go through" has a
+    /// single answer, greppable in one place.
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await session.data(for: request)
     }
 }
 

@@ -52,6 +52,13 @@ LOCAL_CTLS=(
                                      # repo(RC_ROOT)で測定経路まで通す
     test/verify-script-controls.sh
     test/deploy-dirt-controls.sh
+    test/session-guard-controls.sh   # ★2026-08-05 に此処へ入れた。電話側の HTTP が
+                                     # 転送を拒否するセッション以外を通っていないか、の検査の対照。
+                                     # Sprint 1 の Evaluator が見つけた欠陥(既定値だけが守られた
+                                     # セッション = 呼ぶ側が素の URLSession を渡せば N5 が消える)の
+                                     # 2段目の守り。型で縛る①は既存の client にしか効かず、
+                                     # Sprint 2-6 が足す**新しい** client には一切かからないので、
+                                     # 綴りの側から見張る。live の木には足すだけ、実測1秒未満
     test/no-linerefs-controls.sh     # ★2026-08-05 に此処へ入れた。検査の**届く範囲**を測る。
                                      # 電話側の木(`ios/`)に行番号を1件植えて赤になるかを見る
                                      # ので、走査が届いていない事は緑で隠せない。実測1秒未満、

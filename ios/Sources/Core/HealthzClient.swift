@@ -22,9 +22,11 @@ protocol HealthzChecking {
 /// call never carries the API key, so a failure here can only mean the URL itself is
 /// unreachable.
 struct HealthzClient: HealthzChecking {
-    private let session: URLSession
+    /// `BackendSession`, not `URLSession`: see that type for why N5 is a constraint
+    /// here rather than a default argument.
+    private let session: BackendSession
 
-    init(session: URLSession = BackendSession.shared.session) {
+    init(session: BackendSession = .shared) {
         self.session = session
     }
 

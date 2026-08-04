@@ -20,9 +20,12 @@ struct SessionsAuthProbe: SessionsAuthChecking {
         case unreachable
     }
 
-    private let session: URLSession
+    /// `BackendSession`, not `URLSession`: see that type for why N5 is a constraint
+    /// here rather than a default argument. This probe carries the bearer key, so a
+    /// followed redirect would be the exact leak N5 exists to prevent.
+    private let session: BackendSession
 
-    init(session: URLSession = BackendSession.shared.session) {
+    init(session: BackendSession = .shared) {
         self.session = session
     }
 

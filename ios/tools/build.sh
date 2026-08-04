@@ -42,10 +42,41 @@ xcodegen generate >/dev/null
 
 if [ "$MODE" = "sim" ]; then
   step "2. build + test on the simulator ($SIM_NAME)"
+  # Why the full log goes to a file and the summary is classified rather than
+  # `| tail -3` (which is what this used to be, until 2026-08-05):
+  #
+  # `xcodebuild test` reports a COMPILE failure and a TEST failure with the same
+  # `** TEST FAILED **` line and the same exit code 65. Truncating to the last three
+  # lines threw away the only thing that tells them apart -- so "the code does not
+  # build" and "an assertion fired" looked identical. That is not a cosmetic loss:
+  # during mutation testing it turns "the mutation was killed" into a claim that
+  # cannot be distinguished from "the mutation did not compile", i.e. from a run that
+  # measured nothing. (Found by the Sprint 1 evaluator, which abandoned this script
+  # for its mutation runs because of it; reproduced again the same day by a hand-typed
+  # `grep -c 'error: '`, which counted XCTest assertion lines as compiler errors.)
+  #
+  # The discriminator is the column number: swiftc writes `file:line:col: error:`,
+  # XCTest writes `file:line: error:`. Nothing else in the log has that shape.
+  mkdir -p "$DERIVED"
+  SIM_LOG="$DERIVED/xcodebuild-sim.log"
+  rc=0
   xcodebuild -project "$SCHEME.xcodeproj" -scheme "$SCHEME" -configuration Debug \
     -sdk iphonesimulator -destination "platform=iOS Simulator,name=$SIM_NAME" \
-    -derivedDataPath "$DERIVED" test 2>&1 | tail -3
-  exit 0
+    -derivedDataPath "$DERIVED" test >"$SIM_LOG" 2>&1 || rc=$?
+
+  compile_errors=$(grep -cE ':[0-9]+:[0-9]+: (error|fatal error): ' "$SIM_LOG" || true)
+  executed=$(grep -E 'Executed [0-9]+ tests' "$SIM_LOG" | tail -1 || true)
+
+  if [ "$compile_errors" -gt 0 ]; then
+    echo "==> ビルドが通っていない(コンパイル error ${compile_errors}件)= テストは1件も測っていない"
+    grep -E ':[0-9]+:[0-9]+: (error|fatal error): ' "$SIM_LOG" | head -10
+  elif [ "$rc" -ne 0 ]; then
+    echo "==> コンパイルは通り、テストが落ちた"
+    grep -E '^Test Case .* failed|: error: .*XCTAssert' "$SIM_LOG" | head -20
+  fi
+  [ -n "$executed" ] && echo "==> $(echo "$executed" | sed 's/^[[:space:]]*//')"
+  echo "==> 全文: $SIM_LOG"
+  exit "$rc"
 fi
 
 step "2. locate the wildcard provisioning profile"
