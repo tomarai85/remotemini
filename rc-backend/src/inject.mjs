@@ -454,7 +454,11 @@ export function composerText(text) {
  * TUI が本文を取り込んだ後の**空の入力欄**の表示。現物 = `fixtures/queued-during-generation.txt`
  * で、`composerText()` はこれを本文として返す(空文字列ではない)。
  */
-const COMPOSER_PLACEHOLDER = "Press up to edit queued messages";
+// ★2026-08-05 に `export` を付けた。実機の台本(`tools/live-http-check.mjs`)が
+//   `delivered:"unverified"` を**起こす**のに同じ文字列を要るからで、あちらへ写しを
+//   置くと「実物と写しが最初からズレていた」型(この案件で既に踏んでいる)を作る。
+//   値の出所は此処1つに保つ。
+export const COMPOSER_PLACEHOLDER = "Press up to edit queued messages";
 
 /**
  * 入力欄が空か(= 本文がもう入力欄に無いか)。

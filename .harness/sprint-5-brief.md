@@ -171,16 +171,25 @@ composer を開けたままでも fail-closed はサーバ側で成立する。
 
 ★この2番は**作業量の見積もりに直結する**ので先に読む事。
 
-### §0-d. 測っていない事(= この観測の分母)
+### §0-d. 測っていない事(= この観測の分母)→ **3行とも 2026-08-05 に edith で観測して閉じた**
 
-| 何 | なぜ未測定 | 閉じ方 |
+| 何 | なぜ未測定だったか | 観測の結果 |
 |---|---|---|
-| 400 / 401 / 404 の**線の上の**形(`code` 欄を含む) | `tools/wire-shape.mjs` が GET 専用で、非200 の本文を出さない | 道具に POST と非200 経路を足し、`test/wire-shape-controls.sh` を伸ばしてから edith で観測 |
-| 202 + `delivered:"unverified"` の実物 | 起こすには TUI を特定の状態に置く必要がある | 実機行(DoD)で扱う。起こせなければ**未測定と書く**、緑にしない |
-| ワーカー経路(`route:"worker"`)の送信 | tmux 経路しか踏んでいない | 同上 |
+| 400 / 401 / 404 の**線の上の**形(`code` 欄を含む) | `tools/wire-shape.mjs` が GET 専用で、非200 の本文を出さない**と書いてあった**(= 古い前提。`RC_METHOD`/`RC_BODY`/`RC_EXPECT_STATUS` と `code` は既に在った) | **閉**。5形を観測。401 と 404 の2つは `display` **無**、400 は `display` **有**(`keepText:true`)。電話の契約と一致 |
+| 202 + `delivered:"unverified"` の実物 | 起こすには TUI を特定の状態に置く必要がある | **閉**。生成中に**定型文と同一の本文**を送ると必ず起きる(`bodyIsPlaceholder` が直接証拠を無効化する = 構造的に決まらない唯一の道)。`kind:"warn"` / `keepText:true` / `display.text` は `note` より**長い**(二重送信の警告を持つ) |
+| ワーカー経路(`route:"worker"`)の送信 | tmux 経路しか踏んでいない | **閉**。ペインを畳んでから送ると 202 `{accepted,route:"worker",seq}`。**`delivered` も `pane` も無い**。`display` は `kind:"ok"` / `keepText:false`。割り込み後、子プロセスの一致数 0 |
+
+観測の全文と再現手順: `rc-backend/.harness/evidence-2026-08-05/live-http-0d-rows-20260805.md`
+(走行そのもの: `tools/live-http-check.mjs` を edith で 25 OK / 0 NG / 実測メモ 8 件、exit 0)
 
 ★1行目は今日の `code` 追加で**重みが増した**。電話が新しく `code` に依存するので、
-「source にはそう書いてある」だけで実装を閉じない事。
+「source にはそう書いてある」だけで実装を閉じない —— この規則どおり、**source ではなく線の上で**閉じた。
+
+★閉じた事で電話側に効く発見が2つ(どちらも source を読むだけでは出なかった):
+1. `unverified` の `display.text` は `note` の**続きを持つ**。電話が `note` を出す実装だったら
+   「送り直すと二重に入ることがあります」が落ちていた。→ `display.text` を verbatim で出す形が正しい。
+2. ワーカーの 202 には `delivered` が無い。生の欄から画面を作る実装だったら此処で落ちる。
+   → `SendClient.Envelope` が `display` と `code` しか宣言していない形が正しい(§1-b の禁止と同じ向き)。
 
 ---
 
@@ -287,8 +296,8 @@ composer を開けたままでも fail-closed はサーバ側で成立する。
 | 6 | **404+`NO_SUCH_ROUTE` が一覧へ戻らない**(§0-c ②) | 単体(負の対照) |
 | 7 | CHOICE / UNKNOWN で composer が無効、poll 不読では**活性のまま** | 単体 |
 | 8 | 既存4 client の検査が body 次元を読む(または理由付き `EXEMPT`) | `request-shape.test.mjs` が緑 |
-| 9 | **実機**: edith のテストセッションへ実送信し `delivered:"verified"` を観測、対象 jsonl の末尾行が増えた事を `ssh edith` で確認 | 実機 |
-| 10 | §0-d の3行を観測して §0 を更新(または**未測定と明記**) | 観測 |
+| 9 | **実機**: edith のテストセッションへ実送信し `delivered:"verified"` を観測、対象 jsonl の末尾行が増えた事を `ssh edith` で確認 | 実機 → **済(2026-08-05)**。`ios/tools/live-send-check.sh` で5項目とも ok(`evidence-2026-08-05/live-send-row9-20260805.md`)。★但し**行数の増分では閉じていない**: 使い捨ての会話は転写が無い所から始まるので `0 → 8 行` には起動が書いた行が混ざる。閉じたのは**送った本文そのものを転写の中で数えた**方(1 件、陰性対照 0 件) |
+| 10 | §0-d の3行を観測して §0 を更新(または**未測定と明記**) | 観測 → **済(2026-08-05)**。3行とも edith の線の上で観測(`evidence-2026-08-05/live-http-0d-rows-20260805.md`)。未測定として残した行は無い |
 
 ---
 
