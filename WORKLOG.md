@@ -7698,3 +7698,58 @@ Codex の型で自作走査を当てて出た「陰性しか assert していな
 証拠(この session 実測): 変異 M113-M118 を**今の木で**測り直して 6/6 検出・素通り 0・
 木のずれ警告なし。補強後に `npm test` **552 pass / 0 fail**、
 `node test/e2e-local.mjs` **203 pass / 0 fail**。
+
+---
+
+## 2026-08-05 — commit の門が `ios/` に届いていなかった(同じ形の3件目)
+
+Sprint 3 の成果物は**ほぼ全部 `ios/`** だと気付いた所で、門の届く範囲を測った。
+
+`.git/hooks/pre-commit` は先頭で staged 一覧を絞る:
+
+```
+^rc-backend/(src|test|tools)/   ← これに当たらなければ exit 0
+```
+
+`f7c341e` で `staged-controls-gate.sh` は `ios/tools/*-control*.sh` の
+`# controls-for:` 宣言を読める様になっていた。**門は ios を見られる様になったのに、
+門を呼ぶ側の条件は rc-backend しか知らないまま**だったので、`ios/` だけの commit は
+ここで `exit 0` し、3つの門(的照合 / 単体一式 / 触れた対照)に一度も届かなかった。
+
+実測(条件をそのまま再現、index は触らない):
+
+| staged | 旧条件 |
+|---|---|
+| `ios/Sources/...` + `ios/Tests/...` | **`exit 0`(門を通らない)** |
+| `rc-backend/src/view.mjs` | 門へ進む |
+
+`ios/**` を見張ると宣言している対照は 3 本。その内 `ui-fixture-behavior-control.sh` は
+`ios/Sources/RootView.swift` を名指ししていて、**それは今この瞬間 Sprint 3 の Generator が
+書き換えている file**。つまり Sprint 3 の commit は門を1つも通さずに入る所だった。
+
+★これは 2026-08-02(`tools/` の欠落)と同じ形の3件目 = **下流に能力を足した時、
+上流の絞り込みがその能力を知らないと守りは伸びない**。DESIGN §2.18-10
+「守りの届く範囲が、欠陥と一緒に縮む」の別の顔。
+
+直し: 条件を code の範囲へ広げた(書類だけの commit を止めない、という元の趣旨は保つ)。
+
+```
+^(rc-backend/(src|test|tools)|ios/(Sources|Tests|tools))/|^ios/project\.yml$
+```
+
+`ios/*.md` は入れない。`ios/project.yml` は `ui-fixture-absence-control.sh` が
+名指ししているので入れる。hook は追跡されないので退避を取った
+(`pre-commit.bak.20260805-102147`、sha 一致を確認)。
+
+証拠(この session 実測):
+
+| 測った物 | 結果 |
+|---|---|
+| 新条件・`ios` の code だけ | 門へ進む |
+| 新条件・`ios/project.yml` | 門へ進む |
+| 新条件・`ios/README.md` だけ | `exit 0`(通らない) |
+| 新条件・`.harness/*.md` + `WORKLOG.md` | `exit 0`(通らない) |
+| `STAGED_LIST_CMD` に ios 3 file を差し込んで `staged-controls-gate.sh` | **`ui-fixture-behavior-control.sh` が回って GREEN(6s)/ 終了 0** |
+
+残余(承知の上): hook は追跡されないので、この直しは**この作業機にしか無い**。
+clone した所では手置きが要る(DESIGN §2924 に既出)。
