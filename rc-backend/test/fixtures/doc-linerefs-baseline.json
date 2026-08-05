@@ -1,0 +1,16 @@
+{
+  ".harness/feedback/check-2026-07-31-rc-inject-registry.md": 13,
+  ".harness/feedback/check-2026-08-05-2-session-guard.md": 1,
+  ".harness/progress.md": 13,
+  ".harness/spec-native-shell-2026-08-05.md": 21,
+  ".harness/sprint-3-brief.md": 7,
+  ".harness/sprint-4-brief.md": 4,
+  "DESIGN.md": 97,
+  "HANDOFF-NEXT-SESSION.md": 77,
+  "WORKLOG.md": 151,
+  "rc-backend/.harness/audit-2026-08-04/AUDIT-controls-discrimination.md": 2,
+  "rc-backend/.harness/evidence-2026-08-02/README.md": 1,
+  "rc-backend/.harness/evidence-2026-08-03/codex-deploy-review.md": 1,
+  "rc-backend/.harness/evidence-2026-08-03/deploy-atomicity-audit.md": 4,
+  "research/asset-survey.md": 1
+}

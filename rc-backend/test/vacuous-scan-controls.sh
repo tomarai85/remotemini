@@ -15,16 +15,23 @@
 # ★ここが対照の主対象。`--self-test` は**分類器**しか見ておらず、分母の仕掛けを
 #   一度も通らない。分類が正しくても走査が空なら、この道具は無害な顔で無力になる。
 #
-# ── 測る6つ ────────────────────────────────────────────────────────────
+# ── 測る9つ ────────────────────────────────────────────────────────────
 #   1 floor を下回る木では **exit 2**            (= 測っていないを緑にしない)
 #   2 満たした木では exit 2 に**ならない**       (= 1 が常時発火ではない)
 #   3 Swift の**部分木**に届く                   (= 非再帰 glob への回帰防止)
 #   4 否定だけが無ければ exit 0                  (= 挙げるのが巻き添えでない)
 #   5 同梱の自己検査が通る
 #   6 分類器を1つ壊すと自己検査が**赤**          (= 5 が空回りでない証拠)
+#   7 説明文の剥がしを外すと自己検査が**赤**     (= 2026-08-05 の素通りへの回帰防止)
+#   8 分類が常に**錨あり**へ潰れると自己検査が赤 (= 「要人手 0 本」が既定値でない証拠)
+#   9 分類が常に**錨なし**へ潰れると自己検査が赤 (= 錨ありの3類が飾りでない証拠)
 #
 # ★6 が無いと 5 は無意味。「自己検査が通った」は、自己検査が何かを見分けている事を
 #   意味しない —— 見分けていなくても通る。壊して赤くなって初めて計器になる。
+# ★8/9 を足したのは、2026-08-05 に分類層(錨あり literal/producer/兄弟 を報告から
+#   落とす)を入れた日。この層の壊れ方は静かで、潰れても出力は「要人手 0 本 / exit 0」
+#   = 健全な報告と**字面が同じ**。実物の木は現に 0 本なので、実物では見分けられない。
+#   両向きに壊して両方赤くなる事だけが、分類が何かを見分けている証拠になる。
 
 set -u
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -129,15 +136,80 @@ sed 's/^NEG = re\.compile($/NEG = re.compile(r"(?!x)x") if False else re.compile
 python3 - "$TOOL" "$T/mutant.py" <<'PY'
 import sys
 src = open(sys.argv[1], encoding="utf-8").read()
-old = "    return bool(NEG.match(one) or NEG_ARGS.search(one) or NEG_SELF.search(one))"
+old = "        if NEG.match(form) or NEG_ARGS.search(form) or NEG_SELF.search(form):"
 assert old in src, "変異の的が消えている = この対照が古い"
-open(sys.argv[2], "w", encoding="utf-8").write(src.replace(old, "    return False"))
+open(sys.argv[2], "w", encoding="utf-8").write(src.replace(old, "        if False:"))
 PY
 if python3 "$T/mutant.py" --self-test > "$T/mutant.log" 2>&1; then
     ng "6 分類器を壊すと自己検査が赤" \
        "常に否定でないと判定させても自己検査が通る = 5 は何も見分けていない"
 else
     ok "6 分類器を壊すと自己検査が赤(5 が空回りでない証拠)"
+fi
+
+# ── 7: 説明文の剥がしを外すと自己検査が赤 ───────────────────────────────────
+#     2026-08-05 の実害そのもの。`assert.deepEqual(x, [], "説明")` —— 説明文を1つ
+#     足すだけで、否定だけの検査が**挙がらなくなっていた**(NEG_ARGS が閉じ括弧に
+#     錨を打っていた為)。この repo の主流の書き方なので、素通りの範囲は広い。
+#     見つけ方は道具の出力ではなく、**実物を空にする変異**: live-http-swallow の
+#     `SRC` を空にしたら 10 本中 9 本が赤くなり、緑のまま残った1本を道具は挙げて
+#     いなかった。挙げていない事の方が答えだった。
+#     ★ここを外して赤くならないなら、その修正はもう効いていない。
+python3 - "$TOOL" "$T/mutant2.py" <<'PY'
+import sys
+src = open(sys.argv[1], encoding="utf-8").read()
+old = "    for form in (one, strip_message(one)):"
+assert old in src, "変異の的が消えている = この対照が古い"
+open(sys.argv[2], "w", encoding="utf-8").write(src.replace(old, "    for form in (one,):"))
+PY
+if python3 "$T/mutant2.py" --self-test > "$T/mutant2.log" 2>&1; then
+    ng "7 説明文の剥がしを外すと自己検査が赤" \
+       "説明文つきを見分けられなくても自己検査が通る = 2026-08-05 の穴へ戻っても気づけない"
+else
+    ok "7 説明文の剥がしを外すと自己検査が赤(素通りへの回帰を捕まえる)"
+fi
+
+# ── 8: 分類が「常に錨あり」へ潰れると自己検査が赤 ─────────────────────────
+#     2026-08-05 に足した分類層(literal / producer / 兄弟)の対照。この層は
+#     **報告から件を落とす**側なので、壊れ方が静かである:潰れても出力は
+#     「要人手 0 本 / exit 0」—— 完全に健全な報告と**字面が同じ**になる。
+#     実物の木は今この瞬間 0 本なので、実物では両者を見分けられない。
+#     だから的は分類器その物に打つ。錨なしの枝を殺して赤くならないなら、
+#     「要人手 0 本」は測定ではなく既定値である。
+python3 - "$TOOL" "$T/mutant3.py" <<'PY'
+import sys
+src = open(sys.argv[1], encoding="utf-8").read()
+old = '\n    return "", ""\n'
+assert src.count(old) == 1, "変異の的が消えている = この対照が古い"
+open(sys.argv[2], "w", encoding="utf-8").write(
+    src.replace(old, '\n    return "sibling", "常に錨あり(変異)"\n'))
+PY
+if python3 "$T/mutant3.py" --self-test > "$T/mutant3.log" 2>&1; then
+    ng "8 分類が常に錨ありへ潰れると自己検査が赤" \
+       "錨なしの枝を殺しても自己検査が通る = 「要人手 0 本」が測定である保証が無い"
+else
+    ok "8 分類が常に錨ありへ潰れると自己検査が赤(報告が空になる壊れ方を捕まえる)"
+fi
+
+# ── 9: 分類が「常に錨なし」へ潰れると自己検査が赤 ─────────────────────────
+#     8 の裏返し。こちらは 2026-08-05 の分類前の状態そのもの —— 58 本挙げて
+#     本物 0 本(偽陽性 98%)。赤くならないなら、錨ありの 3 類は飾りで、
+#     この道具はまた「読む価値の無い一覧」に戻っている。
+#     ★8 と 9 の両方が要る。片方だけでは「常に同じ答えを返す分類器」と
+#       見分けが付かない —— 見分けているのは、両向きに壊せる事だけが示す。
+python3 - "$TOOL" "$T/mutant4.py" <<'PY'
+import sys
+src = open(sys.argv[1], encoding="utf-8").read()
+old = '    """(類, 証拠)。類が "" = 錨がどこにも無い = 人手に回す物。"""\n'
+assert src.count(old) == 1, "変異の的が消えている = この対照が古い"
+open(sys.argv[2], "w", encoding="utf-8").write(
+    src.replace(old, old + '    return "", ""\n'))
+PY
+if python3 "$T/mutant4.py" --self-test > "$T/mutant4.log" 2>&1; then
+    ng "9 分類が常に錨なしへ潰れると自己検査が赤" \
+       "錨ありを一切出さなくても自己検査が通る = 3類が飾り(偽陽性 98% へ戻っても気づけない)"
+else
+    ok "9 分類が常に錨なしへ潰れると自己検査が赤(雑音まみれへの回帰を捕まえる)"
 fi
 
 cleanup

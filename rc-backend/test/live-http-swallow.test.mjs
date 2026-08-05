@@ -81,6 +81,11 @@ function deadEntries(src, list = ALLOWED) {
 }
 
 test("実物に**一覧に無い素の catch** が居ない", () => {
+  // ★錨。`unlisted` は走査が一件も回らなくても `[]` を返す —— `SRC` が読めていなければ
+  //   この検査は何も見ずに緑になる。実測(2026-08-05): `SRC = ""` の変異を当てたら、
+  //   この file の 10 本中**此処だけ**が緑のまま残った。件数の突き合わせは次の検査の
+  //   仕事なので、此処では「歩いたか」だけを固定する。
+  assert.ok(bareCatches(SRC).length > 0, "素の catch を1つも歩けていない = 下の行は空振り");
   assert.deepEqual(unlisted(SRC), [], "飲んでよい理由が書かれていない catch が在る");
 });
 
@@ -150,6 +155,14 @@ for (const [name, strip, isRed] of STRIPS) {
 }
 
 test("陰性対照: 今の木は通る(上の対照が『常に赤』ではない事)", () => {
+  // ★肯定の錨を**この検査自身の中に**持つ。`unlisted` も `deadEntries` も、走査が
+  //   一件も回らなければ `[]` を返す —— `SRC` が空でも下の2行は緑になる。
+  //   兄弟(「★除外リストが古くなっていない」の `bareCatches(SRC).length === ALLOWED.length`)
+  //   が捕まえてはくれる。だがそれは、**兄弟が消えたら此処が意味を失う**という事でもある。
+  //   対照は自分で立つ。(2026-08-05 vacuous-scan.py が挙げた 36 本の中の、本物の方)
+  //   ※この註釈を最初 `:87` と行番号で書いて、実物は `:88` だった。書き足している最中の
+  //     file へ行番号で引かない —— 引くなら検査の名前で引く。
+  assert.equal(bareCatches(SRC).length, ALLOWED.length, "素の catch を歩けていない = 下の2行は空振り");
   assert.deepEqual(unlisted(SRC), []);
   assert.deepEqual(deadEntries(SRC), []);
 });
