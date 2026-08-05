@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/tools/disposable-session.mjs
+# controls-for: tools/disposable-session.mjs
 #
 # この道具は 2026-08-05 に Sprint 5 DoD 9行目を閉じた計器で、結論はそのまま
 # 「電話の送信路は本物に当たる」の唯一の根拠になっている。計器そのものが正しい事を
