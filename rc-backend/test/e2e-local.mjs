@@ -102,6 +102,11 @@ const SID_DEATH_LATE = "aaaaaaaa-0000-0000-0000-000000000040"; // 孫が stdout 
 const SID_DEATH_PART = "aaaaaaaa-0000-0000-0000-000000000041"; // 最後の行が**改行の前**で切れて死ぬ
 const CWD_DEATH_LATE = join(SB, "death-late");
 const CWD_DEATH_PART = join(SB, "death-part");
+// ★孫が**いつ書くか**を検査が持つ為の合図(2026-08-05、13-W-a の揺らぎを根治)。
+//   合図が来るまで孫は書かない = 「孫が pipe を握ったまま」の状態を検査側が保てる。
+//   直す前は孫が `time.sleep(0.35)` で書いていて、13-W-a の順序が**暗黙の壁時計依存**
+//   だった(12-h と同じ病)。経緯と実測はこの file の 13-W-a の頭に書いた。
+const DEATH_GATE = join(SB, "death-gate");
 // ★「送信待ちが実在する会話」を**作れる様にする**為の1本(2026-08-04、送信待ちの取り消し)。
 //   偽ワーカーは既定では即座に echo を返すので、busy の窓が数 ms しか無く、そこへ2本目を
 //   届けようとすると**運で結果が変わる検査**になる。運で緑になる検査は、赤にもなる。
@@ -466,11 +471,17 @@ for line in sys.stdin:
         # 孫に stdout を**継承**させてから親だけ先に死ぬ。pipe は孫が握ったままなので
         # \`close\` は来ず \`exit\` だけが来る = §2.18-10(2) が \`exit\` を死の合図に選んだ形。
         # その代償(exit の後にも本文が届く)が本当に起きるかを、此処で本物の子で測る。
+        # ★孫が書くのは**合図が置かれてから**(2026-08-05)。以前は 0.35 秒の眠りで、
+        #   検査の順序が壁時計の賭けになっていた。合図なら「握ったまま」を検査が保てる。
+        #   20 秒で諦めるのは、合図の付け忘れで孫を**永久に居座らせない**為。
         subprocess.Popen([sys.executable,"-u","-c",
-            "import time,sys,json;time.sleep(0.35);"
+            "import os,sys,time,json\\n"
+            "g=sys.argv[1]\\n"
+            "d=time.time()+20.0\\n"
+            "while g and not os.path.exists(g) and time.time()<d: time.sleep(0.02)\\n"
             "sys.stdout.write(json.dumps({'type':'assistant','message':{'role':'assistant',"
-            "'content':[{'type':'text','text':'ANCHOR-GRANDCHILD'}]}})+chr(10));"
-            "sys.stdout.flush()"])
+            "'content':[{'type':'text','text':'ANCHOR-GRANDCHILD'}]}})+chr(10))\\n"
+            "sys.stdout.flush()\\n", os.environ.get("RC_E2E_DEATH_GATE","")])
         print(json.dumps({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ANCHOR-PARENT"}]}}),flush=True)
         print(json.dumps({"type":"result","result":"ANCHOR-PARENT"}),flush=True)
         sys.stdout.flush()
@@ -533,6 +544,9 @@ const sv = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
     //   「走っている番がまだ走っている」に依っていた事の実証。既定(合図あり)では
     //   同じ `RC_E2E_SLOW_MS=50` でも緑のまま = 依存が消えた事の実証。
     RC_E2E_SLOW_GATE: process.env.RC_E2E_NO_SLOW_GATE ? "" : SLOW_GATE,
+    // ★13-W-a の孫が「いつ書くか」。空にすると孫は待たずに即書く = 検査が「握ったまま」を
+    //   保てなくなるので (2) は落ちる(= この合図が効いている事の栓。本走行では常に置く)。
+    RC_E2E_DEATH_GATE: process.env.RC_E2E_NO_DEATH_GATE ? "" : DEATH_GATE,
     // ★`RC_E2E_FORCE_PORT` は**対照専用の栓**。本番経路では絶対に立てない。
     //   これが在るのは、環境死の関門(下)を**本物の bind 失敗**で駆動できる様にする為。
     //   手で書いた文字列で関門を試すと、私が想像した出力しか試せない
@@ -2238,36 +2252,62 @@ try {
     const seqOfType = (ring, t) => (ring.find((e) => e?.ev?.type === t) || {}).seq;
 
     // --- 13-W-a. 孫が pipe を握ったまま親が先に死ぬ ---------------------------
+    //
+    // ★2026-08-05、揺らぎを根治した。直す前の (2) は「孫の行は worker_closed の**後**に
+    //   届く」を**孫の 0.35 秒の眠り**で作っていた。これは 12-h と同じ**暗黙の壁時計依存**:
+    //   死の合図(親の exit)は素の node で 27ms、孫の行は 400ms —— 差は充分に見えるが、
+    //   その 370ms の間サーバの事象ループが塞がると、既に読める孫の行が exit の callback
+    //   より先に処理されて順序が入れ替わる。実測(同じ commit・同じ木):
+    //     この repo の木で 9/10 赤 / /private/tmp の写しで 1/6 赤
+    //   = **結果が機械の混み具合で決まっていた**。緑が「取引を守った」なのか
+    //   「たまたま間に合った」なのか言えない検査は、検査の顔をした賭けである。
+    //   (git bisect は 1 走 1 判定なので、この種の検査では**嘘の犯人**を指す。
+    //    最初 69fd70d を「最初の赤」と出したが、そこでも 1/5 で赤だった = 犯人ではない。)
+    //
+    // ★見分けたい物は元から順序ではない。「**孫が pipe を握ったままでも死の合図が出る**」
+    //   —— つまり合図が `close` ではなく `exit` である事、これだけが discriminator である。
+    //   合図が `close` なら、孫が握っている限り worker_closed は**永久に来ない**。
+    //   だから孫の筆を検査側が握る(合図の file を置くまで書かない)。壁時計の賭けが消え、
+    //   discriminator は残る。
     const jLate = await (await send(SID_DEATH_LATE, "死の順序を測る")).json();
     check("★死の順序(孫): ワーカー経路で受理される", jLate.accepted === true && jLate.route === "worker",
       JSON.stringify(jLate));
-    // 孫は 0.35 秒後に書く。**その行が来るまで**待つ(固定待ちにしない)。
+    const asShape = (r) => (r || []).map((e) => `${e.seq}:${e.ev?.type}${textOf(e) ? "/" + textOf(e) : ""}`).join(" ")
+      || "(ring が空 = 待っていた行が来なかった)";
+    // 孫はまだ書いていない(合図を置いていない)。この状態で死の合図が来るのを待つ。
+    const ringDead = await waitFor(async () => {
+      const r = await ringOf(SID_DEATH_LATE);
+      return r.some((e) => e?.ev?.type === "worker_closed") ? r : false;
+    });
+    const shapeD = asShape(ringDead);
+    const sParent = seqOfText(ringDead || [], "ANCHOR-PARENT");
+    const sClosed = seqOfType(ringDead || [], "worker_closed");
+    check("★死の順序(孫): 死んだ事は `worker_closed` として届く",
+      typeof sClosed === "number", shapeD);
+    // (1) 親自身の最後の行は**死の前**に届く。= 平坦な取りこぼしは起きていない。
+    check("★実測: 親が書いた最後の行は worker_closed より**前**(平坦な取りこぼしは無い)",
+      typeof sParent === "number" && typeof sClosed === "number" && sParent < sClosed, shapeD);
+    // (2) ★discriminator。孫が pipe を握ったまま(= まだ1文字も書いていない)worker_closed が
+    //   届いた。合図を `close` に替えたら此処は**時間切れで**赤くなる —— 孫が握る限り
+    //   `close` は来ないので。順序ではなく「合図の出所」を直に見ている。
+    //   これは欠陥ではなく**明示した取引**(§2.18-10(2)): 順序より死の検知を採った。
+    //   此処が赤くなる = その取引を誰かが黙って裏返した合図。理由ごと読み直す事。
+    check("★実測: 孫が pipe を握ったまま worker_closed が届く(死の合図は close ではない)",
+      typeof sClosed === "number" && !(ringDead || []).some((e) => textOf(e) === "ANCHOR-GRANDCHILD"),
+      shapeD);
+    // 此処で孫に筆を渡す。以降に届く本文は**確実に死の後**の物である。
+    writeFileSync(DEATH_GATE, "");
     const ringLate = await waitFor(async () => {
       const r = await ringOf(SID_DEATH_LATE);
       return r.some((e) => textOf(e) === "ANCHOR-GRANDCHILD") ? r : false;
     });
-    const sParent = seqOfText(ringLate || [], "ANCHOR-PARENT");
-    const sGrand  = seqOfText(ringLate || [], "ANCHOR-GRANDCHILD");
-    const sClosed = seqOfType(ringLate || [], "worker_closed");
-    const asShape = (r) => (r || []).map((e) => `${e.seq}:${e.ev?.type}${textOf(e) ? "/" + textOf(e) : ""}`).join(" ")
-      || "(ring が空 = 待っていた行が来なかった)";
     const shape = asShape(ringLate);
-    check("★死の順序(孫): 死んだ事は `worker_closed` として届く",
-      typeof sClosed === "number", shape);
-    // (1) 親自身の最後の行は**死の前**に届く。= 平坦な取りこぼしは起きていない。
-    check("★実測: 親が書いた最後の行は worker_closed より**前**(平坦な取りこぼしは無い)",
-      typeof sParent === "number" && typeof sClosed === "number" && sParent < sClosed, shape);
-    // (2) だが孫の行は**死の後**に届く。§2.35 の懸念は「此処でだけ」現実になる。
-    //   ★これは欠陥ではなく**明示した取引**。`close` を死の合図にすれば順序は守れるが、
-    //     孫が pipe を握っている限り `close` は永久に来ない(§2.18-10(2))ので、
-    //     電話は死んだ会話を「生成中」のまま見続ける事になる。順序より死の検知を採った。
-    //     此処が赤くなる = その取引を誰かが黙って裏返した合図。理由ごと読み直す事。
-    check("★実測: 孫が pipe を握ると本文は worker_closed の**後**に届く(採った取引の代償)",
-      typeof sGrand === "number" && typeof sClosed === "number" && sGrand > sClosed, shape);
+    const sGrand = seqOfText(ringLate || [], "ANCHOR-GRANDCHILD");
     // (3) 順序は崩れても**中身は落ちない**。此処が守られている限り、電話は栞を
     //   進め直せば必ず読める(表示の並べ替えは view 側の仕事 = 判断は view にしか置かない)。
+    //   ★死んだ後の子の行を ring が受け付けるか、は構造の問い(合図の file とは無関係)。
     check("★死の後に届いた本文も ring から**失われない**(栞で必ず拾える)",
-      sGrand > 0 && (ringLate || []).some((e) => textOf(e) === "ANCHOR-GRANDCHILD"), shape);
+      typeof sGrand === "number" && typeof sClosed === "number" && sGrand > sClosed, shape);
 
     // --- 13-W-b. 最後の行が**改行の前**で切れて死ぬ ---------------------------
     //
