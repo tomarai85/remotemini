@@ -27,7 +27,16 @@
  *   RC_SESSION_INDEX=2 ... で一覧の何本目を使うか選ぶ(既定 0 = 最新)
  * 網を使わずに形だけ畳む(対照が使う口。鍵も要らない):
  *   node tools/wire-shape.mjs - < payload.json
- * 終了コード: 0 = 取れた / 1 = HTTP が 200 以外 or 本文が JSON でない / 2 = 準備段で中断
+ * 200 以外を**狙って**観測する(電話が分岐する応答の形はこれでしか取れない):
+ *   RC_EXPECT_STATUS=404 RC_KEY=... node tools/wire-shape.mjs /api/sessions/nope/history
+ *   RC_METHOD=POST RC_BODY='{}' RC_EXPECT_STATUS=400 ... '/api/sessions/{id}/input'
+ * 終了コード: 0 = 取れた / 1 = status が期待と違う or 本文が JSON でない / 2 = 準備段で中断
+ *
+ * ── `RC_EXPECT_STATUS` が既定 200 のままではない理由 ────────────────────
+ * 「200 以外は捨てる」だと、電話が**画面を移す判断**に使う 401 / 404 の形が一度も
+ * 観測できない。かといって「来た物を何でも畳む」にすると、401 を見に行った実行が
+ * 404 を印字し、その出力が「401 の形」として記録に残る。**狙いを先に宣言させて、
+ * 違ったら畳まずに落とす**のが、観測を記録として信じられる唯一の形。
  *
  * ── `{id}` を道具の側に持たせた理由 ──────────────────────────────────
  * 会話ごとの口は URL に session id が要る。id は**会話の識別子そのもの**で、
@@ -53,12 +62,32 @@ const VALUE_KEYS = new Set([
   //   吹き出しを2種類で組む事になる(`sessions.mjs` は 3 種類を積む)。
   "role", // history[].role = "user" | "assistant" | "tool"
   "who", // display.who = "Tom" | "Claude" | "道具"(= whoOf の戻り値。サーバ側で計算済み)
+  // ↓ 復旧語彙 (2026-08-05)。電話が**画面を移す判断**に使う唯一の鍵なので、値が読めないと
+  //   「401/404 が来た」までしか判らず、`SESSION_NOT_FOUND`(一覧へ戻る)と
+  //   `NO_SUCH_ROUTE`(client の path のバグ)を線の上で見分けられない = 観測にならない。
+  "code",
+  "errno", // 診断用の errno。`errnoOf()` が大文字の形へ潰した後の値しか入らない
 ]);
+
+/**
+ * ★**形で通す filter にはしなかった**(一度そう設計しかけた記録)。
+ *
+ * 「大文字だけの語 = 語彙だから出してよい」という規則にすると、鍵の一覧を手で持たずに
+ * 済む代わりに、**木のどこに在っても**大文字の語が印字される。会話の題や発言の断片に
+ * `README` `URGENT` のような語が入れば、それは値であって語彙ではない。
+ *
+ * 鍵で持つ側の弱点は「サーバが新しい復旧鍵を足した日に古くなる」事だが、その時の壊れ方は
+ * **`"string"` と出る**= 伏せる側へ倒れる。この道具は「出さない」為に在るので、
+ * 古くなった時に安全側へ落ちる方を選ぶ。
+ */
 
 const HOST = process.env.RC_HOST || "127.0.0.1";
 const PORT = Number(process.env.RC_PORT || 8787);
 const PATHNAME = process.argv[2] || "/api/sessions";
 const KEY = process.env.RC_KEY;
+const METHOD = (process.env.RC_METHOD || "GET").toUpperCase();
+const BODY = process.env.RC_BODY; // ★中身は一切印字しない。バイト数だけ出す
+const EXPECT = Number(process.env.RC_EXPECT_STATUS || 200);
 
 /** 網を張らずに標準入力の JSON を畳むだけの口。★対照はこちらを使う —— 畳み方と
  *  伏せ方(下の `VALUE_KEYS`)は網とは無関係な純粋な処理なので、本物のサーバも鍵も
@@ -69,6 +98,20 @@ const FROM_STDIN = PATHNAME === "-";
 if (!FROM_STDIN && !KEY) {
   console.error("測れない: RC_KEY が無い(argv には置かない事)");
   process.exit(2);
+}
+if (!FROM_STDIN && !Number.isInteger(EXPECT)) {
+  console.error("測れない: RC_EXPECT_STATUS が整数でない");
+  process.exit(2);
+}
+if (BODY !== undefined) {
+  // ★形が壊れた本文で叩いて 400 を貰い、それを「400 の形の観測」として記録する事故を防ぐ。
+  //   準備段の失敗は 2(未測定)—— 観測できなかった事と、観測したら 400 だった事は別物。
+  try {
+    JSON.parse(BODY);
+  } catch {
+    console.error("測れない: RC_BODY が JSON ではない(中身は出さない)");
+    process.exit(2);
+  }
 }
 
 /** 値 → 形。文字列は VALUE_KEYS の時だけ値を残す。 */
@@ -137,19 +180,28 @@ function emit(body, label) {
   console.log(JSON.stringify(shapeOf(parsed, null), null, 2));
 }
 
-/** 網を1回叩いて `{status, body}` を返すだけ。伏せる判断はここでは一切しない。 */
-function get(path) {
+/**
+ * 網を1回叩いて `{status, body}` を返すだけ。伏せる判断はここでは一切しない。
+ *
+ * ★method / body は**引数で受ける**(`METHOD` / `BODY` を中で読まない)。中で読むと、
+ *   id を解決する為の一覧引きまで `RC_METHOD` を継ぐ —— `RC_METHOD=POST` で会話の口を
+ *   観測しようとしただけで、`/api/sessions` へ POST が飛ぶ。観測の道具が副作用を持つ。
+ */
+function hit(path, { method = "GET", body } = {}) {
   return new Promise((resolve, reject) => {
-    const req = request(
-      { host: HOST, port: PORT, path, method: "GET", headers: { authorization: `Bearer ${KEY}` } },
-      (res) => {
-        let body = "";
-        res.setEncoding("utf8");
-        res.on("data", (c) => (body += c));
-        res.on("end", () => resolve({ status: res.statusCode, body }));
-      },
-    );
+    const headers = { authorization: `Bearer ${KEY}` };
+    if (body !== undefined) {
+      headers["content-type"] = "application/json";
+      headers["content-length"] = Buffer.byteLength(body);
+    }
+    const req = request({ host: HOST, port: PORT, path, method, headers }, (res) => {
+      let out = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => (out += c));
+      res.on("end", () => resolve({ status: res.statusCode, body: out }));
+    });
     req.on("error", reject);
+    if (body !== undefined) req.write(body);
     req.end();
   });
 }
@@ -168,7 +220,8 @@ async function resolveSessionId() {
   }
   let r;
   try {
-    r = await get("/api/sessions");
+    // ★ここは常に GET。観測したい method は本番の口にだけ効かせる(上の `hit` の注記)。
+    r = await hit("/api/sessions", { method: "GET" });
   } catch (e) {
     console.error(`測れない: 一覧に届かない(${e.message})`);
     process.exit(2);
@@ -211,19 +264,27 @@ async function main() {
   }
   let r;
   try {
-    r = await get(path);
+    r = await hit(path, { method: METHOD, body: BODY });
   } catch (e) {
     console.error(`届かない: ${e.message}`);
     process.exit(1);
   }
-  if (r.status !== 200) {
-    // ★本文は出さない。401 の本文に鍵は載らないが、5xx はスタックを載せうる。
-    //   道も出さない —— 差し込み済みの道には id が入っている。
-    console.error(`HTTP ${r.status}(本文は出さない。${r.body.length} バイト)`);
+  if (r.status !== EXPECT) {
+    // ★**期待と違う status の本文は畳まない**。畳んで出すと、401 を観測したつもりの実行が
+    //   404 の形を印字し、その出力が「401 の形」として記録に残る。道も出さない
+    //   —— 差し込み済みの道には id が入っている。
+    console.error(
+      `HTTP ${r.status}(RC_EXPECT_STATUS=${EXPECT} と違うので本文は畳まない。${r.body.length} バイト)`,
+    );
     process.exit(1);
   }
+  // ★期待どおりなら 200 以外でも畳んで出す。安全なのは `shapeOf` が `VALUE_KEYS` 以外の
+  //   文字列を全部 `"string"` へ潰すからで、5xx がスタックを載せても値は出ない。
+  //   これが無いと 401/404 の形は**一度も観測できない** = 電話が分岐する応答だけが
+  //   仕様書の散文からしか判らない、という一番危ない穴が残る。
   // ★印字するのは**雛形**(`PATHNAME`)であって差し込み済みの `path` ではない。
-  emit(r.body, `GET ${PATHNAME} → 200`);
+  const note = BODY === undefined ? "" : ` (本文 ${Buffer.byteLength(BODY)} バイト送信)`;
+  emit(r.body, `${METHOD} ${PATHNAME}${note} → ${r.status}`);
 }
 
 if (FROM_STDIN) {
