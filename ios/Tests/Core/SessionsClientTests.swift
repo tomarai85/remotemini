@@ -45,6 +45,21 @@ final class SessionsClientTests: XCTestCase {
         XCTAssertEqual(result, .failure(.unreachable))
     }
 
+    // Negative control, added alongside Sprint 3's `.notFound` case (brief §3-c):
+    // `/api/sessions` has no session id to 404 against, so `SessionsClient`'s switch
+    // deliberately has no `case 404` of its own -- a stray 404 here still falls
+    // through the existing `default:` to `.unreachable`, same as any other
+    // unexpected status. This guards against `.notFound` handling creeping into
+    // this client just because the enum it returns now has the case available.
+    func testStatus404StillFallsThroughToUnreachableForListNegativeControl() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 404)]
+        let client = SessionsClient(session: MockURLProtocol.makeSession())
+
+        let result = await client.fetch(baseURL: baseURL, apiKey: "fixture-key")
+
+        XCTAssertEqual(result, .failure(.unreachable))
+    }
+
     func testConnectionFailureIsUnreachable() async {
         MockURLProtocol.stubQueue = []
         let client = SessionsClient(session: MockURLProtocol.makeSession())

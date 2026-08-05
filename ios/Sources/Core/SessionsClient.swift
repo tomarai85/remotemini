@@ -25,6 +25,17 @@ enum SessionsFetchError: Error, Equatable {
     /// self-discovered -- rapid pull-to-refresh cancels an in-flight fetch, and that
     /// must not look like the backend went unreachable).
     case cancelled
+    /// HTTP 404. Added in Sprint 3 (brief §3-c, a same-day correction to the brief's
+    /// own first draft, which had folded 404 into `.unreachable`): `src/server.mjs`'s
+    /// `/history` handler, `if (!file && !registeredOnly) return json(res, 404, {
+    /// error: "unknown session" })` -- a session that existed when the List row was
+    /// rendered but is gone by the time Conversation opens it (or by the time a
+    /// later "load earlier" tap lands). This is an EXTENSION of the shared taxonomy,
+    /// not a second one (the brief's own distinction, §3-c): `SessionsClient` below
+    /// still never returns it -- `/api/sessions` has no session id to 404 against --
+    /// only `HistoryClient` produces this case. It lives here rather than on a
+    /// Conversation-only type so both clients keep exactly one error vocabulary.
+    case notFound
 }
 
 protocol SessionsListing {
