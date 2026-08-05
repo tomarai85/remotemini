@@ -34,7 +34,11 @@
 # | 変異                                            | 落ちる対照      |
 # |-------------------------------------------------|-----------------|
 # | REPO_OK を `rev-parse --is-inside-work-tree` に戻す | ③(これだけ)   |
+# | 見張りの印を基準値の**全** path へ戻す          | ③(これだけ)   |
 # | 飛ばし判定を常に真にする(写しでも測る)          | ① ③            |
+#
+# ★2行目は、砂場に本番と同じ名前の兄弟を置くまで**1件も落とせなかった**変異である
+#   (= 名前を合わせる前の ③ は、この形について何も言っていなかった)。
 #
 # 終了コード: 0=緑 / 1=赤 / 2=測れていない
 set -uo pipefail
@@ -126,29 +130,54 @@ fi
 # ── ③ 親が**別件の repo** でも緑(edith の仮置きと同じ形)────────────────────
 # ★①②の砂場は親が無い。ここは親を git の木にする = 「上に木が在るか」だけを見る判定が
 #   真になる配置。edith で実際に赤くなったのはこの形である。
+#
+# ★★砂場の**名前**まで本番に合わせる(2026-08-05、1度目の直しがここで漏れた)。
+#   最初は写しを `rc/` 1 つだけ置いたが、edith の親には
+#     rc-staging/  ← 検査する木
+#     rc-backend/  ← **本番の木**(兄弟として実在する)
+#   の2つが居る。基準値が `rc-backend/.harness/…` を名指しているので、親からの相対 path が
+#   兄弟の木の中で**実在してしまう**。名前を変えた砂場ではその衝突が起きず、対照は
+#   「緑」と言ったのに配備は赤で返ってきた。**本番に在る名前を砂場に持ち込まない限り、
+#   その形は網に入らない。**
 FGN="$SB/foreign"
 /bin/mkdir -p "$FGN" || exit 2
-/usr/bin/rsync -a --exclude node_modules --exclude .git "$ROOT/" "$FGN/rc/" >/dev/null 2>&1 \
-    || { echo "別件 repo 側の写しを作れなかった"; echo "COPIED-TREE-CONTROLS: 測定不成立(緑ではない)"; exit 2; }
+for _d in rc-staging rc-backend; do
+    /usr/bin/rsync -a --exclude node_modules --exclude .git "$ROOT/" "$FGN/$_d/" >/dev/null 2>&1 \
+        || { echo "別件 repo 側の写し($_d)を作れなかった"; echo "COPIED-TREE-CONTROLS: 測定不成立(緑ではない)"; exit 2; }
+done
 # 親を repo にする。**写しは追跡しない**(edith の実物と同じ: 索引に .md は1本も無い)。
 printf 'fleet hygiene placeholder\n' > "$FGN/unrelated.txt"
 git -C "$FGN" init -q >/dev/null 2>&1
 git -C "$FGN" -c user.email=ctl@example.invalid -c user.name=ctl add -- unrelated.txt >/dev/null 2>&1
 git -C "$FGN" -c user.email=ctl@example.invalid -c user.name=ctl commit -q -m ctl >/dev/null 2>&1
 
-# 錨: 砂場が本当に「別件の repo が親」になっているか。なっていなければ ③ は ① の焼き直し。
+# 錨: 砂場が本当に edith と同じ形になっているか。3 つ全部が要る。
+#   ① 親が git の作業木(= 「上に木が在るか」だけの判定が真になる)
+#   ② その索引に `.md` が 1 本も無い(= 測ると 0 本で赤くなる側)
+#   ③ 基準値の**下位 path** が親から実在する / **直下**の書類は実在しない
+#      = 兄弟の木に吸われる衝突が、砂場でも実際に起きている
+# どれか欠けたら ③ は edith の形を再現していないので、緑と言ってはいけない。
 fgn_tree="$(git -C "$FGN" rev-parse --is-inside-work-tree 2>/dev/null)"
 fgn_md="$(git -C "$FGN" ls-files '*.md' 2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d ' ')"
 fgn_n="$(git -C "$FGN" ls-files 2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d ' ')"
-if [ "$fgn_tree" != "true" ] || [ "${fgn_md:-x}" != "0" ] || [ "${fgn_n:-0}" -lt 1 ]; then
-    echo "砂場の親が『別件の repo』になっていない(tree=${fgn_tree:-無} md=${fgn_md:-無} 索引=${fgn_n:-無})"
+shape="$(node -e '
+const {readFileSync, existsSync} = require("node:fs");
+const {join} = require("node:path");
+const base = JSON.parse(readFileSync(process.argv[1], "utf8"));
+const under = (f) => Object.keys(base).filter(f).filter((p) => existsSync(join(process.argv[2], p))).length;
+console.log(`${under((p) => p.includes("/"))} ${under((p) => !p.includes("/"))}`);
+' "$ROOT/test/fixtures/doc-linerefs-baseline.json" "$FGN" 2>/dev/null)"
+fgn_deep="${shape%% *}"; fgn_top="${shape##* }"
+if [ "$fgn_tree" != "true" ] || [ "${fgn_md:-x}" != "0" ] || [ "${fgn_n:-0}" -lt 1 ] \
+   || [ -z "$shape" ] || [ "${fgn_deep:-0}" -lt 1 ] || [ "${fgn_top:-1}" -ne 0 ]; then
+    echo "砂場が edith の形になっていない(tree=${fgn_tree:-無} md=${fgn_md:-無} 索引=${fgn_n:-無} 下位実在=${fgn_deep:-無} 直下実在=${fgn_top:-無})"
     echo "COPIED-TREE-CONTROLS: 測定不成立(緑ではない)"
     exit 2
 fi
 
 OUT3="$SB/run3.txt"
 rc3=0
-( cd "$FGN/rc" && npm test --silent ) > "$OUT3" 2>&1 || rc3=$?
+( cd "$FGN/rc-staging" && npm test --silent ) > "$OUT3" 2>&1 || rc3=$?
 nfail3="$(/usr/bin/sed -n 's/^# fail \([0-9][0-9]*\)$/\1/p' "$OUT3" | /usr/bin/tail -1)"
 if [ -z "$nfail3" ]; then
     echo "要約行(# fail)が出ていない = 測れていない"
@@ -158,7 +187,7 @@ if [ -z "$nfail3" ]; then
 fi
 if [ "$rc3" -eq 0 ] && [ "$nfail3" = "0" ]; then
     nskip3="$(/usr/bin/sed -n 's/^# skipped \([0-9][0-9]*\)$/\1/p' "$OUT3" | /usr/bin/tail -1)"
-    ok "親が別件の repo でも単体スイートが緑(索引 ${fgn_n} 件・.md 0 本 / skipped=${nskip3:-0})"
+    ok "親が別件の repo・兄弟に本番の木が在っても緑(索引 ${fgn_n} 件・.md 0 本 / 基準値の下位 path ${fgn_deep} 件が兄弟の木に実在 / skipped=${nskip3:-0})"
 else
     ng "親が別件の repo でも単体スイートが緑" \
        "親の索引を『自分の repo』と読んで測っている検査が居る。edith の仮置きで実際に落ちた形:

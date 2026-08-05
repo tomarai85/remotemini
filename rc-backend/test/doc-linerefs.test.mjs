@@ -212,13 +212,24 @@ test("陰性対照: 基準値の判定が両向きに動く(片側だけ見て�
 //   この見張りが**測れない場所で赤を出す**側へ回る(実際そうなった)。
 //   独立した印として妥当なのは「基準値が語っている書類が、その親に実際に在るか」。
 //   git を一切通らないので、REPO_OK の判定が壊れた時に見分けが付く。
-//   1 本でも在れば「その repo に居る」= 改名や 1 件の削除では黙らない。
+//
+// ★★★同じ配備の**次の回**で、その印もまだ甘い事が出た。基準値の path を全部使うと
+//   `rc-backend/.harness/evidence-2026-08-02/README.md` が `/Users/edith` の下で**実在する**
+//   —— 配備先には本番の木がその名前で居るのだから当然で、親 repo の印にならない。
+//   (実測: 親直下の 4 件は全部 absent、当たったのはこの `rc-backend/…` の 2 件だけ)
+//   → 印にするのは**親 repo の直下**の書類だけにする。下位の path は、配備先で
+//     兄弟の木に吸われる。印が 1 件も無くなったら黙るのではなく**その場で赤**にする。
 test("★飛ばして良いのは版管理の外に居る時だけ(黙って飛ばし続ける形になっていない)", () => {
   const base = readBaseline() ?? {};
-  const looksLikeRepo = Object.keys(base).some((p) => existsSync(join(REPO, p)));
+  const tops = Object.keys(base).filter((p) => !p.includes("/"));
+  assert.ok(
+    tops.length > 0,
+    "基準値に親 repo 直下の書類が 1 件も無い = この見張りは印を持てない(黙って飛ぶ側へ倒れる)",
+  );
+  const looksLikeRepo = tops.some((p) => existsSync(join(REPO, p)));
   assert.equal(
     looksLikeRepo && !REPO_OK, false,
-    `基準値が名指す書類が親に在る(= 本物の repo に居る)のに、索引がこの file を` +
+    `基準値が名指す親直下の書類が在る(= 本物の repo に居る)のに、索引がこの file を` +
       `追跡していないと読めた(${REPO} / ${SELF_IN_REPO})= 上の3本が黙って飛ぶ。` +
       "git の呼び方が壊れた時にここが赤くなる",
   );
