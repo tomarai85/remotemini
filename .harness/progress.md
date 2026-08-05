@@ -2291,3 +2291,71 @@ spec §6 の Day 7 は「4機能を実回線(Wi-Fi→セルラー、機内モー
 
 残り(この脚で私にできない事): 実回線の2脚は Tom の iPhone が要る。**サーバ側は
 これで閉じた**ので、実機で赤が出たら原因は電話側だと先に絞れる。
+
+---
+
+## 6. tailnet 鍵の期限を艦隊ぜんぶで数えた —— と、自分の「対照が無い」の数え方が間違っていた話
+
+### 6-1. 渡米(2026-08-20)を跨ぐ鍵は 5 台。Tom の記録は 2 台ぶんしか無い
+
+`tools/tailnet-key-expiry.sh` の頭には、なぜ観測側の鍵まで見るのかが書いてある ——
+観測側が落ちると edith は無事なのに `/healthz` へ届かず、**本物の障害と区別が付かない**。
+それを艦隊ぜんぶへ広げて数えた(標準の制約どおり、機械名は一切出さず OS / 在線 / 期限だけ):
+
+| tailnet のノード | 台数 |
+|---|---|
+| 合計 | 28 |
+| 鍵の期限が無効化済み(切れない) | 23 |
+| **期限が生きている** | **5** |
+
+生きている 5 台の期限は**全部が渡米日より後**。つまり 5 台とも「出発前には何も起きず、
+旅の途中で切れる」形をしている:
+
+| OS | 在線 | 期限 | 残り |
+|---|---|---|---|
+| macOS | online | 2026-09-19 | 44 日 |
+| macOS | online | 2026-09-19 | 44 日 |
+| **iOS** | online | **2026-11-15** | 101 日 |
+| macOS | online | 2026-12-25 | 141 日 |
+| macOS | offline | 2027-01-24 | 171 日 |
+
+この機械の値は正規の道具でも独立に一致した: `tools/tailnet-key-expiry.sh --porcelain`
+→ `KEY self 44 2026-09-19`。
+
+Tom の記録済み action B は「friday と edith」の 2 台。**この一覧はそれより広い**。
+とくに iOS が 1 台在り、切れると電話が tailnet から落ちる = この製品の面が丸ごと届かなくなる。
+復旧は電話で Tailscale に入り直すだけだが、それを**旅先で、MFA ごと**やる事になる。
+
+### 6-2. 「対照が無い道具 18 本」は、私が門の**盲点**を coverage と読み違えていた
+
+昨日まで carry-over に「64 本中 18 本(28%)に対照が無い」と書いていた。数え直したら、
+この数字が測っているのは **coverage ではなく宣言**だった。14 本(`.example` と ios の 2 本を除く)
+を割ると:
+
+| 実態 | 本数 | 中身 |
+|---|---|---|
+| `.test.mjs` が見ている | 3 | `live-choice-check.mjs` / `live-http-check.mjs` / `live-inject-check.mjs` |
+| 兄弟の `*-check.sh` が見ている | 2 | `serve-decision.sh` / `rc-backend-launch.sh` |
+| 対照が在るのに宣言が無い | 1 | `tailnet-key-expiry.sh` |
+| **本当に誰も見ていない** | **7** | `hint-statusline-control.mjs` / `inflight-under-statusline.mjs` / `make-icon.py` / `serve-decision-check.sh` / `spinner-glyph-probe.mjs` / `verify-phone-window.sh` / `verify-rc-backend-state.sh` |
+
+門(`tools/staged-controls-gate.sh`)が対照として拾うのは `*-control*.sh` だけなので、
+`.test.mjs` で守られている物は**構造上ぜったいに孤児として出る**。18 という数字には
+この盲点が混ざっていた。**本当の carry-over は 7 本**。
+
+★門を `.test.mjs` まで広げるのは**採らない**。この門が聞いているのは「試験が在るか」ではなく
+「**負の対照を持つ対照**が見張っているか」で、そこを混ぜると弱い単体試験が本番の道具を
+「守っている」と名乗れてしまう。盲点ではなく**線引き**なので、広げる方が壊れる。
+
+### 6-3. 直したのは宣言 1 行だけ(嘘になる 4 本は足さなかった)
+
+`test/health-observer-controls.sh` の `controls-for:` に `tools/tailnet-key-expiry.sh` を足した。
+§10-i / 10-j が本物の台本を偽 tailscale で**直に駆動**していて(引数なしの呼び口・porcelain の形・
+値の無い `--peer` で回り続けない、の 3 点)、宣言は実態に一致する。孤児 18 → 17。
+
+足さなかった物とその理由 —— `test/deploy-to-edith-behavior-controls.sh` は
+`rc-backend-launch-check.sh` を走らせてはいるが、測っているのは「deploy が B3 を走らせるか」で、
+**起動チェッカ自身を敵対的に試してはいない**。ここに宣言を足すと門の数字がまた嘘になる。
+
+観測: `test/health-observer-controls.sh` → ok 116 / ng 0 / rc=0、§10 は a〜l 全部が走った
+(`測定不成立` の行なし = 本物の tailscale から骨組みが採れている)。
