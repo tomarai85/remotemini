@@ -21,6 +21,12 @@ final class MockURLProtocol: URLProtocol {
 
     static var stubQueue: [Stub] = []
     static var requestedURLs: [URL] = []
+    /// Same shape as `requestedURLs` -- appended once per request, never overwritten
+    /// in place. Added 2026-08-05: until this existed, nothing in this tree recorded
+    /// which HTTP method a request actually used, so `SessionsClient` (or any other
+    /// client) could have its `"GET"` silently rewritten to `"POST"` and all existing
+    /// suites would stay green -- a request-shape mutation with no test able to see it.
+    static var requestedMethods: [String] = []
     static var lastRequestHeaders: [String: String]?
 
     /// Sprint 2: when non-zero, `startLoading()` schedules its response
@@ -58,6 +64,7 @@ final class MockURLProtocol: URLProtocol {
     static func reset() {
         stubQueue = []
         requestedURLs = []
+        requestedMethods = []
         lastRequestHeaders = nil
         deliveryDelay = 0
         injectedError = nil
@@ -92,6 +99,11 @@ final class MockURLProtocol: URLProtocol {
             return
         }
         Self.requestedURLs.append(url)
+        // `URLRequest.httpMethod` is `String?`, but every client in this tree sets it
+        // explicitly before dispatch -- a `nil` here would itself be a finding (a
+        // request that forgot to set a method), so it is recorded as `"<nil>"`
+        // rather than silently defaulted to "GET", which would hide that finding.
+        Self.requestedMethods.append(request.httpMethod ?? "<nil>")
         Self.lastRequestHeaders = request.allHTTPHeaderFields
 
         if Self.deliveryDelay > 0 {

@@ -190,6 +190,16 @@ final class PollClientTests: XCTestCase {
         XCTAssertTrue(query.contains("wait=20000"))
     }
 
+    // 2026-08-05: `SessionsClient`/`SessionsModels`'s mutation-audit gap (no method
+    // check anywhere in the tree) applies to this client too -- added alongside it.
+    func testRequestMethodIsGET() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validBody.utf8))]
+
+        _ = await makeClient().poll(baseURL: baseURL, apiKey: "k", sessionID: "s", cursor: .empty, waitMs: 0)
+
+        XCTAssertEqual(MockURLProtocol.requestedMethods.last, "GET")
+    }
+
     func testEmptyCursorIsSentAsAnEmptyQueryValueNotOmitted() async {
         // The fresh sentinel (`PollCursor.empty`) must still appear on the wire as
         // `cursor=` -- an omitted `cursor` param entirely would be a different
