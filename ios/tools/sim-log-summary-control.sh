@@ -253,6 +253,67 @@ else
        "rc=$rc / 出力=$(printf '%s' "$out" | head -1)"
 fi
 
+# ── ⑩ 印そのものが改行で割られていても数える ─────────────────────────
+# ⑧と同じ現象の、**1バイト違う切れ方**。OS log の書き込みが印の途中で改行を挟むと、
+# `Test Case` の `T` だけが前の行の末尾に残り、次の行は `est Case '-[...]' passed` で
+# 始まる。2026-08-05 夜の 290件 の run で実測した実物がこれで、要約は 289件 と出した。
+#
+# ★⑧が緑のままこれを通した理由がそのまま教訓: ⑧の作り物は「印は必ず**丸ごと**在って、
+#   その手前に騒音が付く」形しか写していなかった。**印自身が割れる**形が無かった。
+#   同じ現象でも、割れる位置が違えば別の形である。
+#
+# ★passed だけでなく failed 側も測る。理由は⑧と同じで、そちらが本当の危険
+#   (飲まれた失敗は 0件と数えられ、倒れた検査の名前が1つも出ない)。
+SPLIT="$SCRATCH/split-marker.log"; : >"$SPLIT"
+{
+    echo "Test Suite 'All tests' started at 2026-08-05 08:00:00.000."
+    echo "Test Suite 'RemoteMiniTests.xctest' started at 2026-08-05 08:00:00.000."
+    echo "Test Case '-[RemoteMiniTests.SomeTests testClean]' started."
+    echo "Test Case '-[RemoteMiniTests.SomeTests testClean]' passed (0.001 seconds)."
+    echo "Test Case '-[RemoteMiniTests.SomeTests testSplitPass]' started."
+    # 印の `T` が前の行の末尾に取り込まれ、印は `est Case` から始まる。
+    echo '2026-08-05 08:00:00.100+0900 App[1:2] [Default] Task finished with error [-1004] NSLocalizedDescripT'
+    echo "est Case '-[RemoteMiniTests.SomeTests testSplitPass]' passed (0.002 seconds)."
+    echo "Test Case '-[RemoteMiniTests.SomeTests testSplitFail]' started."
+    printf '/path/to/Some.swift:%d: error: -[RemoteMiniTests.SomeTests testSplitFail] : XCTAssertEqual failed\n' 42
+    echo '2026-08-05 08:00:00.200+0900 App[1:2] [Default] Task finished with error [-1004] NSLocalizedDescripT'
+    echo "est Case '-[RemoteMiniTests.SomeTests testSplitFail]' failed (0.003 seconds)."
+    echo "Test Suite 'RemoteMiniTests.xctest' failed at 2026-08-05 08:00:01.000."
+    printf '\t Executed 3 tests, with 1 failure (0 unexpected) in 0.100 (0.100) seconds\n'
+} >>"$SPLIT"
+out=$("$TOOL" "$SPLIT" 65 2>&1); rc=$?
+if [ "$rc" -eq 1 ] \
+   && printf '%s' "$out" | grep -q "テスト 3件 実行" \
+   && printf '%s' "$out" | grep -q "失敗 1件" \
+   && printf '%s' "$out" | grep -q "testSplitFail"; then
+    ok "⑩ 印が改行で割られていても 3件/失敗1件と数え、倒れた検査の名前を出す"
+else
+    ng "⑩ 印が改行で割られていても 3件/失敗1件と数え、倒れた検査の名前を出す" \
+       "rc=$rc / 出力=$(printf '%s' "$out" | head -2 | tr '\n' ' ')"
+fi
+
+# ── ⑩' 錨を外した代わりに、印でない行を数え始めていないか ────────────
+# ⑩の為に錨を `Test ` から `Case '-[...]'` へ移した。緩め過ぎれば、**検査の名前や
+# 失敗の文面の中に同じ綴りが在るだけ**で1件と数える道が開く —— 件数が水増しされると
+# 「始まった数 ≠ 終わった数」が常時ずれて、全部の run が未測定に化ける。
+# 引用の中(= `-[` で始まらない)は数えない事を測る。
+QUOTED="$SCRATCH/quoted-marker.log"; : >"$QUOTED"
+{
+    echo "Test Suite 'All tests' started at 2026-08-05 08:00:00.000."
+    echo "Test Case '-[RemoteMiniTests.SomeTests testA]' started."
+    printf '/path/to/Some.swift:%d: error: -[RemoteMiniTests.SomeTests testA] : XCTAssertEqual failed: the summary said Case %s passed (0.000 seconds) but nothing ran\n' 42 "'the-suite'"
+    echo "Test Case '-[RemoteMiniTests.SomeTests testA]' failed (0.001 seconds)."
+    echo "Test Suite 'RemoteMiniTests.xctest' failed at 2026-08-05 08:00:01.000."
+    printf '\t Executed 1 test, with 1 failure (0 unexpected) in 0.100 (0.100) seconds\n'
+} >>"$QUOTED"
+out=$("$TOOL" "$QUOTED" 65 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "テスト 1件 実行" && printf '%s' "$out" | grep -q "失敗 1件"; then
+    ok "⑩' 失敗の文面の中の同じ綴りは印として数えない(1件・赤)"
+else
+    ng "⑩' 失敗の文面の中の同じ綴りは印として数えない(1件・赤)" \
+       "rc=$rc / 出力=$(printf '%s' "$out" | head -1)"
+fi
+
 # ── ⑨' skip は「消えた」ではない ─────────────────────────────────────
 # ⑨の突き合わせが `skipped` を数え損なうと、XCTSkip を1本入れた瞬間に
 # **緑の run が未測定に化ける**。この木は今 XCTSkip を0本しか持たないので、

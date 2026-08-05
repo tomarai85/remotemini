@@ -68,10 +68,31 @@ XC_RC="${2:-0}"
 
 compile_errors=$(grep -cE ':[0-9]+:[0-9]+: (error|fatal error): ' "$LOG" 2>/dev/null || true)
 
+# ── 三つ目の欠陥(2026-08-05 夜、Sprint 5 の run で実測)────────────────
+# 二つ目を直した後も、290件 の run が **289件** と出た。差の1件を log から探すと、
+# 印の綴りが `est Case '-[...]' passed` になっていた —— OS log の書き込みが
+# **印の途中で改行を挟んだ**ので、`T` の1文字だけが前の行の末尾に残っている。
+#   ...localizedDescripT
+#   est Case '-[RemoteMiniTests.ConversationViewModelTests testLoadEarlier...]' passed
+# ⑧(印が行の**後ろ**に繋がる)と同じ現象の、1バイト違う切れ方である。
+#
+# ★だから錨を `Test ` から外し、`Case '-[...]' <動詞> (` の方に置く。この木の印は
+#   580件すべて `-[Suite test名]` の形なので、`-[` を要求すれば錨は緩まない
+#   (`Test ` の5文字は情報を持たない —— 落ちても何も判らなくならない)。
+#   改行が `Case` や検査名の内側に落ちた場合は此処では拾えないが、その run は
+#   下の「始まった数 ≠ 終わった数」で 2(未測定)になる。**取りこぼしは黙って
+#   緑にならない**方に倒れる、という形は保つ。
+#
+# ★騒音そのものは元から断った(`ConversationViewModelTests` の `SilentPollFetching`)。
+#   此処を直すのは要約の基準を下げる為ではない —— 綴りが1文字欠けた時に
+#   **失敗の印が飲まれる**方が本当の危険だから。飲まれると失敗は0件と数えられ、
+#   run は「テスト以外の所で落ちている」に化けて、倒れた検査の名前が1つも出ない。
+#   変異検査ではそれは「殺した変異を生存と読む」道である。
+#
 # ★行数(`grep -c`)ではなく**出現数**(`grep -o | wc -l`)。行頭の錨を外した以上、
 #   1行に印が2つ乗る形が有り得る(OS log + 印 + 別の印)。行で数えると其処で1件失う。
 marker_count() {   # $1 = passed | failed | skipped
-    grep -oE "Test Case '[^']*' $1 \(" "$LOG" 2>/dev/null | wc -l | tr -d ' '
+    grep -oE "Case '-\[[^']*' $1 \(" "$LOG" 2>/dev/null | wc -l | tr -d ' '
 }
 tc_pass=$(marker_count passed)
 tc_fail=$(marker_count failed)
@@ -80,7 +101,7 @@ tc_fail=$(marker_count failed)
 # 偽の未測定を出す形にしない。
 tc_skip=$(marker_count skipped)
 tc_total=$((tc_pass + tc_fail + tc_skip))
-tc_started=$(grep -oE "Test Case '[^']*' started" "$LOG" 2>/dev/null | wc -l | tr -d ' ')
+tc_started=$(grep -oE "Case '-\[[^']*' started" "$LOG" 2>/dev/null | wc -l | tr -d ' ')
 
 if [ "$compile_errors" -gt 0 ]; then
     echo "==> ビルドが通っていない(コンパイル error ${compile_errors}件)= テストは1件も測っていない"
@@ -106,14 +127,14 @@ if [ "$tc_started" -gt "$tc_total" ]; then
     # 「測り切っていない」だけ出して倒れた検査の名前を伏せると、診断の手掛かりが減る。
     if [ "$tc_fail" -gt 0 ]; then
         echo "    (同じ run で ${tc_fail}件は失敗として報告されている)"
-        grep -oE "Test Case '[^']*' failed \([0-9.]+ seconds\)" "$LOG" | head -20
+        grep -oE "Case '-\[[^']*' failed \([0-9.]+ seconds\)" "$LOG" | head -20
     fi
     exit 2
 fi
 
 if [ "$tc_fail" -gt 0 ]; then
     echo "==> テスト ${tc_total}件 実行 / **失敗 ${tc_fail}件**"
-    grep -oE "Test Case '[^']*' failed \([0-9.]+ seconds\)" "$LOG" | head -20
+    grep -oE "Case '-\[[^']*' failed \([0-9.]+ seconds\)" "$LOG" | head -20
     exit 1
 fi
 

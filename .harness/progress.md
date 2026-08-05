@@ -1479,3 +1479,136 @@ Every cell ≥ 1 — the condition team-lead specified as this task's completion
 criterion. Not committed, per instruction; team-lead runs their own check
 against this state and lands together.
 
+
+---
+
+# Sprint 5 — 打ち込む(composer + send)
+
+`.harness/sprint-5-brief.md` に対する実装。ここに書く数字は全部この session で
+実際に走らせた出力で、記憶からの再構成は1つも無い。
+
+## 何を作ったか
+
+| 物 | 役 |
+|---|---|
+| `ios/Sources/Core/ResultDisplay.swift`(新) | 系統B の `display` を持つ型。`Tone`(未知の `kind` は `.warn` に倒す)、`SendBanner`(`fromServer` を持つ = 画面の文言が**誰の言葉か**を型で保つ)、`RecoveryCode`、`ResponseContractViolation` |
+| `ios/Sources/Core/SendClient.swift`(新) | POST `/api/sessions/{id}/messages`。分岐は 401 → `.unauthorized` / 404 かつ `code` が `SESSION_NOT_FOUND` → `.sessionNotFound` / それ以外は `display` を**そのまま**運ぶ / `display` が無ければ `.contractViolation` |
+| `ConversationViewModel` の composer 部 | `draft` / `composerEnabled` / `canSend` / `isSending` / `sendBanner`、`applySendOutcome(_:)` |
+| `ConversationView` の composer 部 | 入力欄・送信ボタン・banner・不許可理由。`color(for:)` を internal に開けた(同じ型の `shouldResumeOnForeground` と同じ前例) |
+
+## 設計判断(brief から意図的に外した所を含む)
+
+1. **`display.text` は端末で書き換えない。** HTTP status や他の body の欄から文言を
+   導かない。401 と 404+`SESSION_NOT_FOUND` だけが例外で、これは Codex の裁定どおり
+   「操作処理より手前の、プロトコル / 資源解決の結果だから」。この2つ以外で `display`
+   が無い応答は**応答契約違反**として扱い、端末が勝手に言葉を作らない。
+2. **404 は3箇所・2つの意味を持つ**(`NO_SUCH_ROUTE` ×2 と `SESSION_NOT_FOUND`)。
+   status だけで分岐すると、端末側の URL の作り間違いが「セッションが消えた」と
+   表示される。`code` を見る事は最適化ではなく、意味の取り違えを塞ぐ為である。
+3. **`keepText` が無い時は draft を残す(brief からの意図的な逸脱)。** brief は
+   `keepText == true` の時に残すと書いているが、欄が欠けた応答で消すと
+   「サーバが何も言っていないのに人が打った物を消す」事になる。消す方は取り返しが
+   付かず、残す方は付く。`testKeepTextAbsentKeepsTheDraftDeliberateDeviationFromTheBrief`
+   がこの選択を名前で固定している。
+4. **送信路の契約違反は banner、読み込み路の契約違反は phase。** 読み込みは
+   それ自体が画面なので画面ごと倒すのが正しいが、送信時は会話も poll も生きて
+   いるので画面を壊してはいけない。`applyContractViolation` と
+   `recordContractViolation` の分離がこれで、
+   `testTheSameViolationBecomesThePhaseOnLoadButNotOnSendNegativeControl` が両側を測る。
+5. **BUSY では composer を止めない。** Tom の裁定「返答待ちであれ作業中であれ
+   いつでも見て、干渉できればいいんじゃないかな？」がそのまま根拠。止めるのは
+   `CHOICE` と `UNKNOWN` の2つだけ。
+
+## 変異検査(Mode 0 の敵対的検査 = この Sprint の成果物)
+
+「後から誰かが実際に書きそうな一行の単純化」を植えて、**気付くべき検査群が
+本当に赤くなるか**を測った。台本は scratchpad にのみ在り、repo には入れていない
+(live の source を壊す道具を版に残さない)。コンパイルが通らない変異は
+`[VOID]` として弾く枝を先に入れてある —— 通らない変異は検査ではなく
+コンパイラを測っているだけなので、それを「殺した」と数えると測定が嘘になる。
+
+| # | 植えた一行 | 結果 | 落ちた検査 |
+|---|---|---|---|
+| M1 | 送信時の2つの 404 を1つに潰す | killed | 2件 |
+| M2 | 400 の文言を端末が書き直す(`display` を運ばない) | killed | 8件 |
+| M3 | `keepText` が無い時に draft を消す | killed | 1件 |
+| M4 | 送信時の契約違反を phase にする | killed | 3件 |
+| M5 | BUSY で composer を止める | killed | 1件 |
+| M6 | 送信ボタンを押した瞬間に draft を消す | killed | 1件 |
+| M7 | 消すかどうかを `keepText` でなく `kind` で決める | killed | 4件 |
+| M8 | **送る本文を空文字に握り潰す**(brief §3-a 対照③) | killed | 3件 |
+
+8/8 killed、survived 0、void 0。
+
+**M8 が brief §3-a の対照③そのもの**である。「緑を数えても記録欄の生死は
+分からない」—— `MockURLProtocol` が body を拾うのは `httpBodyStream` 経由で、
+`URLRequest.httpBody` を素直に読む造りなら **nil を永久に記録して緑のまま**に
+なる。だから記録欄を信じる前に、本文を変える変異を1つ植えて赤くなる所を
+実際に見た。落ちたのは狙いどおり body を読む3件だけ:
+`testRequestIsAPOSTToTheMessagesPathWithTheBearerKeyAndTheTextAsJSON` /
+`testTextIsSentUntrimmed` /
+`testTwoDifferentTextsProduceTwoDifferentRecordedBodiesNegativeControl`。
+最後の1件は記録欄の陰性対照なので、**対照自身が赤くなった**事が
+「記録欄は生きている」の証拠になる。
+
+## 測定器の欠陥を1つ直した(検査ではなく、検査を数える側)
+
+`tools/build.sh --sim` が **「始まった 290件 / 終わりを報告したのは 289件」= 未測定**
+と出した。差の1件を log から探すと、`ConversationViewModelTests` の
+`testLoadEarlierWithGrowingLiveEndButUnchangedOldestStillReadsAsStalledRetry` の
+結果の印が `est Case '-[...]' passed` になっていた —— アプリ側の stdout が
+**印の途中で改行を挟み**、`T` の1文字だけが前の行の末尾に取り込まれていた。
+検査は通っていた。壊れたのは測定である。
+
+原因は2つ在り、両方直した。
+
+1. **騒音の出所**(根治): `ConversationViewModelTests` の `makeViewModel` の
+   既定 `pollClient:` が**本物の** `PollClient()` だったので、poll に触る検査は
+   fixture の `.invalid` host へ実際に request を投げ、失敗するたびに
+   `NSURLErrorDomain` の行を吐いていた。Sprint 3 の頃から在り、当時の注釈は
+   これを「harmless」と書いていた —— **assertion には無害でも出力には無害では
+   なかった**。request を出さず結果も返さない `SilentPollFetching` を注入して
+   断った(注釈も訂正済み)。
+2. **測定器の錨**: 要約は印を `Test Case '...' passed (` で数えていた。印自身が
+   割れると `Test` の綴りが崩れて数えられない。錨を `Case '-[...]' <動詞> (` に
+   移した(この木の印は全て `-[Suite test名]` の形)。`Test ` の5文字は情報を
+   持たないので、外しても錨は緩まない。
+
+**要約の基準は下げていない。** 下げてはいけない理由の方が本体で、同じ綴りで
+`failed` も数えているから、**落ちた検査の印が飲まれると失敗が0件と数えられる**。
+その run は `xcodebuild` の rc で赤にはなるが、文面は「テスト以外の所で落ちて
+いる」に化けて、倒れた検査の名前を1つも出さない。変異検査ではそれは
+「殺した変異を生存と読む」道である。
+
+対照を2本足した(`tools/sim-log-summary-control.sh`):
+
+- **⑩** 印が改行で割られた log でも 3件/失敗1件と数え、倒れた検査の名前を出す。
+- **⑩'** 失敗の文面の中に同じ綴りが在っても印として数えない(錨を緩め過ぎて
+  いない事の陰性対照)。件数が水増しされると「始まった数 ≠ 終わった数」が
+  常時ずれて、全部の run が未測定に化ける。
+
+**⑩ が本物の対照である事を実測した**: 直す前の要約の写しを `RC_SIMSUMMARY_TOOL`
+に差して走らせると、⑩ だけが赤(11/12)。直した版では 12/12。既存の ⑧
+(印が行の**後ろ**に繋がる形)は両方で緑 —— つまり ⑧ の作り物の log は
+「印は必ず丸ごと在る」形しか写しておらず、**印自身が割れる**形を一度も
+測っていなかった。同じ現象でも割れる位置が違えば別の形である。
+
+## 走らせた物と結果
+
+| 命令 | 結果 |
+|---|---|
+| `bash ios/tools/build.sh --sim`(headless、GUI は開いていない) | **テスト 290件 実行 / 失敗 0件** |
+| `bash ios/tools/sim-log-summary-control.sh` | **PASS 12 / FAIL 0** |
+| 同上 + 直す前の要約を差した陰性対照 | PASS 11 / FAIL 1(⑩ のみ赤 = 対照が効いている) |
+| `node --test test/request-shape.test.mjs`(rc-backend) | 5/5 |
+| 変異 8本 | 8 killed / 0 survived / 0 void |
+
+## 未測定・持ち越し
+
+- **DoD 9行目(edith への実送信)は未実施。** `delivered:"verified"` を観測し、
+  対象の jsonl が実際に伸びた事を `ssh edith` で確かめる所まで。
+- **`.notFound` / `sessionNotFound` は poll loop を止めない**(Sprint 4 の挙動の
+  まま、意図的に変えていない)。brief §1-b が範囲外の追加を禁じている為。
+  次の Sprint で扱うなら、止める側が正しいかは別途裁く必要が在る。
+- **一覧画面の契約違反は log のみ**で、画面には出ない。会話画面と非対称。
+- 会話画面の `RC_UI_FIXTURE` を使った UI 検査は未着手(UITests は今も一覧画面だけ)。

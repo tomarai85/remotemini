@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The List screen's state machine (Sprint 2 brief §4/§4-a/§5-2).
 ///
@@ -45,6 +46,10 @@ final class ListViewModel: ObservableObject {
     private let apiKey: String
     private let onUnauthorized: () -> Void
     private let now: () -> Double
+
+    /// Same subsystem/category as `ConversationViewModel`'s, on purpose: "how many
+    /// response-contract violations did this app see today" must be one query, not two.
+    private static let log = Logger(subsystem: "com.tomtim.mobilework", category: "contract")
 
     private var consecutiveFailures = 0
     private var lastResponse: SessionsResponse?
@@ -104,6 +109,24 @@ final class ListViewModel: ObservableObject {
             // Brief §4-a/§8: not counted. No state changes at all -- a cancelled
             // fetch carries no information about the backend.
             break
+
+        case .failure(.contractViolation(let violation)):
+            // `SessionsClient` really does produce this one (every 404 on `/api/sessions`
+            // is a path the server does not serve), so unlike `.notFound` below this is
+            // not a compile-only arm.
+            //
+            // It still counts as an ordinary failure HERE, because the List screen has
+            // no per-error display vocabulary -- it shows one failure surface, tracked
+            // by a counter, and inventing a second one is Sprint 5's §1-b "何も足さない".
+            // What it does NOT do is stay silent: the log line is the countable half of
+            // brief §0-c ③, and it is the only reason a wrong-path bug on this route is
+            // distinguishable from the backend being down. Recorded in progress.md as
+            // the one place a contract violation is currently visible only in the log.
+            Self.log.error(
+                "response contract violation: status=\(violation.status, privacy: .public) code=\(violation.code ?? "-", privacy: .public)"
+            )
+            consecutiveFailures += 1
+            phase = failurePhase()
 
         case .failure(.unreachable), .failure(.malformedBody), .failure(.notFound):
             // `.notFound` is Sprint 3's addition to the shared `SessionsFetchError`

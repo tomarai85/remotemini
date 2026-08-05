@@ -86,6 +86,17 @@ final class HealthzClientTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.requestedMethods.last, "GET")
     }
 
+    /// A GET carries no body. See `HistoryClientTests`' copy for why this dimension is
+    /// asserted rather than assumed.
+    func testGETCarriesNoRequestBody() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(#"{"ok":true,"pid":1,"uptime":1,"version":"x"}"#.utf8))]
+        let client = HealthzClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.check(baseURL: baseURL)
+
+        XCTAssertEqual((MockURLProtocol.requestedBodies.last ?? nil)?.count ?? 0, 0)
+    }
+
     func testRequestCarriesNoAuthorizationHeaderByDesign() async {
         // `HealthzClient.check` never calls `setValue(_:forHTTPHeaderField:)` at
         // all -- Key-entry uses this exact endpoint to tell "wrong URL" apart from

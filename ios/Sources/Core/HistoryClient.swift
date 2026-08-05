@@ -55,10 +55,28 @@ struct HistoryClient: HistoryFetching {
         case 401:
             return .failure(.unauthorized)
         case 404:
-            // Brief §3-c (same-day correction): distinct from the `default` bucket
-            // below -- Conversation renders this as "this conversation is gone,"
-            // never as "network trouble, try again" (`server.mjs`'s `/history`
-            // handler, `json(res, 404, { error: "unknown session" })`).
+            // Sprint 3 brief §3-c made 404 distinct from the `default` bucket below:
+            // Conversation renders it as "this conversation is gone," never as
+            // "network trouble, try again."
+            //
+            // Sprint 5 brief §0-c ② then NARROWED it, and that narrowing is the
+            // point of DoD row 6. Counting `json(res, 404, …)` in `server.mjs` turned
+            // up three sites carrying two meanings: the session really is unknown
+            // (`SESSION_NOT_FOUND`), or the requested path does not exist at all
+            // (`NO_SUCH_ROUTE`, twice). Branching on the status alone -- which is
+            // what this line did until now -- rendered the second as "この会話はもう
+            // 在りません," i.e. it told the user their conversation had been deleted
+            // when the truth was that this app built a URL wrong.
+            //
+            // That combination is worse than a merely imprecise message. The same
+            // day's mutation audit measured the request path as the least-guarded
+            // thing in this tree (changing `api/sessions` to `api/session` left 214
+            // tests green), so this branch was covering the most likely bug in the
+            // app with the most convincing possible false explanation.
+            let code = try? JSONDecoder().decode(RecoveryCode.self, from: data).code
+            guard code == RecoveryCode.sessionNotFound else {
+                return .failure(.contractViolation(ResponseContractViolation(status: 404, code: code)))
+            }
             return .failure(.notFound)
         default:
             // Covers the brief §0-a-5 500 (`TRANSCRIPT_UNREADABLE`) case too: the

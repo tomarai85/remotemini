@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The Conversation screen's state machine (Sprint 3 brief §3). Same split as
 /// `ListViewModel`: `apply(_:)` is separated from the async fetch call so tests can
@@ -22,7 +23,19 @@ final class ConversationViewModel: ObservableObject {
         /// again might work"; `.notFound` means the conversation is gone and retrying
         /// the same request will 404 again forever -- so the View must never offer a
         /// retry button for this case, only a way back to the list.
+        ///
+        /// Sprint 5 narrowed what reaches here: only a 404 whose body says
+        /// `SESSION_NOT_FOUND` (see `HistoryClient`). A 404 that means "no such path"
+        /// now lands in `.contractViolation` below instead, which is the whole of
+        /// DoD row 6 -- this screen must NOT offer "一覧に戻る" for a bug in its own
+        /// URL construction.
         case notFound
+        /// Sprint 5 brief §0-c ③: the server broke the response contract. Its own
+        /// phase rather than a variant of `.malformedBody`, because the two prompt
+        /// different actions from whoever is debugging: `.malformedBody` means the
+        /// payload of an otherwise-correct response did not parse, this means the
+        /// response was not one the phone is permitted to interpret at all.
+        case contractViolation(ResponseContractViolation)
     }
 
     /// Brief §3-b-2's table, one case per row. `.loading` covers the in-flight tap
@@ -77,6 +90,94 @@ final class ConversationViewModel: ObservableObject {
     /// as `Freshness`.
     @Published private(set) var lastReadableAt: Date?
 
+    // MARK: - Composer (Sprint 5)
+
+    /// What the user has typed. The one `@Published` property on this type with a
+    /// public setter -- SwiftUI's `TextField` needs a two-way binding, and routing
+    /// every keystroke through a method would buy nothing. Everything that *clears*
+    /// it goes through `applySendOutcome(_:)`, which is where the `keepText` rule
+    /// lives.
+    @Published var draft: String = ""
+    /// True from the moment the send button is pressed until the response has been
+    /// applied. The composer text is deliberately NOT cleared on entry to this state
+    /// (brief §2 steps 2 and 5, and the star between them): clearing before the
+    /// branch means a refusal makes the user retype what they wrote.
+    @Published private(set) var isSending = false
+    /// The band under the composer. `nil` until a send has completed at least once.
+    @Published private(set) var sendBanner: SendBanner?
+    /// Retained for tests and for anyone reading the screen's state in a debugger --
+    /// the durable record is the log line written in `applySendOutcome(_:)`. Brief
+    /// §0-c ③ asks for both: a fixed display AND a log, because a violation that only
+    /// shows up as one user-visible sentence is one nobody can count.
+    @Published private(set) var lastContractViolation: ResponseContractViolation?
+
+    /// Brief §0-c ⑤, exactly its table. Only `CHOICE` and `UNKNOWN` disable the
+    /// composer.
+    ///
+    /// Two spots where the obvious reading is wrong, both load-bearing:
+    ///
+    /// 1. **An unreadable poll leaves this `true`.** Nothing here consults
+    ///    `unreadableStage`. The temptation is to fail closed -- "we can't see the
+    ///    desk, so don't let them send" -- but fail-closed already exists on the side
+    ///    that can actually observe the screen: `inject.mjs` returns `sent:false` for
+    ///    `CHOICE`/`UNKNOWN` and aborts on a modal detected immediately before
+    ///    injection. Blocking here would add nothing except a phone that goes mute
+    ///    exactly when the user most wants to reach the desk.
+    /// 2. **`BUSY` stays enabled**, which contradicts a literal reading of the Sprint
+    ///    5 brief's own §2 step 1 ("not `SENDABLE` -> the button can't be pressed").
+    ///    §2 step 1 is a loose restatement; §0-c ⑤ is the table with sources, and
+    ///    `server.mjs`'s injector comment settles it outright: "生成中でも composer は
+    ///    あるので送れる(Claude Code 自身が次ターンとして扱う)". Disabling on `BUSY`
+    ///    would make the app unusable during exactly the state it exists to watch.
+    ///
+    /// `.unrecognized` (a future 5th classification) also stays enabled, same reasoning
+    /// as `ResultDisplay.kind` not being a strict enum: an unknown value must not
+    /// silently take a capability away.
+    var composerEnabled: Bool {
+        guard let screen else {
+            // No screen observed yet (the first poll has not landed, or the route
+            // holds `screen` over as null). Same rule as an unreadable poll.
+            return true
+        }
+        switch screen.classification {
+        case .choice, .unknown:
+            return false
+        case .sendable, .busy, .unrecognized:
+            return true
+        }
+    }
+
+    /// The fixed line shown in place of the composer while it is disabled. Both
+    /// strings are the spec's own (§5-3 and its §2-3 reference), not newly invented
+    /// here -- and neither describes a *response*, so the "never word things
+    /// yourself" rule (which governs rendering `display`) does not apply: this is the
+    /// phone reporting its own UI state, which no server response covers.
+    var composerDisabledReason: String? {
+        guard let screen, !composerEnabled else { return nil }
+        switch screen.classification {
+        case .choice:
+            return "v1 では電話から選べません。机で確認するか、割り込みで中断してください"
+        case .unknown:
+            return "画面の状態を読めていません"
+        case .sendable, .busy, .unrecognized:
+            return nil
+        }
+    }
+
+    /// Whether the send button does anything. Empty (or whitespace-only) input is
+    /// blocked here rather than sent for the server to reject: the server's own 400
+    /// path exists and is tested, but making the user round-trip to be told "text
+    /// required" is not a use of it.
+    ///
+    /// The trim is only for THIS decision. `send()` transmits `draft` unmodified --
+    /// the server trims, and a phone that also trimmed would be a second place
+    /// deciding what the user's message is.
+    var canSend: Bool {
+        composerEnabled
+            && !isSending
+            && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// The render array every screen actually shows. Recomputed on every access
     /// rather than cached -- brief §2-d, this is the one call site `mergeHistory`
     /// needs this sprint.
@@ -89,6 +190,7 @@ final class ConversationViewModel: ObservableObject {
 
     private let client: HistoryFetching
     private let pollClient: PollFetching
+    private let sendClient: MessageSending
     private let baseURL: URL
     private let apiKey: String
     private let sessionID: String
@@ -106,9 +208,18 @@ final class ConversationViewModel: ObservableObject {
     private var pollLoop: PollLoop?
     private var pollTask: Task<Void, Never>?
 
+    /// One `os.Logger` for the whole screen, used only for response-contract
+    /// violations. Deliberately not a general-purpose logger: everything else this
+    /// type does has a visible on-screen consequence, and a log line nobody reads is
+    /// worse than no log line -- it makes the file look instrumented while measuring
+    /// nothing. Nothing user-typed and nothing key-shaped is ever passed to it; only
+    /// the status and the server's own `code` vocabulary word.
+    private static let log = Logger(subsystem: "com.tomtim.mobilework", category: "contract")
+
     init(
         client: HistoryFetching,
         pollClient: PollFetching = PollClient(),
+        sendClient: MessageSending = SendClient(),
         baseURL: URL,
         apiKey: String,
         sessionID: String,
@@ -118,6 +229,7 @@ final class ConversationViewModel: ObservableObject {
     ) {
         self.client = client
         self.pollClient = pollClient
+        self.sendClient = sendClient
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.sessionID = sessionID
@@ -158,6 +270,127 @@ final class ConversationViewModel: ObservableObject {
             phase = .malformedBody
         case .failure(.notFound):
             phase = .notFound
+        case .failure(.contractViolation(let violation)):
+            applyContractViolation(violation)
+        }
+    }
+
+    /// The one place a contract violation becomes screen state, so that "was it
+    /// logged?" has a single answer. Brief §0-c ③ asks for both halves -- the fixed
+    /// sentence AND a log line -- because a violation that exists only as one Japanese
+    /// sentence on a phone is one nobody can ever count.
+    private func applyContractViolation(_ violation: ResponseContractViolation) {
+        recordContractViolation(violation)
+        phase = .contractViolation(violation)
+    }
+
+    /// Records without deciding what the screen becomes -- the load paths make it the
+    /// whole screen, the send path makes it one banner (see `applySendOutcome(_:)` for
+    /// why those differ).
+    ///
+    /// The two logged values are the only two this type holds: an HTTP status and the
+    /// server's own `code` vocabulary word. Neither can contain the user's typed text
+    /// or the API key, which is why `ResponseContractViolation` never retains the
+    /// response body in the first place.
+    private func recordContractViolation(_ violation: ResponseContractViolation) {
+        lastContractViolation = violation
+        Self.log.error(
+            "response contract violation: status=\(violation.status, privacy: .public) code=\(violation.code ?? "-", privacy: .public)"
+        )
+    }
+
+    // MARK: - Send (Sprint 5, brief §2)
+
+    /// One send attempt. The ordering here is the brief's §2, and the one thing it
+    /// stars is the one thing this method is careful about: **the composer text is not
+    /// touched until the response has been classified.** Clearing on tap reads as
+    /// snappier UI and is wrong -- 409 (refused) and every transport failure would
+    /// then cost the user everything they wrote.
+    func send() async {
+        guard canSend else { return }
+        let text = draft
+
+        isSending = true
+        // The previous attempt's banner goes away as this one starts; leaving "送った"
+        // visible under an in-flight send would let the user read a stale success as
+        // this send's result.
+        sendBanner = nil
+
+        let outcome = await sendClient.send(
+            baseURL: baseURL,
+            apiKey: apiKey,
+            sessionID: sessionID,
+            text: text
+        )
+        applySendOutcome(outcome)
+    }
+
+    /// Split out for the same reason as `applyInitial(_:)`: tests drive the classified
+    /// outcomes directly rather than racing a real `Task`.
+    func applySendOutcome(_ outcome: SendOutcome) {
+        isSending = false
+
+        switch outcome {
+        case .cancelled:
+            // Whoever cancelled owns the outcome: no banner, and above all no clearing
+            // of the draft. Same rule as `SessionsFetchError.cancelled` everywhere else
+            // in this app.
+            return
+
+        case .unauthorized:
+            // A ROUTE decision, decided from the status alone (brief §0-c ①). The draft
+            // is deliberately left in place: the user is about to be sent to Key-entry
+            // and back, and losing what they typed to a credentials round trip would be
+            // the worst possible moment for it.
+            onUnauthorized()
+
+        case .sessionNotFound:
+            // The one 404 that means what it says. The whole screen is now invalid, not
+            // just this send -- so it becomes the phase, exactly as a 404 on `/history`
+            // does.
+            phase = .notFound
+
+        case .contractViolation(let violation):
+            // Deliberately NOT `applyContractViolation` -- this one does not become the
+            // phase. On the load paths the unreadable response IS the screen's content,
+            // so there is nothing left to show. Here the conversation is loaded, the
+            // poll loop is live, and the desk may well have received the message: tearing
+            // the screen down would destroy the one view the user needs in order to find
+            // out. So it is recorded, logged, and shown as a banner over an intact screen.
+            recordContractViolation(violation)
+            sendBanner = SendBanner(locallyWorded: violation.displayText, tone: .error)
+
+        case .unreachable:
+            // One of the only three places the phone words a banner itself, and it is
+            // allowed to precisely because no `display` ever arrived. The wording refuses
+            // to claim either outcome: a request whose response was lost may well have
+            // been delivered, and "送れませんでした" would be a guess stated as a fact.
+            sendBanner = SendBanner(
+                locallyWorded: "送れたかどうか確認できませんでした。本文は残してあります。机の画面を確認してください。",
+                tone: .warn
+            )
+
+        case .display(let display):
+            // The verbatim path. `display.text` is shown as the server wrote it -- no
+            // suffix, no rewording, nothing appended. In particular the "本文は残して
+            // あります" sentence is NOT added here: `view.mjs` already writes it into the
+            // one branch that needs it (202 + `delivered:"unverified"`), and adding a
+            // second copy on the phone would mean two files deciding one sentence.
+            sendBanner = SendBanner(display: display)
+
+            // Brief §2 step 5, read as a FIELD and never inferred from `kind`.
+            //
+            // Deliberate deviation, recorded rather than applied silently: the brief
+            // says "偽/不在なら消す" -- absent should clear. This clears only on an
+            // explicit `false`. The asymmetry is that the two mistakes are not the same
+            // size. Keeping text that should have been cleared leaves a duplicate the
+            // user can see and delete; clearing text that should have been kept destroys
+            // something unrecoverable. It is the same reasoning §0-c ⑥ uses for an
+            // unknown `kind` (degrade appearance, never capability) and the same
+            // `view.mjs` states as "読めない事は値ではない".
+            if display.keepText == false {
+                draft = ""
+            }
         }
     }
 
@@ -224,6 +457,19 @@ final class ConversationViewModel: ObservableObject {
             // `phase != .loaded` once this fires, so `loadEarlierFooter` (which only
             // renders inside the `.loaded` branch) disappears along with the history.
             phase = .notFound
+        case .failure(.contractViolation(let violation)):
+            // Same teardown as `.notFound`, and for the same structural reason rather
+            // than the same cause. The tempting alternative -- keep the (perfectly
+            // good) history on screen and just show `.stalledRetry` -- fails on one
+            // property: a contract violation does not heal by retrying. It would leave
+            // the user tapping "もう一度試す" against a response the phone is not
+            // permitted to interpret, forever, with the retry label quietly asserting
+            // that another attempt might work.
+            //
+            // That is exactly the shape brief §0-c ② measured and DoD row 6 exists to
+            // prevent: the app's own most likely bug (a wrong path) wearing the most
+            // ordinary-looking explanation available.
+            applyContractViolation(violation)
         }
     }
 

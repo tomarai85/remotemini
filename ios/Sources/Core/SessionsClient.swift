@@ -35,7 +35,25 @@ enum SessionsFetchError: Error, Equatable {
     /// still never returns it -- `/api/sessions` has no session id to 404 against --
     /// only `HistoryClient` produces this case. It lives here rather than on a
     /// Conversation-only type so both clients keep exactly one error vocabulary.
+    ///
+    /// Narrowed in Sprint 5 (brief §0-c ②): this now means "the server said
+    /// `SESSION_NOT_FOUND`," not "the status was 404." The three 404 sites in
+    /// `server.mjs` carry two different meanings, and the other one -- the phone
+    /// built a URL that does not exist -- must never render as "this conversation is
+    /// gone," which sends the user hunting for a session that was never deleted.
     case notFound
+    /// A response the phone is not allowed to interpret on its own: no `display`, and
+    /// not one of the two statuses whose meaning is fixed by the contract (401, and
+    /// 404 + `SESSION_NOT_FOUND`). Sprint 5 brief §0-c ③.
+    ///
+    /// Kept distinct from `.malformedBody` on purpose. `.malformedBody` says "a 200
+    /// arrived and its payload did not parse" -- a data problem in a response that
+    /// otherwise went right. This says "the response did not obey the response
+    /// contract," which is a problem with the *agreement* between the two sides, and
+    /// which the phone must surface loudly rather than fold into a familiar-looking
+    /// failure. Folding them would put the single most likely client bug (a wrong
+    /// path) into the same bucket as an ordinary bad payload.
+    case contractViolation(ResponseContractViolation)
 }
 
 protocol SessionsListing {
@@ -79,6 +97,17 @@ struct SessionsClient: SessionsListing {
             break
         case 401:
             return .failure(.unauthorized)
+        case 404:
+            // Sprint 5 brief §0-c ②, this client's half. `/api/sessions` names no
+            // session, so there is nothing here that could legitimately be
+            // "not found" -- every 404 on this route means the phone asked for a path
+            // the server does not serve. The `code` is read anyway, purely so the
+            // violation carries a diagnostic; the branch does NOT depend on its
+            // value, because `SESSION_NOT_FOUND` arriving on a listing request would
+            // itself be a contract problem rather than a reason to show the
+            // "conversation is gone" screen (which this screen does not even have).
+            let code = try? JSONDecoder().decode(RecoveryCode.self, from: data).code
+            return .failure(.contractViolation(ResponseContractViolation(status: 404, code: code)))
         default:
             return .failure(.unreachable)
         }
