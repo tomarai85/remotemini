@@ -386,8 +386,14 @@ bash rc-backend/tools/run-controls.sh  # 対照一式(前景で。背景走行�
    宣言する path は **repo の根からの相対**(`ios/Sources/…`)。`rc-backend` 側の対照は
    `rc-backend` からの相対なので、**基点が木ごとに違う**事に注意。
    宣言が無いと commit が止まる(「未登録の対照は対照ではない」)。
-   —— この門が `ios/` を見る様になったのは 2026-08-05 の `f7c341e` から。それ以前は
-   ios の対照は commit 時に一度も回っていなかった。
+   —— **★このブリーフの初版はここを間違えて書いていた**(2026-08-05 訂正)。初版は
+   「門が `ios/` を見る様になったのは `f7c341e` から」と書いたが、それは
+   `staged-controls-gate.sh`(門の**本体**)の話で、**門を呼ぶ `.git/hooks/pre-commit` の
+   絞り込みは `^rc-backend/(src|test|tools)/` のままだった** —— `ios/` だけの commit は
+   呼び口で `exit 0` し、門に一度も届かない。Sprint 3 の成果物はほぼ全部 `ios/` なので、
+   **この Sprint の commit は門を1つも通らずに入る所だった**。
+   同日中に呼び口の範囲を `ios/(Sources|Tests|tools)/` + `ios/project.yml` へ広げて実測で
+   塞いだ(WORKLOG「commit の門が `ios/` に届いていなかった」)。**今は届く。**
 5. **`.harness/progress.md` は Generator の持ち物。** 仕様書 (`spec-*.md`) とこのブリーフは書き換えない。
 6. GUI を開かない(Simulator の窓・Xcode・ブラウザ)。実機・シミュレータとも headless。
 
