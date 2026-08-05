@@ -29,8 +29,14 @@
  *   node tools/wire-shape.mjs - < payload.json
  * 200 以外を**狙って**観測する(電話が分岐する応答の形はこれでしか取れない):
  *   RC_EXPECT_STATUS=404 RC_KEY=... node tools/wire-shape.mjs /api/sessions/nope/history
- *   RC_METHOD=POST RC_BODY='{}' RC_EXPECT_STATUS=400 ... '/api/sessions/{id}/input'
+ *   RC_METHOD=POST RC_BODY='{}' RC_EXPECT_STATUS=400 ... '/api/sessions/{id}/messages'
  * 終了コード: 0 = 取れた / 1 = status が期待と違う or 本文が JSON でない / 2 = 準備段で中断
+ *
+ * ★2026-08-05 訂正: この行は元々 `/input` と書いていた。それは対照(`test/wire-shape-controls.sh`)
+ *   の**偽サーバが持つ道**で、本番の書き込み口は `/api/sessions/{id}/messages` である。
+ *   実際に此処の例をそのまま打って 404 を踏んだ。**この道具が存在する理由そのもの**
+ *   (散文の名前と実装の名前がずれる)を、道具自身の使い方が踏んでいた事になる。
+ *   対照側の `/input` は偽サーバの道なので正しい —— 直すのはこの散文の側だけ。
  *
  * ── `RC_EXPECT_STATUS` が既定 200 のままではない理由 ────────────────────
  * 「200 以外は捨てる」だと、電話が**画面を移す判断**に使う 401 / 404 の形が一度も
