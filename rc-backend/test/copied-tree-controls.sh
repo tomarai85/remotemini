@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: test/mutation-controls.py package.json
+# controls-for: test/mutation-controls.py package.json test/doc-linerefs.test.mjs
 # 単体スイートが**木の写しでも回る**か。
 #
 # ── なぜ要るか(2026-08-04、実際に踏んだ)────────────────────────────────────
@@ -20,6 +20,21 @@
 # 「写しで緑」を確かめるだけでは、写しの作り方を間違えて**常に緑**でも気付けない。
 # だから同じ写しに、木の外を読む1行だけの囮を植えて**赤になる事**まで見る。
 # 囮は砂場の中にしか置かない(本物の `test/` には1度も書かない)。
+#
+# ── ③ を足した理由(2026-08-05 夜、edith への配備が実際に落ちた)────────────
+# ①②が見ているのは「親が**無い**写し」だけで、これは写しの取りうる形の片方でしかない。
+# 配備の仮置きは `/Users/edith/rc-staging` で、その親 `/Users/edith` には
+# **別件の repo** が在る(艦隊の衛生 pass が 2026-08-03 に作った物。索引 12 件・`.md` 0 本)。
+# `test/doc-linerefs.test.mjs` の飛ばし判定は当時「上が git の作業木か」だったので、
+# そこでは真になり、**無関係な索引を測って**「追跡 .md が 0 本」で 3 本が赤くなった。
+# 本番の木に触る前の段で止まったので実害は出ていないが、赤の中身は検査の誤りである。
+# → 砂場の親を **git の木にした写し**でもう一度回す。「親が無い」と「親が別人」は別の形。
+#
+# ── 変異での効き分け(③ を足した時に実測)────────────────────────────────
+# | 変異                                            | 落ちる対照      |
+# |-------------------------------------------------|-----------------|
+# | REPO_OK を `rev-parse --is-inside-work-tree` に戻す | ③(これだけ)   |
+# | 飛ばし判定を常に真にする(写しでも測る)          | ① ③            |
 #
 # 終了コード: 0=緑 / 1=赤 / 2=測れていない
 set -uo pipefail
@@ -107,6 +122,48 @@ fi
 
 /bin/rm -f "$PROBE"
 [ -e "$PROBE" ] && ng "囮を片付けた" "残っている: $PROBE" || ok "囮を片付けた(不在を確認)"
+
+# ── ③ 親が**別件の repo** でも緑(edith の仮置きと同じ形)────────────────────
+# ★①②の砂場は親が無い。ここは親を git の木にする = 「上に木が在るか」だけを見る判定が
+#   真になる配置。edith で実際に赤くなったのはこの形である。
+FGN="$SB/foreign"
+/bin/mkdir -p "$FGN" || exit 2
+/usr/bin/rsync -a --exclude node_modules --exclude .git "$ROOT/" "$FGN/rc/" >/dev/null 2>&1 \
+    || { echo "別件 repo 側の写しを作れなかった"; echo "COPIED-TREE-CONTROLS: 測定不成立(緑ではない)"; exit 2; }
+# 親を repo にする。**写しは追跡しない**(edith の実物と同じ: 索引に .md は1本も無い)。
+printf 'fleet hygiene placeholder\n' > "$FGN/unrelated.txt"
+git -C "$FGN" init -q >/dev/null 2>&1
+git -C "$FGN" -c user.email=ctl@example.invalid -c user.name=ctl add -- unrelated.txt >/dev/null 2>&1
+git -C "$FGN" -c user.email=ctl@example.invalid -c user.name=ctl commit -q -m ctl >/dev/null 2>&1
+
+# 錨: 砂場が本当に「別件の repo が親」になっているか。なっていなければ ③ は ① の焼き直し。
+fgn_tree="$(git -C "$FGN" rev-parse --is-inside-work-tree 2>/dev/null)"
+fgn_md="$(git -C "$FGN" ls-files '*.md' 2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d ' ')"
+fgn_n="$(git -C "$FGN" ls-files 2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d ' ')"
+if [ "$fgn_tree" != "true" ] || [ "${fgn_md:-x}" != "0" ] || [ "${fgn_n:-0}" -lt 1 ]; then
+    echo "砂場の親が『別件の repo』になっていない(tree=${fgn_tree:-無} md=${fgn_md:-無} 索引=${fgn_n:-無})"
+    echo "COPIED-TREE-CONTROLS: 測定不成立(緑ではない)"
+    exit 2
+fi
+
+OUT3="$SB/run3.txt"
+rc3=0
+( cd "$FGN/rc" && npm test --silent ) > "$OUT3" 2>&1 || rc3=$?
+nfail3="$(/usr/bin/sed -n 's/^# fail \([0-9][0-9]*\)$/\1/p' "$OUT3" | /usr/bin/tail -1)"
+if [ -z "$nfail3" ]; then
+    echo "要約行(# fail)が出ていない = 測れていない"
+    /usr/bin/tail -5 "$OUT3"
+    echo "COPIED-TREE-CONTROLS: 測定不成立(緑ではない)"
+    exit 2
+fi
+if [ "$rc3" -eq 0 ] && [ "$nfail3" = "0" ]; then
+    nskip3="$(/usr/bin/sed -n 's/^# skipped \([0-9][0-9]*\)$/\1/p' "$OUT3" | /usr/bin/tail -1)"
+    ok "親が別件の repo でも単体スイートが緑(索引 ${fgn_n} 件・.md 0 本 / skipped=${nskip3:-0})"
+else
+    ng "親が別件の repo でも単体スイートが緑" \
+       "親の索引を『自分の repo』と読んで測っている検査が居る。edith の仮置きで実際に落ちた形:
+        $(/usr/bin/grep '^not ok' "$OUT3" | /usr/bin/head -5)"
+fi
 
 echo ""
 echo "COPIED-TREE-CONTROLS: pass=$pass fail=$fail"

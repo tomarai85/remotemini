@@ -32,7 +32,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,19 +40,33 @@ const REPO = dirname(ROOT);
 const BASELINE = join(ROOT, "test", "fixtures", "doc-linerefs-baseline.json");
 
 /**
- * この木の**上**に repo が在るか。
+ * この木は、**基準値が語っている repo** の中に在るか。
  *
  * ★2026-08-05、`copied-tree-controls.sh` に捕まって足した。変異の台本は `rc-backend`
  *   **だけ**を temp へ写して単体を回すので、写しの中には親も `.git` も無い。この検査の
  *   対象(`.md`)は全部親側に在るから、写しでは**原理的に測れない**。
  *   そこで「緑」でも「赤」でもなく **skip = 測っていない** と名乗る。単体スイートは変異の
  *   判定器なので、測れない物を赤にすると 197 件の変異が 1 件も回らなくなる。
+ *
+ * ★★同日夜、配備が edith で赤くなって**問いの立て方を作り直した**。初版は
+ *   `git rev-parse --is-inside-work-tree` で「上が git の作業木か」だけを見ていた。
+ *   edith の仮置きは `/Users/edith/rc-staging` で、その親 `/Users/edith` は
+ *   **別件の repo**(艦隊の衛生 pass が 2026-08-03 に作った物。索引 12 件・`.md` 0 本)。
+ *   だから問いは yes になり、無関係な索引を測って「追跡 .md が 0 本」で 3 本が赤くなった。
+ *   本番の木に触る前の段で止まったので実害は無いが、赤の中身は**この検査の誤り**である。
+ *   問うべきは「上に木が在るか」ではなく「**上に在るのがこの木の repo か**」。
+ *   判別は「その索引が**この file を今の path で**追跡しているか」——
+ *   写し(変異の temp / 配備の仮置き / rsync で版管理の外へ出た木)は必ず偽になり、
+ *   親がたまたま別の repo でも真にならない。file 名を直書きしないので改名でも壊れない。
  * ★ただし「黙って飛ばし続ける」形は、この repo が何度も踏んだ穴そのもの。だから
- *   下に、親に `.git` が在るのに飛ばしていたら**赤にする**見張りを置いてある。
+ *   下に、本物の repo に居るのに飛ばしていたら**赤にする**見張りを置いてある。
  */
+const SELF_IN_REPO = relative(REPO, fileURLToPath(import.meta.url));
 const REPO_OK = (() => {
   try {
-    execFileSync("git", ["-C", REPO, "rev-parse", "--is-inside-work-tree"], { stdio: "pipe" });
+    execFileSync("git", ["-C", REPO, "ls-files", "--error-unmatch", "--", SELF_IN_REPO], {
+      stdio: "pipe",
+    });
     return true;
   } catch {
     return false;
@@ -60,7 +74,7 @@ const REPO_OK = (() => {
 })();
 const SKIP = REPO_OK
   ? false
-  : "この木の上に repo が無い(変異の台本は rc-backend だけを写す)= 測っていない";
+  : "この木は版管理の外に出た写し(変異の temp / 配備の仮置き)= 測っていない";
 
 // ★綴りは組み立てる(この file が自分の規則に当たらない為)。
 const EXT = "(?:mjs|js|sh|py|yml|json|swift)";
@@ -191,13 +205,22 @@ test("陰性対照: 基準値の判定が両向きに動く(片側だけ見て�
 // ── 飛ばして良い時の見張り ────────────────────────────────────────────
 // ★これは skip を付けない(付けたら見張りごと消える)。
 //   「測っていない」は正直だが、**測れる場所で測っていない**のは只の穴である。
-//   親に `.git` が在る = 本物の repo に居るのだから、その時に飛ばしていたら赤。
-test("★飛ばして良いのは repo が無い時だけ(黙って飛ばし続ける形になっていない)", () => {
-  const looksLikeRepo = existsSync(join(REPO, ".git"));
+//
+// ★★2026-08-05、印を `.git` の有無から**基準値が名指す書類の実在**へ替えた。
+//   `.git` は「本物の repo に居る」の印にならない —— edith では親(`/Users/edith`)に
+//   別件の `.git` が在り、旧版の印はそこで真になる。つまり上の REPO_OK を正しく直すと、
+//   この見張りが**測れない場所で赤を出す**側へ回る(実際そうなった)。
+//   独立した印として妥当なのは「基準値が語っている書類が、その親に実際に在るか」。
+//   git を一切通らないので、REPO_OK の判定が壊れた時に見分けが付く。
+//   1 本でも在れば「その repo に居る」= 改名や 1 件の削除では黙らない。
+test("★飛ばして良いのは版管理の外に居る時だけ(黙って飛ばし続ける形になっていない)", () => {
+  const base = readBaseline() ?? {};
+  const looksLikeRepo = Object.keys(base).some((p) => existsSync(join(REPO, p)));
   assert.equal(
     looksLikeRepo && !REPO_OK, false,
-    `親に .git が在るのに repo として読めていない(${REPO})= ` +
-      "上の3本が黙って飛ぶ。git の呼び方が壊れた時にここが赤くなる",
+    `基準値が名指す書類が親に在る(= 本物の repo に居る)のに、索引がこの file を` +
+      `追跡していないと読めた(${REPO} / ${SELF_IN_REPO})= 上の3本が黙って飛ぶ。` +
+      "git の呼び方が壊れた時にここが赤くなる",
   );
 });
 
