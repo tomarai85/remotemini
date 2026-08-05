@@ -221,10 +221,54 @@ commit された。実測(今回、私が直接確認):
 | 関数 | 配線状態(サーバ側) | v1 の Swift client の扱い |
 |---|---|---|
 | `routeLabel` / `subtitleOf` / `whoOf` / `scanLine` / `gapNotice` / `sendResult` / `interruptResult` | 配線済み | v1 の4機能が直接描画(§2) |
-| `choiceView` | 配線済み。ただし `server.mjs:1386-1395` の poll 経路では **`screen` フィールドと同じ条件でのみ添える**(`screenChanged` の時だけ非 null、変化が無い poll では `null` = 据え置き)。この条件を外すと S群として不正になる事が同じ調査で見つかっている(`server.mjs:1393` 付近のコメント) | v1 は options/buttons を描かない(D-A)が、`display.choiceView.reason` は**バッジ文言としてそのまま使う**(§2-3 訂正、下記)。固定文言の独自実装より正確で、追加コストはゼロ |
+| `choiceView` | 配線済み。ただし `server.mjs:1386-1395` の poll 経路では **`screen` フィールドと同じ条件でのみ添える**(`screenChanged` の時だけ非 null、変化が無い poll では `null` = 据え置き)。この条件を外すと S群として不正になる事が同じ調査で見つかっている(`server.mjs:1393` 付近のコメント) | v1 は options/buttons を描かない(D-A)が、`display.choice.reason`(**鍵名は `choice`** — 下の対応表)は**バッジ文言としてそのまま使う**(§2-3 訂正、下記)。固定文言の独自実装より正確で、追加コストはゼロ |
 | `choiceResult` | 配線済み(`POST …/choice` の応答に乗る) | v1 は `POST …/choice` を呼ばない(D-A)ので、このフィールドが v1 の受信する応答に登場する事自体が無い。読まないだけで、配線の欠落ではない |
 | `clearQueueResult` | 配線済み(`DELETE …/queue` の応答に乗る) | 同上。v1 は `DELETE …/queue` を呼ばない |
 | `queueView`(C群、Swift未移植) | 該当なし(そもそもC群、サーバ配線の対象外) | v1 は queue 件数 UI を持たない(§1-a 未変更)ので Swift へ移植しない。**S群の choke-point 問題とは別レイヤー**である事に注意 — こちらは「v1 の機能スコープが無い」が理由で、「サーバ側に穴を残す」話ではない |
+
+#### 訂正(2026-08-05)— **関数名は鍵名ではない**。`display.*` の対応表
+
+この仕様は初稿で S群の**関数名をそのまま鍵名として**書いていた(`display.routeLabel` /
+`display.scanLine` / `display.choiceView`)。**線上に出る鍵は全部これより短い**。実装
+(`src/server.mjs` の `display: {` を作っている各所)を数えて確定した対応:
+
+**`display` は多相**である。同じ名前の枝が、応答の種類によって**違う形**で来る。ここを1つの
+Swift 型で受けようとすると必ず壊れる。実装を数えると系統は**2つ**しかない。
+
+**系統A — 描画の断片**(枝の中で、対象1つずつに添う。`display: {` を直接書いている7箇所):
+
+| 作る関数(S群) | **線上の鍵** | 出る場所 |
+|---|---|---|
+| `routeLabel(live)` | `display.route` | 一覧の各行 |
+| `subtitleOf(s)` | `display.subtitle` | 一覧の各行(`route` と同じ枝に同居) |
+| `scanLine(scanBody)` | `display.scan` | 一覧の応答(**同じ応答の `scan` は走査の生本文。別物**) |
+| `whoOf(entry.role)` | `display.who` | history の各要素 |
+| `gapNotice(why)` | `display.notice` | `kind:"gap"` の要素 |
+| `choiceView(...)` | `display.choice` | `screen` フレーム / poll(`screenChanged` の時だけ非 null) |
+
+**6関数すべてで名前が違う**。1つとして一致しないので、「関数名で `Decodable` を書いて1つ通った
+から他も通る」は成り立たない。Swift 側の `CodingKeys` は**この表**を写す事。
+
+**系統B — 動作の結果**(`speaks(res, fn)` が応答の**根**に付ける。`display.sendResult` の様な
+入れ子は**存在しない** — `display` そのものが結果):
+
+| 呼ぶ端点 | 付ける関数 | 線上の形 |
+|---|---|---|
+| `POST …/messages` | `sendResult` | `display` = `{kind, text, keepText?}` |
+| `POST …/interrupt` | `interruptResult` | `display` = `{kind, text}` |
+| `POST …/choice` | `choiceResult` | 同上(v1 は呼ばない) |
+| `DELETE …/queue` | `clearQueueResult` | 同上(v1 は呼ばない) |
+
+**4端点すべてが同じ形**を返す(`kind` の値域も4つで共通: `ok` / `warn` / `refused` / `error`)。
+つまり Swift 側は**1つの型**で4端点を受けられる — `keepText` だけ `sendResult` にしか現れないので
+optional。系統Aの様に端点ごとに型を分ける必要は**無い**。
+
+> 系統Aと系統Bを分けて書く理由: 「`display` の `Decodable` を1つ作る」が**両方に効く様に見えて
+> 片方しか通らない**。系統Bは根に載るので、系統Aの `{route, subtitle}` 型で受けると `kind`/`text`
+> が落ちる。逆も同じ。**`display` という名前は器の名前であって、型の名前ではない。**
+
+(この訂正が何故要るか: 同じ取り違えを sprint-2 と sprint-3 の brief が各々見つけ直していた
+= 仕様が直っていないから毎回 Generator が踏む。仕様側を直したので、以後の brief は再発見不要)
 
 → Swift 側の C群移植は **7関数**(`mergeHistory`/`relTime`/`freshness`/`nextAttempt`+`backoffMs`/
 `nextHistoryLimit`/`readablePoll`。`queueView` は v1 スコープ外のため対象外のまま)。
@@ -301,8 +345,9 @@ D-A(CHOICE 画面全般)は D4 の「許可プロンプト」除外とは別物:
 
 - 表示行 = `GET /api/sessions` の `sessions[]`。1行の構成要素: `title`(無ければ `id` 先頭8桁)/
   `display.subtitle`(= `subtitleOf`、S群・サーバ計算値)/ `relTime(updatedAt, now)`(C群、Swift実装)/
-  `display.routeLabel`(= `routeLabel`、S群)由来のバッジ・短文。
-- 一覧下部に `display.scanLine`(S群、= `scanLine`)を出す — 「何本のうち何本を読んだか」。
+  `display.route`(= `routeLabel` の**戻り値**、S群)由来のバッジ・短文。
+- 一覧下部に `display.scan`(S群、= `scanLine` の戻り値)を出す — 「何本のうち何本を読んだか」。
+  **同じ応答に `scan`(= 走査の生本文)が別に居る**。`display.scan` は文、`scan` は素材。混ぜない。
 - 更新契機: 初回表示 / pull-to-refresh / Conversation から戻った直後 / フォアグラウンド復帰時。
   **行ごとの poll は張らない**(D-C = A、§3-4)。
 - 一覧の各行の `live` は取得時点のスナップショットである事を `freshness`(C群、Swift実装)で明示 —
@@ -314,23 +359,23 @@ D-A(CHOICE 画面全般)は D4 の「許可プロンプト」除外とは別物:
 - 初期表示: `GET …/history?limit=50` → `history[]`(各要素 `{role, text}`)を吹き出しで描く。
   `role` の表示名は `display.who`(= `whoOf`、S群)。
 - 直後に poll ループを開始(§3)。history と live の継ぎ目は `mergeHistory`(C群、Swift実装)で剥がす。
-- 画面上部のバッジ(`screen`/`activity` の生値 + `display.routeLabel`):
+- 画面上部のバッジ(`screen`/`activity` の生値 + `display.route`):
   - `SENDABLE` + `activity:"observed"` → 「動いています」
   - `SENDABLE` + `activity:"unknown"` → 何も出さない(**沈黙を「待機」と読ませない** —
     `activity` は表示専用、送信可否の判定には使わない)
-  - `CHOICE` → `display.choiceView.reason`(S群、Sprint 0.5 で配線済み、§0-4 訂正2)をそのまま表示
+  - `CHOICE` → `display.choice.reason`(S群、Sprint 0.5 で配線済み、§0-4 訂正2)をそのまま表示
     + 固定の補助文「v1 では電話から選べません。机で確認するか、割り込みで中断してください」。
     `reason` は options/buttons を描かない v1 でも無償で使える(D-A は「回答しない」であって
-    「文言を自作する」ではない)。**注意**: `display.choiceView` は poll 応答では `screen` と同じ
+    「文言を自作する」ではない)。**注意**: `display.choice` は poll 応答では `screen` と同じ
     規則で運ばれる(`server.mjs:1386-1395`)— 画面が変化した poll でのみ非 null、変化が無い poll
     では `null`(= 据え置き)。Swift 側は `screen` を保持するのと同じ場所で `choiceView` も保持し、
     `null` を「選択画面が消えた」と読み替えない事。composer は無効化。interrupt は有効のまま
   - `UNKNOWN` → 「画面の状態を読めていません」。composer は無効化、interrupt は有効のまま
 - `truncated:true` の時、「以前を読む」ボタン。押すと `nextHistoryLimit`(C群)で再取得し、
   `mergeHistory` と同じ手順で結合。
-- composer: `screen === "SENDABLE"` の時のみ活性。`POST …/messages`。応答は `display.sendResult`
+- composer: `screen === "SENDABLE"` の時のみ活性。`POST …/messages`。応答の `display`(系統B)
   (S群)をそのまま描画 — 独自の文言判定は持たない。`keepText` が真の間は入力欄の本文を消さない。
-- interrupt ボタン: `route !== "blocked"` の間のみ活性。応答は `display.interruptResult`(S群)を
+- interrupt ボタン: `route !== "blocked"` の間のみ活性。応答の `display`(系統B)(S群)を
   そのまま描画。`interrupted` の真偽だけで丸めず、`stopped` の4値(`verified`/`already-done`/
   `unverified`/`null`)をテキストへ反映する。
 
@@ -344,7 +389,7 @@ D-A(CHOICE 画面全般)は D4 の「許可プロンプト」除外とは別物:
 - List/History/Messages/Interrupt: 単発の `URLSession.data(for:)`。
 - Live 更新: `GET …/poll?cursor=<opaque>&wait=<ms>` を**単一の poll ループが**繰り返す(discrete
   request の反復であって、常時接続のストリームではない)。`wait` はサーバ上限 `POLL_MAX_WAIT_MS =
-  20_000`(`server.mjs:622`)に合わせ 20000 を送る。クライアント側 `URLRequest.timeoutInterval` は
+  20_000`(`server.mjs` の poll 定数ブロック)に合わせ 20000 を送る。クライアント側 `URLRequest.timeoutInterval` は
   **必ずこれより大きく**(推奨30秒)。サーバの保留上限より先にクライアントがタイムアウトすると、
   正常な「何も起きなかった」応答を通信エラーと誤認する。
 
@@ -375,7 +420,7 @@ D-A(CHOICE 画面全般)は D4 の「許可プロンプト」除外とは別物:
    worker = `event`(生の NDJSON 1行)。型を分けて扱う(enum ケースを分ける等)。
 5. `screen` フィールドは `null` でなければ最新値として置き換え(順序付き履歴配列には混ぜない)。
 6. `more:true` の場合、`wait:0` で即座に再 poll してバックログを排出しきってから通常の
-   `wait:20000` 保留 poll に戻る(`POLL_MAX_ITEMS = 64`、`server.mjs:623`)。
+   `wait:20000` 保留 poll に戻る(`POLL_MAX_ITEMS = 64`、`server.mjs` の poll 定数ブロック)。
 7. `queued` は v1 では未使用(§0-4、queue 表示は v1 スコープ外)。将来 v2 で使う時のため、
    `null`(観測不能)と `0`(実数)を混同しない事だけここに記録しておく。
 
@@ -420,13 +465,13 @@ D-A(CHOICE 画面全般)は D4 の「許可プロンプト」除外とは別物:
 反対側。(2) 送信可否の判定は**サーバが送信の瞬間に自分でペインを読み直して**行っており
 (`inject.mjs:886` = `CHOICE`/`UNKNOWN` なら `sent:false` を返す、`inject.mjs:912` = 送信直前に
 モーダルが出たら中止)、client の古い `screen` に依存していない。つまり composer を開けたままでも
-**fail-closed はサーバ側で成立している**。結果は `display.sendResult` /
-`display.interruptResult` がそのまま語る。
+**fail-closed はサーバ側で成立している**。結果は送信・割り込みどちらも応答の `display`(系統B、
+`{kind, text}`)がそのまま語る。
 
 ### 3-4. connection ownership(N3)/ D-C の反映
 
 - poll ループの所有者は**表示中の Conversation 画面につき1つ**の actor。List 画面はいかなる poll も
-  張らない(D-C = A)。理由: `POLL_MAX_HELD = 4`(`server.mjs:624`、会話1本あたりの同時保留上限)は
+  張らない(D-C = A)。理由: `POLL_MAX_HELD = 4`(`server.mjs` の poll 定数ブロック。会話1本あたりの同時保留上限)は
   「1画面が1本を張る」前提。移動中の細い回線で一覧の行数ぶん同時に long-poll を開くのは Tom の
   「地下鉄で電波が瞬く」実測前提と相性が悪い。
 - Conversation 画面が閉じられると、poll ループの `URLSessionTask` を明示的に `cancel()` する。
@@ -436,7 +481,7 @@ D-A(CHOICE 画面全般)は D4 の「許可プロンプト」除外とは別物:
 `scenePhase` が `.background` → `.active` に遷移した時: (1) 今開いている Conversation があれば、
 poll を再開する前に `GET …/history` を撮り直す(fresh fetch)。(2) cursor を空文字列にリセットし、
 取り直した history を土台に画面を再構築してから poll を再開する。理由: バックグラウンド中は iOS が
-接続を切る。`POLL_LEASE_MS = 30_000`(`server.mjs:625`)や worker 側の generation 変化を跨いでいる
+接続を切る。`POLL_LEASE_MS = 30_000`(`server.mjs` の poll 定数ブロック)や worker 側の generation 変化を跨いでいる
 可能性が高く、古い cursor で再開を試みても `gap` を返されるのが関の山。
 
 ### 3-6. N2(切断は正常)+ backoff(C群)
@@ -445,10 +490,15 @@ poll を再開する前に `GET …/history` を撮り直す(fresh fetch)。(2) 
   切って「何も起きなかった」で 200 が返るのは失敗ではない。
 - backoff は `frames.mjs:102 backoffMs(attempt)` を1:1移植: `attempt <= 0` なら 0、それ以外は
   `min(15_000, 1000 * 2^(attempt-1))`。
-- 試行回数は `view.mjs:305 nextAttempt(attempt, openedAt, now)` を移植: 直前の接続が5秒
+- 試行回数は `view.mjs:305 nextAttempt(attempt, openedAt, nowMs)` を移植: 直前の接続が5秒
   (`HEALTHY_MS`)より長く開いていれば1にリセット、そうでなければ `attempt + 1`。
-- 3回連続失敗するまでは目立つエラー表示を出さない(§3-9 参照、閾値は初期値・調整可)。4回目以降は
+- 目立つエラー表示の条件は **`consecutiveFailures >= 3`**(= 3回目の失敗で出る。2回目までは出さない)。
   §5-4 の「backend unreachable」表示に切り替える。
+
+  **訂正(2026-08-05)**: 初稿はここだけ「3回連続失敗する**まで**は出さない / **4回目**以降は」と
+  書いており、§5-4 と §5-5 の表(どちらも「**連続3回**で赤バナー」)と食い違っていた。**3が正**
+  (2対1、かつ §5-4 が状態の定義側)。併せて「〜するまでは出さない」という言い方をやめた —
+  境界がどちらに入るかが日本語として決まらず、**検査に落とせない**。閾値は不等式で書く事。
 
 ### 3-7. N5(redirect は Authorization を落とす)
 
@@ -517,7 +567,7 @@ ConversationState {
 移植は抑制ロジックを持たない単純版(`why` があれば必ず表示)とする。関数自体は S群(payload のみの
 純関数)なのでサーバ側で計算して良いが、抑制条件が構造的に無意味である事はコードコメントに残す。
 
-### 4-4. `display.sendResult`/`display.interruptResult` は描画するだけ
+### 4-4. `display`(系統B) は描画するだけ
 
 Sprint 0.5 は既に完了しており(§0-4)、これらはサーバ計算済みフィールドとして届く。Conversation
 ViewModel は届いた `kind`(`ok`/`warn`/`refused`/`error`)で色とアイコンを出し分けるだけで、文言・
@@ -539,7 +589,7 @@ ViewModel は届いた `kind`(`ok`/`warn`/`refused`/`error`)で色とアイコ�
 
 | 状況 | 判定材料 | 表示 |
 |---|---|---|
-| 真に0件 | `sessions:[]` かつ `paneFault:null` | 「会話がありません」+ `display.scanLine` |
+| 真に0件 | `sessions:[]` かつ `paneFault:null` | 「会話がありません」+ `display.scan` |
 | `paneFault` あり | `paneFault.reason` | 一覧の上に専用バナー |
 | fetch 自体が失敗 | HTTP層 | 「backend unreachable」— 最後に取得できた一覧(メモリキャッシュ)を
   グレーアウトして残し、赤バナー+手動再試行。**空一覧に差し替えない** |
@@ -607,11 +657,11 @@ S群10関数すべて配線、評価は `.harness/feedback/check-2026-08-05-1-di
 |---|---|---|---|
 | 完了済 | **0.5**(rc-backend、§0-4) | `view.mjs` の S群10関数全部(`choiceView`/`choiceResult`/`clearQueueResult` を含む。前版は defer していたが team-lead 訂正2 により反転)をサーバが呼び、`display` 名前空間の追加フィールドとして応答へ足した | commit `7f3641f`。`.harness/feedback/check-2026-08-05-1-display-wiring.md` — 15変異中14 red、`SSE_SPEAKS.gap` の1件(M14)を検査追加で塞いで再検証 red。`test/app-html.test.mjs`(約44件)無改修で通過。native 実装の Day 予算は消費しない |
 | 1 | 1 | Core モジュール雛形: `PollCursor`、`backoffMs`/`nextAttempt`、`readablePoll` の Swift 移植(C群、§0-4 訂正1。`view.mjs:412-425` から純関数として移植、UI 依存なしでこの段で先に作れる)、Keychain 保存層、`/healthz` 疎通クライアント。Key-entry 画面実装 | 単体: `PollCursor` 不透明性検査・`backoffMs` 上限検査・`readablePoll` 移植の `view.mjs` 出力一致検査(正常系+ワーカー経路の `event`/`entries` 取り違え異常系)green。実機: `devicectl device process launch --console` のログに自前の診断ログ `healthz ok:true pid:<n>` を出力させ `grep` で確認 |
-| 2 | 2 | List 画面: `GET /api/sessions` クライアント、行UI、`display.subtitle`/`display.scanLine`/`freshness`/`relTime`、pull-to-refresh、§5-2 の3分岐 | 単体: `freshness` 閾値(60秒)検査 green。Simulator: fixture 応答での `paneFault` あり/なし/空一覧3状態のスクリーンショット、バナー文字列を Accessibility identifier 経由で XCUITest 確認 |
+| 2 | 2 | List 画面: `GET /api/sessions` クライアント、行UI、`display.subtitle`/`display.scan`/`freshness`/`relTime`、pull-to-refresh、§5-2 の3分岐 | 単体: `freshness` 閾値(60秒)検査 green。Simulator: fixture 応答での `paneFault` あり/なし/空一覧3状態のスクリーンショット、バナー文字列を Accessibility identifier 経由で XCUITest 確認 |
 | 3 | 3 | Conversation 画面: `GET …/history` クライアント、吹き出しUI、`mergeHistory`、`truncated`+「以前を読む」 | 単体: `mergeHistory` 重複剥がし検査(正常系+「同じ発言2回で剥がしすぎる」既知限界の検査)。Simulator: fixture 応答スクリーンショット |
 | 4 | 4 | poll ループ(§3全体): 単一owner の poll actor、Sprint 1 で作った `readablePoll` 移植を受信直後・merge直前に適用(§3-3 step 3、C群)、**§3-3a の `unreadableStreak`/`lastReadableAt` と §5-5 の段階表示・1回限りの自動取り直し(訂正4)**、gap処理(§4-3訂正版)、N4フォアグラウンド復帰時fresh fetch、`more:true` 即時再poll | 単体: スタブ `URLProtocol` で駆動する poll状態機械の検査群(正常/gap/screen-only/`readablePoll` 判定偽の4分岐、最後は負の対照込み)+ **§3-9 の `unreadableStreak` 段階遷移検査(計器を `attempt` に畳む改変で赤くなる負の対照を含む)**。Simulator: 読めない 200 を返す fixture で段階1・段階2のスクリーンショットを撮り、`lastReadableAt` の時刻文字列が画面に出ている事を Accessibility identifier 経由で確認。実機: edith上の1会話にpollを張り、バックグラウンド→フォアグラウンド遷移後に「history refetched before poll resumed」ログが1行出る事を確認 |
-| 5 | 5 | composer(送信): `POST …/messages`、`display.sendResult` 描画、CHOICE/UNKNOWN時の無効化 | 単体: `sendResult` 全分岐(202+verified/202+unverified/202+worker/409/400/401/5xx/本文なし)テーブル駆動検査。実機: edithのテストセッションへ実送信、`delivered:"verified"` 観測 + `ssh edith` で対象jsonl末尾行増加を確認 |
-| 6 | 6 | interrupt + ネットワーク堅牢化: `POST …/interrupt`、`display.interruptResult`描画、N5 redirect拒否の負の対照検査、backend-unreachableバナー(§5-4)全画面適用 | 単体: `interruptResult` 4分岐 + N5 検査。実機: 生成中セッションへinterrupt送信、`stopped:"verified"` 観測 |
+| 5 | 5 | composer(送信): `POST …/messages`、`display`(系統B)描画、CHOICE/UNKNOWN時の無効化 | 単体: `sendResult` 全分岐(202+verified/202+unverified/202+worker/409/400/401/5xx/本文なし)テーブル駆動検査。実機: edithのテストセッションへ実送信、`delivered:"verified"` 観測 + `ssh edith` で対象jsonl末尾行増加を確認 |
+| 6 | 6 | interrupt + ネットワーク堅牢化: `POST …/interrupt`、`display`(系統B)描画、N5 redirect拒否の負の対照検査、backend-unreachableバナー(§5-4)全画面適用 | 単体: `interruptResult` 4分岐 + N5 検査。実機: 生成中セッションへinterrupt送信、`stopped:"verified"` 観測 |
 | 7 | 6.5 | 統合仕上げ: 4機能を実回線(Wi-Fi→セルラー切替、機内モード往復、rc-backend再起動を挟む)で通し。REQUIREMENTS §5 のうちv1該当分(#1-3,#5-7,#9。#4は push不可のため対象外、#8はアカウント切替除外のため対象外)を証跡付きで確認 | チェックリスト+証跡(スクリーンショット/ログ抜粋)を `.harness/evidence-2026-08-1x/sprint6-acceptance.md` に記録(Evaluator/Generator の成果物。本spec はその期待値を定義するのみ) |
 
 Day 7 終了時点で v1 の4機能が実機で動作。残り(渡米まで2026-08-20)は実運用の不具合修正と v2 候補
@@ -642,7 +692,7 @@ REQUIREMENTS §5-4 が求める「ロック中/非フォアグラウンドでも
 | long-pollが本線、SSEは死んでいる(結論) / §8-4が未回答である限り成立する構造的論拠(2026-08-05訂正3) | `DESIGN.md` §2.36(`DESIGN.md:5787-5808`)、§8-4(`DESIGN.md:8544-8551`)、`app.html:171,403,418-419`、`server.mjs:1257-1420` |
 | dead-guardの規律(到達しない守りは測れない) | `src/mutex.mjs:101`(2026-08-02 の実例コメント)、`DESIGN.md:5793-5798` の適用 |
 | SSE_SPEAKS は v1 の消費者を持たない(明記する規律) | `DESIGN.md` §2.36-d(`DESIGN.md:5849-5854`「死んだ計器を名指しする」) |
-| cursor形式・定数 | `tail.mjs:78-107`、`server.mjs:622-625` |
+| cursor形式・定数 | `tail.mjs:78-107`、`server.mjs` の poll 定数ブロック(`POLL_MAX_WAIT_MS`/`POLL_MAX_ITEMS`/`POLL_MAX_HELD`/`POLL_LEASE_MS` が連続4行) |
 | S/C判断分割・境界テストの訂正・再導出(2026-08-05訂正1) | `DESIGN.md` §2.13 内2026-08-05追記、team-lead ruling メッセージ、`view.mjs`各関数(本文中に行番号記載、`readablePoll`は`view.mjs:412-425`) |
 | `readablePoll` を C群へ戻した経緯・`choiceView`のscreen連動条件 | `server.mjs:1386-1395`(コメント含む、`server.mjs:1393`付近) |
 | 訂正4(fail-closed が無言だった / §3-3a・§5-5) | Codex `gpt-5.6-sol` xhigh 2026-08-05 の設計レビュー全文 = `.harness/evidence-2026-08-05/codex-readablepoll-stall-2026-08-05.txt`。composer を止めない根拠 = `inject.mjs:886`(`CHOICE`/`UNKNOWN` で `sent:false`)、`inject.mjs:912`(送信直前のモーダル検知で中止) |
