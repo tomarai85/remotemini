@@ -39,9 +39,37 @@ const SCAN_EXT = [".mjs", ".sh", ".py", ".swift"];
 const TREES = [
   { name: "rc-backend", root: ROOT, dirs: ["src", "test", "tools"], floor: 20,
     bare: ["src", "test", "tools", "test/fixtures", "."] },
-  { name: "ios", root: join(REPO, "ios"), dirs: ["Sources", "Tests", "tools"], floor: 15,
+  { name: "ios", root: join(REPO, "ios"), dirs: ["Sources", "Tests", "UITests", "tools"], floor: 15,
     bare: ["Sources", "Tests", "tools", "."] },
 ];
+// ★`UITests` を `bare` に足していない。`bare` は**拡張子を持たない裸の名前**を解決する
+//   為の一覧で、引用の側の拡張子は `mjs|sh|py` だけ(EXT_CITE)。UITests の中身は
+//   `.swift` 1 file なので、足しても永久に当たらない死んだ項になる。
+//   1件でも `.sh` / `.py` が置かれたら足す。
+
+/**
+ * 走査しない dir と、その理由。
+ *
+ * ★この一覧が在るのは、下の「範囲が木と一致しているか」の検査が**知らない dir を
+ *   全部赤にする**為。黙って範囲外になるのを止めるのがこの仕掛けの目的なので、
+ *   除くなら名指しで理由を書く以外の道を用意しない。
+ *
+ * ★消えた項を赤にする**逆向きは撃っていない**。`build` は綺麗な複製には存在しないのが
+ *   正常なので、逆向きにすると clean clone で偽の赤になる。取らなかった向きとして明記。
+ */
+const NOT_SCANNED = {
+  "rc-backend": [
+    ["node_modules", "依存の展開先。今この木には無いが `npm install` した瞬間に現れる" +
+      " = 先に書いておかないと、その時に全員の commit が偽の赤で止まる"],
+    [".harness", "実行の記録と証拠の置き場(実測 2026-08-05: json 48 / txt 15 / md 10 / log 8、" +
+      "走査対象の拡張子は 0 件)。source を置く場所ではない"],
+    [".claude", "この木で走った agent の作業用。追跡 0 件(実測 2026-08-05)"],
+  ],
+  ios: [
+    ["build", "xcodebuild の出力"],
+    ["RemoteMini.xcodeproj", "生成物(実測 2026-08-05: 追跡 0 件)"],
+  ],
+};
 /** 実在する木だけ走る。**居ない事は下の検査が必ず名指しで報告する**(黙って減らさない)。 */
 const present = (t) => existsSync(t.root) && statSync(t.root).isDirectory();
 const LIVE_TREES = TREES.filter(present);
@@ -253,6 +281,47 @@ test("陰性対照: 実在しない名前を1件混ぜれば見つかる", () =>
   assert.deepEqual(findBrokenCites(planted, join(ROOT, "tools", "x.sh")), [ghost]);
   assert.deepEqual(findBrokenCites("# 出し先は `tools/health-observer.sh` を見る",
     join(ROOT, "tools", "x.sh")), []);
+});
+
+// ── ③ 走査の範囲が、守られる側の木構造と一致している ──────────────────────
+/**
+ * ★2026-08-05。`ios/UITests` はこの検査の `dirs` にも Sprint 4 の DoD の台本にも無く、
+ *   UI の検査は**どちらからも見えていなかった**。両方とも「一覧に書いた物」を見ていて
+ *   「木に実際に在る物」を見ていない。一覧に1つ足すだけでは次に増えた dir で同じ事が
+ *   起きるので、直すべきは一覧ではなく**一覧が木と一致している事の検査**の方。
+ *
+ * ★名前の配列を受ける形にして、陰性対照が同じ道を通れるようにする。
+ */
+export function unlistedDirs(names, tree) {
+  const known = new Set([...tree.dirs, ...(NOT_SCANNED[tree.name] || []).map(([d]) => d)]);
+  return names.filter((n) => !known.has(n)).sort();
+}
+
+test("★走査の範囲が木の直下と一致している(新しい dir が黙って範囲外にならない)", () => {
+  const bad = [];
+  for (const t of LIVE_TREES) {
+    const names = readdirSync(t.root, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+    for (const n of unlistedDirs(names, t)) bad.push(`${t.name}/${n}`);
+  }
+  assert.deepEqual(
+    bad, [],
+    "木の直下に、走査もせず除外の理由も書いていない dir が在る。" +
+      "TREES の dirs に足すか、NOT_SCANNED に理由付きで足すか、どちらかを必ず選ぶ事",
+  );
+});
+
+test("陰性対照: 一覧に無い dir を1件混ぜれば見つかる", () => {
+  assert.deepEqual(
+    unlistedDirs(["Sources", "SnapshotTests"], { name: "ios", dirs: ["Sources"] }),
+    ["SnapshotTests"],
+  );
+  // ★★免除は木ごと。片方の木に書いた1行がもう片方にも効くと、**書いた覚えのない木が
+  //   黙って範囲外になる** —— 一覧を共有した瞬間に必ず起きる形で、今夜の欠陥の本体。
+  assert.deepEqual(unlistedDirs(["node_modules"], { name: "ios", dirs: [] }), ["node_modules"]);
+  assert.deepEqual(unlistedDirs(["node_modules"], { name: "rc-backend", dirs: [] }), []);
+  assert.deepEqual(unlistedDirs(["Sources"], { name: "ios", dirs: ["Sources"] }), []);
 });
 
 // ── 「此処に無い」と「実在しない」を分ける ────────────────────────────────

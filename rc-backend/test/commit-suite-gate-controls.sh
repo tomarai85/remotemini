@@ -32,7 +32,12 @@ mkfake() { # mkfake <名前> <終了コード> <本文>
   printf '#!/bin/bash\n%s\nexit %s\n' "$3" "$2" > "$SB/$1.sh"
   /bin/chmod +x "$SB/$1.sh"
 }
-run_gate() { SUITE_CMD="bash $SB/$1.sh" bash "$GATE" 2>&1; }
+# 走行の有無は**固定する**。外の状態に任せると、この対照を変異の走行中に回した時に
+# G1〜G11 が揃って rc=2 に化けて、判定ではなく**機械の機嫌**を測る事になる。
+LIVE_OK="$SB/live-absent.sh"
+printf '#!/bin/bash\nexit 1\n' > "$LIVE_OK"; /bin/chmod +x "$LIVE_OK"
+run_gate()  { SUITE_CMD="bash $SB/$1.sh" LIVE_CMD="bash $LIVE_OK"  bash "$GATE" 2>&1; }
+run_live()  { SUITE_CMD="bash $SB/green.sh" LIVE_CMD="bash $SB/$1.sh" bash "$GATE" 2>&1; }
 
 # 本物の node runner が出す形(末尾の集計)をそのまま真似る
 GREEN='echo "ok 1 - 何か"; echo "1..536"; echo "# tests 536"; echo "# suites 0"; echo "# pass 536"; echo "# fail 0"'
@@ -83,6 +88,27 @@ out=$(run_gate lookalike); chk "G10 似た名前の行を取り違えない" 0 $
 #     同じ道で赤が出る事(G2/G4)と合わせて初めて「見分けている」と言える。
 mkfake red2 1 'echo "# tests 2"; echo "# pass 0"; echo "# fail 2"'
 out=$(run_gate red2); chk "G11 陰性対照: 別の赤も赤と言う(2件)" 1 $? "2 件中 2 件が落ちた" "" "$out"
+
+# ── G12〜G15 ★★木が動いている間は測らない ─────────────────────────────────
+#     2026-08-05 に踏んだ形。背後で対照一式(= 変異の走行を起こす)を回したまま手元で
+#     一式を回し、走行が tools/ へ 80〜160 秒だけ置く probe を引用検査が拾って赤になった。
+#     **赤の原因は判定を読む頃には木から消えている**ので、追い掛けても出て来ない。
+#     門が先に止まっていれば、その赤はそもそも生まれない。
+mkfake live_yes 0 'true'          # 0 = 走行中
+out=$(run_live live_yes); chk "G12 ★走行中 -> 未測定(rc=2)" 2 $? "木が動くので" "" "$out"
+chk "G13 ★★走行中の一式を『緑』として書かない" 2 2 "" "commit-suite-gate: 単体 " "$out"
+
+# ★2 は「止めなくてよい」ではない。tools/mutation-run-live.sh の頭が名指しで書いている
+#   2026-08-04 の欠陥そのもの —— 呼ぶ側が「止めろと言われたか」を訊いていて、訊くべき
+#   だったのは「進んでよいと確認できたか」。この2つは計器が壊れた時にだけ食い違い、
+#   そしてそれは門が要る時である。
+mkfake live_unknown 2 'true'
+out=$(run_live live_unknown); chk "G14 ★走行の有無を判定できない -> 未測定(rc=2)" 2 $? "判定できなかった" "" "$out"
+
+# ★陰性対照。G12/G14 が止まるのは判定が働いているからか、それとも走行の検査を足した事で
+#   常に 2 を返す様になっただけか。**丁度 1 で一式まで進む**事まで見て初めて見分けと言える。
+mkfake live_no 1 'true'
+out=$(run_live live_no); chk "G15 陰性対照: 走行なし(丁度 1)なら一式まで進む" 0 $? "536/536 緑" "" "$out"
 
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]
