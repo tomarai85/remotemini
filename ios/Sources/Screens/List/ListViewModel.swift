@@ -36,7 +36,12 @@ final class ListViewModel: ObservableObject {
 
     /// Named constant, never a bare literal (brief §4-a): resolves the §5-4 vs §3-6
     /// numeric inconsistency in the spec: the brief author ruled 3 is correct.
-    static let unreachableThreshold = 3
+    ///
+    /// Sprint 6: the number and the counting now live in `ReachabilityMeter`, shared
+    /// with Conversation per spec §5-4. This stays as a forwarding alias so the
+    /// existing call sites and tests keep naming the threshold rather than the
+    /// literal -- the thing the constant existed for in the first place.
+    static var unreachableThreshold: Int { ReachabilityMeter.unreachableThreshold }
 
     @Published private(set) var phase: Phase = .initialLoading
     @Published private(set) var isRefreshing = false
@@ -51,7 +56,16 @@ final class ListViewModel: ObservableObject {
     /// response-contract violations did this app see today" must be one query, not two.
     private static let log = Logger(subsystem: "com.tomtim.mobilework", category: "contract")
 
-    private var consecutiveFailures = 0
+    /// Spec §5-4's counter, shared with `ConversationViewModel` (Sprint 6). Readable
+    /// so the View can print the live count in the banner -- the banner outlives the
+    /// threshold, so "3回" frozen into the text would state a stale measurement as the
+    /// current one. Redraw is not a problem: `phase` is `@Published` and is assigned
+    /// on every failure, and `@Published` notifies on assignment regardless of whether
+    /// the new value compares equal to the old.
+    ///
+    /// What List feeds it is a superset of §5-4's definition -- see `ReachabilityMeter`'s
+    /// doc for why that is deliberate and what it costs.
+    private(set) var reachability = ReachabilityMeter()
     private var lastResponse: SessionsResponse?
     /// epoch ms of the last *successful* fetch; `0` means "never." Read by the View
     /// via `lastFetchedAtMs` and fed to `Freshness.freshness`, re-evaluated at redraw
@@ -96,7 +110,7 @@ final class ListViewModel: ObservableObject {
         switch result {
         case .success(let response):
             // Brief §4-a: ANY HTTP 200 resets the counter, regardless of paneFault.
-            consecutiveFailures = 0
+            reachability.recordSuccess()
             lastResponse = response
             lastFetchedAtMs = now()
             phase = Self.phase(for: response)
@@ -125,7 +139,7 @@ final class ListViewModel: ObservableObject {
             Self.log.error(
                 "response contract violation: status=\(violation.status, privacy: .public) code=\(violation.code ?? "-", privacy: .public)"
             )
-            consecutiveFailures += 1
+            reachability.recordFailure()
             phase = failurePhase()
 
         case .failure(.unreachable), .failure(.malformedBody), .failure(.notFound):
@@ -136,7 +150,7 @@ final class ListViewModel: ObservableObject {
             // handle every case to compile. Folded into the same opaque-failure
             // bucket as the other two: if a future server change ever did return 404
             // here, "nothing usable to show, count it" is still the right call.
-            consecutiveFailures += 1
+            reachability.recordFailure()
             phase = failurePhase()
         }
     }
@@ -155,7 +169,7 @@ final class ListViewModel: ObservableObject {
 
     private func failurePhase() -> Phase {
         let prior = lastResponse?.sessions
-        if consecutiveFailures >= Self.unreachableThreshold {
+        if reachability.isUnreachable {
             return .unreachable(priorSessions: prior)
         }
         return .retryable(priorSessions: prior)

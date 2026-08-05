@@ -161,6 +161,17 @@ struct ConversationView: View {
     @ViewBuilder
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if viewModel.isBackendUnreachable {
+                // Spec §5-4, the same component List draws. Sits above both banners:
+                // "nothing is getting through" is the frame the other two sentences
+                // have to be read inside.
+                UnreachableBanner(
+                    failures: viewModel.reachability.consecutiveFailures,
+                    context: .conversation,
+                    identifier: "conversation.unreachable"
+                )
+            }
+
             if let banner = viewModel.sendBanner {
                 Text(banner.text)
                     .font(.caption)
@@ -168,6 +179,28 @@ struct ConversationView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("conversation.sendBanner")
+            }
+
+            // Its own row, never merged with `sendBanner` above -- see
+            // `ConversationViewModel.interruptBanner`. These two are the operations
+            // most likely to be fired seconds apart, and one slot would make the
+            // surviving sentence unattributable.
+            if let banner = viewModel.interruptBanner {
+                Text(banner.text)
+                    .font(.caption)
+                    .foregroundStyle(Self.color(for: banner.tone))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.interruptBanner")
+            }
+
+            if let reason = viewModel.interruptDisabledReason {
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.interruptDisabledReason")
             }
 
             if let reason = viewModel.composerDisabledReason {
@@ -183,6 +216,23 @@ struct ConversationView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
+                // Left of the field, deliberately far from the send button: these two
+                // do opposite things and a mis-tap on a phone in one hand is the
+                // ordinary case, not the edge case.
+                Button {
+                    Task { await viewModel.interrupt() }
+                } label: {
+                    if viewModel.isInterrupting {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "stop.circle")
+                            .font(.title2)
+                    }
+                }
+                .disabled(!viewModel.canInterrupt)
+                .accessibilityLabel("割り込む")
+                .accessibilityIdentifier("conversation.interruptButton")
+
                 TextField("メッセージ", text: $viewModel.draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...5)
