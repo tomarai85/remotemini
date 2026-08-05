@@ -96,7 +96,7 @@ Run with `bash .harness/dod-sprint-4.sh` (default mode; exit 0 green / 1 red / 2
 | 2-b. no mutation residue | green | 0 mutation markers under `ios/Sources` + `ios/Tests` |
 | 3. ten §5-b branches | green | 10/10 exist by name |
 | 4. §5-c stage transitions | green | 7/7 exist; the meter takes time as a parameter and never reads the clock itself |
-| 5. standing controls battery | unmeasured by default | run separately, see below — 43/43 green |
+| 5. standing controls battery | unmeasured by default | run separately, see below — 43/43 green at evaluation time; **44/44 green** after this pass (`no-linerefs-controls.sh` was registered into the standing list, so the denominator itself grew by one) |
 | 6. simulator evidence | unmeasured by design | both PNGs exist; what is *in* them can only be judged by eye |
 | 7. live device, message on the wire | unmeasured | needs Tom's phone |
 | 8. live device, foreground refetch | unmeasured | needs Tom's phone |
@@ -248,8 +248,85 @@ to cite content instead. It stopped a commit tonight, which is the evidence for 
   manual-refetch buttons is asserted rather than assumed.
 - (ii) `port-coverage.py` structurally cannot verify the history-merge function — it has no
   matchable literals. Unchanged from Sprint 3, still not a Sprint 4 regression.
-- (iii) Two documentation ratchets diverge: the citation gate scans tracked and indexed
-  content, while the no-line-reference check walks the working tree, so a teammate's
-  in-progress file can block everyone. Recorded, not fixed, and not a Sprint 4 item.
+- (iii) ~~Two documentation ratchets diverge~~ — **the diagnosis was right and the
+  prescription was wrong.** Closed with a fix at a different layer; see below.
 - (iv) DoD rows 7 and 8 are the only two that cannot be closed on this desk at all. They
   need the physical phone.
+
+## Carry-over (iii), closed — and the prescription in it was wrong
+
+The carry-over said: the two ratchets disagree about what they read, so make the
+code-side check read the index like the doc-side one. That was written without
+measuring what the code-side check actually is.
+
+**The premise, measured.** The commit chain is `pre-commit` → `pre-commit-gates.sh` →
+`commit-suite-gate.sh` → `npm test`, and it runs in the working tree — no stash, no
+`checkout-index`, no temporary worktree. So every test in that suite judges what is on
+disk (the count is deliberately not repeated here: it changed with this pass and a
+carried-over number is the defect Finding 3 is about). The
+no-line-reference check is a member of that suite. Switching it alone to index content
+would put **two different snapshots of the repo inside one `npm test` run**: its verdict
+would describe the index while every neighbouring test described the disk. The doc-side
+ratchet has no such constraint — it is pure prose accounting, and the index is the right
+denominator there because it gates what enters the repo.
+
+So the divergence is correct, and the fix as written would have made things worse while
+looking like closure.
+
+**What the carry-over got right was the symptom, and tonight it happened for real.** Not
+to a teammate's file — to mine. The standing controls battery was still running in the
+background (one process, confirmed by parentage; the other candidates were its own
+children, already exited), and it had written a probe into the very directory the check
+scans. My foreground `npm test` picked the probe up and went red. By the time the verdict
+was on screen the file was gone: the control removes it on exit, so the cause of the red
+does not survive in the tree. A red whose evidence deletes itself is the expensive kind.
+
+The probe cannot be moved out. The control that places it exists to check that a mutation
+run **freezes** its source tree, so dirtying the running tree is the measurement, not an
+implementation detail of it.
+
+**The fix, at the layer where it belongs.** The freeze control already refuses to start
+while a run is live, using the repository's single liveness oracle. The commit gate did
+not ask. It does now, and it follows the rule that oracle's own header states — proceed
+only on *exactly* "confirmed absent"; both "running" and "could not tell" mean stop. It
+stops as **unmeasured**, not as a failure, because what broke was the measuring condition
+and not a test; and unmeasured still blocks the commit, so nothing is skipped into green.
+
+Controls for that gate: 11 → 15. Against the pre-fix gate the three new ones go red and
+the fourth stays green — the fourth is there so that "always returns unmeasured now" is
+distinguishable from "discriminates".
+
+## A third instance of the same shape, in a second instrument
+
+The DoD script could not see the UI test target. Checking whether anything else was
+scoped the same way turned up the line-reference check, which walks two trees by an
+explicit list of directories — and the phone-side list named three of the four that
+exist. `UITests` was absent. Every UI test file was outside the reach of the check that
+is supposed to cover the phone tree, and had one been written with a line-number
+citation, nothing would have reported it.
+
+Adding the missing directory is the small half. The instrument was wrong in a way that
+would recur on the next directory anyone adds, so the check now derives its own scope
+from the tree: every directory at the top of a scanned tree must be either scanned or
+excluded **by name with a reason**, and anything unlisted fails. Running it immediately
+produced two unlisted directories that had never been considered, both correctly excluded
+once looked at, and one exclusion written pre-emptively for a directory that does not
+exist yet — because it appears the moment anyone installs dependencies, and discovering
+that through a repo-wide false red is the expensive way to learn it.
+
+The reverse direction — failing when an exclusion goes stale — is deliberately not
+asserted, and the reason is in the code: build output is legitimately absent in a clean
+clone, so that assertion would fire on exactly the machines that had done nothing wrong.
+
+Its control: 8 → 11 assertions. The unit-level negative control inside the check proves
+the *function* rejects an unlisted name; it cannot prove the function is wired to the
+real tree. So the control plants an actual directory in the phone tree, requires the red
+to name it, and requires green to return when it is removed. Against the pre-fix check
+the first two fail and the third passes — the same discrimination test as above.
+
+**Closing measurement for both fixes.** The standing battery was started *after* the last
+edit, so what it measured is the shipped state and not a half-applied one: **44 green /
+0 red / 0 unmeasured**, exit 0. The denominator is one larger than at evaluation time
+because `no-linerefs-controls.sh` was registered into the standing list during this pass —
+a control that exists on disk but is not in that list is exactly the shape this file has
+now caught three times, so it was registered rather than left to be rediscovered.

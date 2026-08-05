@@ -53,9 +53,12 @@ fi
 
 # 植えた物を必ず落とす。名前は衝突しない形にして、消し残しは最後に**不在で**確かめる。
 PLANT="$IOS/Sources/__no_linerefs_control_probe.swift"
+# ⑤ 用。**dir を1つ足す**だけで、中身は要らない(範囲の検査は木の直下の名前を見る)。
+PLANTDIR="$IOS/__no_linerefs_control_unlisted"
 SCRATCH="$(mktemp -d /tmp/rc-nolineref.XXXXXX)" || exit 2
 cleanup() {
     /bin/rm -f "$PLANT" 2>/dev/null
+    /bin/rmdir "$PLANTDIR" 2>/dev/null
     find "$SCRATCH" -type f -print0 2>/dev/null | xargs -0 /bin/rm -f 2>/dev/null
     find "$SCRATCH" -type d -depth -exec /bin/rmdir {} \; 2>/dev/null
 }
@@ -174,7 +177,38 @@ else
        "空でも緑 = 下限を合計で持っている。片方の walk が死んでも気付けない"
 fi
 
+# ── ⑤ 一覧に無い dir を足す → 赤か(範囲が木と一致している事の検査) ──────────
+# なぜ要るか(2026-08-05): `ios/UITests` は `dirs` に無く、UI の検査 3 本は
+# **この検査からも Sprint 4 の DoD の台本からも見えていなかった**。どちらも
+# 「一覧に書いた物」を見ていて「木に実際に在る物」を見ていない。一覧に1つ足すだけでは
+# 次に増えた dir で同じ事が起きるので、検査本体に「一覧が木と一致しているか」を入れた。
+#
+# ★検査本体の中にも陰性対照(関数へ直接名前を渡す形)は在るが、それが証明するのは
+#   **関数**であって、関数が**本物の木に繋がっている**事ではない。ここで実際に木へ
+#   足して初めて配線まで測れる。今夜 DoD の台本で同じ理由の1行を足したのと同じ形。
+mkdir -p "$PLANTDIR"
+if [ "$(run_test "$TEST")" != "0" ]; then
+    ok "⑤ 一覧に無い dir を足すと赤(範囲が木と一致している事を見ている)"
+else
+    ng "⑤ 一覧に無い dir を足すと赤" \
+       "足しても緑 = 新しい dir が黙って走査の外に落ちる。UITests がそうだった状態"
+fi
+if grep -q '__no_linerefs_control_unlisted' "$SCRATCH/out.txt"; then
+    ok "⑤ 赤の中身が足した dir を名指ししている(別の理由で赤いのではない)"
+else
+    ng "⑤ 赤の中身" "足した dir の名前が報告に出ない = 別の理由で落ちている"
+fi
+/bin/rmdir "$PLANTDIR"
+if [ "$(run_test "$TEST")" = "0" ]; then
+    ok "⑤ 落とせば緑に戻る"
+else
+    ng "⑤ 落とせば緑に戻る" "消しても赤いまま"
+fi
+
 cleanup
+if [ -e "$PLANTDIR" ]; then
+    ng "後始末" "足した dir が残っている: $PLANTDIR"
+fi
 if [ -e "$PLANT" ]; then
     ng "後始末" "植えた file が残っている: $PLANT"
 fi

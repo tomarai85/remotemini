@@ -22,6 +22,32 @@ cd "$ROOT" || { echo "commit-suite-gate: rc-backend へ入れない"; exit 2; }
 
 # 継ぎ目。対照は本物の `npm test` を回さずに、出力と終了コードだけを差し替えて判定を測る。
 SUITE_CMD="${SUITE_CMD:-npm test}"
+# 継ぎ目その2。走行の有無も差し替えられる形にする(対照に本物の走行を起こさせない為)。
+LIVE_CMD="${LIVE_CMD:-bash $ROOT/tools/mutation-run-live.sh}"
+
+# ⓪ **木が動いている間は測れない**。変異の走行は凍結が効いているかを見る為に、走行中の
+#    木へわざと一時 file を置く(`test/mutation-freeze-controls.sh` の probe)。その窓で
+#    一式を回すと、引用検査がその一時 file を拾って落ちる —— 2026-08-05 に実際に踏んだ。
+#    背後で対照一式を回したまま手元で一式を回し、`tools/` に 80〜160 秒だけ現れる probe を
+#    引用検査が掴んだ。判定を読む頃には file は消えていて、追い掛けても見付からない。
+#    **赤の原因が木の中に残らない**のが、この壊れ方の質の悪い所である。
+#
+#    判定は `tools/mutation-run-live.sh` に一本化されている。その file の頭が書いている
+#    通り**丁度 1(居ないと確認できた)の時だけ**進む。0(走行中)も 2+(測れなかった)も
+#    等しく「進むな」で、どちらも 2 = 未測定として止める。走行中を「赤」と呼ばないのは、
+#    落ちたのが検査ではなく**測定の条件**だから。ここを 0 に丸めると、木が動いている間の
+#    一式が「異常なし」として commit を通す —— 上の ① と全く同じ壊れ方になる。
+eval "$LIVE_CMD" >/dev/null 2>&1
+live_rc=$?
+if [ "$live_rc" != "1" ]; then
+    if [ "$live_rc" = "0" ]; then
+        echo "commit-suite-gate: ★変異の走行が動いている = 木が動くので一式を測れない"
+    else
+        echo "commit-suite-gate: ★走行の有無を判定できなかった(exit $live_rc)= 測れていない"
+    fi
+    echo "  走行が終わってから commit する事。状態は tools/mutation-run-live.sh が答える。"
+    exit 2
+fi
 
 OUT="$(/usr/bin/mktemp -t commitsuite)" || exit 2
 trap '/bin/rm -f "$OUT" 2>/dev/null' EXIT INT TERM HUP
