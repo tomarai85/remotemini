@@ -139,7 +139,14 @@ Codex(2026-08-03)の裁定が「拒否操作を許したいなら、D4 を『承
 ### §2-c. §5-4 の共通バナーを 1 箇所へ
 
 現状: `ListViewModel` は `unreachableThreshold = 3` を持ち `.unreachable(priorSessions:)` を出す。
-`ConversationViewModel` は `.failure(.unreachable)` を **1 回で** `phase = .unreachable` にする。
+`ConversationViewModel` は経路で別々に振る舞う ——
+
+| 経路 | 現状 | 問題 |
+|---|---|---|
+| 初回読み込み(`applyInitialLoad`) | `.failure(.unreachable)` を **1 回で** `phase = .unreachable` | 閾値が無い(§5-4 は連続3回) |
+| 「前を読む」(`applyLoadEarlier`) | `.stalledRetry`(ボタンは残る) | ここは妥当 |
+| **poll 中(`applyPollStep`)** | **`.unreachable` の腕は `return true` だけで、何も変えない** | ★会話の途中で backend を失った電話が、**古い画面を黙って映し続ける** |
+
 見た目も `ListView` の private な `BannerStyle` に閉じている。
 
 仕様 §5-4 は「**連続3回**」「List/Conversation 共通のコンポーネントとして文言・見た目を
@@ -186,14 +193,14 @@ Codex(2026-08-03)の裁定が「拒否操作を許したいなら、D4 を『承
 | # | 行 | 判定 |
 |---|---|---|
 | 1 | `InterruptClient` が `POST` / 正しい path / `Authorization` を出す | 単体(記録欄で観測) |
-| 2 | `interruptResult` の**6 分岐**(verified / already-done / unverified / null / worker欄なし / 409)が別々の文言で描かれる | 単体(テーブル駆動 + §3 の対照2本) |
+| 2 | サーバが書いた文が**逐語で**バナーへ届き、電話は生フィールドから文言を作れない | 単体(逐語表 + 生フィールド盲目の対照3本) |
 | 3 | 401 → Key-entry / 404+`SESSION_NOT_FOUND` → `.notFound` / 404+`NO_SUCH_ROUTE` → 契約違反 | 単体(送信と同じ規律) |
 | 4 | 割り込みバナーと送信バナーが独立 | 単体(負の対照) |
 | 5 | §5-4 が共通コンポーネントで、両画面が連続3回・復帰で即消 | 単体(負の対照2本) |
 | 6 | §5-4 と §5-5 が互いを代用しない | 単体(負の対照) |
 | 7 | N5: 6 client 全部が 302 を追わず想定外として分類 | 単体 |
 | 8 | `interruptEnabled` の `.choice` 既定が**禁止側**、かつ文言と同時に動く | 単体(負の対照) |
-| 9 | **実機**: edith の生成中セッションへ割り込み、`stopped:"verified"` を観測 | 実機 |
+| 9 | **実機**: edith の生成中セッションへ割り込み、`stopped:"verified"` を観測 | **閉じた**(2026-08-06、`ios/tools/live-interrupt-check.sh`。生フィールドではなく `interruptResult` が `verified` の時だけ書く文で観測 —— 電話が `stopped` を読まない設計に合わせる為) |
 
 ## §6. Tom の裁定待ち(★今回は 1 件が実装に効く)
 
@@ -204,3 +211,30 @@ Codex(2026-08-03)の裁定が「拒否操作を許したいなら、D4 を『承
   Yes になったら動くのは §0-e の 2 箇所だけ。
 - 仕様 §7: 口座の切り替えを v1 から落とす件(`REQUIREMENTS.md` は必須と記録している)。
   こちらは Sprint 6 を止めない。
+
+## §7. この brief 自身の訂正(2026-08-06、実装後に読み直して見つけた)
+
+書いた時点の誤りを消さずに残す。次の brief を書く時、同じ形で外さない為。
+
+**訂正1 —— DoD 行2 が、電話側では測れない物を電話側の行に置いていた。**
+元の文: 「`interruptResult` の**6 分岐**(verified / already-done / unverified / null /
+worker欄なし / 409)が別々の文言で描かれる」。
+この 6 分岐を**文言へ変換しているのはサーバ**(`src/view.mjs`)で、既に
+`rc-backend/test/view.test.mjs` が単体で押さえている。電話側で同じ表を書いても、
+測るのは「私が fixture に書いた 6 本の文字列が、私の書いた表と一致する」事でしかない ——
+サーバが 7 本目を足しても、文言を変えても、この検査は緑のまま。**検査が二重になったのではなく、
+片方が何も測っていない**。
+電話側でしか測れないのは別の性質だった: **サーバの文がそのまま届く事**と、**生フィールド
+(`interrupted` / `stopped` / `route` / `pane`)から電話が文言を再発明できない事**。
+`InterruptClient.Envelope` が `display` と `code` しか宣言していないのは、その為の構造。
+行2 はそちらへ差し替えた(対照は `testDisplayTextWinsOverTheRawFieldsThatContradictIt` /
+`testTwoWildlyDifferentRawBodiesWithTheSameDisplayProduceTheSameOutcome` /
+`testAMissingDisplayIsNotBackfilledFromTheRawFieldsNegativeControl`)。
+
+**訂正2 —— §2-c の「現状」が、一番大きい穴を書き落としていた。**
+元の文は Conversation を 1 行で片付けていた(「`.failure(.unreachable)` を 1 回で
+`phase = .unreachable`」)。それは**初回読み込みの経路だけ**の話で、`applyPollStep` の
+`.unreachable` の腕は `return true` だけ、つまり**何も変えていなかった**。
+閾値が 1 なのは「厳しすぎる」だが、poll の腕が無反応なのは「**会話の途中で backend を
+失った電話が、古い画面を黙って映し続ける**」——後者の方が重い。1 経路だけ読んで
+「現状」を書いたのが原因。§2-c は 3 経路の表へ直した。

@@ -1854,3 +1854,287 @@ v1 の owner 発話「1. 一覧 2. 履歴 + ライブの流れ 3. **打ち込む
 - Tom の裁定待ち 2 件（ブリーフ §7）は Sprint 5 を止めなかったが、**Sprint 6 の前に要る**:
   D4 の読み替え（CHOICE 画面へ `Escape` だけ送れるか。私の推奨は Yes）と、
   口座切り替えを v1 から落とす件（黙って落とすと `REQUIREMENTS.md` の必須要件が 1 つ消える）。
+
+# Sprint 6 — 割り込む + §5-4(到達性のバナー)
+
+`.harness/sprint-6-brief.md` に対する実装。数字は全部この session で走らせた出力。
+
+## 何を作ったか
+
+| 物 | 役 |
+|---|---|
+| `ios/Sources/Core/InterruptClient.swift`(新) | `POST /api/sessions/{id}/interrupt`。body 無し・`Content-Type` 無し・`Authorization` だけ。返す型は `SendOutcome` を再利用(brief §2-a の判断どおり) |
+| `ios/Sources/Core/ReachabilityMeter.swift`(新) | 仕様 §5-4 の計器。閾値 3(`>=`)、復帰は**即座に 0**(減衰ではない) |
+| `ios/Sources/Screens/Shared/UnreachableBanner.swift`(新) | 両画面が使う共通のバナー。文言と見た目が 1 箇所 |
+| `ConversationViewModel` の割り込み部 | `interruptEnabled` / `interruptDisabledReason` / `isInterrupting` / `canInterrupt` / `interrupt()` / `applyInterruptOutcome(_:)` / `interruptBanner` |
+| `ListViewModel` | 自前の `consecutiveFailures` を `ReachabilityMeter` へ差し替え。`unreachableThreshold` は**転送別名**として残した(Sprint 2 の呼び出し元と検査が名前を変えずに済む) |
+
+## 設計判断
+
+**① `interruptEnabled` と `composerEnabled` は別々の表にした。** SENDABLE と BUSY では一致し、
+**UNKNOWN で割れる** —— composer は拒否、割り込みボタンは生かす。
+理由: 読めない画面へ新しい文を入れるのは賭けだが、止めるのは賭けではない。そして
+**読めない画面こそ、机を止められない事が一番効く状態**。
+Tom の裁定「返答待ちであれ作業中であれいつでも見て、干渉できればいい」は BUSY で
+composer も割り込みも殺さない根拠だが、UNKNOWN については何も言っていないので、
+非対称はこちらの判断として書き残す。
+
+**② D4 の衝突は「定数 1 本・読み手 2 人」に閉じ込めた。** `interruptAllowedOnChoiceScreen`
+(既定 `false`)を、`interruptEnabled` の `.choice` の腕と `composerDisabledReason(.choice)`
+の**両方**が読む。後者は
+「v1 では電話から選べません。机で確認するか、**割り込みで中断**してください」と
+「v1 では電話から選べません。机で確認してください」を選び分ける ——
+Sprint 5 が出荷した前者は**ボタンについての約束**なので、文とボタンは同時に動かないと
+片方が嘘になる。Tom が §2.29-f に Yes を出したら、動くのはこの定数 1 行だけ。
+Sprint 6 の検査は全部**定数に対して**書いてあり、`false` に対しては書いていない。
+
+**③ 割り込みのバナーは送信のバナーと別の欄。** 同じ欄に入れると
+「さっき間違った物を送った」直後に押される 2 操作が数秒差で同じ場所を奪い合い、
+残った 1 文が**どちらの返事か読めなくなる**。
+
+**④ 読めない配信(§5-5)は、到達性(§5-4)の**成功**として数える。** `applyPollStep` の
+`.unreadable` の腕は `reachability.recordSuccess()` を呼ぶ。`PollClient` が `.unreadable` へ
+辿り着くのは **200 を線から読んだ後だけ**だから。逆向きに代用すると、サーバの形の後退を
+**通信の問題**として利用者に報告する事になる。仕様が名指しで禁じている代用そのもの。
+
+**⑤ poll の `.unreachable` が Sprint 5 では何もしていなかった。** `return true` だけで、
+会話の途中で backend を失った電話は**古い画面を黙って映し続けた**。brief §2-c の初版は
+この穴を書き落としていた(初回読み込みの経路だけ読んで「現状」を書いた)。訂正は
+brief §7 に残した。
+
+## 門が 2 本の検査を突き返した(そして門が正しかった)
+
+最初の commit は `vacuous-gate.sh` に止められた —— 「★錨のない検査が 2 本ある」。
+`testAFreshMeterIsNotUnreachable` と `testASuccessOnAFreshMeterChangesNothing`、
+どちらも**否定の主張しか持っていなかった**。中身を抜いた `ReachabilityMeter`
+(`isUnreachable` が常に `false`、計数が動かない)は、両方とも緑で通る。
+
+直し方は「錨を 1 行足す」ではなく、**その検査が直接食う導出の上に錨を置く**:
+
+- 前者 → 閾値まで数えて `isUnreachable` が**立つ**事まで見る。
+- 後者 → ★こちらは実質的な直し。元の doc は
+  「0 の streak を reset して**負にしない**」を守ると書いてあったのに、
+  `-1` は `consecutiveFailures` からも `isUnreachable` からも**見えない**。
+  つまり元の 2 行は、名指しした欠陥を**構造的に検出できなかった**。
+  見えるようになるのは 3 回失敗した後 —— `-1` から数え始めた計器は
+  **4 回目**でようやくバナーを出す(毎回 1 周期遅れる)。
+  なので「成功 → 失敗 3 回 → **3 で立つ、4 ではない**」まで書いた。
+
+同じ形は 7/31 の `method_check_reference_drifts_when_geometry_is_rebuilt` と
+8/02 の「ログに書き手が複数いる」件に出ている: **検査が名指しした欠陥を、
+その検査の計器で観測できるか**を確かめていない。
+
+## 変異検査 —— 60 本の緑が「性質を測っている緑」か(Mode 0 の敵対的検査)
+
+`.harness/dod-sprint-6-controls.sh`。Sprint 6 で足した 60 本は全部緑で出たが、
+緑は「欠陥が無い」の証拠ではなく「**今の実装とこの検査が一致している**」の証拠でしかない。
+骨抜きの検査も同じ緑を出す。だから実装を 1 行ずつ壊して、名指しの検査が赤くなるかを見た。
+
+まず基準: 名指しの 10 本を**無変異で**回して全部緑(10 本)。
+これが赤いと変異の赤と区別が付かないので、その場合は 2(未測定)で止まる作りにしてある。
+
+| 変異 | 壊した物 | 赤くなるはずの検査 | 結果 |
+|---|---|---|---|
+| `choice-button` | CHOICE のボタン**だけ**開ける(文はそのまま) | `…ChoiceSentenceAndTheChoiceButtonMoveTogether…` | 赤 |
+| `meter-substitution` | 読めない 200 を到達性の**失敗**として数える | `…UnreadablePollsDriveTheOtherMeterAndNever…` | 赤 |
+| `unreachable-arm-inert` | poll の `.unreachable` を Sprint 5 の「何もしない」に戻す | `…TwoPollTransportFailuresAreNotEnoughAndTheThird…` | 赤 |
+| `banner-merge` | 割り込みの答えを送信の欄へ書く | `…AnInterruptOutcomeNeverTouchesTheSendBanner` | 赤 |
+| `banner-provenance` | 文言は同じまま、**出所だけ**電話側にすり替える | `…PhoneWordedInterruptBannersAreMarkedAsNot…` | 赤 |
+| `inflight-guard` | 二度押しの門を `canInterrupt` から `interruptEnabled` へ | `…ASecondPressWhileOneIsInFlightDoesNot…` | 赤 |
+| `threshold-equality` | `>=` を `==` に(4回目でバナーが消える双子) | `…TheBannerStaysUpPastTheThreshold…` | 赤 |
+| `recovery-decay` | 復帰を「即座に 0」から「1 ずつ減衰」に | `…RecoveryIsNotADecay…` | 赤 |
+| `threshold-fork` | 転送別名を展開して 2 本目の定数にする | `…ListViewModelForwardsToThisThreshold…` | 赤 |
+| `interrupt-body` | 割り込みに body と `Content-Type` を付ける | `…RequestCarriesNoBodyAndNoContentType…` | 赤 |
+
+**`== PASS 10 / FAIL 0 / UNMEASURED 0`**、復元も観測済み。
+★この表の値は**書き換えた後の版**で取り直した物(下の2節)。初版の走行も同じ 10/0/0 を出したが、
+初版は基準点が git の index なので**同じ数字が別の事を言っている** —— 数字が一致するからといって
+古い走行の値を新しい script の証拠に流用しない。
+
+`banner-provenance` が一番効いている: **文言を変えずに出所だけ**すり替える変異なので、
+文字列を比べる検査は全部素通しする。`SendBanner.fromServer` を型に持たせた事が、
+「画面のこの文は誰の言葉か」を**主張できる性質**にしている事の証明になっている。
+
+置換が 1 件も当たらなかった変異は**未測定**として落とす(緑と読まない)。
+的が本文から外れたのを緑と読むのが、この repo が `check-mutation-targets.sh` を作る事に
+なった失敗そのものなので、同じ扱いにしてある。
+
+## ★この対照は初版のままだと、次の commit を自分で止めていた
+
+書いた直後に `staged-controls-gate` の側から読み直して見つけた。初版は
+「対象 file が dirty なら走らない」+ `git checkout --` で復元、という形だった。
+
+- 門はこの対照を `ios/Tests/…` が staged の時に選ぶ(宣言どおり)。
+- ところが Sprint 5/6 の commit の形は「**検査と実装を同じ commit に入れる**」。
+- その瞬間 `ios/Sources/…` は staged = `git status --porcelain` が非空 = dirty 判定。
+- → 対照が 2(未測定)で落ちる → 門は 2 を 0 に丸めない → **commit が止まる**。
+
+実測(改行を1つ足して回した): `UNMEASURED 変異の対象が最初から dirty` / `rc=2`。
+
+真因は「厳しすぎた」ではなく**基準点を index に取った事**。直しは基準点を
+「走る前のバイト」へ移す —— 走る前に複製を取り、そこから戻し、**shasum の一致**で
+復元を確かめる。作業木の状態に依存しなくなるので前提そのものが消える。
+復元の確認も強くなった: `git status` が清潔なのは「index と一致」の意味しか無く、
+**元から staged だった file には最初から間違った問い**だった(変異が残っていても
+index と一致していれば清潔に見える、という逆向きの穴も在る)。
+
+## ★★その直しが**後始末に隠された**欠陥を持ち込んでいた(同じ晩に 2 段)
+
+基準点を複製へ移す書き換えの中で、復元を1本の関数にまとめた:
+
+    restore_one() { local i="$1" f="${TARGETS[$i]}" s; … }
+
+これは**動かない**。bash は `local` の右辺を**全部展開してから**代入するので、
+`${TARGETS[$i]}` の `$i` はまだ引数ではなく**呼び出し元の `i`** を読む。
+変異の loop から呼ぶと、直前の複製 loop が置いた global の `i=4`(範囲外)を引いて
+`set -u` で落ちる。実測: `line 71: TARGETS[$i]: unbound variable`、基準の 10 本が
+緑で出た直後に死んだ。
+
+★**性質が悪いのは死んだ事ではなく、死んだのに最後の判定が緑に見えた事**。
+`cleanup` は `local i=0` を持つので、動的スコープでそちらを引いて**正しく復元する**。
+だから走行が途中で死んでも、対象 file は走る前のバイトに戻っている ——
+`shasum` の一致も出る。**後始末が効いている事を、本体が効いている証拠に読める形**に
+なっていた。今回は tee した全文に例外行が残っていたので気付いたが、
+判定行だけ見ていたら通していた。
+
+`method_check_reference_drifts_when_geometry_is_rebuilt`(7/31)と同じ形:
+**基準点を作り直した時、その基準点に寄りかかっていた検査も一緒に点検する**。
+今回は「復元できたか」の検査が、直した当の関数ではなく trap を測っていた。
+
+直しは 3 行に割るだけ(`local i="$1"` を先に確定させる)。
+確認は**呼び出し元に範囲外の `i=4` を置いた状態**で 4 添字とも引ける事を単体で見た
+(条件を再現しない確認は、直った証拠にならない)。
+
+## 走らせた物と結果
+
+| 何 | 結果 |
+|---|---|
+| `ios/tools/build.sh --sim`(headless、`iPhone-dogfood`) | **350 件 / 失敗 0**(Sprint 5 終わりは 290。+60) |
+| `.harness/dod-sprint-6-controls.sh` | **PASS 10 / FAIL 0 / UNMEASURED 0**。★この値は**書き換えた後の版**の走行(下の2節の直しを両方入れた形)。しかも**わざと dirty にした作業木**で回して、走った後も対象が dirty のまま = 復元したのが index の版ではなく**走る前のバイト**だと確かめてある |
+| `doc-linerefs-gate.sh` | 緑 |
+| `check-mutation-targets.sh` | 的の照合 241 件 / 当たらない 0 |
+| `commit-suite-gate.sh` | 単体 681 / 681 緑 |
+| `vacuous-gate.sh` | 錨なし 0 本(SELF-TEST pass 17 / fail 0)。★2 本を突き返された後の値 |
+| `staged-controls-gate.sh` | 「触れた対照は無い」= **この対照がまだ存在しなかった時の値**。次の commit から回る |
+
+commit `a0be498`(11 file、1721 挿入 / 21 削除)。
+
+## 未測定・持ち越し
+
+- ★**この対照は commit の門から呼ばれると 9 分前後かかる**(xcodebuild 11 回)。
+  短くするなら「staged な物に関わる変異だけ回す」だが、選び方を 2 箇所に持つ事になる。
+  `--no-verify` で外される兆候が出るまでやらない —— **黙って上限を掛けない**方を採った。
+- ~~DoD 9 行目(**実機**)は未実施~~ → **2026-08-06 に観測で閉じた**(下の節)。
+- Sprint 5 からの持ち越しはそのまま生きている: DoD 1 の method / path / header 次元に
+  同種の変異を植えていない、`pollUntilScreen` の `tries = 10`、`port-coverage.py` の
+  構造入力 13/13、`pre-commit-gates.sh` の手書きの範囲絞り。
+- `ios/tools/live-send-check.sh` / `live-send-main.swift` /
+  `rc-backend/tools/live-http-check.mjs` を**見張ると宣言している対照が 1 本も無い**。
+  門は名前を出すだけで止めない(そういう設計)ので、見えている穴として残る。
+  (`live-interrupt-check.sh` だけは下の節で埋めた。残り 3 本はそのまま。)
+- Conversation 画面の `RC_UI_FIXTURE` UI 検査、List 画面の契約違反が log だけの件、
+  `.notFound` が poll を止めない件は、引き続き未着手。
+
+## Tom の裁定待ち(Sprint 6 は止まらなかったが、次に効く)
+
+- **★`DESIGN.md` §2.29-f —— D4 を「承認は禁止、明示的な拒否は可」へ読み替えるか(Yes / No)。**
+  私の推奨は **Yes**。移動中に止まった会話を動かせる唯一の手で、向きは常に拒否だから。
+  Yes になっても動くのは `interruptAllowedOnChoiceScreen` **1 行だけ** ——
+  Sprint 6 の検査は全部この定数に対して書いてあり、`false` に対しては書いていない。
+- 仕様 §7 —— 口座の切り替えを v1 から落とす件。黙って落とすと `REQUIREMENTS.md` が
+  必須と記録している項目が 1 つ消える。
+
+---
+
+# 2026-08-06 —— Sprint 6 DoD 9 行目(実機)を閉じた。緑より価値が在ったのは**赤の内訳を名付けた**方
+
+## 何を観測したか
+
+`ios/tools/live-interrupt-check.sh`(新)を Jervis から走らせ、edith の本番 rc-backend に
+**製品の `InterruptClient` をそのまま**当てた。出力(会話 id は伏せてある):
+
+| 段 | 観測 |
+|---|---|
+| 3. 仕込み | `text=送った`(電話の `SendClient` で 400 行の生成を始めさせる) |
+| 4. 生成中の確認 | `生成中を観測(0s 目 / 材料 = spinner)` |
+| 5. 割り込み | `kind=ok tone=ok` / **`text=止めました(生成が止まったのを確認)。`** / 終了コード 0 |
+| 6. 陰性対照A | 止まった後にもう一度撃つ → `kind=warn` /「止める対象が見当たりませんでした」 |
+| 7. 陰性対照B | でたらめな鍵 → `outcome=unauthorized(401)` |
+| 後始末 | セッション / `panes/*.json` / 転写 の **3 つとも不在を確認** |
+
+★**生フィールドの `stopped` は読んでいない**。`InterruptClient` の `Envelope` は
+`display` と `code` しか宣言していない —— 2026-08-03 まで、サーバの
+「Escape を押した」を電話が「止まった」と読む欠陥が在り、電話側で文言を作り直す事は
+その欠陥を建て直す事に等しい。だから此処でも、`view.mjs` の `interruptResult` が
+`stopped:"verified"` の時**だけ**書く文が届いた事で確かめている。
+
+★**陰性対照A が無いと、5 段目の緑は「この口はいつでも止めましたと言う」の可能性を
+排除できない**。実際に別の文(`null` の枝)が返ったので、四択が四択として動いている。
+
+## ★この検査の本当の穴は、緑の側ではなく「赤の意味」に在った
+
+初版は verified 以外を全部 `NG` に落としていた。しかし四択のうち
+
+- `already-done` = 撃つ前に番が自力で終わっていた
+- `null` = 生成中の観測と撃鍵の間に終わった
+
+の 2 つは、**割り込みが壊れている事の証拠ではない**。仕込みが甘かった走行である。
+同じ色にすると、次に読む人が原因を「経路の側」と「検査の側」で取り違える ——
+この repo が繰り返し踏んだ「狭い観測を、それが支えていない結論に貼る」の裏返し。
+終了コードを 0 / 1(経路) / **2(測れていない)** の 3 値に割り、判定も 3 色に分けた。
+
+そして 1 回の実機走行では **verified の枝しか通らない**。残り 3 枝は無検査のまま
+残る事になるので、判定を `classify_interrupt_text()` に切り出し、
+通信も build もしない `--classify <文>` の口を付けて、対照から呼べる様にした。
+
+## その対照が、書いた当日に本体の欠陥を捕まえた
+
+`.harness/live-interrupt-wording-controls.sh`(新、`# controls-for:` は
+`ios/tools/live-interrupt-check.sh rc-backend/src/view.mjs`)。守るのは 4 つ:
+
+1. 四択の文が `view.mjs` と実機検査の**両方**に在り、`view.mjs` では**ちょうど 1 箇所**
+   (2 箇所以上あると、梯子がどの枝を指しているか言えなくなる)
+2. 針どうしが部分文字列で食い合っていない(`grep -F` の誤射)
+3. `--classify` が四択 + `unknown`(legacy の worker 経路の文)を**名前で**返す
+4. 陰性対照: どの file にも書いていない文が「在る」と出ない
+
+初回走行が **`PASS 6 / FAIL 5`**。5 本とも `[verified] のはずが [] になった` の形 ——
+`--classify` の判定を**引数の輪より後ろ**に置いていた。輪の既定は
+`*) echo "知らない引数: $1" >&2; exit 2` なので、この口は**永久に届かない**。
+しかも輪を抜けた後は `$1` 自体が消えている。
+
+★**当たらないプローブは「無い」と報告する**。`method_check_reference_drifts_when_geometry_is_rebuilt`
+と同じ形で、今回は対照の側が先に赤くなったので気付けた。直しは block ごと
+`set -uo pipefail` の直後へ移すだけ。移した後 **`PASS 11 / FAIL 0`**、
+実機走行も再度 `rc=0` で緑(refactor 前の緑を流用していない)。
+
+## 何を作ったか
+
+| 物 | 役 |
+|---|---|
+| `ios/tools/live-interrupt-main.swift`(新) | 製品の `InterruptClient` を包む殻。URL / 会話 id / 鍵を**標準入力の 3 行**で受ける(argv は `ps` に出る)。鍵は印字しない。`keepText` は出さない —— 割り込みには composer の文が懸かっていない |
+| `ios/tools/live-interrupt-check.sh`(新) | 上の 7 段。終了コード 0 / 1(経路) / **2(測れていない)** |
+| `.harness/live-interrupt-wording-controls.sh`(新) | 文言の一致 + 四択の名付け + 陰性対照 |
+| `rc-backend/tools/disposable-session.mjs` の `busy` 副命令(追加) | `observed <材料>` / `unknown -` の**1 行だけ**。画面は出さない |
+
+★`busy` を足したのは「n 秒待てば生成中だろう」で撃たない為。スピナーの被覆は
+61-82%(`classifyScreen` の見出し)なので **1 枚では決めない**。輪で回して
+`observed` を**見たその周**で撃つ。`unknown` は「待機中」ではなく「観測できなかった」。
+今回の走行は 0 秒目で当たったので、**60 周の予算は一度も使われていない**(下の持ち越し)。
+
+## 走らせた物と結果(この節)
+
+| 何 | 結果 |
+|---|---|
+| `ios/tools/live-interrupt-check.sh`(実機、edith) | **rc=0**。5 段目で `stopped=verified` の文、陰性対照 A / B とも期待どおり、後始末 3 点とも不在を確認 |
+| `.harness/live-interrupt-wording-controls.sh` | 初回 **PASS 6 / FAIL 5**(本体の欠陥を捕捉)→ 直して **PASS 11 / FAIL 0** |
+
+## 未測定・持ち越し(この節ぶん)
+
+- `busy` の待ち輪は **一度も待った事が無い**(2 走行とも 0 秒目で観測)。
+  60 周という予算そのものは未検査。
+- 実機で通ったのは `verified` の枝**だけ**。`already-done` / `unverified` / `null` は
+  `--classify` の単体でしか通っていない —— 線の上でその 3 つを作る手立ては
+  今のところ無い(意図して生成中を外す仕込みが要る)。
+- `live-send-check.sh` / `live-send-main.swift` / `live-http-check.mjs` の
+  `# controls-for:` 宣言は**まだ無い**。埋めたのは割り込み側 1 本だけ。
