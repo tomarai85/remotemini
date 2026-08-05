@@ -31,6 +31,11 @@ struct RootView: View {
                     // screenshot can be taken without a List fixture row to tap.
                     ConversationView(viewModel: ConversationViewModel(
                         client: HistoryFetchingFixture(state: conversationFixtureState),
+                        // Sprint 4: without this, the poll loop would default to a
+                        // real `PollClient()` and make real network attempts against
+                        // the inert fixture host in the background -- see
+                        // `PollFetchingFixture`'s own doc for the full reasoning.
+                        pollClient: PollFetchingFixture(historyState: conversationFixtureState),
                         baseURL: Self.fixtureBaseURL,
                         apiKey: "ui-fixture-key",
                         sessionID: "fixture-session",

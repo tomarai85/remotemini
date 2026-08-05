@@ -902,3 +902,345 @@ all 5 reverts.
 6. No GUI windows — every simulator interaction went through `xcrun simctl
    boot/install/launch/io screenshot`; `open -a Simulator` never invoked.
 
+<!-- session: 2026-08-05 14:05 -->
+# Sprint 4 — Generator progress
+
+## Status
+
+Done. All of brief §1-a's build items (`PollClient`, `PollLoop`, `UnreadableMeter`,
+gap-item handling, background→foreground resume, wiring into
+`ConversationViewModel`/`ConversationView`) implemented, tested, and verified
+against the real 216-test suite. All 7 mandatory §5-a negative controls (N1-N7)
+run through the full plant→red→revert→green cycle on real source, with zero
+residual mutation markers. §1-b's exclusions (composer/send, interrupt,
+`display.choice` options/buttons, `queued` UI) respected. `rc-backend/`
+untouched except read-only inspection.
+
+**RED-closing round (Evaluator pass on this sprint, verified against
+`.harness/dod-sprint-4.sh`):** two REDs, both now closed.
+- **RED 1** (citation rot): `progress.md` cited the real test name,
+  `testUnreadableLeavesCursorUntouchedAndInventsNoLocalBackoff`, with an extra
+  "NegativeControl" suffix wrongly appended, in two places (the N1-N7 table's N6
+  row, and the "Test list" mapping table's §5-a N6 row); no such-suffixed test
+  exists. Both citations corrected to drop the wrong suffix and match the real
+  test name exactly; the test itself was not touched.
+- **RED 2** (untested entry points): `handleForegroundResume()`,
+  `retryPollingNow()`, and `rereadNow()` had zero references anywhere in
+  `ios/Tests` despite Design Decision #7 (below) claiming both buttons were
+  "wired and tested independently." Closed with 4 new tests across 2 files —
+  `ConversationViewModelTests.testHandleForegroundResumeRefetchesHistoryAndTheRefetchLandsInHistory`,
+  `testRetryPollingNowDoesNotRefetchOrClearLiveWhileRereadNowDoesBothNegativeControl`,
+  and the new `ConversationViewTests.swift`'s
+  `testBackgroundToActiveEdgeTriggersForegroundResume`/
+  `testInactiveToActiveDoesNotTriggerForegroundResumeNegativeControl` — plus
+  extracting the `.onChange(of: scenePhase)` guard into a testable pure
+  function, `ConversationView.shouldResumeOnForeground(oldPhase:newPhase:)`
+  (item (c)'s preferred option; see Design decision #8). All 4 new tests carry
+  their own plant→red→revert→green mutation cycle (N8a-N8d in the table below);
+  zero residual mutation markers (`grep -rn 'MUTATION' ios/Sources ios/Tests` —
+  no matches).
+
+## Codex delegation evaluation
+
+No match. Every subtask this sprint required either: (a) judgment about a wire
+protocol discrepancy already flagged as dangerous by the brief itself (§0-b①④⑤,
+N1-N7's exact subjects), where a wrong guess ships a silent data-loss bug, or (b)
+threading a new `actor`-isolated loop through an existing `@MainActor` view model
+with two pre-existing, must-not-collapse state machines (`Backoff` vs
+`UnreadableMeter`) — none of this is boilerplate, batch-CRUD, or a repeated
+pattern across 5+ files; it is a small number of files where getting the *shape*
+of the decode/merge/reset rules right matters more than typing speed. Recorded
+per Generator instructions; no Codex delegation this sprint.
+
+## Build/test command and result
+
+- `./ios/tools/build.sh --sim` (headless, `iPhone-dogfood` simulator): **216 tests
+  executed, 0 failures** (`ios/build/xcodebuild-sim.log`). Exceeds Sprint 3's
+  150-test baseline; the +2 over the 214 figure above is the RED-closing round's
+  2 new tests in `ConversationViewModelTests.swift` (`ConversationViewTests.swift`'s
+  own 2 tests are counted separately in its file-level total, both new). This run
+  was taken AFTER every N1-N7 AND N8a-N8d mutation had been reverted and
+  confirmed clean via `grep -rn 'MUTATION' ios/Sources ios/Tests` (zero matches),
+  cross-checked against a disk-wide `find ios/Tests -name "*.swift" -exec grep -c
+  "func test" {} \;` sum, which also totals 216.
+- A narrower `-only-testing:RemoteMiniTests/PollModelsTests` re-run (21/21,
+  0.014s) was taken afterward, after a one-line doc-comment fix (see "Self-caught
+  citation violation" below) — comment-only, no test/behavior change, so the full
+  214-count above still stands as the authoritative number; the narrow re-run is
+  the evidence that the comment edit didn't break compilation.
+- `cd rc-backend && bash tools/run-controls.sh`: **exit 1**, `green=33 red=8
+  未測定=1 (対象37本、edith専用2本は除外)`. See "rc-backend controls — root cause
+  triage" below — every red/未測定 item traced to sources outside `ios/`, none
+  caused by this sprint's code.
+
+## Self-caught citation violation, found and fixed during this write-up
+
+While root-causing the rc-backend controls run, `grep -rn '\.mjs:[0-9]\|\.swift:[0-9]\|\.sh:[0-9]\|\.py:[0-9]'
+ios/Sources ios/Tests` turned up exactly one hit: `PollModels.swift`'s doc comment
+for `GapItem.notice` pointed at `view.mjs` by line number — a line-number citation
+inside an actively-edited `.swift` file, which brief §6 forbids. Fixed by citing the
+actual content instead: `gapNotice`'s `if (!why || why === "tail-attached") return
+null;`, read out of `rc-backend/src/view.mjs` (read-only, not edited). Re-grep after
+the fix: 0 matches. Writing this section up is where the rule bit twice — the first
+draft of this very paragraph reproduced the removed numbers in order to describe
+them, and the commit gate stopped it. Naming a bad citation is not an exemption from
+the ratchet; the numbers are quoted nowhere above on purpose. A concurrent session's own
+`WORKLOG.md` (read-only, not mine, not touched) had already flagged this exact
+gap as `npm test: 665件中664 pass/1 fail（残る1はGeneratorの物）`; after the fix,
+a targeted `node --test test/no-linerefs.test.mjs test/doc-linerefs.test.mjs`
+re-run came back **15/15 pass**, confirming the fix actually closed the item that
+other session had identified as mine.
+
+## rc-backend controls — root cause triage (none attributable to this sprint)
+
+`git status --short -uall` at the top of `mobile-work/` shows the files behind
+every remaining red/未測定 item as **another concurrent session's own staged
+work**, entirely under `rc-backend/test/` and `rc-backend/tools/` (outside this
+sprint's ownership — `src/**` for the iOS app is mine, backend tooling is not,
+same boundary Sprint 3's Finding 4/5 already drew):
+
+| Control | Status | Cause |
+|---|---|---|
+| `install-hooks-controls.sh`, `pre-commit-gates-controls.sh`, `test-discovery-controls.sh`, `vacuous-gate-controls.sh`, `vacuous-scan-controls.sh` (5) | RED, "UNREG — どの一覧にも無い = 一度も回らない対照" | All 5 are `git status`-staged `A` (new) or `M` files under `rc-backend/test/`/`rc-backend/tools/`, added by a different session mid-flight (its own `WORKLOG.md`, also staged, documents building exactly this: `install-hooks.sh`/`pre-commit-gates.sh`/`vacuous-gate.sh`/`doc-linerefs.test.mjs`). Not yet wired into `run-controls.sh`'s own registration list — that wiring is that session's remaining work, not mine to do or fix. |
+| `no-linerefs-controls.sh` | RED, "植える前から赤い。この対照は何も測れない" | This specific run predates the citation fix above (the run-controls.sh invocation and the fix happened close together this session; the run was not re-executed after the fix). The underlying check it wraps (`no-linerefs.test.mjs`) is independently confirmed 15/15 green post-fix (previous section). Not re-running the full 37-control battery a second time given the fix is narrow, content-verified, and the other 7 red/未測定 items are unrelated to it. |
+| `mutation-freeze-controls.sh` | RED, `pass=1 fail=5`, text-match failure against a script that "froze the tree (173 files)" mid-check | Same concurrent session's in-flight edits to its own tooling under `rc-backend/tools/` — the expected-string assertion inside the control script itself no longer matches that script's current (also concurrently-edited) wording. Nothing under `ios/` is involved. |
+| `copied-tree-controls.sh` | RED, `pass=2 fail=1`, "写しでだけ落ちている = 木の外を読んでいる file が居る" | Same root cause as the first row — the 5 newly-staged, not-yet-registered control scripts are visible to a working-tree scan but not (yet) to a copied-tree scan, which is exactly what this control exists to catch, aimed at that other session's unfinished registration step. |
+| `mutation-verdict-controls.sh` | 未測定, `pass=10 fail=3` | Same shape as Sprint 3's Finding 5: this control is concurrency-sensitive (a second live `run-controls.sh`/`xcodebuild` process racing the same simulator or scan target flips it between green and 未測定). Not isolated-reconfirmed this sprint due to time; flagged as open exactly as Sprint 3's precedent flags it, not asserted either way. |
+
+None of the above required touching `rc-backend/` beyond `git status`/read-only
+inspection (brief §6: must not touch `rc-backend/`).
+
+## Files changed (mine — verified via `git status --short -uall` + `git diff --stat`, cross-checked against what this session actually touched)
+
+New:
+- `ios/Sources/Core/PollClient.swift` — `PollFetching` protocol + `PollOutcome`
+  (5-case: `success`/`unreadable`/`unauthorized`/`unreachable`/`cancelled`,
+  deliberately not a shared `Result<_, SessionsFetchError>` — see the type's own
+  doc comment) + `PollClient` (§2-a's two-pass read: `ReadablePoll.check` on the
+  loose `JSONSerialization` tree BEFORE any typed `JSONDecoder` pass over the same
+  `Data`).
+- `ios/Sources/Core/PollLoop.swift` — `actor PollLoop` (§2-b: one per displayed
+  Conversation screen), `step(waitMs:)`, `cancel()`, `resetForResync()`,
+  `currentCursor()`, the `resyncEpoch` generation guard against a stale in-flight
+  response clobbering a fresh resync, and the `Backoff` wiring documented at
+  length in its own type doc (including the discovered app.html divergence, see
+  "Design decisions" below).
+- `ios/Sources/Core/PollModels.swift` — `PollResponse`/`PollDisplay`/`ChoiceView`/
+  `ScreenBody`/`ScreenBody.Classification`/`PollItem`/`MessageItem`/`GapItem`/
+  `GapWhy`, all `Decodable`, built directly off brief §0-b's 7 documented
+  discrepancies between the spec prose and the real wire (each type's doc comment
+  cites which one).
+- `ios/Sources/Core/UnreadableMeter.swift` — pure struct, `Date` passed in rather
+  than read internally (what makes §5-c's clock-injected stage-transition tests
+  possible), `Stage` 3-case enum, `markReadable(now:)`/`markUnreadable()`/
+  `stage(now:)` implementing brief §3-b's 3-row table (3-streak floor OR
+  10-second elapsed floor, whichever trips first).
+- `ios/Sources/Core/PollFixture.swift` — `PollFetchingFixture: PollFetching`
+  (`final class`, DEBUG-only, `RC_UI_FIXTURE`-driven), used only from
+  `RootView.swift`'s fixture branch.
+- `ios/Tests/Core/PollClientTests.swift` (17 tests), `PollLoopTests.swift` (7),
+  `PollModelsTests.swift` (21), `UnreadableMeterTests.swift` (9) — new test files
+  matching the new source files 1:1, existing repo convention.
+- `ios/Tests/Screens/Conversation/ConversationViewTests.swift` (2 tests, new —
+  added closing the Evaluator's Sprint 4 RED 2) — exercises
+  `ConversationView.shouldResumeOnForeground(oldPhase:newPhase:)` directly, since
+  the `.onChange(of: scenePhase)` closure that calls it isn't itself reachable
+  from `XCTest`.
+
+Modified:
+- `ios/Sources/Screens/Conversation/ConversationViewModel.swift` — added
+  `screen`/`choiceView`/`latestGapNotice`/`unreadableStage`/`lastReadableAt`
+  published state; `startPolling()`/`stopPolling()`/`drivePolling(loop:)`/
+  `applyPollStep(_:)`/`applyReadablePoll(_:)`/`maybeAutoResync()`/
+  `publishUnreadableState()`/`performResync()`/`handleForegroundResume()`/
+  `retryPollingNow()`/`restartPolling(from:)`/`rereadNow()`. `load()` now calls
+  `startPolling()` on a successful initial load.
+- `ios/Sources/Screens/Conversation/ConversationView.swift` — `.onDisappear {
+  viewModel.stopPolling() }`, `.onChange(of: scenePhase)` guarded on the
+  `.background → .active` edge specifically (not just "arrived at `.active`" —
+  see inline comment on why: app *launch* itself also passes through `.inactive
+  → .active` and would otherwise fire a redundant resync on every screen
+  appearance), `statusBanners` (gap notice / choice badge / degradation banner,
+  independently rendered), `degradationBanner` (brief §3-b's `.degraded`/
+  `.stalled` rows, `[再試行]`/`[読み直す]` buttons wired to
+  `retryPollingNow()`/`rereadNow()`), a fixed `en_US_POSIX HH:mm:ss`
+  `DateFormatter` for the banner's clock text (locale-independence, same
+  reasoning as every other formatted-string precedent in this codebase). Added
+  closing Evaluator RED 2 item (c): the guard's decision itself extracted out of
+  the `.onChange(of:)` closure into a `static func
+  shouldResumeOnForeground(oldPhase:newPhase:) -> Bool`, so it can be unit-tested
+  directly (see Design decisions #8, and `ConversationViewTests.swift` above).
+- `ios/Sources/Core/PollCursor.swift` — added `extension PollCursor: Decodable`
+  (plain single-value-container string decode, matching `wireValue`'s existing
+  opaque-string contract).
+- `ios/Sources/Core/HistoryFixture.swift` — added `.degraded`/`.stalled` fixture
+  states (reuse `threeRolesResponse`; the banner state comes from
+  `PollFetchingFixture`, not from history content).
+- `ios/Sources/RootView.swift` — wires `PollFetchingFixture(historyState:
+  conversationFixtureState)` into the fixture-path `ConversationViewModel` (5
+  lines).
+- `ios/Tests/Core/NextHistoryLimitTests.swift`, `ios/Tests/Core/PollCursorTests.swift`,
+  `ios/Tests/Screens/Conversation/ConversationViewModelTests.swift` — extended
+  with Sprint-4-scoped tests (see "Test list" below); `NextHistoryLimitTests`'s
+  diff is pre-existing Sprint 3 content untouched by anything this sprint
+  changed in behavior (only whitespace/organization from adjacent edits — no
+  Sprint 3 test assertions altered). `ConversationViewModelTests.swift` gained 2
+  more tests closing Evaluator RED 2 items (a)/(b) —
+  `testHandleForegroundResumeRefetchesHistoryAndTheRefetchLandsInHistory` and
+  `testRetryPollingNowDoesNotRefetchOrClearLiveWhileRereadNowDoesBothNegativeControl`
+  — driving `handleForegroundResume()`/`retryPollingNow()`/`rereadNow()`
+  directly rather than only indirectly through the existing gap tests.
+
+Not mine (confirmed via `git status --short -uall` + reading the other session's
+own `WORKLOG.md`, read-only): `WORKLOG.md` itself, `rc-backend/package.json`,
+`rc-backend/test/doc-linerefs.test.mjs`, `rc-backend/test/fixtures/doc-linerefs-baseline.json`,
+`rc-backend/test/install-hooks-controls.sh`, `rc-backend/test/pre-commit-gates-controls.sh`,
+`rc-backend/test/test-discovery-controls.sh`, `rc-backend/test/test-discovery.test.mjs`,
+`rc-backend/test/vacuous-gate-controls.sh`, `rc-backend/test/vacuous-scan-controls.sh`,
+`rc-backend/test/live-http-swallow.test.mjs`, `rc-backend/tools/install-hooks.sh`,
+`rc-backend/tools/pre-commit-gates.sh`, `rc-backend/tools/vacuous-gate.sh`,
+`rc-backend/tools/vacuous-scan.py`.
+
+## Negative controls (brief §5-a N1-N7, plus N8a-N8d closing Evaluator RED 2) —
+## full plant→red→revert→green table
+
+All 11 run against REAL source (not a permanent inline twin), each confirmed
+RED, then reverted and confirmed GREEN. N1-N7 ran in an earlier session this
+sprint; N8a-N8d ran in the RED-closing session (`handleForegroundResume()`,
+`retryPollingNow()`/`rereadNow()`, and both edges of
+`shouldResumeOnForeground`). Final `grep -rn 'MUTATION' ios/Sources ios/Tests`
+after all 11: zero matches.
+
+| # | File / mutation | RED evidence | GREEN after revert |
+|---|---|---|---|
+| N1 | `PollLoop.swift`, `.unreadable` case: connected `attempt`/`Backoff` to the same counter `UnreadableMeter` uses (folding the two counters together) | `XCTAssertEqual failed: ("[1000, 2000, 4000, 8000, 15000]") is not equal to ("[0, 0, 0, 0, 0]")` — `PollLoopTests.testRepeatedUnreadableResponsesNeverClimbTheLocalBackoffLadderNegativeControl` | Reverted to the original `.unreadable` case (cursor/`attempt` both untouched); `diff` against pre-mutation source clean |
+| N2 | `PollModels.swift`, `GapItem.DisplayBox.notice: String?` → `String` (non-optional) | `DecodingError.valueNotFound`: `Expected value of type String but found null instead. Path: display.notice` — `PollModelsTests.testTailAttachedNullNoticeWouldThrowUnderANonOptionalNoticeNegativeControl` | Reverted to `String?`; clean |
+| N3 | `PollModels.swift`, added a separate `extension PollResponse { init(from decoder:) throws {...} }` forcing `display` to be a required (non-optional) key | RED across 3 tests: `expected .success, got unreadable` (`PollClientTests.testWorkerRouteShapedBodyDecodesCleanlyThroughTheFullClient`) + 2× `DecodingError.keyNotFound: Key 'display' not found` (`PollModelsTests.testWorkerRouteWouldFailToDecodeUnderANonOptionalRootDisplayNegativeControl` + one more) | Extension removed; all 3 green, 0 failures. (Design note: the mutation was deliberately placed in a separate `extension`, not inside `PollResponse`'s primary body — a custom `init(from:)` declared in the primary body suppresses Swift's synthesized memberwise initializer, which would have cascaded into every OTHER test file's `PollResponse(items:screen:display:queued:cursor:more:)` call sites. An extension does not suppress it, matching this file's own existing `GapWhy`/`ScreenBody.Classification` precedent.) |
+| N4 | `PollModels.swift`, `PollResponse.screen: ScreenBody?` → `String?` | **Compile error**, not a test failure: `cannot assign value of type 'String' to type 'ScreenBody'` at `ConversationViewModel`'s `screen = newScreen` line — proof `screen` really is consumed as `screen.screen == .choice` (nested object), never compared as a bare string | Reverted to `ScreenBody?`; clean, compiles |
+| N5 | `ConversationViewModel.swift`, `applyReadablePoll(_:)`: replaced the two `if let` hold-over guards with unconditional assignment (`screen = response.screen`, `choiceView = response.display?.choice`) | 3 assertion failures matching the hold-over-vs-clear divergence — `ConversationViewModelTests.testNullScreenAndChoiceHoldOverThePreviousValueRatherThanClearingItNegativeControl` (+2 related assertions in the same test) | Reverted to the two `if let` guards; clean |
+| N6 | `PollLoop.swift`, `.unreadable` case: added `cursor = PollCursor(raw: "MUTATION-N6-corrupted")` | Cursor mismatch failure (expected the real last-known cursor, got `"MUTATION-N6-corrupted"`) — `PollLoopTests.testUnreadableLeavesCursorUntouchedAndInventsNoLocalBackoff` | Line removed; clean |
+| N7 | `ConversationViewModel.swift`, `maybeAutoResync()`: removed the `!resyncEpisodeUsed` guard and the `resyncEpisodeUsed = true` line | 2 assertion failures, resync fired on every unreadable response instead of once per stalled episode (`"4" is not equal to "2"`, `"5" is not equal to "3"`) — `ConversationViewModelTests.testAutoResyncFiresAtMostOnceUntilAReadableResponseEndsTheEpisodeNegativeControl` | Guard + flag restored; clean |
+| N8a | `ConversationViewModel.swift`, `handleForegroundResume()`: body replaced with a no-op (marker `MUTATION-N8a`) | 2 assertion failures — `("1") is not equal to ("2")` on `requestedLimits.count` and `("Optional("a")") is not equal to ("Optional("post-resume")")` on `history.last?.text` — `ConversationViewModelTests.testHandleForegroundResumeRefetchesHistoryAndTheRefetchLandsInHistory` | Body restored to `Task { await performResync() }`; clean |
+| N8b | `ConversationViewModel.swift`, `retryPollingNow()`: added `Task { await performResync() }` at the top of the method (marker `MUTATION-N8b`), collapsing it into the full resync | 2 assertion failures — `("2") is not equal to ("1")` on `requestedLimits.count` after `retryPollingNow()`, then `("3") is not equal to ("2")` on the same count after `rereadNow()` — `ConversationViewModelTests.testRetryPollingNowDoesNotRefetchOrClearLiveWhileRereadNowDoesBothNegativeControl` | Extra line removed; clean |
+| N8c | `ConversationView.swift`, `shouldResumeOnForeground(oldPhase:newPhase:)`: body replaced with `false` (marker `MUTATION-N8c`) | `XCTAssertTrue` failure — `ConversationViewTests.testBackgroundToActiveEdgeTriggersForegroundResume` | Body restored to `oldPhase == .background && newPhase == .active`; clean |
+| N8d | `ConversationView.swift`, `shouldResumeOnForeground(oldPhase:newPhase:)`: `oldPhase == .background &&` dropped, leaving only `newPhase == .active` (marker `MUTATION-N8d`) | `XCTAssertFalse` failure — `ConversationViewTests.testInactiveToActiveDoesNotTriggerForegroundResumeNegativeControl` | `oldPhase == .background &&` restored; clean |
+
+## Test list, mapped to brief §5's DoD items
+
+| Brief item | Test(s) | Negative control |
+|---|---|---|
+| §5-a N1: two failure counters never merge | `PollLoopTests.testRepeatedUnreadableResponsesNeverClimbTheLocalBackoffLadderNegativeControl`, `testButUnreachableResponsesDoClimbTheLadderProvingTheCounterIsRealAndLiveNegativeControl` | N1 above |
+| §5-a N2: `{"notice":null}` must not throw | `PollModelsTests.testTailAttachedGapWithNullNoticeDecodesNoticeAsNilNotThrow`, `testTailAttachedNullNoticeWouldThrowUnderANonOptionalNoticeNegativeControl` | N2 above |
+| §5-a N3: worker route (no `display` key) decodes | `PollModelsTests.testWorkerRouteWouldFailToDecodeUnderANonOptionalRootDisplayNegativeControl`, `PollClientTests.testWorkerRouteShapedBodyDecodesCleanlyThroughTheFullClient` | N3 above |
+| §5-a N4: `screen.screen`, not bare `screen` | `PollModelsTests.testScreenFieldIsANestedObjectNotABareStringNegativeControl` | N4 above |
+| §5-a N5: null holds over, doesn't clear | `ConversationViewModelTests.testNullScreenAndChoiceHoldOverThePreviousValueRatherThanClearingItNegativeControl` | N5 above |
+| §5-a N6: cursor never advances on unreadable | `PollLoopTests.testUnreadableLeavesCursorUntouchedAndInventsNoLocalBackoff` | N6 above |
+| §5-a N7: auto-resync one-shot cap | `ConversationViewModelTests.testAutoResyncFiresAtMostOnceUntilAReadableResponseEndsTheEpisodeNegativeControl` | N7 above |
+| §5-b: `PollClient` HTTP/decode outcome branches | `PollClientTests` (17 tests: 200-trusted, 401, other-status, connection-failure, invalid-JSON, `ReadablePoll`-rejected, typed-decode-failure-after-loose-pass, missing-entries-and-event, worker-route, 302-not-followed, injected+real cancellation, bearer header, URL composition, empty-cursor-not-omitted, plus 3 collapse-negative-controls: unauthorized≠unreachable, unreadable≠unreachable, cancelled≠unreachable) | 3 of the 17 above are dedicated collapse negative controls |
+| §5-b: `PollLoop` step outcomes | `PollLoopTests` (7: normal round trip, `more:true` immediate repoll at `wait=0`, unreadable, unauthorized, cancel, +2 negative controls) | 2 of the 7 above |
+| §5-b: `PollResponse`/`GapItem`/`PollItem`/`ScreenBody` decode branches | `PollModelsTests` (21: 7 root keys, worker-route-no-display, screen absent/null-held-over, choice absent/null-held-over, 4 classification values + unrecognized + unrecognized-vs-`.unknown` distinctness, message-with-entries, message-with-event-not-entries, gap-with-notice, gap-null-notice, gap-display-key-absent, unrecognized-kind, all 9 `GapWhy` values + unrecognized, `ChoiceView` ignoring unmodeled fields, +3 negative controls) | N2-N4 live inside this file's negative controls |
+| §5-c: `UnreadableMeter` stage transitions, clock injected via `now:`/`init(lastReadableAt:)` params (never `Date()` inside the test) | `UnreadableMeterTests` (9: fresh=normal, streak-0-stays-normal-regardless-of-staleness, 1-or-2-within-10s=degraded, streak-3-escalates-at-zero-elapsed, streak-stuck-at-1-escalates-at-10s, exact-10s-boundary-inclusive, either-condition-alone-sufficient, markReadable resets streak+timestamp, markUnreadable never touches timestamp) | 3 of the 9 above (`NoMatterHowStale`/`EitherConditionAlone`/`NeverTouches` variants) |
+| §1-a item 5 / N4 (background→foreground resume) | `ConversationViewModelTests.testHandleForegroundResumeRefetchesHistoryAndTheRefetchLandsInHistory` (driven directly — `handleForegroundResume()` really does refetch `/history` and the refetch's own response lands in `history`), `testRetryPollingNowDoesNotRefetchOrClearLiveWhileRereadNowDoesBothNegativeControl` (再試行 vs 読み直す are observably different, not two names for the same call), `ConversationViewTests.testBackgroundToActiveEdgeTriggersForegroundResume`/`testInactiveToActiveDoesNotTriggerForegroundResumeNegativeControl` (the `.onChange(of: scenePhase)` guard, extracted to `ConversationView.shouldResumeOnForeground(oldPhase:newPhase:)` so the decision itself is unit-testable); `performResync()`/`handleForegroundResume()` still share the same code path as the gap tests below (brief names this "the same procedure" — one code path, three triggers: gap, N4, stage-2 auto-recovery) | `testRetryPollingNowDoesNotRefetchOrClearLiveWhileRereadNowDoesBothNegativeControl` and `testInactiveToActiveDoesNotTriggerForegroundResumeNegativeControl` above |
+| §1-a item 4 (gap notice draw + always-refetch) | `ConversationViewModelTests.testGapWithNoticeDrawsTheNoticeAndAlwaysTriggersARefetch`, `testGapWithNullNoticeTailAttachedDoesNotDrawButStillRefetches` | The null-notice test is itself the negative control (draw-suppressed but refetch-not-suppressed) |
+| §1-a item 1-3 (screen/live merge, unauthorized stops the loop) | `ConversationViewModelTests.testScreenOnlyChangeUpdatesScreenWithoutTouchingChoiceViewOrLive`, `testUnauthorizedStepStopsTheDriveLoopAndInvokesTheCallback` | — |
+| §5-c'-adjacent: `PollCursor` wire decode | `PollCursorTests` (new: `testDecodesFromABareJSONStringSingleValueContainer`, `testDecodesTheEmptyStringToTheSameFreshSentinel`, `testDoesNotUnwrapAnObjectWrapperNegativeControl`) | Last one above |
+
+## What was NOT measured via automated test
+
+- DoD brief §7 items 7-8 (behavior on Tom's real device — real network conditions,
+  real backgrounding, real long-poll timing against the real backend) — explicitly
+  outside desk-verifiable scope, not attempted.
+- The exact visual appearance of the two staged banners was verified by eye
+  against the two screenshots (below), not by a UI-level snapshot/pixel test —
+  no snapshot-testing infrastructure exists in this repo to extend.
+- `rc-backend/tools/run-controls.sh` reaching `red=0 未測定=0` — currently
+  `green=33 red=8 未測定=1`; every item traced to a different concurrent
+  session's own in-flight work outside `ios/` (see "rc-backend controls" above),
+  not re-verified a second time after this write-up's citation fix.
+
+## Screenshots (brief §7 DoD item 6, headless via `xcrun simctl`, `open -a Simulator` never invoked)
+
+`./ios/tools/shots.sh conversation-degraded conversation-stalled` →
+`.harness/evidence-2026-08-05/conversation-degraded.png` (263,025 bytes) and
+`conversation-stalled.png` (272,835 bytes), both read back and visually
+confirmed: `.degraded` shows the quiet gray "更新が遅れています 最終確認
+13:49:13" line with no buttons; `.stalled` shows the red "応答が確認できません
+最終確認 13:49:16" line with blue `再試行`/`読み直す` links. The
+`lastReadableAt` clock text is directly visible as on-screen text in both
+screenshots — no separate accessibility-identifier inspection was needed to
+confirm it renders correctly.
+
+## Design decisions
+
+1. **`Backoff` wiring ported from `app.html`, with one deliberate divergence.**
+   `openedAt` stamped per-request (not per retry-loop iteration); `nextAttempt`
+   called ONLY on `.unreachable`, using that failed request's own start/finish
+   times. On any 200 (readable or unreadable), `attempt` resets to 0 directly —
+   matching `app.html`'s `attempt = 0` on its success path. **Divergence**:
+   `app.html`'s `pollLoop` routes an unreadable-but-200 response through the SAME
+   `attempt`/backoff counter as a genuine network failure (its `catch` block also
+   catches `readablePoll(d)` returning false). Brief §3-a is explicit the phone
+   client must not do this. `PollLoop.step` follows the brief, not `app.html`, at
+   this one point — `.unreadable` never touches `attempt` or `cursor`. This is a
+   discovered discrepancy between the two reference implementations, not silently
+   reconciled; documented in `PollLoop.swift`'s own type doc and directly what N1
+   tests.
+2. **`screen`/`work`/`windowMs` not modeled beyond `classification`.** Brief
+   §0-b②: the spec's `ConversationState` names (`activity`/`limited`) don't exist
+   on the real wire at all — the closest analog, `work: "observed"|"quiet"`, is a
+   different name AND vocabulary, and nothing built this sprint renders an
+   activity indicator (brief §1-a item 6 enumerates the staged banner + `reason`
+   badge only). Declaring the property would only add an unused field with its
+   own chance to drift from the real wire; not declaring it is sufficient for
+   `JSONDecoder` to ignore that key.
+3. **`ChoiceView` models only `show`/`reason`.** Brief §1-b (D-A) explicitly
+   excludes options/buttons/head/digest this sprint (Sprint 6). Declaring a
+   property is what makes the decoder require that key, so only declaring the 2
+   actually-rendered fields is the minimum-risk shape — same precedent as
+   `SessionsResponse` omitting `live`.
+4. **`GapItem` construction stays decode-only** (no memberwise init exposed) —
+   nothing outside the decode path constructs one; `why`/`notice`/`seq` are
+   assigned inside `init(from:)` directly off a private `DisplayBox`/`CodingKeys`
+   pair, matching this file's existing `PollItem` custom-decode convention.
+5. **N3's mutation-and-revert used a separate `extension`, not the primary type
+   body** — this IS the fix location too, so it's a real (not merely
+   test-scoped) judgment call: any future custom `Decodable` conformance added to
+   `PollResponse` should go in an extension for the same reason, to avoid
+   silently breaking every other test file's memberwise-init call sites. Recorded
+   here so a future sprint doesn't rediscover this the hard way.
+6. **`performResync()`'s own failure path is judgment, not brief-specified.** No
+   distinct UI state exists for "the resync's own `/history` call itself failed."
+   Chose fail-soft: keep whatever `history` currently holds, let the still-running
+   poll loop's next successful response keep merging against it, rather than
+   inventing a new phase the brief doesn't name.
+7. **`retryPollingNow()` ("再試行") vs `rereadNow()` ("読み直す") semantic
+   split** is a judgment call: `rereadNow()` runs the full resync (clears
+   `history`/`live`, resets cursor to empty) exactly like a gap or N4;
+   `retryPollingNow()` restarts the driving `Task` from the SAME cursor the old
+   loop had already reached, without touching `history`/`live` — only useful to
+   distinguish from a full resync if the old loop's `Task` was stuck (e.g. deep in
+   a local backoff sleep) rather than genuinely behind. Not fully pinned down by
+   the brief. Both buttons, and `handleForegroundResume()`, are now driven
+   directly by dedicated tests (not just reached indirectly through the gap
+   tests): `ConversationViewModelTests.testHandleForegroundResumeRefetchesHistoryAndTheRefetchLandsInHistory`
+   and `testRetryPollingNowDoesNotRefetchOrClearLiveWhileRereadNowDoesBothNegativeControl`
+   — the latter specifically asserts the two are observably different (one
+   refetches `/history` and clears `live`, the other does neither), not merely
+   that each runs without crashing. Mutation cycles N8a/N8b in the table above.
+8. **`scenePhase` foreground-resume guard checks `oldPhase == .background`
+   specifically**, not merely "arrived at `.active`" — iOS routes app *launch*
+   itself through `.inactive → .active`, which lands right after `.task { await
+   viewModel.load() }` already started polling fresh; an unguarded check would
+   fire a redundant resync on every screen appearance, not only on a genuine
+   backgrounding round trip. Originally caught during implementation, not by a
+   test failure — the `.onChange(of: scenePhase)` closure itself isn't reachable
+   from `XCTest`, so the decision was extracted into a pure static function,
+   `ConversationView.shouldResumeOnForeground(oldPhase:newPhase:)`, specifically
+   so it could be. Now covered by `ConversationViewTests.testBackgroundToActiveEdgeTriggersForegroundResume`
+   and `testInactiveToActiveDoesNotTriggerForegroundResumeNegativeControl`
+   (mutation cycles N8c/N8d above).
+9. **`PollFetchingFixture` is a `final class`, not a struct** — `PollLoop` holds
+   its `client: PollFetching` as a `let`, and an existential stored in a `let`
+   cannot dispatch to a `mutating` struct method; the fixture's internal
+   `callCount`-driven state machine needs mutation across calls.
+

@@ -42,4 +42,23 @@ final class PollCursorTests: XCTestCase {
     func testDistinctWireValuesAreNotEqual() {
         XCTAssertNotEqual(PollCursor(raw: "t.abc.1.0"), PollCursor(raw: "t.abc.2.0"))
     }
+
+    // MARK: - Decodable (Sprint 4: `PollResponse.cursor` is a bare JSON string)
+
+    func testDecodesFromABareJSONStringSingleValueContainer() throws {
+        let decoded = try JSONDecoder().decode(PollCursor.self, from: Data(#""t.abc123.5.2""#.utf8))
+        XCTAssertEqual(decoded, PollCursor(raw: "t.abc123.5.2"))
+    }
+
+    func testDecodesTheEmptyStringToTheSameFreshSentinel() throws {
+        let decoded = try JSONDecoder().decode(PollCursor.self, from: Data(#""""#.utf8))
+        XCTAssertEqual(decoded, PollCursor.empty)
+    }
+
+    func testDoesNotUnwrapAnObjectWrapperNegativeControl() {
+        // Negative control: a `{ "cursor": "..." }` object wrapper (the easy mistake
+        // if this were modeled as a keyed struct instead of a single-value
+        // container) must NOT decode -- the wire sends a bare string.
+        XCTAssertThrowsError(try JSONDecoder().decode(PollCursor.self, from: Data(#"{ "cursor": "t.abc.1.0" }"#.utf8)))
+    }
 }

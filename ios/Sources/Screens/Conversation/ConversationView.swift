@@ -14,6 +14,12 @@ struct ConversationView: View {
     /// is a no-op with nothing to dismiss in the rootless fixture case; in the real,
     /// pushed case it pops back to List exactly like the nav bar's own back button.
     @Environment(\.dismiss) private var dismiss
+    /// N4 (brief §1-a item 5): background -> foreground on THIS screen runs the same
+    /// resync procedure as a gap notice or the stage-2 auto-recovery. Only the
+    /// `.background` -> `.active` edge fires it -- `.inactive` is the transient state
+    /// iOS passes through on its way to both backgrounding and the app-switcher
+    /// snapshot, not a real return.
+    @Environment(\.scenePhase) private var scenePhase
 
     init(viewModel: @autoclosure @escaping () -> ConversationViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel())
@@ -27,6 +33,30 @@ struct ConversationView: View {
             .navigationTitle(viewModel.title)
             .navigationBarTitleDisplayMode(.inline)
             .task { await viewModel.load() }
+            // Brief §2-b: the poll loop belongs to this screen, not to the app -- it
+            // must not keep running once nobody is looking at it (nav pop, or the
+            // fixture/UI-test host tearing the view down).
+            .onDisappear { viewModel.stopPolling() }
+            .onChange(of: scenePhase) { oldPhase, newPhase in
+                if Self.shouldResumeOnForeground(oldPhase: oldPhase, newPhase: newPhase) {
+                    viewModel.handleForegroundResume()
+                }
+            }
+    }
+
+    /// N4's guard, extracted as a pure function (Sprint 4 Evaluator RED 2, item c) --
+    /// `.onChange(of:)`'s closure itself isn't unit-testable, but the decision it
+    /// makes is, once separated from the view lifecycle around it.
+    ///
+    /// Guarding on `oldPhase == .background` specifically (not just "arrived at
+    /// `.active`") matters: iOS routes app launch itself through `.inactive` ->
+    /// `.active`, and that transition can land right after `.task { await
+    /// viewModel.load() }` already started polling fresh -- an unguarded check would
+    /// fire a redundant resync on every screen appearance, not only on a genuine
+    /// backgrounding round trip. `ConversationViewTests` asserts this exact case:
+    /// `.inactive -> .active` must NOT resume.
+    static func shouldResumeOnForeground(oldPhase: ScenePhase, newPhase: ScenePhase) -> Bool {
+        oldPhase == .background && newPhase == .active
     }
 
     @ViewBuilder
@@ -71,6 +101,7 @@ struct ConversationView: View {
 
         case .loaded:
             VStack(spacing: 0) {
+                statusBanners
                 if viewModel.entries.isEmpty {
                     ScrollView {
                         Text("まだ発言がありません")
@@ -156,6 +187,100 @@ struct ConversationView: View {
                 .accessibilityIdentifier("conversation.loadEarlierCeiling")
         }
     }
+
+    /// Brief §4 gap-notice display + brief §1-b's "D-A" choice badge + the
+    /// `UnreadableMeter` staged banner, stacked in that order above the message
+    /// list. All 3 are independent of each other -- a gap notice and a stalled poll
+    /// loop can both be true at once, and each renders (or doesn't) on its own.
+    @ViewBuilder
+    private var statusBanners: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let notice = viewModel.latestGapNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.gapNotice")
+            }
+            // Brief §1-b "D-A": only `reason`, shown as a badge -- the choice's
+            // `options`/buttons are explicitly out of scope this sprint (Sprint 6).
+            if let choice = viewModel.choiceView, choice.show {
+                Text(choice.reason)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.choiceBadge")
+            }
+            degradationBanner
+        }
+        .padding(.horizontal)
+        .padding(.top, 6)
+    }
+
+    /// Brief §3-b's 3-row table, the 2 non-`.normal` rows: a quiet 1-line notice at
+    /// stage 1 (`.degraded`, no buttons), a warning + `[再試行]`/`[読み直す]` at
+    /// stage 2 (`.stalled`) -- `[再試行]`/`[読み直す]` map to
+    /// `retryPollingNow()`/`rereadNow()` respectively (see those two methods' own doc
+    /// comments in `ConversationViewModel` for the judgment call behind which is
+    /// which).
+    @ViewBuilder
+    private var degradationBanner: some View {
+        switch viewModel.unreadableStage {
+        case .normal:
+            EmptyView()
+
+        case .degraded:
+            HStack(spacing: 4) {
+                Text("更新が遅れています")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("最終確認 \(lastReadableTimeText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("conversation.lastReadableAt")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("conversation.degraded")
+
+        case .stalled:
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 4) {
+                    Text("応答が確認できません")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.red)
+                    Text("最終確認 \(lastReadableTimeText)")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("conversation.lastReadableAt")
+                }
+                HStack(spacing: 16) {
+                    Button("再試行") { viewModel.retryPollingNow() }
+                        .accessibilityIdentifier("conversation.stalled.retry")
+                    Button("読み直す") { viewModel.rereadNow() }
+                        .accessibilityIdentifier("conversation.stalled.reread")
+                }
+                .font(.caption)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("conversation.stalled")
+        }
+    }
+
+    private var lastReadableTimeText: String {
+        guard let lastReadableAt = viewModel.lastReadableAt else { return "--:--:--" }
+        return Self.clockFormatter.string(from: lastReadableAt)
+    }
+
+    /// `en_US_POSIX` + a fixed `HH:mm:ss` pattern -- brief §3-b's banner text always
+    /// shows a clock time; a locale-dependent format would make the DoD screenshot
+    /// (and any UI test asserting on this string) depend on the Simulator's region
+    /// setting.
+    private static let clockFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }()
 }
 
 /// One history row. 3 wire roles get distinct treatment (brief §3-a); `.unknown`

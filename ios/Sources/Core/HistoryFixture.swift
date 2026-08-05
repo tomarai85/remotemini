@@ -10,13 +10,22 @@ struct HistoryFetchingFixture: HistoryFetching {
         /// All 3 wire roles + a "load earlier" button in one screenshot -- brief
         /// §4-b's Simulator screenshot requirement.
         case threeRoles = "conversation-3roles"
+        /// Sprint 4 brief §7 DoD item 6: the quiet 1-line staged-degradation banner
+        /// (`UnreadableMeter.Stage.degraded`). History content is irrelevant to this
+        /// screenshot -- reuses `threeRolesResponse` rather than a second literal --
+        /// what makes the banner actually appear is `PollFetchingFixture`, selected
+        /// off this same case in `RootView`.
+        case degraded = "conversation-degraded"
+        /// Sprint 4 brief §7 DoD item 6: the warning + `[再試行]`/`[読み直す]` banner
+        /// (`UnreadableMeter.Stage.stalled`). Same reasoning as `.degraded`.
+        case stalled = "conversation-stalled"
     }
 
     let state: State
 
     func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
         switch state {
-        case .threeRoles:
+        case .threeRoles, .degraded, .stalled:
             return .success(Self.threeRolesResponse)
         }
     }
