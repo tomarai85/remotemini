@@ -76,6 +76,35 @@ else
     row skip "1. 単体一式" "$SIMLOG が無い(DOD_FULL=1 で回すと作られる)"
 fi
 
+# --- 1-b. UI target(ios/UITests)も同じ実行で走ったか ------------------------
+# ★1 行目は `ios/Tests` しか見ていない。UI の検査は**別 target**で、消しても
+#   1 行目は緑のまま —— 今夜の他の欠陥と同じ「静かに範囲外」の形。
+# ★件数では照合しない。UI は 3 本で、log には class 単位の「Executed 3 tests」が
+#   幾つも出るので、数だけ見ると別 class の 3 に当たって偽の緑になる。
+#   名前で照合する = 当たる相手が一意に決まる。
+UITESTS="$IOS/UITests"
+if [ ! -d "$UITESTS" ]; then
+    row skip "1-b. UI target" "$UITESTS が無い"
+elif [ ! -f "$SIMLOG" ]; then
+    row skip "1-b. UI target" "log が無い(DOD_FULL=1 で作られる)"
+else
+    ui_names="$(grep -rhoE 'func test[A-Za-z0-9_]+' "$UITESTS" 2>/dev/null | sed 's/func //' | sort -u)"
+    ui_total="$(printf '%s' "$ui_names" | grep -c . || true)"
+    ui_missing=""
+    while IFS= read -r t; do
+        [ -n "$t" ] || continue
+        grep -qE "Test Case '-\[[A-Za-z0-9_.]+ $t\]' passed" "$SIMLOG" \
+            || ui_missing="$ui_missing $t"
+    done <<< "$ui_names"
+    if [ "$ui_total" -eq 0 ]; then
+        row fail "1-b. UI target" "$UITESTS に検査が1本も無い(target が空になっている)"
+    elif [ -n "$ui_missing" ]; then
+        row fail "1-b. UI target" "同じ log で通ったと言えない検査:$ui_missing"
+    else
+        row pass "1-b. UI target" "$ui_total 本、全部が同じ log に passed として名前で在る"
+    fi
+fi
+
 # --- 2. §5-a の負の対照 7 本が在り、名前が実在する --------------------------
 # 表の右列 = ブリーフが「何が壊れたら赤くなるべきか」と書いた主題。
 declare -a NCTL=(

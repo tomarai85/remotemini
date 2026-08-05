@@ -58,6 +58,14 @@ fresh() {
     n="$(grep -rhoE 'func test[A-Za-z0-9_]+' "$SCRATCH/ios/Tests" 2>/dev/null | grep -c .)"
     printf 'Test Suite passed\nExecuted %s tests, with 0 failures (0 unexpected)\n' "$n" > "$LOG"
 
+    # 1-b 行が読む UI target 側も、同じ原則で**写しの実数から**合成する。
+    # 本物の log を持ち込めば UI の検査名も一緒に来てしまい、写しの中で UI を
+    # 消しても緑のままになる = 対照が自分の壊した物を見なくなる。
+    while IFS= read -r t; do
+        [ -n "$t" ] || continue
+        printf "Test Case '-[RemoteMiniUITests.RemoteMiniUITests %s]' passed\n" "$t" >> "$LOG"
+    done < <(grep -rhoE 'func test[A-Za-z0-9_]+' "$SCRATCH/ios/UITests" 2>/dev/null | sed 's/func //' | sort -u)
+
     # 9 行目が読む progress.md も合成する(本物は Generator が書き換え中)。
     # 実在する検査名を1つだけ引用した、最小で正しい版。
     local real
@@ -96,7 +104,7 @@ echo
 
 # ── 前提: 基準の写しでは 1・2・2-b・3・4・6・8-b・9 が緑 ─────────────────────
 fresh
-for r in 1 2 2-b 3 4 8-b 9; do check "$r" 緑 "基準の写しでは緑"; done
+for r in 1 1-b 2 2-b 3 4 8-b 9; do check "$r" 緑 "基準の写しでは緑"; done
 # ★6 行目は**2 枚揃っていても未測定**が正しい。初版はここを緑と期待して対照が落ち、
 #   落ちていたのは本体ではなく私の期待値だった。PNG が在る事は測れるが、
 #   そこに段階1と段階2が写っているかは人の目でしか決まらない —— 存在を内容と読み替えない。
@@ -117,6 +125,34 @@ check 1 未測定 "log が無ければ未測定(緑にも赤にも丸めない)"
 
 fresh; printf 'Executed 999 tests, with 0 failures\n' > "$LOG"
 check 1 未測定 "★log と disk の実数がズレたら未測定(どちらが正かは決められない)"
+
+# ── 1-b 行目(UI target)────────────────────────────────────────────────────
+# この行を足した理由は「1 行目が ios/Tests しか見ておらず、UI の検査を全部消しても
+# 緑のままだった」。だから対照の本命は**消して赤になる**事と、**件数では緑にならない**事。
+fresh
+UIN="$(grep -rhoE 'func test[A-Za-z0-9_]+' "$SCRATCH/ios/UITests" 2>/dev/null | sed 's/func //' | sort -u | head -1)"
+if [ -n "$UIN" ]; then
+    grep -v "$UIN" "$LOG" > "$LOG.tmp" && /bin/mv "$LOG.tmp" "$LOG"
+    check 1-b 赤 "★UI の検査が1本でも同じ log に通っていなければ赤"
+else
+    UNMEASURED=$((UNMEASURED+1)); echo "  未測定 [行1-b] UITests に検査が無い —— 対照の前提が壊れている"
+fi
+
+# ★★件数が合っていても名前が違えば赤。1-b を件数で書いていたら、log 中の
+#   別 class の「Executed 3 tests」に当たって偽の緑になる —— 4 行目で踏んだ
+#   「当たってはいるが当たっている相手が違う」と同じ型を、先に潰しておく。
+fresh
+n_ui="$(grep -rhoE 'func test[A-Za-z0-9_]+' "$SCRATCH/ios/UITests" 2>/dev/null | grep -c . || true)"
+grep -v "Test Case " "$LOG" > "$LOG.tmp" && /bin/mv "$LOG.tmp" "$LOG"
+printf 'Executed %s tests, with 0 failures (0 unexpected)\n' "$n_ui" >> "$LOG"
+for i in $(seq 1 "$n_ui"); do
+    printf "Test Case '-[SomeOtherSuite.SomeOtherSuite testUnrelatedName%s]' passed\n" "$i" >> "$LOG"
+done
+check 1-b 赤 "★★件数だけ合った log では緑にしない(名前で照合している事の証明)"
+
+fresh
+find "$SCRATCH/ios/UITests" -type f -name '*.swift' -print0 2>/dev/null | xargs -0 /bin/rm -f 2>/dev/null
+check 1-b 赤 "★UI target が空になったら赤(既定の緑ではない)"
 
 # ── 2 / 2-b 行目 ──────────────────────────────────────────────────────────
 fresh
