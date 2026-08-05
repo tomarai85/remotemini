@@ -81,7 +81,7 @@ struct ListView: View {
 
         case .paneFault(let reason, let detail, let sessions, let scanLine):
             VStack(spacing: 0) {
-                faultBanner(reason: reason, detail: detail, style: .paneFault)
+                faultBanner(reason: reason, detail: detail)
                     .accessibilityIdentifier("list.paneFault")
                 if sessions.isEmpty {
                     // Brief §4: paneFault + no sessions shows the banner ALONE --
@@ -123,12 +123,17 @@ struct ListView: View {
 
         case .unreachable(let priorSessions):
             VStack(spacing: 0) {
-                faultBanner(
-                    reason: "バックエンドに接続できません",
-                    detail: "3回連続で取得に失敗しました。しばらくしてから再試行してください",
-                    style: .unreachable
+                // Spec §5-4, shared with Conversation as of Sprint 6. The old
+                // hand-rolled banner here led with 「バックエンドに接続できません」,
+                // which named a cause this screen cannot observe -- see
+                // `UnreachableBanner`'s doc. Keeps its own a11y id in ADDITION to the
+                // component's `shared.unreachable`, because Sprint 2's tests and the
+                // §5-2 screen table both refer to `list.unreachable` by name.
+                UnreachableBanner(
+                    failures: viewModel.reachability.consecutiveFailures,
+                    context: .list,
+                    identifier: "list.unreachable"
                 )
-                .accessibilityIdentifier("list.unreachable")
                 if let sessions = priorSessions {
                     // Brief §4-a: gray out, never replace with an empty list.
                     rows(sessions, grayedOut: true)
@@ -208,17 +213,20 @@ struct ListView: View {
             .accessibilityIdentifier(identifier)
     }
 
-    private enum BannerStyle { case paneFault, unreachable }
-
-    private func faultBanner(reason: String, detail: String, style: BannerStyle) -> some View {
+    /// paneFault only, as of Sprint 6 -- the unreachable arm moved to the shared
+    /// `UnreachableBanner`. The `style` parameter went with it rather than being kept
+    /// "in case": a two-case enum with one live case is a branch nothing exercises,
+    /// which this project has repeatedly measured as the shape that looks like a
+    /// guard and measures nothing.
+    private func faultBanner(reason: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(reason).font(.subheadline.weight(.semibold))
             Text(detail).font(.caption)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(style == .unreachable ? Color.red.opacity(0.15) : Color.orange.opacity(0.15))
-        .foregroundStyle(style == .unreachable ? Color.red : Color.orange)
+        .background(Color.orange.opacity(0.15))
+        .foregroundStyle(Color.orange)
     }
 
     private func retryButton() -> some View {

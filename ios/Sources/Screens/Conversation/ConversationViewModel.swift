@@ -111,6 +111,92 @@ final class ConversationViewModel: ObservableObject {
     /// shows up as one user-visible sentence is one nobody can count.
     @Published private(set) var lastContractViolation: ResponseContractViolation?
 
+    // MARK: - Interrupt (Sprint 6, brief §2-b)
+
+    /// True from the moment the interrupt button is pressed until its response has
+    /// been applied.
+    @Published private(set) var isInterrupting = false
+    /// **Its own band, deliberately not `sendBanner`.** Sharing one slot would let an
+    /// interrupt's answer overwrite a send's (and vice versa) with no way for the
+    /// reader to tell which operation the surviving sentence belongs to -- and these
+    /// two are the operations most likely to be fired seconds apart, since the reason
+    /// to interrupt is usually "I just sent the wrong thing."
+    @Published private(set) var interruptBanner: SendBanner?
+
+    /// ★★The one gated behaviour in Sprint 6, and the reason it is a named constant
+    /// rather than an inline `case .choice: return false`.
+    ///
+    /// The collision, measured 2026-08-05 (Sprint 6 brief §0-e):
+    ///
+    /// - The server's interrupt handler does **not** look at `screen`; `inject.mjs`'s
+    ///   `#interruptExclusive` runs `send-keys … Escape` unconditionally, with no
+    ///   hard-stop or benign-screen check anywhere on that path.
+    /// - Permission / trust prompts carry numbered options, so `classifyScreen`
+    ///   returns `CHOICE` for them.
+    /// - Therefore an interrupt button that is live on a `CHOICE` screen **is** a way
+    ///   to send `Escape` to a permission prompt from the phone.
+    /// - That exact capability is what `DESIGN.md` §2.29-f and `src/choice.mjs`'s
+    ///   header record as **not adopted, pending the owner's ruling**, with Codex's
+    ///   2026-08-03 finding that widening D4 「開発側の解釈だけで広げるべきではありません」.
+    /// - Spec §5-3's table nevertheless marks interrupt 有効 on `CHOICE` -- but its
+    ///   justification column only restates the server's behaviour and cites neither
+    ///   D4 nor §2.29-f. A grep of both documents found no reconciliation anywhere. It
+    ///   is an inherited line, not a decided one, so it does not get to settle this.
+    ///
+    /// Default is therefore the forbidden side. Flipping this to `true` is the whole
+    /// of the change if Tom re-defines D4 as 「承認は禁止、明示的な拒否は可」 --
+    /// `composerDisabledReason` reads the same constant, so the button and the
+    /// sentence that points at the button cannot disagree.
+    static let interruptAllowedOnChoiceScreen = false
+
+    /// Whether the interrupt button is live at all.
+    ///
+    /// Note what is deliberately NOT here: `BUSY`. Interrupting is allowed at any
+    /// time, which is Tom's own ruling on this app -- 「返答待ちであれ作業中であれ
+    /// いつでも見て、干渉できればいいんじゃないかな？」. Gating on "we currently observe
+    /// generation" would mean the phone refuses to act precisely when its view of the
+    /// desk has gone stale, and the server already answers "there was nothing to stop"
+    /// truthfully and in its own words (`view.mjs`'s `interruptResult`).
+    var interruptEnabled: Bool {
+        guard let screen else { return true }
+        switch screen.classification {
+        case .choice:
+            return Self.interruptAllowedOnChoiceScreen
+        case .sendable, .busy, .unknown, .unrecognized:
+            // `UNKNOWN` stays enabled: unlike the composer (which would be putting new
+            // text into a screen nobody can read), interrupting only ever cancels. An
+            // unreadable screen is the state in which being unable to stop the desk is
+            // worst.
+            return true
+        }
+    }
+
+    var interruptDisabledReason: String? {
+        guard !interruptEnabled else { return nil }
+        return "確認待ちの画面では、v1 は電話から中断しません。机で確認してください"
+    }
+
+    var canInterrupt: Bool { interruptEnabled && !isInterrupting }
+
+    // MARK: - Reachability (Sprint 6, spec §5-4)
+
+    /// Spec §5-4's counter, the same type List uses. Before Sprint 6 this screen had
+    /// no equivalent at all: `applyPollStep(.unreachable)` returned `true` and touched
+    /// nothing, so a phone that lost the backend mid-conversation kept showing a
+    /// perfectly normal, perfectly stale screen indefinitely.
+    ///
+    /// Fed **only** by transport failures (§5-4: 接続不可・タイムアウト・5xx, all three
+    /// of which arrive here as `.unreachable`). An unreadable poll is not counted here
+    /// -- that is `unreadableMeter`'s job (§5-5), and the spec forbids substituting one
+    /// for the other by name: 「代用した瞬間、200 で返る壊れた配信が『接続は健全』に
+    /// 見える」.
+    ///
+    /// `@Published` because nothing else changes on a poll transport failure -- without
+    /// it the banner would not appear until some unrelated state happened to move.
+    @Published private(set) var reachability = ReachabilityMeter()
+
+    var isBackendUnreachable: Bool { reachability.isUnreachable }
+
     /// Brief §0-c ⑤, exactly its table. Only `CHOICE` and `UNKNOWN` disable the
     /// composer.
     ///
@@ -152,11 +238,20 @@ final class ConversationViewModel: ObservableObject {
     /// here -- and neither describes a *response*, so the "never word things
     /// yourself" rule (which governs rendering `display`) does not apply: this is the
     /// phone reporting its own UI state, which no server response covers.
+    ///
+    /// Sprint 6: the `CHOICE` sentence is now derived from
+    /// `interruptAllowedOnChoiceScreen` rather than fixed. Sprint 5 shipped it ending
+    /// 「…机で確認するか、割り込みで中断してください」, which is a promise about the
+    /// interrupt button -- so the sentence and the button have to move together or one
+    /// of them becomes a lie. Two call sites of one constant is the cheapest structure
+    /// that makes disagreement impossible.
     var composerDisabledReason: String? {
         guard let screen, !composerEnabled else { return nil }
         switch screen.classification {
         case .choice:
-            return "v1 では電話から選べません。机で確認するか、割り込みで中断してください"
+            return Self.interruptAllowedOnChoiceScreen
+                ? "v1 では電話から選べません。机で確認するか、割り込みで中断してください"
+                : "v1 では電話から選べません。机で確認してください"
         case .unknown:
             return "画面の状態を読めていません"
         case .sendable, .busy, .unrecognized:
@@ -191,6 +286,7 @@ final class ConversationViewModel: ObservableObject {
     private let client: HistoryFetching
     private let pollClient: PollFetching
     private let sendClient: MessageSending
+    private let interruptClient: Interrupting
     private let baseURL: URL
     private let apiKey: String
     private let sessionID: String
@@ -220,6 +316,7 @@ final class ConversationViewModel: ObservableObject {
         client: HistoryFetching,
         pollClient: PollFetching = PollClient(),
         sendClient: MessageSending = SendClient(),
+        interruptClient: Interrupting = InterruptClient(),
         baseURL: URL,
         apiKey: String,
         sessionID: String,
@@ -230,6 +327,7 @@ final class ConversationViewModel: ObservableObject {
         self.client = client
         self.pollClient = pollClient
         self.sendClient = sendClient
+        self.interruptClient = interruptClient
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.sessionID = sessionID
@@ -246,6 +344,7 @@ final class ConversationViewModel: ObservableObject {
     func applyInitial(_ result: Result<HistoryResponse, SessionsFetchError>) {
         switch result {
         case .success(let response):
+            reachability.recordSuccess()
             history = response.history
             truncated = response.truncated
             phase = .loaded
@@ -265,6 +364,12 @@ final class ConversationViewModel: ObservableObject {
         case .failure(.cancelled):
             break // a newer request owns the outcome
         case .failure(.unreachable):
+            // Counted (§5-4) as well as phased. The two are not redundant: `.unreachable`
+            // as a PHASE means "the initial load never produced a screen, so there is
+            // nothing to show"; the meter is what the banner over an *already-loaded*
+            // screen reads, and a load failure is exactly as much evidence about the
+            // backend as a poll failure is.
+            reachability.recordFailure()
             phase = .unreachable
         case .failure(.malformedBody):
             phase = .malformedBody
@@ -391,6 +496,67 @@ final class ConversationViewModel: ObservableObject {
             if display.keepText == false {
                 draft = ""
             }
+        }
+    }
+
+    // MARK: - Interrupt (Sprint 6, brief §2-b)
+
+    /// One interrupt attempt. Nothing is sent in the body and nothing local is
+    /// staked on the outcome, so this is much simpler than `send()` -- there is no
+    /// draft to protect and no `keepText` rule.
+    func interrupt() async {
+        guard canInterrupt else { return }
+
+        isInterrupting = true
+        // Same reason `send()` clears `sendBanner` on entry: leaving the previous
+        // attempt's sentence visible under an in-flight one lets a stale
+        // 「止めました」 be read as this attempt's answer.
+        interruptBanner = nil
+
+        let outcome = await interruptClient.interrupt(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID)
+        applyInterruptOutcome(outcome)
+    }
+
+    /// Split out for the same reason as every other `apply…` on this type.
+    ///
+    /// ★The `.display` arm is one line, and that is the design. Whether the generation
+    /// actually stopped is a distinction with six outcomes on the wire (`verified` /
+    /// `already-done` / `unverified` / `null` / worker-route / refused), and the server
+    /// already renders each into its own sentence -- covered branch by branch in
+    /// `test/view.test.mjs`. The phone re-deriving any of it would rebuild the bug the
+    /// server fixed on 2026-08-03, when "Escape was pressed" was being reported as
+    /// 「止めました」.
+    func applyInterruptOutcome(_ outcome: SendOutcome) {
+        isInterrupting = false
+
+        switch outcome {
+        case .cancelled:
+            return
+
+        case .unauthorized:
+            onUnauthorized()
+
+        case .sessionNotFound:
+            phase = .notFound
+
+        case .contractViolation(let violation):
+            // Same call as the send path's, and for the same reason: the conversation
+            // is loaded and the desk may well have received the Escape, so tearing the
+            // screen down would destroy the one view that could show it.
+            recordContractViolation(violation)
+            interruptBanner = SendBanner(locallyWorded: violation.displayText, tone: .error)
+
+        case .unreachable:
+            // Worded locally, permissibly, because no `display` arrived. It refuses to
+            // claim either outcome for the same reason the send path's does: a request
+            // whose response was lost may well have been delivered.
+            interruptBanner = SendBanner(
+                locallyWorded: "止められたかどうか確認できませんでした。机の画面を確認してください。",
+                tone: .warn
+            )
+
+        case .display(let display):
+            interruptBanner = SendBanner(display: display)
         }
     }
 
@@ -557,6 +723,19 @@ final class ConversationViewModel: ObservableObject {
             applyReadablePoll(response)
             return true
         case .unreadable:
+            // ★An unreadable poll is a **reachability SUCCESS**, not "no evidence" and
+            // certainly not a failure. `PollClient` only reaches `.unreadable` after a
+            // 200 has already arrived and been read off the wire, which is direct proof
+            // of the one thing §5-4 measures (接続不可・タイムアウト・5xx -- none of
+            // which happened). The backend is reachable; it is talking nonsense, which
+            // is §5-5's meter's job on the next line.
+            //
+            // Counting it as a failure here would be exactly the substitution the spec
+            // forbids by name -- 「片方をもう片方で代用しない —— 代用した瞬間、200 で
+            // 返る壊れた配信が『接続は健全』に見える」 -- run in the other direction: a
+            // shape regression on the server would be reported to the user as a network
+            // problem, sending them to check their signal instead of the deploy.
+            reachability.recordSuccess()
             unreadableMeter?.markUnreadable()
             publishUnreadableState()
             maybeAutoResync()
@@ -567,11 +746,22 @@ final class ConversationViewModel: ObservableObject {
         case .unreachable:
             // `Backoff.attempt` already advanced inside `PollLoop`; §3-a: a transport
             // failure must not touch `UnreadableMeter` in either direction.
+            //
+            // §5-4 (Sprint 6): it does touch `reachability`. This is the arm that used
+            // to return `true` and change nothing at all, which is how a phone that
+            // had lost the backend went on showing a stale conversation in silence.
+            reachability.recordFailure()
             return true
         }
     }
 
     private func applyReadablePoll(_ response: PollResponse) {
+        // §5-4: 「1回でも HTTP 成功」 clears the reachability banner immediately. Note
+        // the asymmetry with the line below -- reachability resets on any 200 that got
+        // this far, whereas §5-5's meter resets only on a successful MERGE. They are
+        // measuring different things and their reset conditions differ accordingly.
+        reachability.recordSuccess()
+
         // §2-a step 5: this -- a successful merge, not merely "got a 200" -- is the
         // only place the meter resets.
         unreadableMeter?.markReadable(now: Date())

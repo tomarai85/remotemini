@@ -62,6 +62,36 @@ final class ConversationViewModelTests: XCTestCase {
         }
     }
 
+    /// Sprint 6's interrupt-path stub, shaped exactly like `RecordingSendClient` -- the
+    /// only thing worth recording here is the CALL COUNT, since an interrupt carries no
+    /// payload to inspect. That count is what separates "the button was greyed out" from
+    /// "the request was actually stopped", which is the whole of the CHOICE gate.
+    private final class RecordingInterruptClient: Interrupting {
+        var outcomeQueue: [SendOutcome] = []
+        private(set) var callCount = 0
+        /// Same reasoning as `RecordingSendClient.deliveryDelay`: without a real
+        /// suspension point there is no window in which to observe `isInterrupting`.
+        var deliveryDelay: Duration = .zero
+
+        func interrupt(baseURL: URL, apiKey: String, sessionID: String) async -> SendOutcome {
+            callCount += 1
+            if deliveryDelay > .zero {
+                try? await Task.sleep(for: deliveryDelay)
+            }
+            guard !outcomeQueue.isEmpty else { return .unreachable }
+            return outcomeQueue.removeFirst()
+        }
+    }
+
+    /// The default for every test that is not about interrupting -- fails loudly for
+    /// the same reason `UnusedSendClient` does.
+    private struct UnusedInterruptClient: Interrupting {
+        func interrupt(baseURL: URL, apiKey: String, sessionID: String) async -> SendOutcome {
+            XCTFail("this test's view model was not expected to interrupt anything")
+            return .unreachable
+        }
+    }
+
     /// A `PollFetching` that issues no request and never returns a step -- it suspends
     /// until the driving `Task` is cancelled, which is precisely what a long-poll that
     /// is still waiting looks like from `PollLoop`'s side.
@@ -95,6 +125,7 @@ final class ConversationViewModelTests: XCTestCase {
     private func makeViewModel(
         client: HistoryFetching,
         sendClient: MessageSending = UnusedSendClient(),
+        interruptClient: Interrupting = UnusedInterruptClient(),
         pollClient: PollFetching = SilentPollFetching(),
         initialLimit: Int = ConversationViewModel.initialLimit
     ) -> ConversationViewModel {
@@ -103,6 +134,7 @@ final class ConversationViewModelTests: XCTestCase {
             client: client,
             pollClient: pollClient,
             sendClient: sendClient,
+            interruptClient: interruptClient,
             baseURL: URL(string: "https://unit-test.invalid")!,
             apiKey: "unit-test-fixture-key-not-real",
             sessionID: "sess-0001",
@@ -373,6 +405,13 @@ final class ConversationViewModelTests: XCTestCase {
         PollLoop.StepResult(kind: .unreadable, nextWaitMs: 20_000, localBackoffMs: 0)
     }
 
+    /// Sprint 6. The step kind that used to change nothing at all -- §5-4's only input
+    /// on this screen, and not to be confused with `unreadableStep()` above, which is
+    /// §5-5's. The whole point of the pair is that they are different meters.
+    private func unreachableStep() -> PollLoop.StepResult {
+        PollLoop.StepResult(kind: .unreachable, nextWaitMs: 20_000, localBackoffMs: 1_000)
+    }
+
     // MARK: - §5-b branch 3: a screen-only change updates screen, touches nothing else
 
     func testScreenOnlyChangeUpdatesScreenWithoutTouchingChoiceViewOrLive() async throws {
@@ -636,11 +675,12 @@ final class ConversationViewModelTests: XCTestCase {
     /// carrying `screenValue` (or none at all, when `screenValue` is nil).
     private func loadedViewModel(
         screen screenValue: String?,
-        sendClient: MessageSending = UnusedSendClient()
+        sendClient: MessageSending = UnusedSendClient(),
+        interruptClient: Interrupting = UnusedInterruptClient()
     ) async throws -> ConversationViewModel {
         let client = RecordingClient()
         client.resultQueue = [.success(HistoryResponse(history: [], truncated: false))]
-        let vm = makeViewModel(client: client, sendClient: sendClient)
+        let vm = makeViewModel(client: client, sendClient: sendClient, interruptClient: interruptClient)
         await vm.load()
         if let screenValue {
             vm.applyPollStep(try readableStep("""
@@ -681,13 +721,22 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertNil(vm.composerDisabledReason)
     }
 
+    /// Sprint 6 rewrote the second half of this assertion. Sprint 5 pinned the literal
+    /// string, which ended 「…机で確認するか、割り込みで中断してください」 -- a promise
+    /// about the interrupt button. Once `interruptAllowedOnChoiceScreen` exists, that
+    /// sentence is only true on one side of it, so the test now asserts the RELATION
+    /// (the sentence matches the switch) instead of one of the two strings. See
+    /// `testTheChoiceSentenceAndTheChoiceButtonMoveTogetherNegativeControl` for the
+    /// control that makes this relation load-bearing.
     func testComposerIsDisabledOnCHOICEWithTheSpecsFixedWording() async throws {
         let vm = try await loadedViewModel(screen: "CHOICE")
 
         XCTAssertFalse(vm.composerEnabled)
         XCTAssertEqual(
             vm.composerDisabledReason,
-            "v1 では電話から選べません。机で確認するか、割り込みで中断してください"
+            ConversationViewModel.interruptAllowedOnChoiceScreen
+                ? "v1 では電話から選べません。机で確認するか、割り込みで中断してください"
+                : "v1 では電話から選べません。机で確認してください"
         )
     }
 
@@ -1028,5 +1077,461 @@ final class ConversationViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.phase, .contractViolation(ResponseContractViolation(status: 404, code: "NO_SUCH_ROUTE")))
         XCTAssertNotEqual(vm.loadEarlierState, .stalledRetry, "no retry affordance for a response we are not permitted to interpret")
+    }
+
+    // MARK: - Sprint 6 §2-b: the interrupt button -- when it is live
+    //
+    // Split from the composer's table on purpose. The two tables are NOT the same
+    // table with a different name: they agree on SENDABLE and BUSY and disagree on
+    // UNKNOWN, and the reason is the asymmetry between the two operations. Putting new
+    // text into a screen nobody can read is a gamble; cancelling is not, and an
+    // unreadable screen is precisely the state in which being unable to stop the desk
+    // is worst.
+
+    func testInterruptIsEnabledBeforeAnyScreenHasBeenObserved() async throws {
+        let vm = try await loadedViewModel(screen: nil)
+
+        XCTAssertNil(vm.screen)
+        XCTAssertTrue(vm.interruptEnabled)
+        XCTAssertNil(vm.interruptDisabledReason)
+    }
+
+    func testInterruptIsEnabledOnSENDABLE() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+
+        XCTAssertTrue(vm.interruptEnabled)
+        XCTAssertNil(vm.interruptDisabledReason)
+    }
+
+    /// ★Tom's own ruling on this app -- 「返答待ちであれ作業中であれいつでも見て、干渉
+    /// できればいいんじゃないかな？」. `BUSY` is the state the interrupt button exists
+    /// FOR, so a gate on it would be the one gate guaranteed to be wrong. Asserted as
+    /// its own named case so that a later "tidy-up" that gates on observed generation
+    /// has to delete a test that says why.
+    func testInterruptStaysEnabledOnBUSY() async throws {
+        let vm = try await loadedViewModel(screen: "BUSY")
+
+        XCTAssertEqual(vm.screen?.classification, .busy)
+        XCTAssertTrue(vm.interruptEnabled)
+        XCTAssertNil(vm.interruptDisabledReason)
+    }
+
+    /// ★The row where this table and the composer's disagree. `UNKNOWN` disables the
+    /// composer and must NOT disable the interrupt button.
+    func testInterruptStaysEnabledOnUNKNOWNEvenThoughTheComposerDoesNot() async throws {
+        let vm = try await loadedViewModel(screen: "UNKNOWN")
+
+        XCTAssertFalse(vm.composerEnabled, "precondition: this is the row the composer refuses")
+        XCTAssertTrue(vm.interruptEnabled, "interrupting only ever cancels -- there is nothing to gamble")
+        XCTAssertNil(vm.interruptDisabledReason)
+    }
+
+    func testAnUnrecognizedClassificationLeavesTheInterruptButtonEnabled() async throws {
+        let vm = try await loadedViewModel(screen: "SOME_FUTURE_STATE")
+
+        XCTAssertEqual(vm.screen?.classification, .unrecognized)
+        XCTAssertTrue(vm.interruptEnabled, "an unknown value must not silently remove a capability")
+    }
+
+    /// The gated row, asserted against the named constant rather than against `false`.
+    /// Pinning `false` here would mean flipping `interruptAllowedOnChoiceScreen` (the
+    /// whole of the change if Tom re-defines D4 as 「承認は禁止、明示的な拒否は可」)
+    /// turns a deliberate decision into a red suite.
+    func testInterruptOnCHOICEFollowsTheNamedConstant() async throws {
+        let vm = try await loadedViewModel(screen: "CHOICE")
+
+        XCTAssertEqual(vm.interruptEnabled, ConversationViewModel.interruptAllowedOnChoiceScreen)
+        XCTAssertEqual(
+            vm.interruptDisabledReason,
+            ConversationViewModel.interruptAllowedOnChoiceScreen
+                ? nil
+                : "確認待ちの画面では、v1 は電話から中断しません。机で確認してください"
+        )
+    }
+
+    /// ★★The control named by `testComposerIsDisabledOnCHOICEWithTheSpecsFixedWording`,
+    /// and the reason `interruptAllowedOnChoiceScreen` is a constant with two readers
+    /// instead of an inline `return false`.
+    ///
+    /// Sprint 5 shipped the CHOICE composer sentence ending 「…机で確認するか、割り込みで
+    /// 中断してください」 -- a promise about a button. If the button is not live on
+    /// CHOICE, that sentence tells the user to press something that does nothing; if
+    /// the button IS live and the sentence has been shortened, the app hides its own
+    /// only remaining action. Either half moving alone is a lie, so what is asserted is
+    /// the RELATION, in whichever position the constant is in.
+    func testTheChoiceSentenceAndTheChoiceButtonMoveTogetherNegativeControl() async throws {
+        let vm = try await loadedViewModel(screen: "CHOICE")
+
+        let sentencePromisesTheButton = vm.composerDisabledReason?.contains("割り込み") ?? false
+        XCTAssertEqual(
+            sentencePromisesTheButton,
+            vm.interruptEnabled,
+            "the sentence and the button it points at must not be able to disagree"
+        )
+
+        // …and the relation is not vacuous: the two candidate sentences really do
+        // differ on that substring, so the assertion above can fail.
+        XCTAssertNotEqual(
+            "v1 では電話から選べません。机で確認するか、割り込みで中断してください".contains("割り込み"),
+            "v1 では電話から選べません。机で確認してください".contains("割り込み")
+        )
+    }
+
+    /// The two enablement rules must not be one rule. If `interruptEnabled` were
+    /// `composerEnabled` under another name -- the obvious "simplification" -- every
+    /// row above except `UNKNOWN` would still pass.
+    func testInterruptEnablementIsNotACopyOfComposerEnablementNegativeControl() async throws {
+        let vm = try await loadedViewModel(screen: "UNKNOWN")
+
+        XCTAssertNotEqual(vm.interruptEnabled, vm.composerEnabled)
+    }
+
+    // MARK: §2-b: pressing it
+
+    /// The gate has to stop the REQUEST, not merely grey out a button -- and the
+    /// assertion is written against the constant so it stays true on both sides of
+    /// Tom's ruling: allowed -> exactly one call, forbidden -> exactly zero.
+    func testPressingInterruptOnCHOICEFollowsTheSameConstantAsTheButton() async throws {
+        let interrupter = RecordingInterruptClient()
+        interrupter.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "止めました(生成が止まったのを確認)。", keepText: nil))]
+        let vm = try await loadedViewModel(screen: "CHOICE", interruptClient: interrupter)
+
+        await vm.interrupt()
+
+        XCTAssertEqual(interrupter.callCount, ConversationViewModel.interruptAllowedOnChoiceScreen ? 1 : 0)
+        XCTAssertEqual(vm.interruptBanner == nil, !ConversationViewModel.interruptAllowedOnChoiceScreen)
+    }
+
+    func testPressingInterruptOnBUSYActuallyIssuesTheRequest() async throws {
+        let interrupter = RecordingInterruptClient()
+        interrupter.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "止めました(生成が止まったのを確認)。", keepText: nil))]
+        let vm = try await loadedViewModel(screen: "BUSY", interruptClient: interrupter)
+
+        await vm.interrupt()
+
+        XCTAssertEqual(interrupter.callCount, 1, "the one screen this button exists for")
+        XCTAssertEqual(vm.interruptBanner?.text, "止めました(生成が止まったのを確認)。")
+    }
+
+    /// Same guard shape as `isSending`/`isFetchingEarlier`: `isInterrupting` is set
+    /// synchronously before the first `await` inside this `@MainActor` method, so a
+    /// second press arriving before the first suspends sees it and returns. Without
+    /// this, a double tap sends two Escapes -- and the second one lands on whatever
+    /// screen the first one produced.
+    func testASecondPressWhileOneIsInFlightDoesNotLaunchASecondRequest() async throws {
+        let interrupter = RecordingInterruptClient()
+        interrupter.deliveryDelay = .milliseconds(200)
+        interrupter.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "止めました(生成が止まったのを確認)。", keepText: nil))]
+        let vm = try await loadedViewModel(screen: "BUSY", interruptClient: interrupter)
+
+        let first = Task { await vm.interrupt() }
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(vm.isInterrupting, "precondition: we really are looking mid-flight")
+        XCTAssertFalse(vm.canInterrupt, "the button is not pressable while one is in flight")
+
+        await vm.interrupt() // the double tap
+        await first.value
+
+        XCTAssertEqual(interrupter.callCount, 1)
+        XCTAssertFalse(vm.isInterrupting)
+    }
+
+    /// A new interrupt clears the previous interrupt banner before its own outcome
+    /// arrives -- otherwise 「止めました」 from the last press sits under an in-flight
+    /// one and reads as this press's answer.
+    func testStartingAnInterruptClearsThePreviousInterruptBanner() async throws {
+        let interrupter = RecordingInterruptClient()
+        interrupter.deliveryDelay = .milliseconds(200)
+        interrupter.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "今回", keepText: nil))]
+        let vm = try await loadedViewModel(screen: "BUSY", interruptClient: interrupter)
+        vm.applyInterruptOutcome(.display(ResultDisplay(kind: "ok", text: "前回の結果", keepText: nil)))
+        XCTAssertNotNil(vm.interruptBanner)
+
+        let pressing = Task { await vm.interrupt() }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertNil(vm.interruptBanner, "a stale 「止めました」 must not be readable as this press's outcome")
+        await pressing.value
+    }
+
+    // MARK: §2-b: the two bands are separate
+
+    /// ★The reason `interruptBanner` is its own `@Published` and not a second writer of
+    /// `sendBanner`. These are the two operations most likely to be fired seconds
+    /// apart -- the usual reason to interrupt is "I just sent the wrong thing" -- and
+    /// one shared slot would leave the surviving sentence unattributable: 「送った」
+    /// replaced by 「止める対象がありませんでした。」 reads as the send having failed.
+    func testAnInterruptOutcomeNeverTouchesTheSendBanner() async throws {
+        let vm = try await loadedViewModel(screen: "BUSY")
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)))
+
+        vm.applyInterruptOutcome(.display(ResultDisplay(kind: "warn", text: "止める対象がありませんでした。", keepText: nil)))
+
+        XCTAssertEqual(vm.sendBanner?.text, "送った", "the send's answer survives the interrupt's")
+        XCTAssertEqual(vm.interruptBanner?.text, "止める対象がありませんでした。")
+    }
+
+    func testASendOutcomeNeverTouchesTheInterruptBanner() async throws {
+        let vm = try await loadedViewModel(screen: "BUSY")
+        vm.applyInterruptOutcome(.display(ResultDisplay(kind: "ok", text: "止めました(生成が止まったのを確認)。", keepText: nil)))
+
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)))
+
+        XCTAssertEqual(vm.interruptBanner?.text, "止めました(生成が止まったのを確認)。")
+        XCTAssertEqual(vm.sendBanner?.text, "送った")
+    }
+
+    /// The negative control for the split: with one shared slot, two outcomes applied
+    /// in either order leave only ONE readable sentence. Asserting both survive, in
+    /// both orders, is what a shared slot cannot satisfy.
+    func testBothBandsSurviveInEitherOrderNegativeControl() async throws {
+        let sendFirst = try await loadedViewModel(screen: "BUSY")
+        sendFirst.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)))
+        sendFirst.applyInterruptOutcome(.display(ResultDisplay(kind: "ok", text: "止めました", keepText: nil)))
+
+        let interruptFirst = try await loadedViewModel(screen: "BUSY")
+        interruptFirst.applyInterruptOutcome(.display(ResultDisplay(kind: "ok", text: "止めました", keepText: nil)))
+        interruptFirst.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)))
+
+        XCTAssertEqual(sendFirst.sendBanner?.text, "送った")
+        XCTAssertEqual(sendFirst.interruptBanner?.text, "止めました")
+        XCTAssertEqual(interruptFirst.sendBanner?.text, "送った")
+        XCTAssertEqual(interruptFirst.interruptBanner?.text, "止めました")
+    }
+
+    // MARK: §2-b: what the interrupt banner says, and who wrote it
+
+    /// ★The property `rc-backend/test/view.test.mjs` cannot check from its side. All
+    /// four `stopped` sentences the server writes reach the banner unchanged -- no
+    /// suffix, no rewording. Note what the view model never even sees: `SendOutcome`
+    /// carries a `ResultDisplay` and nothing else, so `interrupted`/`stopped`/`route`
+    /// do not cross this seam at all. That is the structural half of the same rule
+    /// (`InterruptClientTests` asserts the wire half).
+    func testEverySentenceTheServerWritesReachesTheBannerVerbatim() async throws {
+        let vm = try await loadedViewModel(screen: "BUSY")
+        let sentences: [(String, String, ResultDisplay.Tone)] = [
+            ("ok", "止めました(生成が止まったのを確認)。", .ok),
+            ("ok", "押した時には終わっていました(止めるものは残っていません)。", .ok),
+            ("warn", "Escape は押しましたが、まだ止まっていません。画面を見て確かめてください。", .warn),
+            ("warn", "止める対象が見当たりませんでした(Escape は押しました)。", .warn),
+            ("warn", "止める対象がありませんでした。", .warn),
+            ("refused", "別の操作が進行中です", .refused),
+        ]
+
+        for (kind, text, tone) in sentences {
+            vm.applyInterruptOutcome(.display(ResultDisplay(kind: kind, text: text, keepText: nil)))
+            XCTAssertEqual(vm.interruptBanner?.text, text)
+            XCTAssertEqual(vm.interruptBanner?.tone, tone, text)
+            XCTAssertEqual(vm.interruptBanner?.fromServer, true, text)
+        }
+    }
+
+    /// Provenance, same control as the send path's. A regression that replaced the
+    /// server's sentence with a locally-composed one of the same meaning would pass any
+    /// "some banner appeared" check -- and this is the exact path on which that already
+    /// happened once, on the server, in the other direction.
+    func testPhoneWordedInterruptBannersAreMarkedAsNotComingFromTheServerNegativeControl() async throws {
+        let vm = try await loadedViewModel(screen: "BUSY")
+
+        vm.applyInterruptOutcome(.display(ResultDisplay(kind: "ok", text: "止めました", keepText: nil)))
+        let fromServer = vm.interruptBanner
+        vm.applyInterruptOutcome(.unreachable)
+        let fromPhone = vm.interruptBanner
+
+        XCTAssertEqual(fromServer?.fromServer, true)
+        XCTAssertEqual(fromPhone?.fromServer, false)
+        XCTAssertNotEqual(fromServer?.fromServer, fromPhone?.fromServer)
+    }
+
+    /// The one place the phone is allowed to word an interrupt result itself, and the
+    /// wording refuses to claim either outcome for the same reason the send path's
+    /// does: a request whose response was lost may well have been delivered.
+    func testUnreachableInterruptRefusesToClaimEitherOutcome() async throws {
+        let vm = try await loadedViewModel(screen: "BUSY")
+
+        vm.applyInterruptOutcome(.unreachable)
+
+        XCTAssertEqual(vm.interruptBanner?.tone, .warn)
+        XCTAssertEqual(vm.interruptBanner?.text, "止められたかどうか確認できませんでした。机の画面を確認してください。")
+        guard case .loaded = vm.phase else { return XCTFail("a transport failure must not tear the screen down") }
+    }
+
+    func testUnauthorizedOnInterruptRoutesOutWithoutABanner() async throws {
+        let vm = try await loadedViewModel(screen: "BUSY")
+
+        vm.applyInterruptOutcome(.unauthorized)
+
+        XCTAssertEqual(unauthorizedCallCount, 1)
+        XCTAssertNil(vm.interruptBanner)
+    }
+
+    func testSessionNotFoundOnInterruptTearsTheScreenDown() async throws {
+        let vm = try await loadedViewModel(screen: "BUSY")
+
+        vm.applyInterruptOutcome(.sessionNotFound)
+
+        XCTAssertEqual(vm.phase, .notFound)
+    }
+
+    /// Same split as the send path's: the conversation is loaded, the poll loop is
+    /// live, and the desk may well have received the Escape -- tearing the screen down
+    /// would destroy the one view that could show it.
+    func testContractViolationOnInterruptIsABannerOverAnIntactScreen() async throws {
+        let vm = try await loadedViewModel(screen: "BUSY")
+        let violation = ResponseContractViolation(status: 200, code: nil)
+
+        vm.applyInterruptOutcome(.contractViolation(violation))
+
+        guard case .loaded = vm.phase else { return XCTFail("the screen and its poll loop must survive") }
+        XCTAssertEqual(vm.interruptBanner?.text, violation.displayText)
+        XCTAssertFalse(vm.interruptBanner?.text.isEmpty ?? true, "the screen must not go silent on an unreadable response")
+        XCTAssertEqual(vm.interruptBanner?.tone, .error)
+        XCTAssertEqual(vm.interruptBanner?.fromServer, false, "there was no server wording to carry -- that is the finding")
+        XCTAssertEqual(vm.lastContractViolation, violation, "recorded even though it did not become the phase")
+    }
+
+    func testCancelledInterruptChangesNothingAtAll() async throws {
+        let vm = try await loadedViewModel(screen: "BUSY")
+        vm.applyInterruptOutcome(.display(ResultDisplay(kind: "ok", text: "前回", keepText: nil)))
+        let bannerBefore = vm.interruptBanner
+
+        vm.applyInterruptOutcome(.cancelled)
+
+        XCTAssertFalse(vm.isInterrupting, "the in-flight flag still has to come down")
+        XCTAssertEqual(vm.interruptBanner, bannerBefore, "whoever cancelled owns the outcome")
+    }
+
+    // MARK: - Sprint 6 §5-4: reachability on the Conversation screen
+    //
+    // This screen had no such meter before Sprint 6. `applyPollStep(.unreachable)`
+    // returned `true` and touched nothing, so a phone that lost the backend mid-
+    // conversation went on showing a perfectly normal, perfectly stale screen with no
+    // indication whatsoever.
+
+    func testTwoPollTransportFailuresAreNotEnoughAndTheThirdRaisesTheBanner() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+
+        vm.applyPollStep(unreachableStep())
+        XCTAssertFalse(vm.isBackendUnreachable, "1回")
+        vm.applyPollStep(unreachableStep())
+        XCTAssertFalse(vm.isBackendUnreachable, "2回")
+        vm.applyPollStep(unreachableStep())
+
+        XCTAssertTrue(vm.isBackendUnreachable, "3回目で立つ")
+        XCTAssertEqual(vm.reachability.consecutiveFailures, 3, "the View prints this number, so it has to be the real one")
+    }
+
+    func testOneReadablePollClearsTheReachabilityBanner() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        for _ in 0..<5 { vm.applyPollStep(unreachableStep()) }
+        XCTAssertTrue(vm.isBackendUnreachable, "precondition")
+
+        vm.applyPollStep(try readableStep("""
+        { "items": [], "cursor": "t.a.2.0", "more": false }
+        """))
+
+        XCTAssertFalse(vm.isBackendUnreachable, "§5-4: 「復帰(1回でも成功)したら即座に消す」")
+        XCTAssertEqual(vm.reachability.consecutiveFailures, 0)
+    }
+
+    /// ★★The non-substitution control, and the single most important assertion in this
+    /// section. Spec: 「片方をもう片方で代用しない —— 代用した瞬間、200 で返る壊れた配信が
+    /// 『接続は健全』に見える」. Three unreadable polls drive §5-5's meter all the way to
+    /// `.stalled` while §5-4's stays at zero, because an unreadable poll is a 200 that
+    /// arrived: direct proof of the one thing §5-4 measures.
+    ///
+    /// Running the substitution in THIS direction is the mistake that looks harmless:
+    /// a server shape regression would be reported to the user as a network problem,
+    /// sending them to check their signal instead of the deploy.
+    func testUnreadablePollsDriveTheOtherMeterAndNeverTheReachabilityOneNegativeControl() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+
+        vm.applyPollStep(unreadableStep())
+        vm.applyPollStep(unreadableStep())
+        vm.applyPollStep(unreadableStep())
+
+        XCTAssertEqual(vm.unreadableStage, .stalled, "§5-5's meter is at its worst stage")
+        XCTAssertFalse(vm.isBackendUnreachable, "§5-4's is untouched: a 200 arrived, three times")
+        XCTAssertEqual(vm.reachability.consecutiveFailures, 0)
+    }
+
+    /// ★And the direction call, stated as its own assertion because "don't count it" and
+    /// "count it as a success" are different implementations that only diverge here: an
+    /// unreadable poll CLEARS an existing reachability streak. `PollClient` only reaches
+    /// `.unreadable` after a 200 has been read off the wire, so the backend demonstrably
+    /// answered -- treating that as "no evidence" would leave a banner up that says the
+    /// opposite of what was just observed.
+    func testAnUnreadablePollClearsAnExistingReachabilityStreak() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        vm.applyPollStep(unreachableStep())
+        vm.applyPollStep(unreachableStep())
+        vm.applyPollStep(unreachableStep())
+        XCTAssertTrue(vm.isBackendUnreachable, "precondition")
+
+        vm.applyPollStep(unreadableStep())
+
+        XCTAssertFalse(vm.isBackendUnreachable, "a 200 that could not be decoded is still a 200")
+        XCTAssertEqual(vm.reachability.consecutiveFailures, 0)
+        XCTAssertNotEqual(vm.unreadableStage, .normal, "…and §5-5's meter did NOT get cleared by the same event")
+    }
+
+    /// The reverse pairing, which is the other half of "two meters, not one": a
+    /// transport failure must not reset §5-5's streak either. §3-a: a transport failure
+    /// does not touch `UnreadableMeter` in either direction.
+    func testAPollTransportFailureDoesNotTouchTheUnreadableMeter() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        vm.applyPollStep(unreadableStep())
+        vm.applyPollStep(unreadableStep())
+        let stageBefore = vm.unreadableStage
+
+        vm.applyPollStep(unreachableStep())
+
+        XCTAssertEqual(vm.unreadableStage, stageBefore, "§3-a: neither direction")
+        XCTAssertEqual(vm.reachability.consecutiveFailures, 1)
+    }
+
+    /// A failed initial load is exactly as much evidence about the backend as a failed
+    /// poll is, so it feeds the same meter -- and the phase it sets is a different
+    /// statement ("there is no screen yet"), not a substitute for the count.
+    func testAnInitialLoadTransportFailureFeedsTheSameMeter() async throws {
+        let vm = makeViewModel(client: RecordingClient())
+
+        vm.applyInitial(.failure(.unreachable))
+        vm.applyInitial(.failure(.unreachable))
+        XCTAssertFalse(vm.isBackendUnreachable)
+        vm.applyInitial(.failure(.unreachable))
+
+        XCTAssertTrue(vm.isBackendUnreachable)
+        XCTAssertEqual(vm.phase, .unreachable, "the phase and the meter are both set, and neither replaces the other")
+    }
+
+    func testASuccessfulInitialLoadClearsTheStreak() async throws {
+        let client = RecordingClient()
+        client.resultQueue = [.success(HistoryResponse(history: [], truncated: false))]
+        let vm = makeViewModel(client: client)
+        vm.applyInitial(.failure(.unreachable))
+        vm.applyInitial(.failure(.unreachable))
+        vm.applyInitial(.failure(.unreachable))
+        XCTAssertTrue(vm.isBackendUnreachable, "precondition")
+
+        await vm.load()
+
+        XCTAssertFalse(vm.isBackendUnreachable)
+        XCTAssertEqual(vm.reachability.consecutiveFailures, 0)
+    }
+
+    /// The other `applyInitial` failure arms are NOT transport failures and must not
+    /// feed §5-4 -- unlike List, which deliberately counts a superset. Conversation has
+    /// a second escalation surface (§5-5 and the contract-violation banner), so here the
+    /// meter can stay exactly the set §5-4 defines.
+    func testNonTransportLoadFailuresDoNotFeedTheReachabilityMeter() async throws {
+        let vm = makeViewModel(client: RecordingClient())
+
+        vm.applyInitial(.failure(.malformedBody))
+        vm.applyInitial(.failure(.notFound))
+        vm.applyInitial(.failure(.contractViolation(ResponseContractViolation(status: 200, code: nil))))
+        vm.applyInitial(.failure(.cancelled))
+
+        XCTAssertEqual(vm.reachability.consecutiveFailures, 0, "§5-4 is 接続不可・タイムアウト・5xx and nothing else")
     }
 }
