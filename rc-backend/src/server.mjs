@@ -899,6 +899,24 @@ const AUTH_REQUIRED = Object.freeze({ error: "unauthorized", code: "AUTH_REQUIRE
 const SESSION_NOT_FOUND = Object.freeze({ error: "unknown session", code: "SESSION_NOT_FOUND" });
 const NO_SUCH_ROUTE = Object.freeze({ error: "not found", code: "NO_SUCH_ROUTE" });
 
+/**
+ * 診断用の errno。**上の `code` とは別の欄にする**理由が2つ在る(2026-08-05):
+ *
+ * ① 名前の衝突。`code` は上の語彙 = 電話が**画面を移す判断**に使う鍵になった。
+ *    同じ名前で errno も流すと、電話から見て `code` の意味が2つになる。
+ * ② 値の際限。旧実装は `String(e.code || e.message)` で、`e.code` を持たない例外
+ *    (JSON の解析失敗・TypeError 等)では **`e.message` がそのまま線に出ていた**。
+ *    Node の fs 由来の文面は path を含む。認証を通った先とはいえ、`code` を名乗る欄に
+ *    自由文が入るのは契約として壊れている。
+ *
+ * ★一覧を持たずに閉じる: 大文字の errno の**形**だけを通し、それ以外は `UNKNOWN` へ潰す。
+ *   既知の errno を列挙すると、その一覧が古くなった日に静かに `UNKNOWN` が増える。
+ */
+function errnoOf(e) {
+  const c = e && e.code;
+  return typeof c === "string" && /^[A-Z][A-Z0-9_]{1,30}$/.test(c) ? c : "UNKNOWN";
+}
+
 function json(res, code, obj) {
   const fn = res[DISPLAY];
   // ★既に `display` を持つ本文には触らない。一覧のように**枝の中で**組み立てる応答が
@@ -1128,7 +1146,7 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { history: h.history.map(withWho), truncated: h.truncated });
       } catch (e) {
         if (e.code === "ENOENT") return json(res, 200, { history: [], truncated: false });
-        return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", code: String(e.code || e.message) });
+        return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", errno: errnoOf(e) });
       }
     }
 

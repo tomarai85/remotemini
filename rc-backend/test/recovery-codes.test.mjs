@@ -54,6 +54,34 @@ export function inventedAtCallSite(emissions) {
   return emissions.filter((e) => !/^[A-Z][A-Z0-9_]*$/.test(e.arg));
 }
 
+/**
+ * 応答本文へ `code` を**直書き**している `json(res, …)` の行を返す(空 = 合格)。
+ *
+ * ★`code` が復旧語彙**だけ**の物である事は、電話がこの鍵で画面を移す以上、契約の一部。
+ *   2026-08-05 に実測した実例: 履歴の 500 が `code: String(e.code || e.message)` を
+ *   返しており、`e.code` を持たない例外では **`e.message` がそのまま線に出ていた**
+ *   (Node の fs 由来の文面は path を含む)。名前が同じというだけで、電話から見た
+ *   `code` の意味が2つになっていた。診断は別の欄(`errno`)へ寄せた。
+ */
+export function jsonCallSites(src) {
+  return src.split("\n").filter((l) => /json\(\s*res\s*,/.test(l)).map((l) => l.trim());
+}
+
+export function codeWrittenAtCallSite(src) {
+  return jsonCallSites(src).filter((l) => /\bcode\s*:/.test(l));
+}
+
+// ★書きかけて**捨てた**検査を此処に残す(同じ物をまた書かない為)。
+//   `json(res, …)` の本文へ `e.message` が入る口を全部禁じる検査を足したら5件当たった:
+//     /api/account の 500 x2 ・ `bad body:` x2 ・ 最外の 500。
+//   だが5件とも既に**明示的に反対の判断**が書かれていた —— 自由文は `markResult` の語彙
+//   (= 艦隊のログへ出る面)からは外し、応答本文(= 認証済み・tailnet 内・読むのは Tom 本人)
+//   には残す、と。新しい根拠を持たずにその判断を裏返す検査だったので落とした。
+//   唯一違いうる `/api/account` の 500 も、その endpoint は**成功時に account 自体を返す**ので
+//   誤りの側で新しく漏れる物が無い。
+//   ★本当の欠陥は「`e.message` が線に出る」ではなく「**電話が分岐に使う欄**へ自由文が入る」で、
+//     それは `code` の話。上の `codeWrittenAtCallSite` が既に丸ごと禁じている。
+
 /** 語彙の定義のうち `code:` を持たない物の名前を返す(空 = 合格)。 */
 export function vocabularyWithoutCode(src, names) {
   return [...new Set(names)].filter((n) => {
@@ -108,6 +136,28 @@ test("★404 の意味が2つ以上在る事を、実際に見分けている", 
   );
 });
 
+// ★下の2件は「該当が無い」形の判定なので、走査そのものが空振りしていないかを先に錨で留める。
+//   `json(res, …)` の口が1つも取れていないなら、両方とも**中身が空だから緑**になる。
+const CALL_SITES = jsonCallSites(SRC);
+
+test("★応答の口を1件も拾えない = 走査が的を外している(下の検査が空振りで緑になる)", () => {
+  assert.ok(
+    CALL_SITES.length >= 10,
+    `${SERVER} から \`json(res, …)\` を ${CALL_SITES.length} 件しか拾えない。` +
+      "応答を作る口の綴りが変わったか、この検査が古い",
+  );
+});
+
+test("★`code` は復旧語彙だけの物(応答本文へ直に `code` を書いている口が無い)", () => {
+  assert.deepEqual(
+    codeWrittenAtCallSite(SRC), [],
+    "`json(res, …)` の呼び口が本文へ `code` を直書きしている。\n" +
+      "  電話はこの鍵で**画面を移す**ので、別の意味(errno / 内部の分類 / 自由文)を同じ名前で\n" +
+      "  流すと、遷移の判断が壊れる。診断値は別の欄(`errno` 等)へ寄せ、`code` は\n" +
+      "  `src/server.mjs` 上部の凍らせた語彙からしか来ない状態を保つ事",
+  );
+});
+
 test("陰性対照: 判定が見分けている(常に緑を返しているのではない)", () => {
   // 呼び口の直書きは名指しされる
   const inline = "return json(res, 404, { error: \"not found\" });";
@@ -125,4 +175,25 @@ test("陰性対照: 判定が見分けている(常に緑を返しているの�
   assert.deepEqual(vocabularyWithoutCode(noCode, ["B"]), ["B"]);
   // ★定義が**在るのに見つからない**時も「持っていない」側へ倒す(綴りが古い時に緑にしない)
   assert.deepEqual(vocabularyWithoutCode("", ["C"]), ["C"]);
+  // 呼び口の `code` 直書きを見分けている
+  assert.deepEqual(
+    codeWrittenAtCallSite('json(res, 500, { error: "X", code: String(e.code) });').length, 1,
+  );
+  // 語彙を**渡すだけ**の呼び口は直書きではない(定義側の `code:` を誤検知しない)
+  assert.deepEqual(codeWrittenAtCallSite("json(res, 404, NO_SUCH_ROUTE);"), []);
+  assert.deepEqual(
+    codeWrittenAtCallSite('const A = Object.freeze({ error: "x", code: "A" });'), [],
+  );
+  // 診断を別の欄へ寄せた形は通る
+  assert.deepEqual(
+    codeWrittenAtCallSite('json(res, 500, { error: "X", errno: errnoOf(e) });'), [],
+  );
+  // ★診断値を `code` へ入れる形は落ちる(= `errno` へ寄せた変更が、名前だけの言い換えで
+  //   はなく実際に判定を通す為の物だった事の確認)
+  assert.equal(
+    codeWrittenAtCallSite('json(res, 500, { error: "X", code: String(e.code || e.message) });')
+      .length, 1,
+  );
+  // 錨そのものも見分けている: 口が無い木では 0 を返す(= 上の錨が実際に赤くなる)
+  assert.deepEqual(jsonCallSites("const x = 1;"), []);
 });
