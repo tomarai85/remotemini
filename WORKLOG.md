@@ -8189,3 +8189,104 @@ Sprint 4 の Generator は `frames.mjs:102 backoffMs` を字面通り追うの�
 `REQUIREMENTS.md` の2件は **Tom 逐語**を指すので優先して確認した(151-157 =
 アカウント切替の逐語、161-176 = 合格条件9件)。**両方とも正確**。ここが腐っていたら
 「Tom がこう言った」の出典が別物を指す事になっていた。
+
+---
+
+## 2026-08-05 12:40 — Sprint 4 ブリーフ。本物の poll 応答を観測し、仕様との相違7件を裁定
+
+Sprint 3 は評価 PASS(5/5・5/5・4/5・5/5・5/5)で閉じ、評価が未測定として挙げた対照2件も
+緑にした(`mutation-verdict-controls.sh` = pass=27 fail=0 / `mutation-freeze-controls.sh` =
+pass=6 fail=0)。ここから Sprint 4(poll ループ)のブリーフ = `.harness/sprint-4-brief.md`。
+
+### 書く前に本物を見た
+
+仕様の散文だけで実装指示を書かず、edith 本番の poll 応答を `tools/wire-shape.mjs` で観測した
+(**値は出さず形だけ**取る道具なので、会話の題や発言が出力に載らない)。edith には置かず
+`mktemp -d` で走らせて削除・不在確認。結果、**仕様と実物のずれが7件**出た。
+
+うち3件は、仕様どおりに書くと**デコードは通るのに画面が嘘をつく**形だった。
+
+### いちばん危ない1件 — 抑制は既にサーバ側で効いている
+
+`gapNotice` は `tail-attached` に対して **`null` を返す**(`view.mjs:320-323`)。
+一方で仕様 §4-3 はこう指示していた ——「poll の世界では gap 項目は常に本物の切れ目。
+Swift 側の移植は抑制ロジックを持たない単純版(`why` があれば必ず表示)とする」。
+
+この指示に従うと事故が2つ同時に起きる:
+
+1. `notice` を非 optional の `String` で書く → `tail-attached` の gap で**デコードが落ちる**
+   → 仕様 §3-3 step 2 の規則により「読めない応答」として数えられる → 「配信の形が読めません」
+   が出る。**良性の合図が偽の警報に化ける。**
+2. 「`why` があれば必ず表示」を字義どおりに実装 → `tail-attached` という理由コードが生で
+   電話に出る。仕様が別の箇所で自分に禁じている事に自分で違反する。
+
+裁定 = `notice: String?`、**null なら何も描かない**。抑制はサーバが既に済ませているので
+Swift 側に判断は要らず、要るのは null を「文言なし」として尊重する事だけ。
+そして**表示するかと読み直すかは別の判断** — `tail-attached` でも `/history` の取り直しは
+要る(その合図の意味が「継ぎ目が見えないので一度読み直せ」だから)。ここを1つにすると
+撮影から購読開始までの間に書かれた行が黙って消える。
+
+なお「`tail-attached` が電話の栞より後に積まれるか」は競合で、**測っていない**。
+ただし optional にする対応は競合がどちらに転んでも正しく、費用は `?` 一文字なので、
+測定を待たずに決めた。**測れない事と決められない事は別**。
+
+### 仕様が数え落としていた集合
+
+gap の `why` を仕様は「`pollDecision` が返しうる5種」と書いていたが、`pollDecision`
+(`tail.mjs:94-108`)が返すのは**4種**。残りは別経路から来る:
+
+| 出所 | `why` | `seq` |
+|---|---|---|
+| `pollDecision` | cursor-too-long / cursor-malformed / route-changed / epoch-mismatch | 無し |
+| resume 分岐が直接積む | ring-overflow | 無し |
+| `feedGap` → ring → 再生 | tail-attached / generation-changed / truncated / checkpoint-mismatch | **有り** |
+
+**実際は9種**。仕様は片方の出所だけを数えて「`tail-attached` は poll に届かない」と
+結論していた。1つの出所を数え切った事が、集合を数え切った事に見えていた形。
+
+### 残り4件
+
+- `screen` は**文字列でなくオブジェクト**。分類は `screen.screen`。仕様の `screen==="CHOICE"`
+  は wire では**常に偽** = CHOICE 画面で composer が開いたままになる。
+- poll に `activity` は**無い**。`screenBody` が畳んで捨てている。運ばれるのは
+  `screen.work`("observed"|"quiet")と、購読直後に短く後で伸びる `windowMs`。
+  定数を仮定すると立ち上がりで「動く印なし」と嘘を出す。
+- 根の `display` は tmux にだけ在り worker には**鍵ごと無い**。`queued` も tmux=常に null /
+  worker=数。非 optional で書くと worker 会話が丸ごとデコード不能。
+- `ReadablePoll` は `Decodable` を消費できない(生の木を取る設計)。Data を
+  `JSONSerialization` → 検査 → `JSONDecoder` と**二度読み**する順序が要る。1回にまとめた
+  瞬間、デコードで壊れた形が捨てられて、検査が見るべき物が消える。
+
+### 測っていない事を分母付きで残した(§0-c)
+
+`kind:"message"` を **wire で一度も観測できていない**。39本すべて静止していて、6本を
+`wait=4000` で突いても items は空だった。形は `server.mjs` の構築箇所から**読んだ**物で
+あって観測ではない。実物を起こす道具(`live-inject-check.mjs`)は在るが、1つの形の為に
+Tom の購読枠を使う判断はしなかった → **DoD 行7 として実機に送った**。worker 経路の応答も
+同じく未観測。
+
+### 検査の指示は「在る」でなく「効く」で書いた
+
+§5-a に**必須の負の対照7本**を置いた(計器を1本に畳む改変 / `notice` 非 optional /
+根の `display` 非 optional / `screen` を文字列比較 / `screen: null` を上書き扱い /
+読めない時に cursor が進む / 自動取り直しの1回上限を外す)。各改変を植えて赤、戻して緑を
+`progress.md` に表で記録させる。**これが無い検査は受け取らない**と明記。
+
+### 自己訂正
+
+§6 に「`no-linerefs.test.mjs` が引用を機械で見ている」と書いた。**嘘だった**。
+`SCAN_EXT` は `.mjs` / `.sh` / `.py` / `.swift` の4つで、**`.md` は走査対象外**。
+仕様もブリーフも `progress.md` も、散文中の引用は誰も機械では見ていない。
+道具が守っている範囲を確かめずに「守られている」と書くのが、この repo でいちばん高く付く嘘
+(Generator がそれを信じて書き、赤が出ないまま腐る)。実測して §6-7 を訂正済み。
+
+同じ形をもう1回踏んだ: `check-no-pii.sh` を**未 stage のまま**走らせて「新ファイル由来の
+指摘0件」を得た。この道具は `git ls-files` = tracked だけを走査するので、**未 stage の
+ファイルは最初から見ていない**。0件は「綺麗」ではなく「測っていない」だった。
+stage してから再実行 = 既出の MagicDNS 名1件(DESIGN.md 他5 file に既在の物と同一)。
+
+### 検証
+
+`npm test` 656/656 / `staged-controls-gate` = 触れた対照なし / backtick 均衡 = 奇数行12件
+すべて code fence の対 / 禁止した行番号引用(`server.mjs:` `DESIGN.md:`)= **0件** /
+残した4件(`view.mjs` `tail.mjs` `inject.mjs`)は今日**現物を開いて照合済み**。
