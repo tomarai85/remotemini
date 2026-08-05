@@ -72,13 +72,48 @@ add_sel() { case " $sel " in *" $1 "*) ;; *) sel="$sel $1" ;; esac; }
 # ── 宣言の一覧を1度だけ作る(対照 → 見張る対象)────────────────────────────
 #   macOS の /bin/bash は 3.2 = 連想配列が無い。添字配列を2本、同じ位置で対にする。
 #   `${arr[@]}` は空の時 `set -u` で落ちるので、長さ `${#arr[@]}` と添字だけで回す。
-CTLS=(); DECLS=()
-for _c in "$ROOT"/rc-backend/test/*-controls.sh; do
-    [ -f "$_c" ] || continue
-    CTLS+=("rc-backend/test/${_c##*/}")
-    DECLS+=("$(/usr/bin/sed -n 's/^# *controls-for:[[:space:]]*//p' "$_c" | /usr/bin/tr '\n' ' ')")
-done
+#
+# ★★木を2つ見る(2026-08-05 の第2波)。此処は `rc-backend/test/` だけを見ていたので、
+#   **`ios/` が丸ごと見えなかった** —— ios の対照3本も、それが見張る ios の道具も、
+#   staged にした所で1本も選ばれない。実害は commit `c1617f7` に出ている: ios の file を
+#   3本 staged にした commit が「触れた対照 1 本を回す … 全部緑(1/1)」と印字した。
+#   選ばれた1本は `tools/run-controls.sh` を触った事で当たった別物で、
+#   **ios 側は1本も測っていない**。この header の上の方に書いてある「1/1 は緑の顔で
+#   欠落を隠す」と**同じ形が、名前ではなく木の軸で再発した**。
+#   前の直しが浅かった訳ではなく、直した軸が1本だけだった。
+#
+# 宣言の基点は木ごとに違う(既存の宣言を書き換えない為):
+#   rc-backend/test/*-control*.sh → 宣言は **rc-backend からの相対**(tools/foo.sh)
+#   ios/tools/*-control*.sh       → 宣言は **repo の根からの相対**(ios/tools/foo.sh)
+# ios 側を根からにするのは、ios の対照が backend の道具を見張る事が在り得るから
+# (逆向きは既に注釈で起きている)。基点を根に取れば両方書ける。
+CTLS=(); DECLS=(); BASES=()
+_scan_ctls() { # $1=対照の居る dir(根から) $2=宣言の基点(根から。空 = 根そのもの)
+    local d="$1" base="$2" _c
+    for _c in "$ROOT/$d"/*-control*.sh; do
+        [ -f "$_c" ] || continue
+        CTLS+=("$d/${_c##*/}")
+        BASES+=("$base")
+        DECLS+=("$(/usr/bin/sed -n 's/^# *controls-for:[[:space:]]*//p' "$_c" | /usr/bin/tr '\n' ' ')")
+    done
+}
+# glob を `*-controls.sh` から `*-control*.sh` へ広げてある: ios 側は単数形
+# (ui-fixture-absence-control.sh)。rc-backend 側の集合は変わらない(実測 34 本 → 34 本)。
+# ★この名前を backtick で囲まない事。囲むと「引いた名前が実在するか」の検査が走り、
+#   ios の居ない**写しの木**(変異走行が使う)でだけ赤くなる —— commit の門は通って
+#   走行の中で落ちる形になる。今夜これで2度倒した。
+_scan_ctls rc-backend/test rc-backend
+_scan_ctls ios/tools ""
 NCTL=${#CTLS[@]}
+
+# staged な path を、その対照の基点から見た形に直す。基点の木の外なら**空**を返す
+# (= その対照の宣言とは照合しない)。
+_key() { # $1=staged path(根から) $2=基点
+    case "$2" in
+        "") printf '%s' "$1" ;;
+        *)  case "$1" in "$2"/*) printf '%s' "${1#"$2"/}" ;; esac ;;
+    esac
+}
 
 # ★ここから先は **path 展開を止める**(2026-08-05、S18 が実際に捕まえた)。
 #   宣言を単語に割る `for _d in ${DECLS[$i]}` は引用しない = 分割と同時に **glob 展開**も
@@ -96,7 +131,8 @@ while [ "$i" -lt "$NCTL" ]; do
         #   staged な path からは原理的に選べないので、実在も照合もしない。**書かせる**のは
         #   「宣言し忘れ」と「そもそも repo に無い」を区別する為 —— 空欄だと前者に見える。
         case "$_d" in external:*|*[*?[]*) continue ;; esac
-        [ -e "$ROOT/rc-backend/$_d" ] || stale="$stale ${CTLS[$i]##*/}→${_d}"
+        _b="${BASES[$i]}"
+        [ -e "$ROOT/${_b:+$_b/}$_d" ] || stale="$stale ${CTLS[$i]##*/}→${_d}"
     done
     i=$((i+1))
 done
@@ -104,12 +140,12 @@ done
 undecl=""
 while IFS= read -r f; do
     [ -n "$f" ] || continue
-    case "$f" in rc-backend/*) rel="${f#rc-backend/}" ;; *) continue ;; esac
+    case "$f" in rc-backend/*|ios/*) ;; *) continue ;; esac
 
     hit=0
     # (a) 対照そのものが staged
     case "$f" in
-        rc-backend/test/*-controls.sh)
+        rc-backend/test/*-control*.sh|ios/tools/*-control*.sh)
             if [ -f "$ROOT/$f" ]; then                 # 削除された対照は回さない
                 add_sel "$f"; hit=1
                 # ★宣言の無い対照は「静かに回らない対照」になる。書く瞬間に止める。
@@ -126,17 +162,21 @@ while IFS= read -r f; do
     # (b) この file を見張ると宣言している対照(名前の一致には頼らない)
     i=0
     while [ "$i" -lt "$NCTL" ]; do
-        for _d in ${DECLS[$i]}; do
-            # `case` の右辺は**引用しない** = 宣言側の glob をそのまま効かせる為
-            case "$rel" in $_d) add_sel "${CTLS[$i]}"; hit=1; break ;; esac
-        done
+        # 基点が違えば見る形も違う。木の外なら空が返り、照合しない。
+        k="$(_key "$f" "${BASES[$i]}")"
+        if [ -n "$k" ]; then
+            for _d in ${DECLS[$i]}; do
+                # `case` の右辺は**引用しない** = 宣言側の glob をそのまま効かせる為
+                case "$k" in $_d) add_sel "${CTLS[$i]}"; hit=1; break ;; esac
+            done
+        fi
         i=$((i+1))
     done
 
     # (c) 見張る物が1本も無い道具は名前を出す(止めない)
     if [ "$hit" -eq 0 ] && [ -f "$ROOT/$f" ]; then
-        case "$rel" in
-            tools/*|test/*.py) orphan="$orphan ${rel##*/}" ;;
+        case "$f" in
+            rc-backend/tools/*|rc-backend/test/*.py|ios/tools/*) orphan="$orphan ${f##*/}" ;;
         esac
     fi
 done <<EOF

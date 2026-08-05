@@ -61,6 +61,19 @@ mkctl rc-backend/test/nodecl-controls.sh 0 "--- 合計: PASS 1 / FAIL 0 ---"
 : > "$R/rc-backend/src/server.mjs"
 : > "$R/rc-backend/test/plain.test.mjs"  # `npm test` 側の物。ここでは選ばない
 
+# ── ★ios の木(2026-08-05 の第2波)──────────────────────────────────────────
+#   門は木を2つ見る。宣言の基点が木ごとに違う所が肝:
+#     rc-backend の対照 → 宣言は rc-backend からの相対(tools/dd.sh)
+#     ios の対照        → 宣言は **repo の根からの相対**(`ios/Sources/Thing.swift`)
+#   命名も違う(ios は単数形 -control.sh)ので、両方を偽の木に置いて測る。
+/bin/mkdir -p "$R/ios/tools" "$R/ios/Sources"
+mkctl ios/tools/ii-control.sh 0 "GREEN: ii" "ios/Sources/Thing.swift"
+mkctl ios/tools/jj-control.sh 0 "GREEN: jj"          # 宣言なし = staged にした時だけ止める
+mkctl ios/tools/kk-control.sh 0 "GREEN: kk" "ios/Sources/gone-away.swift"  # 宣言先が実在しない
+: > "$R/ios/Sources/Thing.swift"
+: > "$R/ios/tools/lonely-ios.sh"         # 誰も見張っていない ios の道具
+: > "$R/ios/tools/dd.sh"                 # ★rc-backend の tools/dd.sh と**同名・別の木**
+
 run_gate() { # run_gate <staged の中身(改行区切り)>
   RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' '$1'" bash "$GATE" 2>&1
 }
@@ -191,6 +204,60 @@ chk "S24 ★edith 側は回さない(未測定で止めない)" 0 $? "此処で�
 # 同上。旧版は cc を**回して** UNMEA 行に名前を出すので、素の名前では見分けない。
 chk "S25 ★落とした文の中で名指しする"           0 0 "回さない(edith 側の対照): cc-controls.sh" "" "$out"
 /bin/rm -f "$R/rc-backend/tools/run-controls.sh"
+
+# ══ S26-S34 ★木を2つ見る様にした分(2026-08-05 の第2波)════════════════════════
+#   旧版は `rc-backend/` の中だけを見ていたので、**`ios/` が丸ごと見えなかった**。
+#   実害は commit `c1617f7`: ios の file を3本 staged にした commit が
+#   「触れた対照 1 本を回す … 全部緑(1/1)」と印字した(選ばれた1本は ios と無関係)。
+#   S16-S23 が塞いだのと同じ形が、名前ではなく**木の軸**で再発した物。
+#   Sprint 3-6 は全部 ios なので、此処が塞がっていないと残り全部の対照が
+#   commit 時に一度も回らない。
+#
+# ★実測(2026-08-05、3通りの旧版/壊した版を `$STAGED_GATE` から差した):
+#   | 差した物                                   | 倒れた assertion            |
+#   |---|---|
+#   | HEAD(木を1本しか見ない版)                 | S26 S27 S28 S31 S32 S33     |
+#   | `_key` が基点を見ず先頭の木を剥がすだけの版 | S29 S30(← **これだけ**)   |
+#   | stale の基点を `rc-backend` 固定にした版    | S34(← **これだけ**)       |
+#   S29/S30/S34 は HEAD では倒れない。旧版は ios を1本も選ばないので「別の木の物を
+#   選ばない」は自動的に真になるからで、**これらは旧版でなく雑な直し方を見分ける**。
+#   3本とも狙った変異でだけ倒れる事を上の表で確かめてある(倒れない対照は、その欠陥に
+#   ついて何も測っていない —— 此処を測らずに置くと assertion の数だけが増える)。
+
+# ── S26 ★★ios の道具を触ったら ios の対照が回る(欠陥の本体)──────────────────
+out=$(run_gate 'ios/Sources/Thing.swift')
+chk "S26 ★★ios の file を触ったら ios の対照が回る" 0 $? "ii-control.sh" "触れた対照は無い" "$out"
+
+# ── S27 ios の対照そのものが staged でも回る(命名が単数形 -control.sh)───────
+out=$(run_gate 'ios/tools/ii-control.sh')
+chk "S27 ★ios の対照そのものが staged -> 回る" 0 $? "GREEN: ii" "触れた対照は無い" "$out"
+
+# ── S28 宣言の無い ios の対照も止める(rc-backend と同じ扱い)──────────────────
+out=$(run_gate 'ios/tools/jj-control.sh')
+chk "S28 ★宣言の無い ios の対照 -> rc=1" 1 $? "宣言していない対照: jj-control.sh" "" "$out"
+
+# ── S29/S30 ★同名・別の木。基点の剥がし方が雑だと**他の木の対照**を選んでしまう ──
+#     ios/tools/dd.sh と rc-backend/tools/dd.sh は同名。rc-backend 側の対照2本は
+#     tools/dd.sh を宣言しているので、基点を見ずに末尾だけで照合すると ios の方でも
+#     当たる = **ios の道具を触ると backend の対照が回る**(緑になるので気付けない)。
+out=$(run_gate 'ios/tools/dd.sh')
+chk "S29 ★別の木の同名 file で dd-controls.sh を選ばない"  0 $? "触れた対照は無い" "dd-controls.sh"  "$out"
+chk "S30 ★同上(2 本目)"                                   0 0 "触れた対照は無い" "dd2-controls.sh" "$out"
+
+# ── S31/S32 見張る物の無い ios の道具は**名前を出すが止めない**(rc-backend と同じ)─
+out=$(run_gate 'ios/tools/lonely-ios.sh')
+chk "S31 ★対照の無い ios の道具 -> 注記のみ(rc=0)" 0 $? "対照を導けない道具" "" "$out"
+chk "S32 ★その名前が実際に出ている"                0 0 "lonely-ios.sh"        "" "$out"
+
+# ── S33/S34 ★宣言の**基点**が木ごとに違う事を見分ける ─────────────────────────
+#     ios の宣言は repo の根から(`ios/Sources/…`)、rc-backend の宣言は rc-backend から
+#     (`tools/…`)。基点を間違えて ios の宣言も `rc-backend/` の下で探すと、
+#     **実在する宣言先まで「実在しない」と報告する**。
+#     S33 だけでは見分けられない —— 実在しない path は基点を間違えても実在しないので、
+#     どちらの実装でも注記に出る。**実在する側(S34)が discriminator**。
+out=$(run_gate 'rc-backend/src/server.mjs')
+chk "S33 ★ios の対照の宣言先が実在しなければ名指しする" 0 $? "kk-control.sh→ios/Sources/gone-away.swift" "" "$out"
+chk "S34 ★★実在する ios の宣言を stale に出さない(基点が効いている)" 0 0 "" "ii-control.sh→" "$out"
 
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]

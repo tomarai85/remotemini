@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: ios/Sources/Core/SessionsListingFixture.swift ios/project.yml
 # 対照(a) -- 文字列走査: `RC_UI_FIXTURE` が Release バイナリの文字列表に
 # 一切出ない事を測る(Sprint 2 brief §5-b)。
 #

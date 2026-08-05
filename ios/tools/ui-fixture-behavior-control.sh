@@ -1,4 +1,5 @@
 #!/bin/bash
+# controls-for: ios/Sources/Core/SessionsListingFixture.swift ios/Sources/RootView.swift ios/project.yml
 # 対照(b) -- 挙動検査: control (a) の文字列走査は速いが脆い(brief 本文の指摘
 # そのまま)。バイナリに文字が無くても、別の経路で同じ状態に落ちる作りのバグは
 # 拾えない。ここでは実際に Release バイナリを headless simulator へ入れて起動し、
