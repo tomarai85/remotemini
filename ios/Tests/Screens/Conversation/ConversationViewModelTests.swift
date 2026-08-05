@@ -30,12 +30,79 @@ final class ConversationViewModelTests: XCTestCase {
         }
     }
 
+    /// Sprint 5's send-path stub. Records what `ConversationViewModel.send()` handed
+    /// it -- which is the only way to check the "text is transmitted unmodified" rule
+    /// from this side of the seam -- and hands back queued outcomes.
+    private final class RecordingSendClient: MessageSending {
+        var outcomeQueue: [SendOutcome] = []
+        private(set) var sentTexts: [String] = []
+        /// Same reasoning as `RecordingClient.deliveryDelay`: without a real suspension
+        /// point, a test that wants to observe the *in-flight* state (`isSending` true,
+        /// draft not yet touched) has no window in which to look.
+        var deliveryDelay: Duration = .zero
+
+        func send(baseURL: URL, apiKey: String, sessionID: String, text: String) async -> SendOutcome {
+            sentTexts.append(text)
+            if deliveryDelay > .zero {
+                try? await Task.sleep(for: deliveryDelay)
+            }
+            guard !outcomeQueue.isEmpty else { return .unreachable }
+            return outcomeQueue.removeFirst()
+        }
+    }
+
+    /// The default for every test that is not about sending. Fails loudly rather than
+    /// quietly returning something: a history/poll test that reaches the send path has
+    /// a wiring bug, and the useful report for that is a named failure, not a plausible
+    /// `.unreachable`.
+    private struct UnusedSendClient: MessageSending {
+        func send(baseURL: URL, apiKey: String, sessionID: String, text: String) async -> SendOutcome {
+            XCTFail("this test's view model was not expected to send anything")
+            return .unreachable
+        }
+    }
+
+    /// A `PollFetching` that issues no request and never returns a step -- it suspends
+    /// until the driving `Task` is cancelled, which is precisely what a long-poll that
+    /// is still waiting looks like from `PollLoop`'s side.
+    ///
+    /// It exists because the default `pollClient:` is a REAL `PollClient()`, so every
+    /// test that reached `startPolling()` was firing real requests at the `.invalid`
+    /// fixture host. Those never affected an assertion -- but each failure wrote an
+    /// `NSURLErrorDomain` line to the process's stdout, and on 2026-08-05 one of them
+    /// interleaved into the middle of xcodebuild's own `Test Case '-[...]' passed`
+    /// line, eating its leading `T`. `tools/sim-log-summary.sh` then could not see
+    /// that result and correctly refused to call the run green (「始まった 290 件 に対し、
+    /// 終わりを報告したのは 289 件」). The test had passed; the measurement had been
+    /// destroyed by noise this suite had no reason to emit. Silencing the source is the
+    /// fix -- not loosening the summariser, which is the only thing standing between a
+    /// half-finished run and a green claim.
+    private struct SilentPollFetching: PollFetching {
+        func poll(
+            baseURL: URL,
+            apiKey: String,
+            sessionID: String,
+            cursor: PollCursor,
+            waitMs: Int
+        ) async -> PollOutcome {
+            try? await Task.sleep(for: .seconds(3600))
+            return .cancelled
+        }
+    }
+
     private var unauthorizedCallCount = 0
 
-    private func makeViewModel(client: HistoryFetching, initialLimit: Int = ConversationViewModel.initialLimit) -> ConversationViewModel {
+    private func makeViewModel(
+        client: HistoryFetching,
+        sendClient: MessageSending = UnusedSendClient(),
+        pollClient: PollFetching = SilentPollFetching(),
+        initialLimit: Int = ConversationViewModel.initialLimit
+    ) -> ConversationViewModel {
         unauthorizedCallCount = 0
         return ConversationViewModel(
             client: client,
+            pollClient: pollClient,
+            sendClient: sendClient,
             baseURL: URL(string: "https://unit-test.invalid")!,
             apiKey: "unit-test-fixture-key-not-real",
             sessionID: "sess-0001",
@@ -290,11 +357,12 @@ final class ConversationViewModelTests: XCTestCase {
     // below because `unreadableMeter` is only seeded inside `startPolling()`
     // (called from `applyInitial(_:)` on success) -- without it, `.unreadable`
     // outcomes would silently no-op via `unreadableMeter?.markUnreadable()`. This
-    // does start a REAL background poll `Task` against a real `PollClient()`
-    // hitting the `.invalid` fixture host (the same pre-existing Sprint 3 quirk
-    // `makeViewModel`'s default `pollClient:` produces) -- harmless here for the
-    // same reason it was harmless in Sprint 3: it runs on a different
-    // `HistoryFetching` instance than the `RecordingClient` these tests inspect.
+    // does start a background poll `Task`, but since Sprint 5 that task drives
+    // `SilentPollFetching` (see its doc comment above), so it issues no request and
+    // writes no log line. The claim that used to stand here -- that the real
+    // `PollClient()` it drove was "harmless" -- was wrong: it was assertion-neutral
+    // but not output-neutral, and its noise is what destroyed a result line in the
+    // 2026-08-05 run.
 
     private func readableStep(_ json: String) throws -> PollLoop.StepResult {
         let response = try JSONDecoder().decode(PollResponse.self, from: Data(json.utf8))
@@ -553,5 +621,412 @@ final class ConversationViewModelTests: XCTestCase {
         vm.applyPollStep(unreadableStep())
         try? await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(client.requestedLimits.count, 3, "a fresh stalled episode after recovery must be allowed to auto-resync again")
+    }
+
+    // MARK: - Sprint 5: the composer
+    //
+    // Two halves, kept apart on purpose. `composerEnabled`/`canSend` are about what the
+    // phone lets the user DO (decided from the polled screen classification, brief
+    // §0-c ⑤); `applySendOutcome(_:)` is about what the phone SAYS afterwards (decided
+    // entirely by the server's `display`, brief §0-c ③). The failure this separation
+    // guards against is the natural drift between them -- a phone that starts deciding
+    // wording from the same signals it uses for enablement.
+
+    /// A view model that has loaded and then observed exactly one poll response
+    /// carrying `screenValue` (or none at all, when `screenValue` is nil).
+    private func loadedViewModel(
+        screen screenValue: String?,
+        sendClient: MessageSending = UnusedSendClient()
+    ) async throws -> ConversationViewModel {
+        let client = RecordingClient()
+        client.resultQueue = [.success(HistoryResponse(history: [], truncated: false))]
+        let vm = makeViewModel(client: client, sendClient: sendClient)
+        await vm.load()
+        if let screenValue {
+            vm.applyPollStep(try readableStep("""
+            { "items": [], "screen": { "route": "tmux", "pane": "p", "screen": "\(screenValue)", "work": "quiet", "windowMs": 0 }, "cursor": "t.a.1.0", "more": false }
+            """))
+        }
+        return vm
+    }
+
+    // MARK: §0-c ⑤ -- the enablement table, one assertion per row
+
+    func testComposerIsEnabledBeforeAnyScreenHasBeenObserved() async throws {
+        let vm = try await loadedViewModel(screen: nil)
+
+        XCTAssertNil(vm.screen)
+        XCTAssertTrue(vm.composerEnabled)
+        XCTAssertNil(vm.composerDisabledReason)
+    }
+
+    func testComposerIsEnabledOnSENDABLE() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+
+        XCTAssertTrue(vm.composerEnabled)
+        XCTAssertNil(vm.composerDisabledReason)
+    }
+
+    /// ★The row that contradicts a literal reading of brief §2 step 1. `BUSY` means
+    /// Claude is generating, and `server.mjs`'s injector comment states outright that a
+    /// send during generation is legitimate ("生成中でも composer はあるので送れる").
+    /// Disabling here would mute the phone during exactly the state the app exists to
+    /// watch -- which is why this is asserted as its own named case rather than left to
+    /// a table row someone could "tidy up" later.
+    func testComposerStaysEnabledOnBUSY() async throws {
+        let vm = try await loadedViewModel(screen: "BUSY")
+
+        XCTAssertEqual(vm.screen?.classification, .busy)
+        XCTAssertTrue(vm.composerEnabled, "§0-c ⑤: BUSY does not disable the composer")
+        XCTAssertNil(vm.composerDisabledReason)
+    }
+
+    func testComposerIsDisabledOnCHOICEWithTheSpecsFixedWording() async throws {
+        let vm = try await loadedViewModel(screen: "CHOICE")
+
+        XCTAssertFalse(vm.composerEnabled)
+        XCTAssertEqual(
+            vm.composerDisabledReason,
+            "v1 では電話から選べません。机で確認するか、割り込みで中断してください"
+        )
+    }
+
+    func testComposerIsDisabledOnUNKNOWNWithTheSpecsFixedWording() async throws {
+        let vm = try await loadedViewModel(screen: "UNKNOWN")
+
+        XCTAssertFalse(vm.composerEnabled)
+        XCTAssertEqual(vm.composerDisabledReason, "画面の状態を読めていません")
+    }
+
+    /// A classification this build has never heard of must not silently remove a
+    /// capability -- same rule as `ResultDisplay.kind` not being a strict enum. The
+    /// opposite behaviour (unknown -> disabled) would mean a future server release
+    /// could mute every phone in the field without anyone shipping a phone change.
+    func testAnUnrecognizedClassificationLeavesTheComposerEnabled() async throws {
+        let vm = try await loadedViewModel(screen: "SOME_FUTURE_STATE")
+
+        XCTAssertEqual(vm.screen?.classification, .unrecognized)
+        XCTAssertTrue(vm.composerEnabled)
+        XCTAssertNil(vm.composerDisabledReason)
+    }
+
+    /// ★Negative control for the whole table: an UNREADABLE poll must not disable the
+    /// composer. Failing closed here is the intuitive move and it is wrong -- the
+    /// fail-closed guard already exists on the side that can actually see the desk
+    /// (`inject.mjs` refuses on CHOICE/UNKNOWN and aborts on a modal detected
+    /// immediately before injection), so adding one here buys nothing and costs the
+    /// user their only channel at the exact moment the desk stopped answering.
+    func testAnUnreadablePollDoesNotDisableTheComposerNegativeControl() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+
+        vm.applyPollStep(unreadableStep())
+        vm.applyPollStep(unreadableStep())
+        vm.applyPollStep(unreadableStep())
+
+        XCTAssertEqual(vm.unreadableStage, .stalled, "precondition: the meter really did reach the worst stage")
+        XCTAssertTrue(vm.composerEnabled, "§0-c ⑤: 「読めない = 送らせない」に倒さない")
+    }
+
+    /// The enablement table must actually discriminate. If `composerEnabled` were a
+    /// constant `true` (or a constant `false`), every row above would still be
+    /// satisfied by one of the two constants -- this is the assertion that neither
+    /// constant passes.
+    func testEnablementIsNotAConstantNegativeControl() async throws {
+        let enabled = try await loadedViewModel(screen: "SENDABLE").composerEnabled
+        let disabled = try await loadedViewModel(screen: "CHOICE").composerEnabled
+
+        XCTAssertNotEqual(enabled, disabled)
+    }
+
+    // MARK: §canSend
+
+    func testCanSendIsFalseForEmptyAndWhitespaceOnlyDrafts() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+
+        XCTAssertFalse(vm.canSend, "empty draft")
+        vm.draft = "   \n\t "
+        XCTAssertFalse(vm.canSend, "whitespace-only draft")
+        vm.draft = "x"
+        XCTAssertTrue(vm.canSend)
+    }
+
+    func testCanSendIsFalseWhileTheComposerIsDisabledEvenWithText() async throws {
+        let vm = try await loadedViewModel(screen: "CHOICE")
+
+        vm.draft = "本当に送りたい"
+
+        XCTAssertFalse(vm.canSend)
+    }
+
+    func testSendDoesNothingWhenCanSendIsFalse() async throws {
+        let sender = RecordingSendClient()
+        let vm = try await loadedViewModel(screen: "CHOICE", sendClient: sender)
+        vm.draft = "blocked"
+
+        await vm.send()
+
+        XCTAssertTrue(sender.sentTexts.isEmpty, "the guard must stop the request, not merely grey out a button")
+        XCTAssertNil(vm.sendBanner)
+    }
+
+    // MARK: §2 -- the send ORDER (the one thing the brief stars)
+
+    /// ★The draft is not cleared on tap. Observed mid-flight, which is the only place
+    /// the mistake is visible: an implementation that cleared on entry and restored on
+    /// refusal would look identical from the outside once the response landed.
+    func testDraftSurvivesUntilTheResponseHasBeenClassified() async throws {
+        let sender = RecordingSendClient()
+        sender.deliveryDelay = .milliseconds(200)
+        sender.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "送った", keepText: false))]
+        let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sender)
+        vm.draft = "書いた文"
+
+        let sending = Task { await vm.send() }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertTrue(vm.isSending, "precondition: we really are looking mid-flight")
+        XCTAssertEqual(vm.draft, "書いた文", "brief §2: the composer text is untouched until the outcome is known")
+
+        await sending.value
+        XCTAssertFalse(vm.isSending)
+        XCTAssertEqual(vm.draft, "", "keepText:false -> cleared, but only after classification")
+    }
+
+    func testTextIsTransmittedUnmodifiedIncludingSurroundingWhitespace() async throws {
+        let sender = RecordingSendClient()
+        sender.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "送った", keepText: false))]
+        let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sender)
+        vm.draft = "  改行あり\n  "
+
+        await vm.send()
+
+        XCTAssertEqual(sender.sentTexts, ["  改行あり\n  "], "the trim exists only to decide canSend; the server trims for real")
+    }
+
+    /// A new send clears the previous banner before its own outcome arrives. Otherwise
+    /// "送った" from the last attempt sits under an in-flight send and reads as this
+    /// send's result.
+    func testStartingASendClearsThePreviousBanner() async throws {
+        let sender = RecordingSendClient()
+        sender.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "送った", keepText: false))]
+        sender.deliveryDelay = .milliseconds(200)
+        let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sender)
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "前回の結果", keepText: true)))
+        XCTAssertNotNil(vm.sendBanner)
+
+        vm.draft = "次"
+        let sending = Task { await vm.send() }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertNil(vm.sendBanner, "a stale success must not be readable as this send's outcome")
+        await sending.value
+    }
+
+    // MARK: §0-c ③ -- what the banner says, and who wrote it
+
+    func testServerDisplayIsShownVerbatimAndMarkedAsComingFromTheServer() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        let display = ResultDisplay(
+            kind: "warn",
+            text: "入れた形跡が確認できません。本文は残してあります。送り直すと二重に入ることがあります。",
+            keepText: true
+        )
+
+        vm.applySendOutcome(.display(display))
+
+        XCTAssertEqual(vm.sendBanner?.text, display.text, "no suffix, no rewording, nothing appended")
+        XCTAssertEqual(vm.sendBanner?.tone, .warn)
+        XCTAssertEqual(vm.sendBanner?.fromServer, true)
+    }
+
+    /// ★Provenance is the assertion, not just the string. A regression that replaced
+    /// the server's sentence with a locally-composed one of the same meaning would pass
+    /// any "some text is shown" check; this is the one that catches it.
+    func testPhoneWordedBannersAreMarkedAsNotComingFromTheServerNegativeControl() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)))
+        let fromServer = vm.sendBanner
+        vm.applySendOutcome(.unreachable)
+        let fromPhone = vm.sendBanner
+
+        XCTAssertEqual(fromServer?.fromServer, true)
+        XCTAssertEqual(fromPhone?.fromServer, false)
+        XCTAssertNotEqual(fromServer?.fromServer, fromPhone?.fromServer)
+    }
+
+    func testEveryDisplayToneReachesTheBannerUnchanged() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        let rows: [(String, ResultDisplay.Tone)] = [
+            ("ok", .ok), ("warn", .warn), ("refused", .refused), ("error", .error), ("brand-new", .warn),
+        ]
+
+        for (kind, expected) in rows {
+            vm.applySendOutcome(.display(ResultDisplay(kind: kind, text: "t", keepText: true)))
+            XCTAssertEqual(vm.sendBanner?.tone, expected, kind)
+        }
+    }
+
+    // MARK: §2 step 5 -- keepText, read as a field
+
+    func testKeepTextFalseClearsTheDraft() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        vm.draft = "書いた"
+
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)))
+
+        XCTAssertEqual(vm.draft, "")
+    }
+
+    func testKeepTextTrueKeepsTheDraft() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        vm.draft = "書いた"
+
+        vm.applySendOutcome(.display(ResultDisplay(kind: "refused", text: "今は入れられません", keepText: true)))
+
+        XCTAssertEqual(vm.draft, "書いた")
+    }
+
+    /// ★The recorded deviation from brief §2 step 5 ("偽/不在なら消す"). Absent means
+    /// KEEP here. Asserted rather than left implicit precisely BECAUSE it departs from
+    /// the brief: an undocumented deviation and a bug look identical six weeks later.
+    /// The asymmetry that justifies it: a kept draft that should have gone leaves a
+    /// duplicate the user can see and delete; a cleared draft that should have stayed
+    /// destroys something unrecoverable.
+    func testKeepTextAbsentKeepsTheDraftDeliberateDeviationFromTheBrief() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        vm.draft = "書いた"
+
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: nil)))
+
+        XCTAssertEqual(vm.draft, "書いた", "absent keepText is not read as false")
+    }
+
+    /// `keepText` must be read as the field it is. Today `keepText:false` occurs on
+    /// exactly one branch (`kind:"ok"`), so `kind == "ok"` would be green right now and
+    /// silently wrong the day the server adds a second -- this pair of rows is what
+    /// separates the two implementations.
+    func testClearingFollowsKeepTextNotKindNegativeControl() async throws {
+        let okKeeping = try await loadedViewModel(screen: "SENDABLE")
+        okKeeping.draft = "書いた"
+        okKeeping.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "t", keepText: true)))
+
+        let errorClearing = try await loadedViewModel(screen: "SENDABLE")
+        errorClearing.draft = "書いた"
+        errorClearing.applySendOutcome(.display(ResultDisplay(kind: "error", text: "t", keepText: false)))
+
+        XCTAssertEqual(okKeeping.draft, "書いた", #"kind:"ok" with keepText:true must KEEP"#)
+        XCTAssertEqual(errorClearing.draft, "", #"kind:"error" with keepText:false must CLEAR"#)
+    }
+
+    // MARK: The non-display outcomes
+
+    func testUnreachableKeepsTheDraftAndRefusesToClaimEitherOutcome() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        vm.draft = "書いた"
+
+        vm.applySendOutcome(.unreachable)
+
+        XCTAssertEqual(vm.draft, "書いた")
+        XCTAssertEqual(vm.sendBanner?.tone, .warn)
+        XCTAssertEqual(
+            vm.sendBanner?.text,
+            "送れたかどうか確認できませんでした。本文は残してあります。机の画面を確認してください。"
+        )
+        guard case .loaded = vm.phase else { return XCTFail("a transport failure must not tear the screen down") }
+    }
+
+    func testCancelledChangesNothingAtAll() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        vm.draft = "書いた"
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "前回", keepText: true)))
+        let bannerBefore = vm.sendBanner
+
+        vm.applySendOutcome(.cancelled)
+
+        XCTAssertFalse(vm.isSending, "the in-flight flag still has to come down")
+        XCTAssertEqual(vm.draft, "書いた")
+        XCTAssertEqual(vm.sendBanner, bannerBefore, "whoever cancelled owns the outcome -- no banner of our own")
+    }
+
+    func testUnauthorizedRoutesOutAndKeepsWhatTheUserTyped() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        vm.draft = "書いた"
+
+        vm.applySendOutcome(.unauthorized)
+
+        XCTAssertEqual(unauthorizedCallCount, 1)
+        XCTAssertEqual(vm.draft, "書いた", "the user is about to make a round trip to Key-entry and back")
+        XCTAssertNil(vm.sendBanner)
+    }
+
+    func testSessionNotFoundOnSendTearsTheScreenDown() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+
+        vm.applySendOutcome(.sessionNotFound)
+
+        XCTAssertEqual(vm.phase, .notFound)
+    }
+
+    // MARK: Contract violations -- the same fact, two different screen consequences
+
+    func testContractViolationOnSendIsABannerOverAnIntactScreen() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        vm.draft = "書いた"
+        let violation = ResponseContractViolation(status: 202, code: nil)
+
+        vm.applySendOutcome(.contractViolation(violation))
+
+        guard case .loaded = vm.phase else {
+            return XCTFail("the conversation and its poll loop must survive: this is the one view that can tell the user what happened")
+        }
+        XCTAssertEqual(vm.sendBanner?.text, violation.displayText)
+        XCTAssertFalse(vm.sendBanner?.text.isEmpty ?? true, "§3-a control 1: the screen must not go silent on an unreadable response")
+        XCTAssertEqual(vm.sendBanner?.tone, .error)
+        XCTAssertEqual(vm.sendBanner?.fromServer, false, "there was no server wording to carry -- that is the whole finding")
+        XCTAssertEqual(vm.draft, "書いた", "delivery is unknown, so the text is unrecoverable if we clear it")
+        XCTAssertEqual(vm.lastContractViolation, violation, "recorded even though it did not become the phase")
+    }
+
+    /// ★The negative control for the split. The same `ResponseContractViolation` value
+    /// arriving on a LOAD becomes the whole screen; arriving on a SEND it becomes one
+    /// banner. Collapsing the two (either direction) is a single-line change that no
+    /// other test in this file would notice.
+    func testTheSameViolationBecomesThePhaseOnLoadButNotOnSendNegativeControl() async throws {
+        let violation = ResponseContractViolation(status: 404, code: "NO_SUCH_ROUTE")
+
+        let onLoad = makeViewModel(client: RecordingClient())
+        onLoad.applyInitial(.failure(.contractViolation(violation)))
+
+        let onSend = try await loadedViewModel(screen: "SENDABLE")
+        onSend.applySendOutcome(.contractViolation(violation))
+
+        XCTAssertEqual(onLoad.phase, .contractViolation(violation))
+        XCTAssertNotEqual(onSend.phase, onLoad.phase)
+        XCTAssertNil(onLoad.sendBanner, "the load path has no banner to show -- there is no screen left to show it on")
+        XCTAssertNotNil(onSend.sendBanner)
+        // Both paths record it, which is the half that makes violations countable.
+        XCTAssertEqual(onLoad.lastContractViolation, violation)
+        XCTAssertEqual(onSend.lastContractViolation, violation)
+    }
+
+    /// A contract violation on "load earlier" tears the screen down rather than showing
+    /// `.stalledRetry`. The alternative keeps a perfectly good history on screen under a
+    /// "もう一度試す" button that quietly asserts another attempt might work -- and a
+    /// contract violation does not heal by retrying.
+    func testContractViolationOnLoadEarlierTearsDownRatherThanOfferingARetry() async throws {
+        let client = RecordingClient()
+        client.resultQueue = [
+            .success(HistoryResponse(history: [e(.user, "a")], truncated: true)),
+            .failure(.contractViolation(ResponseContractViolation(status: 404, code: "NO_SUCH_ROUTE"))),
+        ]
+        let vm = makeViewModel(client: client)
+
+        await vm.load()
+        XCTAssertEqual(vm.loadEarlierState, .available, "precondition: the button was actually there to press")
+        await vm.loadEarlier()
+
+        XCTAssertEqual(vm.phase, .contractViolation(ResponseContractViolation(status: 404, code: "NO_SUCH_ROUTE")))
+        XCTAssertNotEqual(vm.loadEarlierState, .stalledRetry, "no retry affordance for a response we are not permitted to interpret")
     }
 }

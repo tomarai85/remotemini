@@ -99,6 +99,27 @@ struct ConversationView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityIdentifier("conversation.notFound")
 
+        case .contractViolation(let violation):
+            // DoD row 6, the visible half. Deliberately NOT a copy of the `.notFound`
+            // view above: no "一覧に戻る" button, because the most likely cause of
+            // reaching here is that this app asked for a path the server does not
+            // serve -- and sending the user back to the list would present a bug in
+            // the phone as a fact about their conversation. There is also no "再試行",
+            // for the same reason `.notFound` has none: a response the phone is not
+            // permitted to interpret does not become interpretable on the second try.
+            //
+            // The text is `violation.displayText` -- one fixed sentence with the status
+            // and code appended as diagnostics. That is the whole of what the phone
+            // knows, stated as what arrived rather than as an explanation of why.
+            VStack(spacing: 12) {
+                Text(violation.displayText)
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityIdentifier("conversation.contractViolation")
+
         case .loaded:
             VStack(spacing: 0) {
                 statusBanners
@@ -125,7 +146,82 @@ struct ConversationView: View {
                     }
                 }
                 loadEarlierFooter
+                composer
             }
+        }
+    }
+
+    /// Sprint 5's whole visible surface: a text field, a send button, and the band
+    /// that reports what came back.
+    ///
+    /// Placed below `loadEarlierFooter` so it sits at the bottom of the screen where a
+    /// composer belongs. It renders only inside `.loaded` -- there is nothing to send
+    /// INTO a conversation that failed to load, and a composer over a failure view
+    /// would invite typing into a screen whose session may not exist.
+    @ViewBuilder
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let banner = viewModel.sendBanner {
+                Text(banner.text)
+                    .font(.caption)
+                    .foregroundStyle(Self.color(for: banner.tone))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.sendBanner")
+            }
+
+            if let reason = viewModel.composerDisabledReason {
+                // Shown IN ADDITION to the disabled field, not instead of it: a
+                // composer that vanishes tells the user nothing about why, and the two
+                // states this can be in (`CHOICE`, `UNKNOWN`) both need explaining.
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.composerDisabledReason")
+            }
+
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("メッセージ", text: $viewModel.draft, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...5)
+                    .disabled(!viewModel.composerEnabled)
+                    .accessibilityIdentifier("conversation.composerField")
+
+                Button {
+                    Task { await viewModel.send() }
+                } label: {
+                    if viewModel.isSending {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.title2)
+                    }
+                }
+                .disabled(!viewModel.canSend)
+                .accessibilityIdentifier("conversation.sendButton")
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    /// The ONLY thing `kind` is allowed to change. The text is always the server's;
+    /// this picks a colour for it, and an unrecognized `kind` (already mapped to
+    /// `.warn` by `ResultDisplay.tone`) lands on the neutral one rather than
+    /// borrowing either success or failure.
+    /// Internal rather than `private` for the same reason as
+    /// `shouldResumeOnForeground`: it is a pure decision lifted out of the view body so
+    /// that it can be asserted directly (`ConversationViewTests`). A `private` helper
+    /// here would be a rule about what the user sees that no test can reach.
+    static func color(for tone: ResultDisplay.Tone) -> Color {
+        switch tone {
+        case .ok: return .secondary
+        case .warn: return .orange
+        case .refused: return .orange
+        case .error: return .red
         }
     }
 

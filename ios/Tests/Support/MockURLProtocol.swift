@@ -27,6 +27,19 @@ final class MockURLProtocol: URLProtocol {
     /// client) could have its `"GET"` silently rewritten to `"POST"` and all existing
     /// suites would stay green -- a request-shape mutation with no test able to see it.
     static var requestedMethods: [String] = []
+    /// The third request-shape dimension, added for Sprint 5's send path: what the
+    /// request actually carried. `nil` for a request with no body (every GET in this
+    /// tree).
+    ///
+    /// **Read from `httpBodyStream`, never `httpBody`.** This is the landmine in this
+    /// fixture and the reason this comment is long. `URLSession` converts an outgoing
+    /// request's `httpBody` into `httpBodyStream` before the request reaches a
+    /// `URLProtocol` subclass, so `request.httpBody` here is `nil` for EVERY request,
+    /// including the POSTs that plainly set it. A naive implementation of this field
+    /// would therefore record `nil` forever, every assertion built on it would compare
+    /// `nil == nil`, and the suite would report a body-shape guard it does not have --
+    /// which is worse than having no guard, because it stops anyone from adding one.
+    static var requestedBodies: [Data?] = []
     static var lastRequestHeaders: [String: String]?
 
     /// Sprint 2: when non-zero, `startLoading()` schedules its response
@@ -65,6 +78,7 @@ final class MockURLProtocol: URLProtocol {
         stubQueue = []
         requestedURLs = []
         requestedMethods = []
+        requestedBodies = []
         lastRequestHeaders = nil
         deliveryDelay = 0
         injectedError = nil
@@ -104,6 +118,7 @@ final class MockURLProtocol: URLProtocol {
         // request that forgot to set a method), so it is recorded as `"<nil>"`
         // rather than silently defaulted to "GET", which would hide that finding.
         Self.requestedMethods.append(request.httpMethod ?? "<nil>")
+        Self.requestedBodies.append(Self.readBody(of: request))
         Self.lastRequestHeaders = request.allHTTPHeaderFields
 
         if Self.deliveryDelay > 0 {
@@ -114,6 +129,32 @@ final class MockURLProtocol: URLProtocol {
             return
         }
         deliver(url: url)
+    }
+
+    /// Drains the outgoing body. `httpBody` is checked first anyway -- not because it
+    /// is ever populated here today, but because a future direct-`URLProtocol` test
+    /// that never goes through `URLSession` would populate it, and silently returning
+    /// `nil` for such a request would be the same invisible-hole failure this field
+    /// exists to close.
+    private static func readBody(of request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+
+        stream.open()
+        defer { stream.close() }
+
+        var data = Data()
+        let bufferSize = 4096
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        while stream.hasBytesAvailable {
+            let read = stream.read(&buffer, maxLength: bufferSize)
+            // `read < 0` is a stream error and `read == 0` is end-of-stream; both must
+            // break rather than spin, since `hasBytesAvailable` can stay true on a
+            // stream that will never produce another byte.
+            guard read > 0 else { break }
+            data.append(buffer, count: read)
+        }
+        return data
     }
 
     private func deliver(url: URL) {

@@ -45,19 +45,74 @@ final class SessionsClientTests: XCTestCase {
         XCTAssertEqual(result, .failure(.unreachable))
     }
 
-    // Negative control, added alongside Sprint 3's `.notFound` case (brief §3-c):
-    // `/api/sessions` has no session id to 404 against, so `SessionsClient`'s switch
-    // deliberately has no `case 404` of its own -- a stray 404 here still falls
-    // through the existing `default:` to `.unreachable`, same as any other
-    // unexpected status. This guards against `.notFound` handling creeping into
-    // this client just because the enum it returns now has the case available.
-    func testStatus404StillFallsThroughToUnreachableForListNegativeControl() async {
-        MockURLProtocol.stubQueue = [.init(statusCode: 404)]
+    // Sprint 3 asserted that a stray 404 here fell through `default:` to
+    // `.unreachable`; Sprint 5 brief §0-c ② changes what it must be, and the reason is
+    // the whole point of the change: `/api/sessions` has no session id to 404 against,
+    // so a 404 on THIS route can only mean the phone asked for a path the server does
+    // not serve. `.unreachable` renders that as "the backend is unreachable" -- a
+    // client bug wearing the appearance of an infrastructure problem, which is
+    // precisely the disguise the mutation audit measured (`api/sessions` ->
+    // `api/session` left 214 tests green).
+    func testStatus404IsContractViolationForListNotUnreachable() async {
+        MockURLProtocol.stubQueue = [
+            .init(statusCode: 404, body: Data(#"{"error":"not found","code":"NO_SUCH_ROUTE"}"#.utf8))
+        ]
         let client = SessionsClient(session: MockURLProtocol.makeSession())
 
         let result = await client.fetch(baseURL: baseURL, apiKey: "fixture-key")
 
-        XCTAssertEqual(result, .failure(.unreachable))
+        XCTAssertEqual(
+            result,
+            .failure(.contractViolation(ResponseContractViolation(status: 404, code: "NO_SUCH_ROUTE")))
+        )
+    }
+
+    /// Even a 404 that claims `SESSION_NOT_FOUND` stays a contract violation on this
+    /// route. There is no session in the request for the server to have failed to find,
+    /// so that body would itself be the contract breaking -- and routing it to the
+    /// "conversation is gone" recovery would be acting on a claim the request cannot
+    /// support. The branch must not depend on the code's value; this test is what makes
+    /// that non-dependence visible.
+    func testStatus404WithSessionNotFoundCodeIsStillAContractViolationHere() async {
+        MockURLProtocol.stubQueue = [
+            .init(statusCode: 404, body: Data(#"{"error":"unknown session","code":"SESSION_NOT_FOUND"}"#.utf8))
+        ]
+        let client = SessionsClient(session: MockURLProtocol.makeSession())
+
+        let result = await client.fetch(baseURL: baseURL, apiKey: "fixture-key")
+
+        XCTAssertEqual(
+            result,
+            .failure(.contractViolation(ResponseContractViolation(status: 404, code: "SESSION_NOT_FOUND")))
+        )
+    }
+
+    /// Negative control: 404 and 500 must not land in the same bucket. Without this,
+    /// deleting the `case 404:` arm entirely would restore the old `.unreachable`
+    /// behaviour and the two tests above would be the only thing objecting -- both of
+    /// which a careless "fix the failing test" edit would simply rewrite.
+    func testContractViolationIsNotCollapsedIntoUnreachableNegativeControl() async {
+        MockURLProtocol.stubQueue = [
+            .init(statusCode: 404, body: Data(#"{"error":"not found","code":"NO_SUCH_ROUTE"}"#.utf8))
+        ]
+        let violation = await SessionsClient(session: MockURLProtocol.makeSession())
+            .fetch(baseURL: baseURL, apiKey: "x")
+        MockURLProtocol.stubQueue = [.init(statusCode: 500)]
+        let unreachable = await SessionsClient(session: MockURLProtocol.makeSession())
+            .fetch(baseURL: baseURL, apiKey: "x")
+
+        XCTAssertNotEqual(violation, unreachable)
+    }
+
+    /// A GET carries no body. See `HistoryClientTests`' copy for why this dimension is
+    /// asserted rather than assumed.
+    func testGETCarriesNoRequestBody() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validBody.utf8))]
+        let client = SessionsClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.fetch(baseURL: baseURL, apiKey: "x")
+
+        XCTAssertEqual((MockURLProtocol.requestedBodies.last ?? nil)?.count ?? 0, 0)
     }
 
     func testConnectionFailureIsUnreachable() async {

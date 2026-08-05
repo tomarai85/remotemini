@@ -24,4 +24,30 @@ final class ConversationViewTests: XCTestCase {
             "app launch's own .inactive -> .active transition must not read as a background-resume"
         )
     }
+
+    // MARK: - Sprint 5: the send banner's colour is the ONLY thing `kind` may change
+
+    /// An unrecognized `kind` must land on the neutral colour -- not the success one
+    /// (which would dress an unknown outcome as "sent") and not the failure one (which
+    /// would dress a possibly-fine outcome as an error). `ResultDisplay.tone` already
+    /// maps unknown to `.warn`; this asserts the view agrees, i.e. that the degradation
+    /// survives all the way to what the user actually sees.
+    func testAnUnrecognizedKindIsColouredExactlyLikeAWarning() {
+        let unknown = ResultDisplay(kind: "brand-new-state", text: "t", keepText: nil)
+
+        XCTAssertEqual(ConversationView.color(for: unknown.tone), ConversationView.color(for: .warn))
+        XCTAssertNotEqual(ConversationView.color(for: unknown.tone), ConversationView.color(for: .ok))
+        XCTAssertNotEqual(ConversationView.color(for: unknown.tone), ConversationView.color(for: .error))
+    }
+
+    /// Negative control for the assertion above: the colour map has to actually
+    /// distinguish something. A constant colour would satisfy the first line of the
+    /// previous test forever.
+    func testTheColourMapIsNotConstantNegativeControl() {
+        let colours = [ConversationView.color(for: .ok),
+                       ConversationView.color(for: .warn),
+                       ConversationView.color(for: .error)]
+
+        XCTAssertEqual(Set(colours.map { String(describing: $0) }).count, 3)
+    }
 }

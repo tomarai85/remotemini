@@ -200,6 +200,16 @@ final class PollClientTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.requestedMethods.last, "GET")
     }
 
+    /// A GET carries no body. See `HistoryClientTests`' copy for why this dimension is
+    /// asserted rather than assumed.
+    func testGETCarriesNoRequestBody() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validBody.utf8))]
+
+        _ = await makeClient().poll(baseURL: baseURL, apiKey: "k", sessionID: "s", cursor: .empty, waitMs: 0)
+
+        XCTAssertEqual((MockURLProtocol.requestedBodies.last ?? nil)?.count ?? 0, 0)
+    }
+
     func testEmptyCursorIsSentAsAnEmptyQueryValueNotOmitted() async {
         // The fresh sentinel (`PollCursor.empty`) must still appear on the wire as
         // `cursor=` -- an omitted `cursor` param entirely would be a different

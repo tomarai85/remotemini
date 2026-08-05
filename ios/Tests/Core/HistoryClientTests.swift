@@ -50,13 +50,67 @@ final class HistoryClientTests: XCTestCase {
     // Brief §3-c (same-day correction): 404 gets its own case, distinct from the
     // generic `.unreachable` bucket `testOtherStatusIsUnreachable` above covers --
     // `server.mjs`'s `/history` handler, `json(res, 404, { error: "unknown session" })`.
-    func testStatus404IsNotFound() async {
-        MockURLProtocol.stubQueue = [.init(statusCode: 404)]
+    //
+    // Sprint 5 brief §0-c ② narrowed it: the CODE decides, not the status. This test
+    // used to stub a bare `.init(statusCode: 404)` with no body at all and assert
+    // `.notFound`, which is exactly the behaviour DoD row 6 removes -- so it now sends
+    // the body `server.mjs` actually sends.
+    func testStatus404WithSessionNotFoundCodeIsNotFound() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 404, body: Data(Self.sessionNotFoundBody.utf8))]
         let client = HistoryClient(session: MockURLProtocol.makeSession())
 
         let result = await client.fetch(baseURL: baseURL, apiKey: "fixture-key", sessionID: "sess-0001", limit: 50)
 
         XCTAssertEqual(result, .failure(.notFound))
+    }
+
+    /// DoD row 6. The other two `json(res, 404, …)` sites in `server.mjs` send
+    /// `NO_SUCH_ROUTE`, which means the phone asked for a path that does not exist --
+    /// a bug in this app, not a deleted conversation.
+    func testStatus404WithNoSuchRouteCodeIsContractViolationNotNotFound() async {
+        MockURLProtocol.stubQueue = [
+            .init(statusCode: 404, body: Data(#"{"error":"not found","code":"NO_SUCH_ROUTE"}"#.utf8))
+        ]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        let result = await client.fetch(baseURL: baseURL, apiKey: "fixture-key", sessionID: "sess-0001", limit: 50)
+
+        XCTAssertEqual(
+            result,
+            .failure(.contractViolation(ResponseContractViolation(status: 404, code: "NO_SUCH_ROUTE")))
+        )
+    }
+
+    /// A 404 whose body does not parse at all cannot be shown to say
+    /// `SESSION_NOT_FOUND`, so it must not be believed to. Fail toward "we could not
+    /// read this," never toward the recovery action.
+    func testStatus404WithUnreadableBodyIsContractViolation() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 404, body: Data("<html>404</html>".utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        let result = await client.fetch(baseURL: baseURL, apiKey: "fixture-key", sessionID: "sess-0001", limit: 50)
+
+        XCTAssertEqual(
+            result,
+            .failure(.contractViolation(ResponseContractViolation(status: 404, code: nil)))
+        )
+    }
+
+    /// Negative control for the pair above: the two 404 bodies must not produce the
+    /// same outcome. Without this, both tests could be satisfied by a client that
+    /// returned `.contractViolation` for every 404 -- which would break the real
+    /// recovery path while looking green.
+    func testTheTwo404sAreNotCollapsedNegativeControl() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 404, body: Data(Self.sessionNotFoundBody.utf8))]
+        let gone = await HistoryClient(session: MockURLProtocol.makeSession())
+            .fetch(baseURL: baseURL, apiKey: "x", sessionID: "s", limit: 50)
+        MockURLProtocol.stubQueue = [
+            .init(statusCode: 404, body: Data(#"{"error":"not found","code":"NO_SUCH_ROUTE"}"#.utf8))
+        ]
+        let badPath = await HistoryClient(session: MockURLProtocol.makeSession())
+            .fetch(baseURL: baseURL, apiKey: "x", sessionID: "s", limit: 50)
+
+        XCTAssertNotEqual(gone, badPath)
     }
 
     func testConnectionFailureIsUnreachable() async {
@@ -178,7 +232,7 @@ final class HistoryClientTests: XCTestCase {
         // (§3-c): a `default:` arm that swallows 404 alongside every other
         // non-200/401 status would make this equal `.unreachable`, and Conversation
         // would offer a useless "再試行" button on an already-permanent 404.
-        MockURLProtocol.stubQueue = [.init(statusCode: 404)]
+        MockURLProtocol.stubQueue = [.init(statusCode: 404, body: Data(Self.sessionNotFoundBody.utf8))]
         let notFound = await HistoryClient(session: MockURLProtocol.makeSession())
             .fetch(baseURL: baseURL, apiKey: "x", sessionID: "s", limit: 50)
         MockURLProtocol.stubQueue = [.init(statusCode: 500)]
@@ -188,7 +242,28 @@ final class HistoryClientTests: XCTestCase {
         XCTAssertNotEqual(notFound, unreachable)
     }
 
+    // MARK: - Request body (Sprint 5's third recorded dimension)
+
+    /// A GET must carry no body. Asserted rather than assumed: `requestedBodies` is a
+    /// new recorder, and a dimension nobody reads is a dimension a mutation can move
+    /// freely -- which is the entire finding `request-shape.test.mjs` was written from.
+    ///
+    /// `?? Data()` collapses "no body recorded" and "empty body" for the count only;
+    /// both are correct here, and distinguishing them would assert a difference
+    /// `URLSession` does not promise to preserve.
+    func testGETCarriesNoRequestBody() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validBody.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.fetch(baseURL: baseURL, apiKey: "x", sessionID: "sess-0001", limit: 50)
+
+        XCTAssertEqual((MockURLProtocol.requestedBodies.last ?? nil)?.count ?? 0, 0)
+    }
+
     // MARK: - Fixture
+
+    /// What `server.mjs` actually sends from its `SESSION_NOT_FOUND` frozen constant.
+    private static let sessionNotFoundBody = #"{"error":"unknown session","code":"SESSION_NOT_FOUND"}"#
 
     private static let validBody = """
     {
