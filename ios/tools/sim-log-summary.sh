@@ -21,10 +21,34 @@
 #   UI bundle さえ緑なら「Executed 3 tests, with 0 failures」と出て**緑に見える**。
 #   97件が消えた事が要約に出ない。DoD が読むのはこの1行なので、これは偽の緑の道である。
 #
-# 新: `Test Case '...' passed/failed` の行を数える。**1件 = 1行**で、bundle を跨いでも
+# 新: `Test Case '...' passed/failed` の**印**を数える。bundle を跨いでも
 # 二重に数えない。`Test Suite ... Executed N tests` を足す方法は採れない ——
 # あの行は suite / .xctest bundle / All tests の**3階層で同じ数を繰り返す**ので、
 # 素朴に足すと二重・三重に数える(この log では 97 が2回、3 が3回出ている)。
+#
+# ── 二つ目の欠陥(2026-08-05 夕、変異の再測の最中に実測)────────────────
+# 上の「新」は当初 **行頭**(`^Test Case`)で数えていた。本物の log では
+# `xcodebuild` が OS の log(NSURLSession の `-1003` 等)を**改行を挟まずに**
+# 吐くので、印が行の途中に来る事が在る。実測: 227件の run で 4件がそうなり、
+# 要約は **226件** と印字した(log 自身は 227 と書いている)。
+#
+# ★数がずれるのは実害の小さい方。同じ綴りで `failed` も数えているので、
+#   **落ちた検査の印が OS log と同じ行に乗ると、失敗が 0件として数えられる**。
+#   その run は `XC_RC != 0` の道に落ちて赤にはなるが、文面は
+#   「テスト以外の所で落ちている」になり、**倒れた検査の名前を1つも出さない**。
+#   変異検査では「どの検査が捕まえたか」が成果物なので、これは
+#   殺した変異を生存と読む道である。
+#
+# ★対照(`sim-log-summary-control.sh`)が捕まえられなかった理由がそのまま教訓:
+#   作り物の log が**本物より綺麗**で、印は必ず行頭に在った。⑧を足した。
+#
+# 加えて `started` と `passed/failed/skipped` の数を突き合わせる。始まったのに
+# 終わりを報告しない検査(途中で落ちた process)は、**分母から黙って消える**。
+#   実測(2026-08-05、本物の 230 件の run): started 230 / passed 229 / failed 1 で一致。
+#   ★代償を承知の上: 検査が落ちて `xcodebuild` が**再試行**した run は
+#     started > finished になるので 2(未測定)になる。xcodebuild 自身はそれを
+#     緑と呼ぶが、此処では呼ばない —— 落ちてから通った run は「通った」ではない。
+#     `--sim` が非0で返る回数はその分増える。理由は必ず文面に名前が出る。
 #
 # ★0件は緑ではない。rc=0 でも `Test Case` が1行も無ければ 2(未測定)を返す。
 #   「1件も測っていない」が「失敗0件」として通る道を塞ぐ為。
@@ -43,9 +67,20 @@ XC_RC="${2:-0}"
 [ -f "$LOG" ] || { echo "==> 測れない: log が無い ($LOG)"; exit 2; }
 
 compile_errors=$(grep -cE ':[0-9]+:[0-9]+: (error|fatal error): ' "$LOG" 2>/dev/null || true)
-tc_pass=$(grep -cE "^Test Case .* passed \(" "$LOG" 2>/dev/null || true)
-tc_fail=$(grep -cE "^Test Case .* failed \(" "$LOG" 2>/dev/null || true)
-tc_total=$((tc_pass + tc_fail))
+
+# ★行数(`grep -c`)ではなく**出現数**(`grep -o | wc -l`)。行頭の錨を外した以上、
+#   1行に印が2つ乗る形が有り得る(OS log + 印 + 別の印)。行で数えると其処で1件失う。
+marker_count() {   # $1 = passed | failed | skipped
+    grep -oE "Test Case '[^']*' $1 \(" "$LOG" 2>/dev/null | wc -l | tr -d ' '
+}
+tc_pass=$(marker_count passed)
+tc_fail=$(marker_count failed)
+# XCTSkip はこの木では今の所0本だが、数えないと「始まった数 > 終わった数」の
+# 突き合わせが skip を**消えた検査**と誤認する。将来 skip が入った瞬間に
+# 偽の未測定を出す形にしない。
+tc_skip=$(marker_count skipped)
+tc_total=$((tc_pass + tc_fail + tc_skip))
+tc_started=$(grep -oE "Test Case '[^']*' started" "$LOG" 2>/dev/null | wc -l | tr -d ' ')
 
 if [ "$compile_errors" -gt 0 ]; then
     echo "==> ビルドが通っていない(コンパイル error ${compile_errors}件)= テストは1件も測っていない"
@@ -61,9 +96,24 @@ if [ "$tc_total" -eq 0 ]; then
     exit 2
 fi
 
+# 始まったのに終わりを報告していない検査が在る = その分は測っていない。
+# 「失敗0件」と名乗る前に止める(消えた検査は分母からも消えるので、
+#  件数だけ見ていると気付けない)。
+if [ "$tc_started" -gt "$tc_total" ]; then
+    echo "==> ★測り切っていない: 始まった ${tc_started}件 に対し、終わりを報告したのは ${tc_total}件"
+    echo "    差の $((tc_started - tc_total)) 件は結果を出していない(process が途中で落ちた可能性)。緑ではない"
+    # 未測定は赤より強いので此処で止めるが、既に判っている失敗は道連れにしない。
+    # 「測り切っていない」だけ出して倒れた検査の名前を伏せると、診断の手掛かりが減る。
+    if [ "$tc_fail" -gt 0 ]; then
+        echo "    (同じ run で ${tc_fail}件は失敗として報告されている)"
+        grep -oE "Test Case '[^']*' failed \([0-9.]+ seconds\)" "$LOG" | head -20
+    fi
+    exit 2
+fi
+
 if [ "$tc_fail" -gt 0 ]; then
     echo "==> テスト ${tc_total}件 実行 / **失敗 ${tc_fail}件**"
-    grep -E "^Test Case .* failed \(" "$LOG" | head -20
+    grep -oE "Test Case '[^']*' failed \([0-9.]+ seconds\)" "$LOG" | head -20
     exit 1
 fi
 
