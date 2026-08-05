@@ -61,7 +61,8 @@ const BASELINE = join(ROOT, "test", "fixtures", "doc-linerefs-baseline.json");
  * ★ただし「黙って飛ばし続ける」形は、この repo が何度も踏んだ穴そのもの。だから
  *   下に、本物の repo に居るのに飛ばしていたら**赤にする**見張りを置いてある。
  */
-const SELF_IN_REPO = relative(REPO, fileURLToPath(import.meta.url));
+const SELF = fileURLToPath(import.meta.url);
+const SELF_IN_REPO = relative(REPO, SELF);
 const REPO_OK = (() => {
   try {
     execFileSync("git", ["-C", REPO, "ls-files", "--error-unmatch", "--", SELF_IN_REPO], {
@@ -75,6 +76,33 @@ const REPO_OK = (() => {
 const SKIP = REPO_OK
   ? false
   : "この木は版管理の外に出た写し(変異の temp / 配備の仮置き)= 測っていない";
+
+/**
+ * 飛ばす指定を付けた test の**本数を数える**(下の見張りの文面が使う)。
+ *
+ * ★手で書いた本数はずれる。初版の文面は「上の3本が黙って飛ぶ」だったが、実際は **4本**で、
+ *   しかも1本(「走査した範囲を名乗る」)は見張りより**下**に在った —— 数も位置も外していた。
+ *   配備の log から skip 6件を読んで気付いた(残り2件は別 file の DESIGN 検査)。
+ *   文面は「何が失われるか」を将来の読み手へ伝えるのが仕事なので、そこが嘘だと
+ *   見張りが赤くなった時に**過小に読まれる**。数える物は数える。
+ *
+ * ★★数え始めた初版は **5** を返した。5本目は、この注記が説明の為に書いていた綴りそのもの
+ *   —— **数え方の説明文を、数えられる実体として数えていた**。
+ *   ここで効いたのは「値を実際に見た」事だけで、錨(`> 0`)は素通りした。
+ *   錨は**過少**(0本 = 綴りが古い)しか見ない。**過多**は同じ instrument では見えない。
+ *   だから条件を1つ増やす: 飛ばし指定が `test(` の行に在る事。注記の行は `test(` を持たない。
+ * ★綴りは上の EXT と同じく組み立てる(この file 自身の regex literal に当たらない為)。
+ */
+export function countSkipped(text) {
+  // ★数えるのは**行**ではなく**出現**。行で数えた版は、1行に2本書かれた時に 1 を返した
+  //   (陰性対照が即座に捕まえた)。除外したいのは注記の行であって、同居した2本目ではない。
+  const pat = "skip" + ":\\s*" + "SKIP\\b";
+  return text
+    .split("\n")
+    .filter((l) => l.includes("test" + "("))
+    .reduce((n, l) => n + (l.match(new RegExp(pat, "g")) ?? []).length, 0);
+}
+const SKIPPED = countSkipped(readFileSync(SELF, "utf8"));
 
 // ★綴りは組み立てる(この file が自分の規則に当たらない為)。
 const EXT = "(?:mjs|js|sh|py|yml|json|swift)";
@@ -202,6 +230,29 @@ test("陰性対照: 基準値の判定が両向きに動く(片側だけ見て�
   assert.deepEqual(grew({ "C.md": 1 }), ["C.md"]);
 });
 
+// 倒した変異(2026-08-05 実走。復元後 8/8 緑):
+//   `test(` の絞り込みを外す(注記も数える版へ戻す) → 1件が赤
+//   出現数でなく**行数**で数える版へ戻す                → 1件が赤
+test("陰性対照: 飛ばす本数の数え方が動いている(見張りの文面が作り話をしていない)", () => {
+  const S = "skip" + ":";
+  assert.equal(countSkipped(`test("a", { ${S} SKIP }, () => {});`), 1);
+  assert.equal(countSkipped(`test("a", { ${S} SKIP }, x); test("b", { ${S}SKIP }, y);`), 2);
+  // 飛ばしていない test は数えない
+  assert.equal(countSkipped('test("a", () => {});'), 0);
+  // 似て非なる物を数えない(別の変数を飛ばしに使っている形)
+  assert.equal(countSkipped(`test("a", { ${S} SKIPPED_ELSEWHERE }, x);`), 0);
+  assert.equal(countSkipped(`test("a", { ${S} true }, x);`), 0);
+  // ★★説明文は数えない(初版はここで 1 多く数えていた。実測 5 本 vs 実体 4 本)
+  assert.equal(countSkipped(` * \`{ ${S} SKIP }\` を付けた test の本数を数える`), 0);
+  assert.equal(countSkipped(`// ${S} SKIP を使っている test が下に在る`), 0);
+  // ★この file 自身を数えた値が、実際に見張りの文面へ入っている。
+  //   **実体の本数と一致する**事まで見る(0 でない、では過多を見逃す)。
+  const bySource = readFileSync(SELF, "utf8")
+    .split("\n")
+    .filter((l) => /^test\(/.test(l) && l.includes("skip")).length;
+  assert.equal(SKIPPED, bySource, `数えた ${SKIPPED} 本 vs 行頭 test( で数え直した ${bySource} 本`);
+});
+
 // ── 飛ばして良い時の見張り ────────────────────────────────────────────
 // ★これは skip を付けない(付けたら見張りごと消える)。
 //   「測っていない」は正直だが、**測れる場所で測っていない**のは只の穴である。
@@ -226,11 +277,17 @@ test("★飛ばして良いのは版管理の外に居る時だけ(黙って飛�
     tops.length > 0,
     "基準値に親 repo 直下の書類が 1 件も無い = この見張りは印を持てない(黙って飛ぶ側へ倒れる)",
   );
+  // ★飛ぶ本数は**数えた値**。手書きの本数は初版で既にずれていた(countSkipped の注記)。
+  assert.ok(
+    SKIPPED > 0,
+    `この file に \`skip\` を付けた test が 1 本も見えない(${SELF_IN_REPO})= 数え方の綴りが古い。` +
+      "見張りの文面が「0本が飛ぶ」と言い出す前に、ここで止める",
+  );
   const looksLikeRepo = tops.some((p) => existsSync(join(REPO, p)));
   assert.equal(
     looksLikeRepo && !REPO_OK, false,
     `基準値が名指す親直下の書類が在る(= 本物の repo に居る)のに、索引がこの file を` +
-      `追跡していないと読めた(${REPO} / ${SELF_IN_REPO})= 上の3本が黙って飛ぶ。` +
+      `追跡していないと読めた(${REPO} / ${SELF_IN_REPO})= この file の ${SKIPPED} 本が黙って飛ぶ。` +
       "git の呼び方が壊れた時にここが赤くなる",
   );
 });
