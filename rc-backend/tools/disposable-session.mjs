@@ -13,6 +13,9 @@
  *         `rc-e2e-<数字>` で、この道具はその形以外を作らない(Tom の実セッションに触る道が無い)。
  *   node tools/disposable-session.mjs lines <会話 id>
  *       → 転写(jsonl)の**行数だけ**を1行。本文は絶対に出さない。
+ *   node tools/disposable-session.mjs busy <会話 id>
+ *       → `observed <材料>` / `unknown -` の**1行だけ**。画面は出さない。
+ *         `unknown` は「待機中」ではなく「観測できなかった」(輪で回す事)。
  *   node tools/disposable-session.mjs down <tmux セッション名> <会話 id>
  *       → ペインを畳み、登録簿(`panes/`・`heads/`)の**完全一致の1本だけ**を消し、不在を確認。
  *
@@ -248,6 +251,62 @@ function cmdContains(sessionId, needle) {
   return 0;
 }
 
+/**
+ * そのペインが**今、生成中に見えるか**。出すのは1行
+ * `<activity> <activityFrom|->` だけ —— 画面は絶対に出さない。
+ *
+ * 何に使うか: 割り込みの実機検査(`ios/tools/live-interrupt-check.sh`)は、
+ * **本当に動いている最中に** Escape を撃たないと `stopped:"verified"` が出ない。
+ * 「送ってから n 秒待つ」で撃つと、その n は観測ではなく当て推量になる
+ * (短ければ `null`、長ければ `already-done`。どちらも緑にならないのに、
+ *  原因が検査の側なのか経路の側なのか**区別できない**)。だから撃つ直前に此処で観測する。
+ *
+ * ★`activityFrom` を一緒に出すのは「何で観測したか」を答えの横に置く為
+ * (`classifyScreen` の見出しと同じ規律)。電話が触る `rc-claude` 起動では
+ * footer の印は 0/76 で出ないので、実際に立つのは `spinner` のはず ——
+ * `hint` が出たなら**素の claude を掴んでいる**合図で、それは別の話になる。
+ *
+ * ★`unknown` は「待機中」ではなく「観測できなかった」(M3)。スピナーの被覆は
+ * 61-82% なので、呼ぶ側は1枚で決めずに輪で回す事。
+ */
+function cmdBusy(sessionId) {
+  if (!/^[0-9a-f-]{8,64}$/i.test(sessionId)) {
+    say("会話 id の形ではない");
+    return 1;
+  }
+  const p = join(PANE_DIR, `${sessionId}.json`);
+  if (!existsSync(p)) {
+    say("登録簿にこの会話が無い");
+    return 1;
+  }
+  let pane;
+  try {
+    pane = JSON.parse(readFileSync(p, "utf8")).pane;
+  } catch {
+    say("登録簿が読めない");
+    return 1;
+  }
+  if (!pane) {
+    say("登録簿に pane が無い");
+    return 1;
+  }
+  const injector = new TmuxInjector({ tmux: makeTmuxRunner({
+    tmuxBin: TMUX_BIN,
+    exec: (b, a, o) => execFileSync(b, a, { ...o, maxBuffer: 8 * 1024 * 1024 }),
+    quiet: true,
+  }) });
+  let screen;
+  try {
+    screen = injector.capture(pane);
+  } catch {
+    say("ペインが撮れない(畳まれた後かもしれない)");
+    return 1;
+  }
+  const c = classifyScreen(screen);
+  process.stdout.write(`${c.activity} ${c.activityFrom || "-"}\n`);
+  return 0;
+}
+
 function cmdDown(session, sessionId, purgeTranscript = false) {
   if (!/^rc-e2e-[0-9]{6,}$/.test(session)) {
     say(`使い捨ての名前ではない。畳まない: ${session}`);
@@ -301,6 +360,7 @@ let code = 1;
 if (cmd === "up") code = await cmdUp(rest);
 else if (cmd === "lines") code = cmdLines(rest[0] || "");
 else if (cmd === "contains") code = cmdContains(rest[0] || "", rest.slice(1).join(" "));
+else if (cmd === "busy") code = cmdBusy(rest[0] || "");
 else if (cmd === "down") code = cmdDown(rest[0] || "", rest[1] || "", rest.includes("--purge-transcript"));
-else say("使い方: disposable-session.mjs up|lines <id>|contains <id> <本文>|down <session> <id> [--purge-transcript]");
+else say("使い方: disposable-session.mjs up|lines <id>|contains <id> <本文>|busy <id>|down <session> <id> [--purge-transcript]");
 process.exit(code);
