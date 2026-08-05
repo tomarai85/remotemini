@@ -37,7 +37,8 @@
 #   強くなる —— `git status` が清潔なのは「index と一致」の意味しか無く、元から staged
 #   だった file にはそもそも間違った問いだった。shasum の一致は**バイトが戻った事**を言う。
 #
-# 既知の費用(黙って隠さない): xcodebuild を 11 回(基準1 + 変異10)回すので **9 分前後**。
+# 既知の費用(黙って隠さない): xcodebuild を 14 回(基準1 + 変異13)回すので **11 分前後**。
+#   (2026-08-06 に DoD 1 の method / path / header を足して 10 → 13 になった。実測 471s → 下記)
 #   commit の門から呼ばれるとその分待つ。`--no-verify` で外すのは、この repo が
 #   一番繰り返している失敗の形なので、待つ側に倒してある。短くするなら「staged な物に
 #   関わる変異だけ回す」だが、選び方を2箇所に持つ事になるので、実際に外されるまでやらない。
@@ -137,6 +138,19 @@ MUTATIONS+=("threshold-equality|$METER|s/consecutiveFailures >= Self\.unreachabl
 MUTATIONS+=("recovery-decay|$METER|s/    mutating func recordSuccess\(\) \{\n        consecutiveFailures = 0\n    \}/    mutating func recordSuccess() {\n        consecutiveFailures = max(0, consecutiveFailures - 1)\n    }/|ReachabilityMeterTests/testRecoveryIsNotADecayNegativeControl|復帰を「即座に 0」から「1 ずつ減衰」にする")
 MUTATIONS+=("threshold-fork|$LVM|s/    static var unreachableThreshold: Int \{ ReachabilityMeter\.unreachableThreshold \}/    static let unreachableThreshold = 4/|ReachabilityMeterTests/testListViewModelForwardsToThisThresholdRatherThanHoldingItsOwn|転送別名を「展開」して2本目の定数にする")
 MUTATIONS+=("interrupt-body|$ICLIENT|s/(request\.setValue\(\"Bearer \\\\\(apiKey\)\", forHTTPHeaderField: \"Authorization\"\))/\${1}\n        request.setValue(\"application\/json\", forHTTPHeaderField: \"Content-Type\")\n        request.httpBody = Data(\"{}\".utf8)/|InterruptClientTests/testRequestCarriesNoBodyAndNoContentTypeWithAWorkingRecorderAsControl|割り込みに body と Content-Type を付ける")
+
+# ---- DoD 1 の残り3次元(2026-08-06 追加)----------------------------------------
+# Sprint 5 から持ち越していた穴: 「`InterruptClient` が POST / 正しい path /
+# `Authorization` を出す」は**等値では見ている**が、その等値が効いているかは未測定だった。
+# body 次元(上の `interrupt-body`)だけ植えて、残り3次元を植えていない状態は
+# 「対照が在る」で安心して、対照が答えていない次元をそのまま残す形そのもの。
+#
+# ★3本とも受け止めるのは同じ1本の検査
+# (`testRequestIsAPOSTToTheInterruptPathWithTheBearerKey` が3つの `XCTAssertEqual` を持つ)。
+# だから**1本でも緑のまま残ったら、その行の等値が飾り**という読み方になる。
+MUTATIONS+=("interrupt-method|$ICLIENT|s/request\.httpMethod = \"POST\"/request.httpMethod = \"PUT\"/|InterruptClientTests/testRequestIsAPOSTToTheInterruptPathWithTheBearerKey|POST を PUT にする(method 次元)")
+MUTATIONS+=("interrupt-path|$ICLIENT|s#/interrupt\"\)#/stop\")#|InterruptClientTests/testRequestIsAPOSTToTheInterruptPathWithTheBearerKey|path の末尾を /interrupt から /stop にする(path 次元)")
+MUTATIONS+=("interrupt-header|$ICLIENT|s/setValue\(\"Bearer \\\\\(apiKey\)\", forHTTPHeaderField/setValue(\"\\\\\(apiKey)\", forHTTPHeaderField/|InterruptClientTests/testRequestIsAPOSTToTheInterruptPathWithTheBearerKey|Authorization から Bearer の接頭辞を落とす(header 次元)")
 
 # ---- 基準: 名指しの検査が、無変異では全部緑である事 ---------------------------
 # 1回の xcodebuild にまとめる(1本ずつ回すと 10 倍かかる)。
