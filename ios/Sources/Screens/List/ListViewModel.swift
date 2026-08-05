@@ -105,7 +105,14 @@ final class ListViewModel: ObservableObject {
             // fetch carries no information about the backend.
             break
 
-        case .failure(.unreachable), .failure(.malformedBody):
+        case .failure(.unreachable), .failure(.malformedBody), .failure(.notFound):
+            // `.notFound` is Sprint 3's addition to the shared `SessionsFetchError`
+            // taxonomy (brief §3-c) for Conversation's 404 -- `SessionsClient.fetch`
+            // above never actually produces it (`/api/sessions` carries no session id
+            // to 404 against), but the enum is shared, so this switch must still
+            // handle every case to compile. Folded into the same opaque-failure
+            // bucket as the other two: if a future server change ever did return 404
+            // here, "nothing usable to show, count it" is still the right call.
             consecutiveFailures += 1
             phase = failurePhase()
         }

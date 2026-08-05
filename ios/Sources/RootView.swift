@@ -1,9 +1,8 @@
 import SwiftUI
 
-/// Sprint 1 wired only Key-entry; Sprint 2 adds the List screen per
-/// `.harness/spec-native-shell-2026-08-05.md` §6 / `.harness/sprint-2-brief.md`.
-/// Conversation (Sprint 3) still does not exist -- successful Key-entry leads
-/// straight to List now.
+/// Sprint 1 wired only Key-entry; Sprint 2 added the List screen; Sprint 3 adds
+/// Conversation, reached only by tapping a List row (`ListView`'s `NavigationLink`)
+/// -- there is no direct Key-entry -> Conversation path.
 struct RootView: View {
     @StateObject private var appState = AppState()
 
@@ -15,10 +14,27 @@ struct RootView: View {
                     // RemoteMiniUITests path (brief §5-b): bypasses Key-entry and
                     // `AppState` entirely -- the fixture needs no stored credential
                     // and must never touch the Keychain.
-                    ListView(viewModel: ListViewModel(
-                        client: SessionsListingFixture(state: fixtureState),
+                    ListView(
+                        viewModel: ListViewModel(
+                            client: SessionsListingFixture(state: fixtureState),
+                            baseURL: Self.fixtureBaseURL,
+                            apiKey: "ui-fixture-key",
+                            onUnauthorized: {}
+                        ),
                         baseURL: Self.fixtureBaseURL,
                         apiKey: "ui-fixture-key",
+                        onUnauthorized: {}
+                    )
+                } else if let conversationFixtureState = ConversationHistoryFactory.fixtureState {
+                    // Sprint 3 brief §4-b: a second, independent `RC_UI_FIXTURE`
+                    // namespace -- bypasses List too, straight to Conversation, so a
+                    // screenshot can be taken without a List fixture row to tap.
+                    ConversationView(viewModel: ConversationViewModel(
+                        client: HistoryFetchingFixture(state: conversationFixtureState),
+                        baseURL: Self.fixtureBaseURL,
+                        apiKey: "ui-fixture-key",
+                        sessionID: "fixture-session",
+                        title: "fixture 会話",
                         onUnauthorized: {}
                     ))
                 } else {
@@ -43,6 +59,10 @@ struct RootView: View {
                 print("root flow:fixture state:\(fixtureState)")
                 return
             }
+            if let conversationFixtureState = ConversationHistoryFactory.fixtureState {
+                print("root flow:fixture state:\(conversationFixtureState)")
+                return
+            }
             #endif
             print("root flow:normal")
             await appState.loadStoredCredentials()
@@ -54,12 +74,17 @@ struct RootView: View {
         if appState.isLoadingCredentials {
             ProgressView()
         } else if let credentials = appState.credentials {
-            ListView(viewModel: ListViewModel(
-                client: SessionsClient(),
+            ListView(
+                viewModel: ListViewModel(
+                    client: SessionsClient(),
+                    baseURL: credentials.baseURL,
+                    apiKey: credentials.apiKey,
+                    onUnauthorized: { appState.clearCredentials() }
+                ),
                 baseURL: credentials.baseURL,
                 apiKey: credentials.apiKey,
                 onUnauthorized: { appState.clearCredentials() }
-            ))
+            )
         } else {
             KeyEntryView(onSaved: appState.setCredentials)
         }

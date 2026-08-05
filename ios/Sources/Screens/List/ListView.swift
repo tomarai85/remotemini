@@ -6,8 +6,26 @@ struct ListView: View {
     @StateObject private var viewModel: ListViewModel
     @Environment(\.scenePhase) private var scenePhase
 
-    init(viewModel: @autoclosure @escaping () -> ListViewModel) {
+    // Sprint 3 brief §1-a (List -> Conversation navigation): kept as plain
+    // constructor params here rather than read off `viewModel` (which keeps its own
+    // `baseURL`/`apiKey`/`onUnauthorized` private) -- `ListViewModel`'s encapsulation
+    // was set by Sprint 2 for Sprint 2's own needs; loosening it just so this view can
+    // build the next screen's `ConversationViewModel` would spend Sprint 2's design
+    // for a Sprint 3 convenience. `RootView` already holds all three at the call site.
+    private let baseURL: URL
+    private let apiKey: String
+    private let onUnauthorized: () -> Void
+
+    init(
+        viewModel: @autoclosure @escaping () -> ListViewModel,
+        baseURL: URL,
+        apiKey: String,
+        onUnauthorized: @escaping () -> Void
+    ) {
         _viewModel = StateObject(wrappedValue: viewModel())
+        self.baseURL = baseURL
+        self.apiKey = apiKey
+        self.onUnauthorized = onUnauthorized
     }
 
     var body: some View {
@@ -125,11 +143,31 @@ struct ListView: View {
     @ViewBuilder
     private func rows(_ sessions: [SessionRow], grayedOut: Bool) -> some View {
         List(sessions, id: \.id) { row in
-            SessionRowView(row: row, nowMs: Date().timeIntervalSince1970 * 1000)
+            // Trailing-closure `NavigationLink(destination:label:)`: the destination
+            // closure is only evaluated on actual navigation, so this does not
+            // eagerly construct a `ConversationViewModel` (and issue no fetch until
+            // `ConversationView`'s own `.task` runs) per row just because the List
+            // rendered.
+            NavigationLink {
+                ConversationView(viewModel: makeConversationViewModel(for: row))
+            } label: {
+                SessionRowView(row: row, nowMs: Date().timeIntervalSince1970 * 1000)
+            }
         }
         .listStyle(.plain)
         .opacity(grayedOut ? 0.5 : 1)
         .disabled(grayedOut)
+    }
+
+    private func makeConversationViewModel(for row: SessionRow) -> ConversationViewModel {
+        ConversationViewModel(
+            client: HistoryClient(),
+            baseURL: baseURL,
+            apiKey: apiKey,
+            sessionID: row.id,
+            title: row.displayTitle,
+            onUnauthorized: onUnauthorized
+        )
     }
 
     private func footer(scanLine: String) -> some View {
