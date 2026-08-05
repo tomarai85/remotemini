@@ -1605,8 +1605,13 @@ against this state and lands together.
 
 ## 未測定・持ち越し
 
-- **DoD 9行目(edith への実送信)は未実施。** `delivered:"verified"` を観測し、
-  対象の jsonl が実際に伸びた事を `ssh edith` で確かめる所まで。
+- ~~**DoD 9行目(edith への実送信)は未実施。**~~ → **2026-08-05 に観測して閉じた**。
+  `ios/tools/live-send-check.sh` で 5項目とも ok
+  (証拠 = `rc-backend/.harness/evidence-2026-08-05/live-send-row9-20260805.md`)。
+  ★閉じ方が当初の文面と違う: 「jsonl が伸びた事」**では閉じていない**。使い捨ての会話は
+  転写が無い所から始まるので `0 → 8 行` には起動が書いた行が混ざる = 「増えた」は
+  「私の本文が着いた」を意味しない。閉じたのは**送った本文を転写の中で数えた**方
+  (1 件、送っていない本文は 0 件 = 陰性対照)。
 - **`.notFound` / `sessionNotFound` は poll loop を止めない**(Sprint 4 の挙動の
   まま、意図的に変えていない)。brief §1-b が範囲外の追加を禁じている為。
   次の Sprint で扱うなら、止める側が正しいかは別途裁く必要が在る。

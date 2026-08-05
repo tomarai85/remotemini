@@ -36,12 +36,20 @@
  *   **二つの計器が同じ機械について逆の事を言う**状態になっていた。読まれ方まで計器の責任。
  */
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TmuxInjector, makeTmuxRunner, classifyScreen, limitNoticeIn, inFlightHintIn, tmuxChildEnv } from "../src/inject.mjs";
+import {
+  TmuxInjector,
+  makeTmuxRunner,
+  classifyScreen,
+  limitNoticeIn,
+  inFlightHintIn,
+  tmuxChildEnv,
+  COMPOSER_PLACEHOLDER,
+} from "../src/inject.mjs";
 
 const HOME = homedir();
 const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -61,7 +69,25 @@ const injectorRunner = () => makeTmuxRunner({
   quiet: false,
 });
 const PANE_DIR = process.env.RC_PANE_DIR || join(HOME, ".rc-backend", "panes");
+const HEADS_DIR = join(process.env.RC_KEY_DIR || join(HOME, ".rc-backend"), "heads");
 const KEY_FILE = join(process.env.RC_KEY_DIR || join(HOME, ".rc-backend"), "api.key");
+
+/**
+ * `pgrep -f <針>` に一致した**数だけ**を返す。行そのものは持ち出さない ——
+ * `-f` は argv と環境変数を丸ごと吐くので、印字すると鍵や token が紛れる
+ * (この艦隊で実際に一度、無関係の `pgrep -lf` が OAuth の secret を印字した)。
+ * 数える用途に限れば安全に使える。
+ */
+const procsMatching = (needle) => {
+  try {
+    return execFileSync("/usr/bin/pgrep", ["-f", needle], { encoding: "utf8" })
+      .trim()
+      .split("\n")
+      .filter(Boolean).length;
+  } catch {
+    return 0; // pgrep は一致 0 件で exit 1
+  }
+};
 
 // ★locale を明示する理由は inject.mjs の PANE_FORMAT 注記(タブが `_` に潰れる)。
 const tmux = (args) =>
@@ -712,6 +738,109 @@ async function main() {
     const unknown = await api(opt.port, key, "GET", `/api/sessions/00000000-0000-0000-0000-000000000000/status`);
     check("知らない session は 404", unknown.status === 404, `status=${unknown.status}`);
 
+    // --- 10. 「届いたか分からない」を実物で出す ---------------------------------
+    // ここまでの送信は毎回 `delivered:"verified"` だった。`unverified` の枝は偽 tmux では
+    // 作れるが、**実機では一度も観測されていない** = 電話に出る文面の出所が本物の画面から
+    // 出た事を誰も見ていない(Sprint 5 の brief §0-d の2行目)。
+    //
+    // 起こし方は inject.mjs の非対称そのもの: 本文が入力欄の定型文と**同一**の時だけ、
+    // 送信後に定型文が見えても「取り込まれた」と「本文が残っている」の区別が付かない ——
+    // その回は verified 側へ倒さない、という規律が入っている。生成中に送れば TUI は
+    // 本文をキューへ入れて入力欄に定型文を出すので、判別不能の条件が実機で揃う。
+    // ★文字列は `inject.mjs` から import する。此処に写しを置くと、TUI の文言が変わった日に
+    //   **写しだけが古くなって台本が黙って測らなくなる**(この案件で既に踏んだ型)。
+    // ★起こせなかった回を赤にしない。此処が測っているのは「実機で出せるか」であって、
+    //   出せない事はこの経路の故障ではない。緑にもしない = 実測メモで残す。
+    if (opt.send && !limitedReply) {
+      const long2 = "1 から 40 までの数を、間に読点を入れて順に書き出して。";
+      const fired2 = await api(opt.port, key, "POST", `/api/sessions/${sessionId}/messages`, { text: long2 });
+      const gen = await waitFor(
+        async () => (classifyScreen(injector.capture(pane)).activity === "observed" ? true : null),
+        15000,
+      );
+      if (!gen.ok) {
+        note(
+          "★unverified は測っていない",
+          `生成中の状態を作れなかった(送信 status=${fired2.status} delivered=${fired2.json?.delivered})`,
+        );
+      } else {
+        const amb = await api(opt.port, key, "POST", `/api/sessions/${sessionId}/messages`, {
+          text: COMPOSER_PLACEHOLDER,
+        });
+        if (amb.status === 202 && amb.json?.delivered === "unverified") {
+          check(
+            "★202 + delivered=unverified の実物(生成中に、定型文と同一の本文を送る)",
+            true,
+            `status=${amb.status} route=${amb.json?.route} delivered=${amb.json?.delivered}`,
+          );
+          check(
+            "unverified の回にだけ note が付く(電話がそのまま画面へ出す文面)",
+            typeof amb.json?.note === "string" && amb.json.note.length > 0,
+            `note の文字数=${(amb.json?.note || "").length}`,
+          );
+          check(
+            "★unverified でも display は付く(系統 B の応答契約)",
+            typeof amb.json?.display?.text === "string" && amb.json.display.text.length > 0,
+            `kind=${amb.json?.display?.kind} keepText=${amb.json?.display?.keepText}`,
+          );
+          writeFileSync(join(outDir, "10-unverified.json"), JSON.stringify(amb.json, null, 2));
+        } else {
+          note(
+            "★unverified は測っていない",
+            `status=${amb.status} delivered=${amb.json?.delivered} = 実機では判別が付いた。緑にはしない`,
+          );
+        }
+        const calm = await api(opt.port, key, "POST", `/api/sessions/${sessionId}/interrupt`);
+        note("片付け(生成とキューを止める)", `stopped=${calm.json?.stopped}`);
+      }
+    }
+
+    // --- 11. ワーカー経路 -------------------------------------------------------
+    // 机のペインを**自分で畳んで**から同じ会話へ送る。tmux 経路が消えた会話は
+    // `claude-work -p --resume` の子へ落ちる = 「机に無い会話」への唯一の送信路で、
+    // 実機で踏んだ事が一度も無い(brief §0-d の3行目)。
+    // ★この節より後に tmux 経路の検査を足さない事(ペインはもう無い)。
+    // ★子は必ず此処で止める。サーバへ SIGTERM を撃っても子は道連れにならないので、
+    //   止め損ねると **Tom の機械に孤児の claude が残る**。止まった事は HTTP の言い分
+    //   ではなく `pgrep` の一致数で確かめる(数だけ。行は持ち出さない)。
+    if (opt.send) {
+      tmuxOk(["kill-session", "-t", `=${session}`]);
+      const paneGone = !tmuxOk(["has-session", "-t", `=${session}`]);
+      note("ワーカー経路の準備", `使い捨てペインを畳んだ(不在=${paneGone})`);
+      const st2 = await api(opt.port, key, "GET", `/api/sessions/${sessionId}/status`);
+      if (st2.json?.route !== "worker") {
+        // 同じ cwd に別の claude が居ると `unregistered`(= 宛先を確定できない)に落ちる。
+        // これは設計どおりの拒否なので、赤ではなく「測れなかった」。
+        note(
+          "★ワーカー経路は測っていない",
+          `ペインを畳んだ後も route=${st2.json?.route} reason=${st2.json?.reason ?? "-"}`,
+        );
+      } else {
+        const w = await api(opt.port, key, "POST", `/api/sessions/${sessionId}/messages`, {
+          text: "ok とだけ答えて。",
+        });
+        check(
+          "★ワーカー経路の送信が 202 で通る",
+          w.status === 202 && w.json?.accepted === true && w.json?.route === "worker" && Number.isInteger(w.json?.seq),
+          `status=${w.status} route=${w.json?.route} seq=${w.json?.seq} reason=${w.json?.reason ?? "-"}`,
+        );
+        check(
+          "ワーカーの 202 にも display が付く(系統 B の応答契約)",
+          typeof w.json?.display?.text === "string" && w.json.display.text.length > 0,
+          `kind=${w.json?.display?.kind}`,
+        );
+        writeFileSync(join(outDir, "11-worker.json"), JSON.stringify(w.json, null, 2));
+        const stop = await api(opt.port, key, "POST", `/api/sessions/${sessionId}/interrupt`);
+        check(
+          "ワーカーの子を止められる",
+          stop.status === 200 && stop.json?.route === "worker",
+          `status=${stop.status} route=${stop.json?.route} interrupted=${stop.json?.interrupted}`,
+        );
+        const orphan = await waitFor(async () => (procsMatching(sessionId) === 0 ? true : null), 8000);
+        check("★ワーカーの子が残っていない", orphan.ok, `一致するプロセス数=${procsMatching(sessionId)}`);
+      }
+    }
+
     writeFileSync(join(outDir, "09-server.log"), serverLog.join(""));
   } catch (e) {
     console.log(`★落ちた: ${e.stack || e.message}`);
@@ -736,6 +865,24 @@ async function main() {
     const gone = !tmuxOk(["has-session", "-t", `=${session}`]);
     console.log(`片付け: ${session} は ${gone ? "不在を確認" : "★まだ在る"}`);
     if (!gone) failed = true;
+    // ★登録簿の残骸を自分で片付ける(2026-08-05 追加)。statusline が書く
+    //   `panes/<session_id>.json` と、ワーカー経路が書く `heads/<session_id>.json` は
+    //   誰も刈らないので、走らせる度に使い捨て会話の分が Tom の機械へ1件ずつ積もる。
+    //   **消すのは自分の session_id と完全一致する物だけ**(他の会話の登録には触らない)。
+    if (sessionId) {
+      for (const p of [join(PANE_DIR, `${sessionId}.json`), join(HEADS_DIR, `${sessionId}.json`)]) {
+        if (!existsSync(p)) continue;
+        try {
+          unlinkSync(p);
+          console.log(`片付け: ${p.replace(HOME, "~")} は ${existsSync(p) ? "★まだ在る" : "不在を確認"}`);
+          if (existsSync(p)) failed = true;
+        } catch (e) {
+          // 消せなかった事を黙らない。残骸は次の走行の観測を汚す。
+          console.log(`片付け: ${p.replace(HOME, "~")} を消せない(${e.message})`);
+          failed = true;
+        }
+      }
+    }
     console.log(`結果: ${results.filter((r) => r.ok === true).length} OK / ${results.filter((r) => r.ok === false).length} NG / 実測メモ ${results.filter((r) => r.ok === null).length} 件`);
     if (sessionId) console.log(`使い捨て会話の session_id: ${sessionId}(jsonl は ~/.claude/projects/ に残る)`);
     if (limitedReply) {
