@@ -52,12 +52,30 @@ final class ConversationViewModel: ObservableObject {
 
     @Published private(set) var phase: Phase = .initialLoading
     @Published private(set) var history: [HistoryEntry] = []
-    /// Always empty this sprint -- brief §2-d: no poll loop until Sprint 4. Held (not
-    /// omitted) so `entries` already routes through `MergeHistory.merge` today; only
-    /// *populating* `live` is Sprint 4's job, not restructuring this pipeline.
+    /// Populated by the poll loop as of Sprint 4 (brief §1-a items 1-3) -- previously
+    /// always empty (Sprint 3 brief §2-d: no poll loop existed yet). Still never
+    /// mutated directly by the View; only `applyReadablePoll(_:)` appends to it.
     @Published private(set) var live: [HistoryEntry] = []
     @Published private(set) var truncated = false
     @Published private(set) var loadEarlierState: LoadEarlierState = .hidden
+
+    /// §2-c: `nil` means "server held this over, unchanged" -- these two are always
+    /// written together, at the one shared apply site (`applyReadablePoll(_:)`),
+    /// never independently, per the brief's own "両者を同じ1箇所で扱う事."
+    @Published private(set) var screen: ScreenBody?
+    @Published private(set) var choiceView: ChoiceView?
+    /// Brief §4: the most recent non-null gap notice. Brief §1-a item 4 only asks to
+    /// "draw the notice when non-null" -- no dismiss affordance is specified, so this
+    /// simply holds the latest one until superseded by a newer gap (judgment call,
+    /// noted in progress.md).
+    @Published private(set) var latestGapNotice: String?
+
+    @Published private(set) var unreadableStage: UnreadableMeter.Stage = .normal
+    /// `nil` only before polling has ever started. Seeded to "now" the moment
+    /// `startPolling()` runs (brief §3-b's banner always shows a clock time, never a
+    /// blank) -- same "never display nothing, fail toward a stated unknown" instinct
+    /// as `Freshness`.
+    @Published private(set) var lastReadableAt: Date?
 
     /// The render array every screen actually shows. Recomputed on every access
     /// rather than cached -- brief §2-d, this is the one call site `mergeHistory`
@@ -70,6 +88,7 @@ final class ConversationViewModel: ObservableObject {
     let title: String
 
     private let client: HistoryFetching
+    private let pollClient: PollFetching
     private let baseURL: URL
     private let apiKey: String
     private let sessionID: String
@@ -78,8 +97,18 @@ final class ConversationViewModel: ObservableObject {
     private var currentLimit: Int
     private var isFetchingEarlier = false
 
+    private var unreadableMeter: UnreadableMeter?
+    /// Brief §3-c: "2回目以降は「読み直す」を人が押した時のみ" -- the automatic,
+    /// one-shot resync fires once per stalled *episode*; this flag is what makes it
+    /// one-shot, and `applyReadablePoll(_:)` clearing it on the next readable response
+    /// (streak back to 0) is what ends an episode and re-arms it for the next one.
+    private var resyncEpisodeUsed = false
+    private var pollLoop: PollLoop?
+    private var pollTask: Task<Void, Never>?
+
     init(
         client: HistoryFetching,
+        pollClient: PollFetching = PollClient(),
         baseURL: URL,
         apiKey: String,
         sessionID: String,
@@ -88,6 +117,7 @@ final class ConversationViewModel: ObservableObject {
         initialLimit: Int = ConversationViewModel.initialLimit
     ) {
         self.client = client
+        self.pollClient = pollClient
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.sessionID = sessionID
@@ -114,6 +144,10 @@ final class ConversationViewModel: ObservableObject {
                 currentLimit: currentLimit,
                 advanced: true
             )
+            // Brief §1-a items 1-3: the poll loop starts once there is a history
+            // screen to attach it to, not before -- a poll loop with nothing loaded
+            // yet has nowhere to merge its `live` items against.
+            startPolling()
         case .failure(.unauthorized):
             onUnauthorized()
         case .failure(.cancelled):
@@ -213,5 +247,212 @@ final class ConversationViewModel: ObservableObject {
         guard truncated else { return .hidden }
         if MergeHistory.nextHistoryLimit(currentLimit) == currentLimit { return .atCeiling }
         return advanced ? .available : .stalledRetry
+    }
+
+    // MARK: - Poll loop (Sprint 4, brief §1-a items 1-6)
+
+    /// Brief §2-b: one `PollLoop` per displayed Conversation screen. Idempotent --
+    /// called again from a later successful `load()` (the "再試行" button on a
+    /// failure phase) while a loop from an earlier successful load is still running
+    /// is a no-op, not a second concurrent loop.
+    func startPolling() {
+        guard pollTask == nil else { return }
+        let now = Date()
+        unreadableMeter = UnreadableMeter(lastReadableAt: now)
+        lastReadableAt = now
+        unreadableStage = .normal
+        resyncEpisodeUsed = false
+
+        let loop = PollLoop(client: pollClient, baseURL: baseURL, apiKey: apiKey, sessionID: sessionID)
+        pollLoop = loop
+        pollTask = Task { [weak self] in
+            await self?.drivePolling(loop: loop)
+        }
+    }
+
+    /// Brief §2-b: called from the View's `.onDisappear` -- cancels the driving
+    /// `Task` (which, via structured-concurrency cancellation propagation through
+    /// `URLSession`'s async API, also unblocks any in-flight long-poll `await`) and
+    /// the underlying actor's own flag, belt-and-suspenders.
+    func stopPolling() {
+        pollTask?.cancel()
+        pollTask = nil
+        if let loop = pollLoop {
+            Task { await loop.cancel() }
+        }
+        pollLoop = nil
+    }
+
+    /// The real drive loop: repeatedly steps, applies, sleeps for whatever `step()`
+    /// reported, and steps again. Kept separate from `step()` itself, and from
+    /// `applyPollStep(_:)`, so tests exercise those two directly with no real
+    /// sleeping or looping involved -- same reasoning as `load()`/`applyInitial(_:)`.
+    private func drivePolling(loop: PollLoop) async {
+        var waitMs = 0
+        while !Task.isCancelled {
+            guard let result = await loop.step(waitMs: waitMs) else { return }
+            let shouldContinue = applyPollStep(result)
+            guard shouldContinue else { return }
+            if result.localBackoffMs > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(result.localBackoffMs) * 1_000_000)
+            }
+            waitMs = result.nextWaitMs
+        }
+    }
+
+    /// One poll round trip's result, applied synchronously -- mirrors
+    /// `applyInitial(_:)`/`applyLoadEarlier(...)`. Returns `false` when the drive
+    /// loop should stop (brief §5-b: 401 stops polling and exits to Key-entry, same
+    /// as every other authenticated request in this app).
+    @discardableResult
+    func applyPollStep(_ result: PollLoop.StepResult) -> Bool {
+        switch result.kind {
+        case .readable(let response):
+            applyReadablePoll(response)
+            return true
+        case .unreadable:
+            unreadableMeter?.markUnreadable()
+            publishUnreadableState()
+            maybeAutoResync()
+            return true
+        case .unauthorized:
+            onUnauthorized()
+            return false
+        case .unreachable:
+            // `Backoff.attempt` already advanced inside `PollLoop`; §3-a: a transport
+            // failure must not touch `UnreadableMeter` in either direction.
+            return true
+        }
+    }
+
+    private func applyReadablePoll(_ response: PollResponse) {
+        // §2-a step 5: this -- a successful merge, not merely "got a 200" -- is the
+        // only place the meter resets.
+        unreadableMeter?.markReadable(now: Date())
+        publishUnreadableState()
+        resyncEpisodeUsed = false // streak back to 0 ends the episode (§3-c)
+
+        // §2-c: null = hold the previous value, for `screen` and `display.choice`
+        // alike, applied here in the one shared spot the brief asks for.
+        if let newScreen = response.screen {
+            screen = newScreen
+        }
+        if let newChoice = response.display?.choice {
+            choiceView = newChoice
+        }
+
+        var needsHistoryRefetch = false
+        for item in response.items {
+            switch item {
+            case .message(let message):
+                if let entries = message.entries {
+                    live.append(contentsOf: entries)
+                }
+                // Worker-route `event` payloads decode but are not rendered this
+                // sprint (brief §1-b) -- nothing to apply.
+            case .gap(let gap):
+                // Brief §4: whether a notice is DRAWN and whether `/history` is
+                // REFETCHED are two separate decisions -- refetch regardless of
+                // whether `notice` happened to be null for this particular gap.
+                if let notice = gap.notice {
+                    latestGapNotice = notice
+                }
+                needsHistoryRefetch = true
+            case .unrecognized:
+                break
+            }
+        }
+
+        if needsHistoryRefetch {
+            Task { await performResync() }
+        }
+    }
+
+    /// Brief §3-c: fires exactly once per stalled episode, at the moment the stage
+    /// FIRST becomes `.stalled` -- not on every subsequent unreadable response while
+    /// already stalled (`resyncEpisodeUsed` is what prevents that).
+    private func maybeAutoResync() {
+        guard let meter = unreadableMeter, meter.stage(now: Date()) == .stalled, !resyncEpisodeUsed else { return }
+        resyncEpisodeUsed = true
+        Task { await performResync() }
+    }
+
+    private func publishUnreadableState() {
+        guard let meter = unreadableMeter else { return }
+        unreadableStage = meter.stage(now: Date())
+        lastReadableAt = meter.lastReadableAt
+    }
+
+    /// Shared by gap-driven refetch (§4 point 3), N4 (background -> foreground), and
+    /// the one-per-episode auto-recovery (§3-c) -- all three are explicitly "the same
+    /// procedure" (brief §1-a item 5 / §3-c). Refetches `/history` at the current
+    /// limit, clears `live` (the fresh history now supersedes whatever the poll loop
+    /// had accumulated), and resets the poll loop's cursor to empty.
+    private func performResync() async {
+        let result = await client.fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: currentLimit)
+        guard case .success(let response) = result else {
+            // No distinct UI state is specified for "the resync's own /history call
+            // itself failed" (brief doesn't name one) -- fail soft: keep whatever
+            // `history` currently holds, and the still-running poll loop's next
+            // successful response keeps merging against it. Noted as a judgment call
+            // in progress.md.
+            return
+        }
+        history = response.history
+        truncated = response.truncated
+        live = []
+        await pollLoop?.resetForResync()
+    }
+
+    /// N4: background -> foreground. Same procedure as any other resync (see
+    /// `performResync()`'s doc) -- time spent backgrounded is exactly the situation
+    /// brief §4/§3-c already has a name for ("assume a gap happened, don't try to
+    /// prove one did").
+    func handleForegroundResume() {
+        Task { await performResync() }
+    }
+
+    /// Manual "再試行": unlike "読み直す" (`rereadNow()`, a full resync), this does
+    /// NOT touch `history`/`live` -- it restarts the driving `Task` from the SAME
+    /// cursor position the old loop had already reached, which is only useful to
+    /// distinguish from a resync if the old loop's `Task` was itself stuck (e.g. deep
+    /// in a local backoff sleep) rather than just slow. Exact semantic split between
+    /// the two buttons is a judgment call, not fully specified by the brief -- see
+    /// progress.md.
+    func retryPollingNow() {
+        guard let oldLoop = pollLoop else {
+            startPolling()
+            return
+        }
+        pollTask?.cancel()
+        Task { [weak self] in
+            guard let self else { return }
+            let resumeCursor = await oldLoop.currentCursor()
+            await oldLoop.cancel()
+            // No `await` here: `Task { [weak self] in ... }` created directly inside
+            // an already-`@MainActor` method inherits that isolation, so this call
+            // never actually hops actors -- confirmed by the build itself (`await
+            // self.restartPolling(...)` compiled but the compiler warned "no 'async'
+            // operations occur within 'await' expression"). Removed rather than left
+            // in place: this one is not one of the pre-existing Sprint 3
+            // `initialLimit` warnings, it's new to this sprint's own code.
+            self.restartPolling(from: resumeCursor)
+        }
+    }
+
+    private func restartPolling(from cursor: PollCursor) {
+        let loop = PollLoop(client: pollClient, baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, initialCursor: cursor)
+        pollLoop = loop
+        pollTask = Task { [weak self] in
+            await self?.drivePolling(loop: loop)
+        }
+    }
+
+    /// Manual "読み直す": the full resync procedure, on demand -- brief §3-c names
+    /// this explicitly as the ONLY resync trigger from the second stalled episode
+    /// onward (the automatic one is one-shot per episode; this button has no such
+    /// limit).
+    func rereadNow() {
+        Task { await performResync() }
     }
 }

@@ -23,3 +23,13 @@ struct PollCursor: Equatable {
     /// meaning "nothing to resume from," identical to a first-ever request.
     static let empty = PollCursor(raw: "")
 }
+
+/// Sprint 4: `PollResponse.cursor` is a plain JSON string on the wire (`tail.mjs`'s
+/// `formatPollCursor`) -- decodes exactly like `wireValue`'s own opaque-string
+/// contract, single-value, no object wrapper.
+extension PollCursor: Decodable {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        wireValue = try container.decode(String.self)
+    }
+}

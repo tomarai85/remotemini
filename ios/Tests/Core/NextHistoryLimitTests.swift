@@ -27,9 +27,15 @@ final class NextHistoryLimitTests: XCTestCase {
         XCTAssertGreaterThan(MergeHistory.nextHistoryLimit(120), 120)
     }
 
-    func testFourFiftyStepsToFiveHundredNotFiveFifty() {
-        // The cap engages before a plain `+100` would (450 + 100 = 550).
-        XCTAssertEqual(MergeHistory.nextHistoryLimit(450), 500)
+    /// Sprint 3 carryover (brief §8, Sprint 3 evaluator: "1 line, close it now"):
+    /// this used 450 (550 would've been the naive un-capped result), but
+    /// `test/view.test.mjs`'s own case for this row is seeded at 480, not 450 -- a
+    /// silent divergence between the ported test and the JS source it claims to
+    /// port verbatim. 480 still exercises the identical property (the cap engages
+    /// before a plain `+100` would: 480 + 100 = 580), it just now matches the JS
+    /// side's actual input instead of a nearby stand-in.
+    func testFourEightyStepsToFiveHundredNotFiveEighty() {
+        XCTAssertEqual(MergeHistory.nextHistoryLimit(480), 500)
     }
 
     /// The ceiling property `ConversationViewModel`'s "retract the button
