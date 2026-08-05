@@ -42,21 +42,18 @@ xcodegen generate >/dev/null
 
 if [ "$MODE" = "sim" ]; then
   step "2. build + test on the simulator ($SIM_NAME)"
-  # Why the full log goes to a file and the summary is classified rather than
-  # `| tail -3` (which is what this used to be, until 2026-08-05):
+  # The full log goes to a file; the one-line summary is CLASSIFIED (green / red /
+  # not-measured) by tools/sim-log-summary.sh rather than scraped inline here.
   #
-  # `xcodebuild test` reports a COMPILE failure and a TEST failure with the same
-  # `** TEST FAILED **` line and the same exit code 65. Truncating to the last three
-  # lines threw away the only thing that tells them apart -- so "the code does not
-  # build" and "an assertion fired" looked identical. That is not a cosmetic loss:
-  # during mutation testing it turns "the mutation was killed" into a claim that
-  # cannot be distinguished from "the mutation did not compile", i.e. from a run that
-  # measured nothing. (Found by the Sprint 1 evaluator, which abandoned this script
-  # for its mutation runs because of it; reproduced again the same day by a hand-typed
-  # `grep -c 'error: '`, which counted XCTest assertion lines as compiler errors.)
+  # Why a separate file: a summariser that lives inside this script can only be
+  # exercised by a real several-minute xcodebuild run. Something that expensive to
+  # test does not get a control written for it. Taking the log path as an argument
+  # lets a control feed it hand-made logs and measure every branch in a second.
   #
-  # The discriminator is the column number: swiftc writes `file:line:col: error:`,
-  # XCTest writes `file:line: error:`. Nothing else in the log has that shape.
+  # What it fixes and why the old inline version was actively dangerous is written
+  # at the top of that file -- summary: `... | tail -1` reported only the LAST test
+  # bundle's count, so a 100-test run printed "Executed 3 tests", and a run whose
+  # unit bundle never started at all still printed a green-looking line.
   mkdir -p "$DERIVED"
   SIM_LOG="$DERIVED/xcodebuild-sim.log"
   rc=0
@@ -64,19 +61,15 @@ if [ "$MODE" = "sim" ]; then
     -sdk iphonesimulator -destination "platform=iOS Simulator,name=$SIM_NAME" \
     -derivedDataPath "$DERIVED" test >"$SIM_LOG" 2>&1 || rc=$?
 
-  compile_errors=$(grep -cE ':[0-9]+:[0-9]+: (error|fatal error): ' "$SIM_LOG" || true)
-  executed=$(grep -E 'Executed [0-9]+ tests' "$SIM_LOG" | tail -1 || true)
-
-  if [ "$compile_errors" -gt 0 ]; then
-    echo "==> ビルドが通っていない(コンパイル error ${compile_errors}件)= テストは1件も測っていない"
-    grep -E ':[0-9]+:[0-9]+: (error|fatal error): ' "$SIM_LOG" | head -10
-  elif [ "$rc" -ne 0 ]; then
-    echo "==> コンパイルは通り、テストが落ちた"
-    grep -E '^Test Case .* failed|: error: .*XCTAssert' "$SIM_LOG" | head -20
-  fi
-  [ -n "$executed" ] && echo "==> $(echo "$executed" | sed 's/^[[:space:]]*//')"
+  sum_rc=0
+  bash "$HERE/tools/sim-log-summary.sh" "$SIM_LOG" "$rc" || sum_rc=$?
   echo "==> 全文: $SIM_LOG"
-  exit "$rc"
+  # xcodebuild 自身が落ちたなら、その終了コードを潰さずに返す(65 のまま外へ出す)。
+  # 落ちていない時だけ要約側の判定を採る = 「rc=0 だが1件も測っていない」を 2 で返す道。
+  if [ "$rc" -ne 0 ]; then
+    exit "$rc"
+  fi
+  exit "$sum_rc"
 fi
 
 step "2. locate the wildcard provisioning profile"

@@ -253,6 +253,31 @@ LOCAL_CTLS=(
                                      # 陰性 N1 = 握り潰す版は失敗を 0 で返す(この repo は
                                      # `mutation-verdict.sh assert` で同じ病気を既に踏んでいる)。
                                      # 実測1秒未満。
+    ../ios/tools/sim-log-summary-control.sh # ★2026-08-05。ios/tools/build.sh --sim が印字する
+                                     # **要約1行**の判定(ios/tools/sim-log-summary.sh)。
+                                     # ★この2つを backtick で囲まない事。`test/no-linerefs.test.mjs` は
+                                     # backtick の引用を実在検査に掛けるが、`test/copied-tree-controls.sh`
+                                     # が作る写しには **ios/ が入っていない**(backend の変異走行用なので
+                                     # 入れるのも違う)。囲むと「完全な木では緑・写しでだけ赤」になり、
+                                     # commit の門は通って**変異走行の中でだけ**落ちる —— 検査 file 自身が
+                                     # 頭で警告している罠に、2026-08-05 に此処で一度嵌まった。
+                                     # 隣の ui-fixture 2本が ios/ の `.swift` を囲めているのは、
+                                     # 引用検査の対象拡張子が mjs/sh/py だけで `.swift` が入っていないから
+                                     # = **たまたま**であって、真似してよい形ではない。
+                                     # 据えた理由も実害から: 旧版は `Executed N tests` 行を
+                                     # `tail -1` で拾っていたので、bundle が2本(単体97 / UI3)在る
+                                     # この repo では 100 件走った run が「Executed 3 tests」と出た。
+                                     # Sprint 1/2 の Generator と Evaluator が**4者とも別々に**
+                                     # log を grep し直して回避しており、誰も計器の方を直していない。
+                                     # ★本当の害は数字違いではない: 単体 bundle が1件も起動しなくても
+                                     # UI 3件が緑なら「失敗0件」と出る = **偽の緑の道**。DoD が読むのは
+                                     # この1行なので、ここが嘘を吐ける事は sprint 全体の証拠が嘘になる事。
+                                     # 直した版は `Test Case ... passed/failed` の行を数える(1件=1行、
+                                     # bundle を跨いでも二重に数えない)。0件は緑ではなく2(未測定)。
+                                     # ★この対照は**本番の xcodebuild を起こさない**。判定を build.sh から
+                                     # 別ファイルへ出して log を引数で受ける形にしたので、作り物の log で
+                                     # 全分岐を測れる。測るのに数分掛かる造りだと対照は書かれない
+                                     # (上の ui-fixture 2本が実際に数十秒〜数分掛かっている)。実測1秒未満。
 )
 # ── ★ここに**わざと入れていない**物(消えた訳ではない)────────────────────────
 # `test/verdict-mutants.sh` = `test/mutation-verdict-controls.sh` の陰性対照
