@@ -10,7 +10,7 @@
 # ★網も鍵も要らない。道具の `-`(標準入力)口を使う —— 畳み方と伏せ方は網と無関係な
 #   純粋な処理なので、本番を叩かずに測れる。測るのに本番が要る造りだと、対照は書かれない。
 #
-# ── 測る9つ ────────────────────────────────────────────────────────────
+# ── 測る物 ──────────────────────────────────────────────────────────────
 #   ① 伏せる鍵(title / lastPrompt / cwd / text / subtitle / **paneFault.detail**)の値が出ない
 #   ② 出してよい鍵(route / kind / short / **paneFault.reason**)の値は**出る**(= ①の錨)
 #   ③ 一部の要素にしか無い鍵は `(N/M)` が付く            (= optional を必須と読ませない)
@@ -21,6 +21,11 @@
 #   ⑧ 差し込みが**実際に起きている**(偽サーバに届いた道で測る)
 #   ⑧-b `RC_SESSION_INDEX` で何本目かを選べる
 #   ⑨ 一覧に無い番号は 2(未測定)                        (= 赤と未測定を混ぜない)
+#   ⑩ 復旧語彙(`code` / `errno`)の値は**読める** / ⑩-b その隣の自由文は潰れる
+#   ⑪ `RC_EXPECT_STATUS` と違う status の本文は**畳まない**
+#   ⑫ 期待と一致すれば 200 以外でも畳む(= ⑪の錨) / ⑫-b それでも自由文は潰れる
+#   ⑬ ★`RC_METHOD` が id 解決の一覧引きへ**伝播しない** / ⑬-b 本番の口には効いている
+#   ⑭ 送った本文(`RC_BODY`)の中身は出ない / ⑭-b バイト数は出る / ⑭-c 400 の自由文も潰れる
 #
 # ★②が要る理由: 「出てはいけない物が出ていない」は、道具が**何も出さなくても**緑になる。
 #   出てよい物が出ている事を同時に測って初めて、①の緑が意味を持つ。
@@ -43,6 +48,18 @@
 #     | 範囲外を 1(赤)で返す版                    | ⑨(これだけ)      |
 #   ⑧ の単独の見分け役は2つ目、⑨ の単独は4つ目。⑧-b と ⑨ は3つ目で同時に倒れるが、
 #   4つ目で ⑨ だけが倒れる = 2本は別の物を測っている。
+#
+# ★⑩〜⑭(status を狙う口 / 打ち込む口)も同じ作法で実測(2026-08-05):
+#     | 差した物                                    | 倒れた検査              |
+#     | 一覧引きが `RC_METHOD` を継ぐ版             | ⑬ ⑬-b + ⑭ ⑭-b(巻添)  |
+#     | `RC_EXPECT_STATUS` を見ず何でも畳む版       | ⑪(これだけ)           |
+#     | 200 以外は畳まない旧作法の版                | ⑫ + ⑭ ⑭-b(巻添)      |
+#     | 送った本文を出力に載せる版                  | ⑭(これだけ)           |
+#     | 本番の口にも method が効かない版            | ⑬-b + ⑭ ⑭-b(巻添)    |
+#     | `code`/`errno` を `VALUE_KEYS` から外した版 | ⑩ ⑫                    |
+#   ★⑬ と ⑬-b が**別の物を測っている**事は5つ目で確定 —— ⑬-b だけが倒れて ⑬ は緑。
+#     1つ目では2本とも倒れるが、あれは一覧引きが POST になって解決ごと死ぬから
+#     (= 巻き添えの ⑭ ⑭-b も同じ理由)。⑫ と ⑩ の分離は3つ目(⑫ だけ倒れる)。
 #
 # 終了コード: 0 = 全部期待どおり / 1 = どれかが違う / 2 = 測れなかった
 set -uo pipefail
@@ -182,9 +199,27 @@ import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
 const [portFile, logFile, payloadFile] = process.argv.slice(2);
 const listing = readFileSync(payloadFile, "utf8");
 const srv = createServer((req, res) => {
-  appendFileSync(logFile, `${req.url}\n`);
+  // ★method も記録する。`RC_METHOD` が id 解決の一覧引きまで伝播していないかは、
+  //   道だけ見ても判らない(どちらも `/api/sessions` を叩く)。
+  appendFileSync(logFile, `${req.method} ${req.url}\n`);
   const head = { "content-type": "application/json" };
-  if (req.url === "/api/sessions") { res.writeHead(200, head); res.end(listing); return; }
+  if (req.url === "/api/sessions" && req.method === "GET") {
+    res.writeHead(200, head); res.end(listing); return;
+  }
+  // 200 以外を**狙って**観測する為の口。本文には語彙と自由文を両方載せる。
+  if (/^\/api\/sessions\/[^/]+\/input$/.test(req.url) && req.method === "POST") {
+    res.writeHead(400, head);
+    res.end(JSON.stringify({
+      error: "text required",
+      display: { kind: "error", text: "SENTINEL-DISPLAYTEXT" },
+    }));
+    return;
+  }
+  if (req.url === "/api/nope") {
+    res.writeHead(404, head);
+    res.end(JSON.stringify({ error: "SENTINEL-ERRORTEXT", code: "NO_SUCH_ROUTE" }));
+    return;
+  }
   if (/^\/api\/sessions\/[^/]+\/history\?limit=50$/.test(req.url)) {
     res.writeHead(200, head);
     res.end(JSON.stringify({
@@ -269,6 +304,96 @@ if [ "$?" -eq 2 ]; then
     ok "⑨ 一覧に無い番号は 2(未測定)で止まる"
 else
     ng "⑨ 一覧に無い番号は 2(未測定)で止まる" "0/1 で返る = 測れなかった事が測れた事に紛れる"
+fi
+
+# ── ⑩ 復旧語彙は値が読める / 隣の自由文は潰れる ─────────────────────────
+# 電話は `code` で**画面を移す**ので、値が読めないと「404 が来た」までしか判らず
+# `SESSION_NOT_FOUND`(一覧へ戻る)と `NO_SUCH_ROUTE`(client の path のバグ)が
+# 線の上で見分けられない = 観測として役に立たない。
+# ★同じ本文の隣に自由文を置いて**同時に**測る。「`code` の為に伏せ方を緩めた」形に
+#   なっていれば、こちらが赤くなる。
+printf '%s' '{"error":"SENTINEL-FREETEXT","code":"SESSION_NOT_FOUND","errno":"ENOENT"}' \
+    | "$NODE" "$TOOL" - >"$SCRATCH/vocab.txt" 2>&1
+if grep -qF '\"SESSION_NOT_FOUND\"' "$SCRATCH/vocab.txt" && grep -qF '\"ENOENT\"' "$SCRATCH/vocab.txt"; then
+    ok "⑩ 復旧語彙(code / errno)の値は読める"
+else
+    ng "⑩ 復旧語彙(code / errno)の値は読める" "潰れている = 401/404 の意味が線から判らない"
+fi
+if grep -q 'SENTINEL-FREETEXT' "$SCRATCH/vocab.txt"; then
+    ng "⑩-b 語彙の隣の自由文は潰れる" "出た = 語彙を通す為に伏せ方が緩んでいる"
+else
+    ok "⑩-b 語彙の隣の自由文は潰れる(⑩の為に伏せ方を緩めていない)"
+fi
+
+# ── ⑪ 期待と違う status の本文は畳まない ────────────────────────────────
+# ★これが無いと、401 を見に行った実行が 404 の形を印字し、その出力が「401 の形」として
+#   記録に残る。**観測を記録として信じられるか**が此処に懸かっている。
+env RC_KEY=SENTINEL-KEY RC_HOST=127.0.0.1 RC_PORT="$PORT" RC_EXPECT_STATUS=401 \
+    "$NODE" "$TOOL" /api/nope >"$SCRATCH/wrongstatus.txt" 2>&1
+rcw=$?
+if [ "$rcw" -eq 1 ] && ! grep -qF '\"NO_SUCH_ROUTE\"' "$SCRATCH/wrongstatus.txt"; then
+    ok "⑪ 期待と違う status(401 を狙って 404)では畳まずに 1 で落ちる"
+else
+    ng "⑪ 期待と違う status では畳まずに 1 で落ちる" \
+       "rc=$rcw / 本文を畳んだ = 別の status の形が観測として記録に残る"
+fi
+
+# ── ⑫ 期待と一致すれば 200 以外でも畳む(⑪の錨) ───────────────────────
+# ★⑪だけだと「何も畳まない道具」でも緑になる。狙って当てた時に**出る**事を同時に測る。
+env RC_KEY=SENTINEL-KEY RC_HOST=127.0.0.1 RC_PORT="$PORT" RC_EXPECT_STATUS=404 \
+    "$NODE" "$TOOL" /api/nope >"$SCRATCH/expect404.txt" 2>&1
+rce=$?
+if [ "$rce" -eq 0 ] && grep -qF '\"NO_SUCH_ROUTE\"' "$SCRATCH/expect404.txt"; then
+    ok "⑫ 狙った status(404)なら畳んで出す(⑪が空振りでない)"
+else
+    ng "⑫ 狙った status なら畳んで出す" "rc=$rce / 形が出ない = 401/404 は一度も観測できない"
+fi
+if grep -q 'SENTINEL-ERRORTEXT' "$SCRATCH/expect404.txt"; then
+    ng "⑫-b 200 以外を畳んでも自由文は潰れる" "出た = 非 200 の本文が素通しになっている"
+else
+    ok "⑫-b 200 以外を畳んでも自由文は潰れる"
+fi
+
+# ── ⑬ ★RC_METHOD が id 解決の一覧引きへ伝播しない ──────────────────────
+# 中で `METHOD` を読む造りにすると、会話の口を POST で観測しようとしただけで
+# `/api/sessions` へ POST が飛ぶ = **観測の道具が副作用を持つ**。
+: > "$HITLOG"
+env RC_KEY=SENTINEL-KEY RC_HOST=127.0.0.1 RC_PORT="$PORT" RC_SESSION_INDEX=0 \
+    RC_METHOD=POST RC_BODY='{"text":"SENTINEL-BODYTEXT"}' RC_EXPECT_STATUS=400 \
+    "$NODE" "$TOOL" '/api/sessions/{id}/input' >"$SCRATCH/post.txt" 2>&1
+rcp=$?
+# ★`grep -x`(行まるごと一致)。部分一致だと `POST /api/sessions/SENTINEL-ID/input` が
+#   「一覧へ POST した」に当たって、常に赤い検査になる。
+if grep -qx 'GET /api/sessions' "$HITLOG" && ! grep -qx 'POST /api/sessions' "$HITLOG"; then
+    ok "⑬ RC_METHOD は本番の口だけに効く(一覧引きは GET のまま)"
+else
+    ng "⑬ RC_METHOD は本番の口だけに効く" "届いた: $(tr '\n' ' ' <"$HITLOG")"
+fi
+if grep -qx 'POST /api/sessions/SENTINEL-ID/input' "$HITLOG"; then
+    ok "⑬-b RC_METHOD が本番の口には実際に効いている(⑬が空振りでない)"
+else
+    ng "⑬-b RC_METHOD が本番の口には実際に効いている" "届いた: $(tr '\n' ' ' <"$HITLOG")"
+fi
+
+# ── ⑭ 送った本文の中身は出力に出ない(バイト数だけ) ────────────────────
+if [ "$rcp" -ne 0 ]; then
+    ng "⑭ 送った本文の中身は出力に出ない" "道具が落ちた (rc=$rcp): $(tr '\n' ' ' <"$SCRATCH/post.txt")"
+elif grep -q 'SENTINEL-BODYTEXT' "$SCRATCH/post.txt"; then
+    ng "⑭ 送った本文の中身は出力に出ない" "出た = 打ち込んだ文面が観測の記録に残る"
+else
+    ok "⑭ 送った本文の中身は出力に出ない"
+fi
+# ★「出ていない」の錨。バイト数を名乗っている = 本文を送った事自体は記録されている。
+if grep -q 'バイト送信' "$SCRATCH/post.txt"; then
+    ok "⑭-b 送った事はバイト数で記録される(⑭が無出力ではない)"
+else
+    ng "⑭-b 送った事はバイト数で記録される" "本文を送った痕跡が出力に無い"
+fi
+# ★返ってきた 400 の中の自由文も潰れている事(⑫-b の非 200 経路を打ち込み側でも確認)
+if grep -q 'SENTINEL-DISPLAYTEXT' "$SCRATCH/post.txt"; then
+    ng "⑭-c 400 の本文の自由文も潰れる" "出た = display.text が素通しになっている"
+else
+    ok "⑭-c 400 の本文の自由文も潰れる"
 fi
 
 echo
