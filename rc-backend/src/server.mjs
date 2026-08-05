@@ -452,7 +452,10 @@ const NOTE_AFTER_CHOICE = {
  * 同じ会話を2実行が読む(lost-update)ため、拒否する方が安全。
  *
  * @param {ReturnType<TmuxInjector["listPanes"]>} [panes]   一覧描画時に使い回す(tmux 起動を1回に)
- * @param {ReturnType<PaneRegistry["read"]>}      [entries] 同上(登録簿の読み直しを1回に)
+ * @param {ReturnType<PaneRegistry["read"]>}      [entries] 同上(登録簿の読み直しを1回に)。
+ *   ★**1リクエストの中でだけ**渡してよい。寿命の長い物(配信の timer)に渡すと、
+ *   `registryCtx` は `now` を毎回取り直すのに mtime は凍ったままになり、経過時間だけで
+ *   全部が心拍切れ(= unregistered)に見える。渡さなければ毎回読み直す。
  */
 function livePaneFor(sessionId, sessionCwd, panes, entries, ctx) {
   const es = entries || registry.read();
@@ -474,6 +477,20 @@ function livePaneFor(sessionId, sessionCwd, panes, entries, ctx) {
     resolveByCwd: (cwd, free) => injector.resolvePane(cwd, free),
     ...(ctx || registryCtx(es)),
   });
+}
+
+/**
+ * jsonl 由来の cwd。無い / 読めない = 空 = 突き合わせを省く(resolveSessionPane の仕様)。
+ * ★全部読むと 280 MB のファイルで毎回それを払う一方、cwd 経路は仕様上 "ok" を返せない
+ *   (registry.mjs: 同定は名乗りだけ)ので、払う対価に対して得られる物が無い。末尾から有界に採る。
+ */
+function cwdOfSessionFile(file) {
+  if (!file) return "";
+  try {
+    return readMetaFromPath(file).cwd || "";
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -720,7 +737,7 @@ function feedGap(f, why) {
 }
 
 /** 1 tick 分の観測。例外は握って配信を止めない(見に行けない事自体は screen で伝わる)。 */
-function feedTick(sessionId, f, resolvePaneFn) {
+function feedTick(sessionId, f, file) {
   // jsonl は**最初の発言まで存在しない**(edith 実測 2026-07-31)。購読を始めた時点で
   // 無かったからと諦めると、いちばん見たい「開いたばかりの会話」だけが無音になる
   // (2026-08-02 実測: 実機で message が1件も流れなかった原因はこれ)。
@@ -751,7 +768,12 @@ function feedTick(sessionId, f, resolvePaneFn) {
     }
   }
   if (++f.tick % FEED_SCREEN_EVERY === 0) {
-    const r = resolvePaneFn();
+    // ★登録簿は**毎回読み直す**。ここに呼び出し元の写しを持ち込むと、`registryCtx` の
+    //   `now` だけが進んで mtime は凍り、配信が始まって 15 秒(HEARTBEAT_TTL_MS)で
+    //   全ての登録が心拍切れに見える —— 実際には statusline が 2 秒ごとに打っているのに、
+    //   電話には「ペイン登録をしていない」が出続ける(2026-08-05 実測: 登録の見かけの
+    //   齢が 22-26 秒、同時に測った心拍の最大間隔は 1003ms)。読み直しは 1.4 秒に 1 回。
+    const r = livePaneFor(sessionId, cwdOfSessionFile(file), undefined, undefined);
     // ★旧: `{ route:"gone" }`。**産む所1・使う所0**の死んだ経路名で、`routeLabel` に分岐が
     //   無いので画面には「状態不明」としか出なかった(2026-08-02 に実行して確認)。
     //   ★ここは `blockedBody()` に**理由の全域**を渡す唯一の呼び口(他は `UNDECIDABLE` で
@@ -798,12 +820,19 @@ function screenBody(f, pane) {
   };
 }
 
-function startFeed(sessionId, file, resolvePaneFn) {
+/**
+ * 配信を建てる。**解決関数は引数で受け取らない**。
+ * 以前はここに poll/SSE の `resolvePane` をそのまま渡していたが、あの閉包は
+ * 「登録簿は1リクエストにつき1回だけ読む」為の**リクエスト寿命の写し**を握っている。
+ * timer は最初に建てた1本が生き続けるので、写しも一緒に生き続け、15 秒後には
+ * その会話が永久に `unregistered` に見えた。渡せない形にして構造から外す。
+ */
+function startFeed(sessionId, file) {
   const f = getFeed(sessionId);
   if (!f.timer) {
     f.timer = setInterval(() => {
       try {
-        feedTick(sessionId, f, resolvePaneFn);
+        feedTick(sessionId, f, file);
       } catch {
         /* 1 tick の失敗で配信を止めない */
       }
@@ -1122,14 +1151,7 @@ const server = createServer(async (req, res) => {
     // ★ここは送信・割り込みの度に通る。全部読むと 280 MB のファイルで毎回それを払う一方、
     //   cwd 経路は仕様上 "ok" を返せない(registry.mjs: 同定は名乗りだけ)ので、
     //   払う対価に対して得られる物が無い。末尾から有界に採る。
-    const sessionCwd = () => {
-      if (!file) return "";
-      try {
-        return readMetaFromPath(file).cwd || "";
-      } catch {
-        return "";
-      }
-    };
+    const sessionCwd = () => cwdOfSessionFile(file);
     const resolvePane = () => livePaneFor(sessionId, sessionCwd(), undefined, regEntries);
 
     if (action === "history" && req.method === "GET") {
@@ -1404,7 +1426,7 @@ const server = createServer(async (req, res) => {
       // ★`cache-control: no-store` は全ての返り口に付ける。中継が poll の応答を握ると、
       //   電話は**永久に同じ古い物**を受け取り続け、しかも 200 なので「繋がっている」と見える。
       if (route === "tmux") {
-        const f = startFeed(sessionId, file, resolvePane);
+        const f = startFeed(sessionId, file);
         renewPollLease(sessionId, f);
         const d = pollDecision(rawCursor, "tmux", f.epoch);
 
@@ -1609,7 +1631,7 @@ const server = createServer(async (req, res) => {
       // 経路は購読の時点で決める(判定は上の `found`)。机で開かれている会話(tmux)は
       // 画面と jsonl を見に行く。開かれていなければ従来通りワーカーの出来事を流す。
       if (found.pane) {
-        const f = startFeed(sessionId, file, resolvePane);
+        const f = startFeed(sessionId, file);
         f.subs.add(res);
         // 追いつき: `epoch.seq` の epoch が今の配信と同じ時だけ差分で繋ぐ。
         // 違う epoch(サーバ再起動・購読が絶えて作り直された)や、数字でない物、

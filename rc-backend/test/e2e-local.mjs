@@ -192,6 +192,12 @@ fixture(SID_DEATH_LATE, CWD_DEATH_LATE, "死の順序:孫が握る");
 fixture(SID_DEATH_PART, CWD_DEATH_PART, "死の順序:改行なし");
 fixture(SID_SLOW, CWD_SLOW, "応答が遅い:送信待ち");
 
+// ★配信(feed)が登録簿を**毎 tick 読み直す**事を測る為だけの会話。
+//   登録先を %28 -> %29 に付け替えて、配信が追随するかを見る(13-Z)。
+const SID_FEEDREG = "aaaaaaaa-0000-0000-0000-000000000043";
+const CWD_FEEDREG = "/Users/Shared/dev/feedreg";
+fixture(SID_FEEDREG, CWD_FEEDREG, "配信は登録簿を読み直す");
+
 const PANES = [
   `%10${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys010${PANE_SEP}${CWD_READY}`,
   `%11${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys011${PANE_SEP}${CWD_CHOICE}`,
@@ -210,6 +216,8 @@ const PANES = [
   `%25${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys025${PANE_SEP}${CWD_INTR_OK}`,    // 割り込みで印が消える
   `%26${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys026${PANE_SEP}${CWD_INTR_STUCK}`, // 割り込んでも印が残る
   `%27${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys027${PANE_SEP}${CWD_PERM}`,       // 許可確認が出ている
+  `%28${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys028${PANE_SEP}${CWD_FEEDREG}`,    // 13-Z: 付け替え前の登録先
+  `%29${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys029${PANE_SEP}${CWD_FEEDREG}`,    // 13-Z: 付け替え後の登録先
 ].join("\n") + "\n";
 // ★2026-08-01: 画面はもう手で書かない。使い捨てセッションから撮った生の capture-pane 出力
 // (test/fixtures/screens/)をそのまま使う。前の版はここに手書きの画面を置いていて、
@@ -254,6 +262,10 @@ const SCREENS = {
   //   `%11` の `/model` と並べて置いてあるのが要点 — どちらも同じ CHOICE で、
   //   分ける材料は許可一覧に載っているかだけ。片方だけ通る事を e2e で見せる。
   "%27": shot("choice-permission-bash"),
+  // 13-Z: 付け替えの前後で**画面の種別が変わる**組にしてある。同じ画面だと
+  //   「読み直した」と「凍ったまま」が同値になって何も測れない。
+  "%28": shot("idle-boot"),          // -> READY
+  "%29": shot("choice-model-menu"),  // -> CHOICE
 };
 writeFileSync(join(SB, "tmux-panes.txt"), PANES);
 for (const [pane, text] of Object.entries(SCREENS)) {
@@ -298,7 +310,8 @@ function putRegistry(sid, pane, offsetSec = 0) {
   beatOnce();
 }
 for (const [sid, pane] of [[SID_READY, "%10"], [SID_CHOICE, "%11"], [SID_GEN, "%15"], [SID_DEAF, "%16"], [SID_RACE, "%17"], [SID_LIMIT, "%18"],
-                           [SID_INTR_OK, "%25"], [SID_INTR_STUCK, "%26"], [SID_PERM, "%27"]]) {
+                           [SID_INTR_OK, "%25"], [SID_INTR_STUCK, "%26"], [SID_PERM, "%27"],
+                           [SID_FEEDREG, "%28"]]) {
   putRegistry(sid, pane);
 }
 const SENT_LOG = join(SB, "tmux-sent.log");
@@ -1933,6 +1946,23 @@ try {
     // --- poll: gap ---
     const pollD = async (sid, q) =>
       (await (await fetch(`${B}/api/sessions/${sid}/poll?${new URLSearchParams(q)}`, { headers: H })).json());
+    /**
+     * 画面が1枚来るまで poll を撃ち直す。**眠って待たない**為の道具。
+     * 保留中の poll は `feedBroadcast` が起こすが、起こす口は screen 専用ではない ——
+     * 配信の1 tick 目は転写に繋いだ印(`tail-attached` の gap)を出すので、
+     * 待ち受けは**画面より先に**その item で返ってくる。1回で諦めると `screen: null`。
+     * 栞を繋いで撃ち直すので、遅い機械は回数ではなく**待つ時間**が伸びるだけ。
+     * `want` を渡すと「その画面が来るまで」。来なければ回数を使い切って最後の物を返す
+     * (= 呼び側の check が赤くなる。ここで投げない = 何が来たかを検査文に出す為)。
+     */
+    const pollUntilScreen = async (sid, { cursor, tries = 10, wait = "2000", want } = {}) => {
+      let r = { cursor, screen: null };
+      for (let i = 0; i < tries; i++) {
+        r = await pollD(sid, { ...(r.cursor ? { cursor: r.cursor } : {}), wait });
+        if (r.screen && (!want || want(r.screen))) return r;
+      }
+      return r;
+    };
     // 世代の合わない栞 = 必ず gap(12-g で実測済み)。`tail-attached` と違って**文面が出る**側
     // なので、`null` を返す枝と取り違えずに済む。
     const pg = await pollD(SID_FRESH, { cursor: "t.deadbeef.99.0", wait: "0" });
@@ -1984,7 +2014,13 @@ try {
     //   ので、余裕が3秒しか無かった。実際に1回、`SID_CHOICE` が `unregistered` に落ちて
     //   選択の面の検査が赤くなった(同じ回で 12-h の行列も崩れた)。以後の3回は緑だが、
     //   **緑が続いた事は余裕が在る証明ではない**ので、待つ節を後ろに回して依存を消した。
-    const pc1 = await pollD(SID_CHOICE, { wait: "0" });
+    // ★★2026-08-05 追記: 並べ替えでも足りない。ここは「**遥か上で建てた配信がまだ生きている**」
+    //   に賭けていた —— `POLL_LEASE_MS = 30_000` を過ぎて誰も見ていなければ `stopFeedIfIdle`
+    //   が `f.screen` を `null` にするので、間の節が 30 秒を超えた機械では `screen: null` が返る
+    //   (loadavg 90 で実測)。賭けを外す: 1本目で**建て直し**、2本目は**長待ち受け**で
+    //   1枚撮れるまで起こされるのを待つ。遅い機械は長く待つだけで、赤にはならない。
+    await pollD(SID_CHOICE, { wait: "0" });
+    const pc1 = await pollUntilScreen(SID_CHOICE);
     check("13-D 土台: 選択待ちの画面が1枚来る",
       Boolean(pc1.screen) && pc1.screen.screen === "CHOICE", JSON.stringify(pc1.screen).slice(0, 160));
     if (pc1.screen) {
@@ -1999,6 +2035,32 @@ try {
     check("★★画面が変わっていない poll は `choice` も `null`(電話が持つ選択待ちの面を消さない)",
       pc2.screen === null && Boolean(pc2.display) && pc2.display.choice === null,
       JSON.stringify({ screen: pc2.screen, display: pc2.display }));
+
+    // --- 13-Z: 配信は登録簿を**毎 tick 読み直す**(写しを握らない) ------------------
+    // ★2026-08-05 の実測で見つけた本番の欠陥の栓。配信の timer は最初に建てた1本が
+    //   生き続けるので、poll の「1リクエストにつき1回だけ読む」写しをそこへ渡すと、
+    //   `registryCtx` の `now` だけが進んで mtime は凍る = 15 秒(HEARTBEAT_TTL_MS)後に
+    //   その会話は永久に `unregistered` に見えた。電話には「ペイン登録をしていないため、
+    //   宛先を確定できません」が出続ける —— 登録は 2 秒ごとに打たれているのに。
+    // ★時間を待つ形にはしない(それは同じ病気の再発明)。**登録先を付け替えて**、
+    //   配信が追随するかで測る。凍っていれば古いペインの画面を出し続ける。
+    // ★眠って待たない。`feedBroadcast` は保留中の poll を必ず起こすので、**長待ち受けで**
+    //   1枚目を受け取る。眠りで待つと「その機械で 1.4 秒に間に合ったか」を測る事になる
+    //   (実測 2026-08-05: loadavg 90 の機械で 2 秒の眠りが足りず `null` が返った)。
+    await pollD(SID_FEEDREG, { wait: "0" }); // ここで配信が建つ(最初の1枚はまだ撮れていない)
+    const fz1 = await pollUntilScreen(SID_FEEDREG);
+    check("13-Z 土台: 登録された会話の画面が1枚来る(登録先の %28 から撮れている)",
+      Boolean(fz1.screen) && fz1.screen.pane === "%28" && fz1.screen.screen === "SENDABLE",
+      JSON.stringify(fz1.screen).slice(0, 160));
+    putRegistry(SID_FEEDREG, "%29"); // 登録先を付け替える(心拍は打ち続ける = 生きた登録)
+    // 「%29 が来るまで」撃ち直す。★`windowMs` は観測窓が埋まるまで tick ごとに伸びるので、
+    // **画面が変わった = 付け替わった**ではない(1回で判定すると %28 のまま版だけ上がった
+    // 枚を掴む)。凍った写しを握っていれば %29 は永久に来ないので、回数を使い切って赤。
+    // ★待つ時間を延ばしても壊れる側には倒れない(凍った写しは待つほど古くなるだけ)。
+    const fz2 = await pollUntilScreen(SID_FEEDREG, { cursor: fz1.cursor, want: (s) => s.pane === "%29" });
+    check("★★配信は登録簿を毎 tick 読み直す(付け替えに追随して %29 の選択画面になる)",
+      Boolean(fz2.screen) && fz2.screen.pane === "%29" && fz2.screen.screen === "CHOICE",
+      JSON.stringify(fz2.screen).slice(0, 200));
 
     {
       const cctl = new AbortController();
