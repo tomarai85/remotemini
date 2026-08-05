@@ -22,9 +22,19 @@
  *
  * 使い方(edith の中で):
  *   RC_KEY=$(cat ~/.rc-backend/api.key) node tools/wire-shape.mjs /api/sessions
+ * 会話ごとの口(`{id}` を書くと**自分で一覧を引いて差し込む**):
+ *   RC_KEY=... node tools/wire-shape.mjs '/api/sessions/{id}/history?limit=50'
+ *   RC_SESSION_INDEX=2 ... で一覧の何本目を使うか選ぶ(既定 0 = 最新)
  * 網を使わずに形だけ畳む(対照が使う口。鍵も要らない):
  *   node tools/wire-shape.mjs - < payload.json
  * 終了コード: 0 = 取れた / 1 = HTTP が 200 以外 or 本文が JSON でない / 2 = 準備段で中断
+ *
+ * ── `{id}` を道具の側に持たせた理由 ──────────────────────────────────
+ * 会話ごとの口は URL に session id が要る。id は**会話の識別子そのもの**で、
+ * 手で調べるには一覧の値を一度画面に出すしかない —— それは この道具が
+ * 存在する理由(値を出さない)を、この道具を使う為に破る事になる。
+ * だから解決を中に入れて、**印字するのは差し込む前の雛形**にした。
+ * id は取得と URL 組み立てにしか通らず、出力にも log にも一切載らない。
  */
 import { request } from "node:http";
 
@@ -36,6 +46,13 @@ const VALUE_KEYS = new Set([
   "screen", // classifyScreen の分類語
   "short", // routeLabel の短い帯。固定語彙
   "activity", // "observed" | "unknown"
+  // ↓ 会話の口(`/history` / `/messages`)の為に 2026-08-05 追加。どちらも閉じた語彙で、
+  //   **値そのものが吹き出しの描き分けの分岐**になる(何本目が誰の発言かで形が変わる)。
+  //   中身は一切載らない: `role` は生成元の種別、`who` はサーバが決め打つ3語のどれか。
+  //   これを型名へ潰すと「string が来る」しか判らず、`tool` 行が在る事に気付かないまま
+  //   吹き出しを2種類で組む事になる(`sessions.mjs` は 3 種類を積む)。
+  "role", // history[].role = "user" | "assistant" | "tool"
+  "who", // display.who = "Tom" | "Claude" | "道具"(= whoOf の戻り値。サーバ側で計算済み)
 ]);
 
 const HOST = process.env.RC_HOST || "127.0.0.1";
@@ -120,31 +137,100 @@ function emit(body, label) {
   console.log(JSON.stringify(shapeOf(parsed, null), null, 2));
 }
 
+/** 網を1回叩いて `{status, body}` を返すだけ。伏せる判断はここでは一切しない。 */
+function get(path) {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      { host: HOST, port: PORT, path, method: "GET", headers: { authorization: `Bearer ${KEY}` } },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => (body += c));
+        res.on("end", () => resolve({ status: res.statusCode, body }));
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/**
+ * 一覧を引いて `sessions[IDX].id` を返す。**この値は返り値として URL の組み立てに
+ * しか渡さない** —— 呼ぶ側は印字しない事。
+ * 解決に失敗した時は 2(未測定)で止める: 「取れなかった」と「取ったら空だった」を
+ * 同じ籠に入れると、形が空である事の観測と、形を観測できなかった事が見分けられない。
+ */
+async function resolveSessionId() {
+  const idx = Number(process.env.RC_SESSION_INDEX || 0);
+  if (!Number.isInteger(idx) || idx < 0) {
+    console.error(`測れない: RC_SESSION_INDEX が非負の整数でない`);
+    process.exit(2);
+  }
+  let r;
+  try {
+    r = await get("/api/sessions");
+  } catch (e) {
+    console.error(`測れない: 一覧に届かない(${e.message})`);
+    process.exit(2);
+  }
+  if (r.status !== 200) {
+    console.error(`測れない: 一覧が HTTP ${r.status}(本文は出さない。${r.body.length} バイト)`);
+    process.exit(2);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(r.body);
+  } catch (e) {
+    console.error(`測れない: 一覧が JSON ではない(${e.message})`);
+    process.exit(2);
+  }
+  const list = Array.isArray(parsed?.sessions) ? parsed.sessions : null;
+  if (!list) {
+    console.error(`測れない: 一覧に sessions 配列が無い`);
+    process.exit(2);
+  }
+  // 件数は出す(値ではないので伏せる対象ではない)。何本目を選べるかが判らないと使えない。
+  console.log(`一覧: ${list.length} 本 / RC_SESSION_INDEX=${idx} を使う`);
+  if (idx >= list.length) {
+    console.error(`測れない: ${idx} 本目は一覧に無い(0..${list.length - 1})`);
+    process.exit(2);
+  }
+  const id = list[idx]?.id;
+  if (typeof id !== "string" || id === "") {
+    console.error(`測れない: ${idx} 本目に id が無い`);
+    process.exit(2);
+  }
+  return id;
+}
+
+async function main() {
+  let path = PATHNAME;
+  if (PATHNAME.includes("{id}")) {
+    const id = await resolveSessionId();
+    path = PATHNAME.split("{id}").join(encodeURIComponent(id));
+  }
+  let r;
+  try {
+    r = await get(path);
+  } catch (e) {
+    console.error(`届かない: ${e.message}`);
+    process.exit(1);
+  }
+  if (r.status !== 200) {
+    // ★本文は出さない。401 の本文に鍵は載らないが、5xx はスタックを載せうる。
+    //   道も出さない —— 差し込み済みの道には id が入っている。
+    console.error(`HTTP ${r.status}(本文は出さない。${r.body.length} バイト)`);
+    process.exit(1);
+  }
+  // ★印字するのは**雛形**(`PATHNAME`)であって差し込み済みの `path` ではない。
+  emit(r.body, `GET ${PATHNAME} → 200`);
+}
+
 if (FROM_STDIN) {
   let body = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (c) => (body += c));
   process.stdin.on("end", () => emit(body, "stdin"));
 } else {
-  const req = request(
-    { host: HOST, port: PORT, path: PATHNAME, method: "GET", headers: { authorization: `Bearer ${KEY}` } },
-    (res) => {
-      let body = "";
-      res.setEncoding("utf8");
-      res.on("data", (c) => (body += c));
-      res.on("end", () => {
-        if (res.statusCode !== 200) {
-          // ★本文は出さない。401 の本文に鍵は載らないが、5xx はスタックを載せうる
-          console.error(`HTTP ${res.statusCode}(本文は出さない。${body.length} バイト)`);
-          process.exit(1);
-        }
-        emit(body, `GET ${PATHNAME} → 200`);
-      });
-    },
-  );
-  req.on("error", (e) => {
-    console.error(`届かない: ${e.message}`);
-    process.exit(1);
-  });
-  req.end();
+  main();
 }
