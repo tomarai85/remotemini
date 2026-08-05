@@ -8290,3 +8290,49 @@ stage してから再実行 = 既出の MagicDNS 名1件(DESIGN.md 他5 file に
 `npm test` 656/656 / `staged-controls-gate` = 触れた対照なし / backtick 均衡 = 奇数行12件
 すべて code fence の対 / 禁止した行番号引用(`server.mjs:` `DESIGN.md:`)= **0件** /
 残した4件(`view.mjs` `tail.mjs` `inject.mjs`)は今日**現物を開いて照合済み**。
+
+### 付記(同日) — `scratchpad/` を証拠として引いている箇所が59件在る
+
+Sprint 4 ブリーフを書き終えた後、scratchpad の後片付けをしようとして気付いた。
+**消す前に、repo がそこを引いていないか調べたのが正解だった。**
+
+| 引いている file | 件数 |
+|---|---|
+| `WORKLOG.md` | 34 |
+| `DESIGN.md` | 13 |
+| `HANDOFF-NEXT-SESSION.md` | 8 |
+| `.harness/feedback/check-2026-08-01-5-composer-scoped-echo.md` | 2 |
+| `.harness/spec-native-shell-2026-08-05.md` | 1 |
+| `rc-backend/.harness/evidence-2026-08-03/mutation-run-contaminated.md` | 1 |
+| **合計** | **59**(相異なる引用先 28) |
+
+しかも引かれ方が**証拠**としてだった。「証拠 = `scratchpad/mut-full-0750a48.log:333`
+『素通りした変異: なし』」の様に、主張の裏付けとして名指ししている。
+
+**今日の時点で腐っているのは0件**(28件すべて解決する)。`scratchpad/verdict-mutants.sh` が
+一度は腐って見えたが、あれは「昔この名前で引いていて壊れていた」という**過去の説明の引用**で、
+実物は既に `rc-backend/test/verdict-mutants.sh` へ据え直してある。誤検出だった。
+
+#### それでもこれは行番号引用と同じ病気で、しかも一段悪い
+
+28件が今解決するのは、**この session の scratchpad がたまたままだ残っているから**でしかない。
+scratchpad は session ごとに別のディレクトリで、使い捨て前提。次の session からは:
+
+- 良くて **解決しない**(証拠を辿れない)
+- 悪いと **別物に解決する** —— docs が引いているのは相対形の `scratchpad/X` なので、
+  次の session に同名の `X` が在れば、**全然違う作業の成果物が「証拠」として読める**
+
+行番号引用は少なくとも実在する file を指していて、ずれていれば読んだ人が気付ける。
+こちらは**静かに間違った物を指す**。今朝直した引用腐りより始末が悪い。
+
+#### 今回やった事 / やらなかった事
+
+やった = **測って記録した**(この節)。59件・6 file・相異なる28件・今日腐り0件。
+
+やらなかった = 59件の書き替え、および28件を耐久性のある証拠ディレクトリへ複製する事。
+どちらも「Sprint 4 の隣の作業」ではなく別レーンで、片方は数百MBの複製判断を伴う。
+Sprint 4 の Generator を走らせている最中に共有 file を大量に書き替えるのも筋が悪い。
+
+**次に触る人へ**: `scratchpad/` を新しく証拠として引かない事。証拠にするなら
+`.harness/evidence-YYYY-MM-DD/` へ置く(そこは tracked)。既存59件をどうするかは
+「複製して残す / 引用を『当時の作業ログ』と正直に書き直す / 放置」の3択で、まだ決めていない。
