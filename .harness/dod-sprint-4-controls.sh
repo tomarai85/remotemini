@@ -81,7 +81,8 @@ fresh() {
 
 # verdict <行の番号> -- その行の判定(緑/赤/未測定)を返す
 verdict() {
-    DOD_FULL=0 bash "$SCRATCH/.harness/dod-sprint-4.sh" 2>/dev/null \
+    # 既定は 0(重い行を回さない)。DOD_FULL=1 側の分岐を測る対照だけが CTL_FULL=1 にする。
+    DOD_FULL="${CTL_FULL:-0}" bash "$SCRATCH/.harness/dod-sprint-4.sh" 2>/dev/null \
         | grep -E "^  (緑|赤|未測定) +$1\. " | awk '{print $1}' | head -1
 }
 
@@ -125,6 +126,33 @@ check 1 未測定 "log が無ければ未測定(緑にも赤にも丸めない)"
 
 fresh; printf 'Executed 999 tests, with 0 failures\n' > "$LOG"
 check 1 未測定 "★log と disk の実数がズレたら未測定(どちらが正かは決められない)"
+
+# ── DOD_FULL=1 の道(2026-08-05 に足した)────────────────────────────────────
+# ★此処は**既存 31 件が1件も踏んでいなかった**枝である。対照は全部 DOD_FULL=0 で
+#   回していたので、`build.sh --sim` を実際に呼ぶ側の分岐は無検査だった。
+#   `sim-log-summary.sh` に 2(測っていない)を足した日に気付いた —— 足した終了コードを
+#   受ける側が、それを赤に丸めていても誰も判らない状態だった。
+# 本物の `build.sh` は数分掛かるので、写しの中の物を**終了コードだけ返す物**に
+# 差し替える。測りたいのは「終了コードの写り方」であって build ではない。
+stub_build() {   # $1 = 返させる終了コード
+    mkdir -p "$SCRATCH/ios/tools"
+    printf '#!/bin/bash\necho "==> 作り物: 終了コード %s を返す"\nexit %s\n' "$1" "$1" \
+        > "$SCRATCH/ios/tools/build.sh"
+}
+# 5 行目は $SCRATCH に rc-backend が居ないので `cd` が落ちて即座に赤になる。
+# 重くならないし、此処で見ているのは 1 行目だけなので影響しない。
+# ★`VAR=1 check ...` の形は使わない。bash では**関数**への前置き代入は呼び出し後も
+#   残るので、次の対照へ静かに漏れる。明示的に立てて明示的に落とす。
+CTL_FULL=1
+fresh; stub_build 0
+check 1 緑 "--sim が 0 なら 1 行目は log の判定に進む"
+
+fresh; stub_build 1
+check 1 赤 "--sim が 1(赤)なら赤"
+
+fresh; stub_build 2
+check 1 未測定 "★--sim が 2(測っていない)を赤に丸めない —— これが直した所"
+CTL_FULL=0
 
 # ── 1-b 行目(UI target)────────────────────────────────────────────────────
 # この行を足した理由は「1 行目が ios/Tests しか見ておらず、UI の検査を全部消しても
