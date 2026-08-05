@@ -66,6 +66,12 @@ therefore load-bearing, not redundant:
   `x+100 > 500`). I independently corroborate the substitution is functionally harmless, but it is
   still a literal deviation from "port verbatim," worth a Sprint 4 line-item to close (change the
   literal to `480`) rather than re-justify indefinitely.
+  - _(後から足した注記 2026-08-05 — 上の評価文は書かれた時点で正しい。この指摘は
+    Sprint 4 (`e86d156`) で実際に閉じられ、検査は `testFourEightyStepsToFiveHundredNotFiveEighty`
+    に改名されて `nextHistoryLimit(480) == 500` を見ている。従って**上で名指しされた
+    `testFourFiftyStepsToFiveHundredNotFiveFifty` は現在の木に実在しない** —— 記録として
+    正しく、現在の木の索引としては死んでいる。探しに行かない為の注記であって、
+    評価文の訂正ではない。)_
 
 **Verdict: PASS with one flagged, already-accepted, non-blocking deviation.** The
 `mergeHistory`-side denominator was verified entirely by hand; the tooling's green result for it
