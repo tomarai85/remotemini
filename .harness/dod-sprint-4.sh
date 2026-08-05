@@ -46,11 +46,15 @@ echo
 # --- 1. 単体一式が緑で、件数が Sprint 3 の 150 を超える ----------------------
 SIMLOG="$IOS/build/xcodebuild-sim.log"
 if [ "$FULL" = 1 ]; then
-    if out=$(bash "$IOS/tools/build.sh" --sim 2>&1); then
-        :
-    else
-        row fail "1. 単体一式" "build.sh --sim 非ゼロ。末尾: $(printf '%s' "$out" | tail -3 | tr '\n' ' ')"
-    fi
+    out=$(bash "$IOS/tools/build.sh" --sim 2>&1); simrc=$?
+    # 2 = **測っていない**(印が1件も無い / 始まった数と終わった数が合わない)。
+    # 1 = 赤。この2つを同じ行に丸めると、DoD の合計が「未測定を緑に丸めない」と
+    # 名乗りながら**未測定を赤に丸める**事になり、合計の3分類が意味を失う。
+    case "$simrc" in
+        0) : ;;
+        2) row skip "1. 単体一式" "build.sh --sim が 2 = 測っていない。末尾: $(printf '%s' "$out" | tail -3 | tr '\n' ' ')" ;;
+        *) row fail "1. 単体一式" "build.sh --sim 非ゼロ($simrc)。末尾: $(printf '%s' "$out" | tail -3 | tr '\n' ' ')" ;;
+    esac
 fi
 if [ -f "$SIMLOG" ]; then
     # 最大の Executed 行 = 一式の総数(class 単位の行も同じ形で出るので最大を取る)

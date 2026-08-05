@@ -44,7 +44,8 @@ fresh() {
 
 # verdict <行番号> -- その行の判定(緑/赤/未測定)を返す
 verdict() {
-    bash "$SCRATCH/.harness/dod-sprint-3.sh" 2>/dev/null \
+    # 既定は 0(重い行を回さない)。DOD_FULL=1 側の分岐を測る対照だけが CTL_FULL=1 にする。
+    DOD_FULL="${CTL_FULL:-0}" bash "$SCRATCH/.harness/dod-sprint-3.sh" 2>/dev/null \
         | grep -E "^  (緑|赤|未測定) +$1\. " | awk '{print $1}' | head -1
 }
 
@@ -64,6 +65,30 @@ check() {
 echo "=== dod-sprint-3.sh の対照 ($(date '+%Y-%m-%d %H:%M:%S')) ==="
 echo "複製: $SCRATCH  (主作業木 $REAL_ROOT は読むだけ)"
 echo
+
+# ---- 行1: --sim の終了コードが3通りに写るか(2026-08-05 に足した)-----------
+# ★既存の対照は全部 DOD_FULL=0 で回っていたので、`build.sh --sim` を実際に呼ぶ
+#   分岐は無検査だった。`sim-log-summary.sh` に 2(測っていない)を足した日に、
+#   受ける側がそれを赤へ丸めていた事に気付いた —— 足した終了コードが、読む人の
+#   所へ届くまでに1段で潰れていた。
+# 本物の build は数分掛かるので、写しの中の物を終了コードだけ返す物に差し替える。
+stub_build() {   # $1 = 返させる終了コード
+    mkdir -p "$SCRATCH/ios/tools"
+    printf '#!/bin/bash\necho "==> 作り物: 終了コード %s を返す"\nexit %s\n' "$1" "$1" \
+        > "$SCRATCH/ios/tools/build.sh"
+}
+# ★`VAR=1 check ...` の形は使わない。bash では関数への前置き代入が呼び出し後も残り、
+#   次の対照へ静かに漏れる。明示的に立てて明示的に落とす。
+CTL_FULL=1
+fresh; stub_build 0
+check 1 緑 "--sim が 0 なら緑"
+
+fresh; stub_build 1
+check 1 赤 "--sim が 1(赤)なら赤"
+
+fresh; stub_build 2
+check 1 未測定 "★--sim が 2(測っていない)を赤に丸めない —— これが直した所"
+CTL_FULL=0
 
 # ---- 行2: スクショを消したら赤 ---------------------------------------------
 fresh; /bin/rm -f "$SCRATCH/.harness/evidence-copy"/*.png
@@ -148,12 +173,13 @@ check 15 緑 "訂正6-1 を当てたら緑へ動く"
 
 # ---- 対照を掛けていない行(分母を隠さない) ---------------------------------
 echo
-echo "  対照を掛けていない行: 1(単体一式)/ 13(run-controls)/ 14(progress.md 散文)"
-echo "    —— 1 と 13 は本体側で既定 未測定、14 は機械で測れないと宣言済み。"
-echo "       「対照が在る行」は 15 行中 12 行。"
+echo "  対照を掛けていない行: 13(run-controls)/ 14(progress.md 散文)"
+echo "    —— 13 は本体側で既定 未測定、14 は機械で測れないと宣言済み。"
+echo "       1(単体一式)は 2026-08-05 に対照が付いた(終了コード 0/1/2 の写り方)。"
+echo "       「対照が在る行」は 15 行中 13 行。"
 
 echo
-echo "=== 集計: 緑=$PASS 赤=$FAIL 未測定=$UNMEASURED (対照 12 本) ==="
+echo "=== 集計: 緑=$PASS 赤=$FAIL 未測定=$UNMEASURED (対照 13 本) ==="
 [ "$FAIL" -gt 0 ] && exit 1
 [ "$UNMEASURED" -gt 0 ] && exit 2
 exit 0

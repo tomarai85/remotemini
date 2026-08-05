@@ -44,11 +44,13 @@ echo
 
 # --- 1. §4-a の単体が全部緑 --------------------------------------------------
 if [ "$FULL" = 1 ]; then
-    if out=$(bash "$IOS/tools/build.sh" --sim 2>&1); then
-        row pass "1. §4-a 単体一式" "build.sh --sim exit 0"
-    else
-        row fail "1. §4-a 単体一式" "build.sh --sim 非ゼロ。末尾: $(printf '%s' "$out" | tail -3 | tr '\n' ' ')"
-    fi
+    out=$(bash "$IOS/tools/build.sh" --sim 2>&1); simrc=$?
+    # 2 = 測っていない。赤と同じ行に丸めない(dod-sprint-4.sh と同じ理由)。
+    case "$simrc" in
+        0) row pass "1. §4-a 単体一式" "build.sh --sim exit 0" ;;
+        2) row skip "1. §4-a 単体一式" "build.sh --sim が 2 = 測っていない。末尾: $(printf '%s' "$out" | tail -3 | tr '\n' ' ')" ;;
+        *) row fail "1. §4-a 単体一式" "build.sh --sim 非ゼロ($simrc)。末尾: $(printf '%s' "$out" | tail -3 | tr '\n' ' ')" ;;
+    esac
 else
     row skip "1. §4-a 単体一式" "重いので既定では回さない。DOD_FULL=1 で実測する"
 fi
