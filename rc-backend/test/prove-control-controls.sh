@@ -196,7 +196,13 @@ d5="$SB/eater"; mk_eater "$d5"
 # prove-all は自分の置き場所から ROOT を決めるので、砂場側に写しを置いて回す。
 /bin/cp "$PALL" "$d5/tools/prove-all-controls.sh"
 /bin/cp "$PROVE" "$d5/tools/prove-control.sh"
-/bin/chmod +x "$d5/tools/prove-all-controls.sh" "$d5/tools/prove-control.sh"
+# prove-all は**探す範囲**を門の `SCAN_SPECS` から取り出す(2026-08-05〜)。門が居ないと
+# 範囲が空 = 未測定(rc=2)で正しく止まるので、砂場にも門を置く。
+# ★手で書かずに**本物を複製する**。書式が変わった時、合成した門だけが古い形のまま
+#   緑を返し続けるのを避ける為(`test/run-controls-controls.sh` R24-R28 と同じ判断)。
+/bin/cp "$ROOT/tools/staged-controls-gate.sh" "$d5/tools/staged-controls-gate.sh"
+/bin/chmod +x "$d5/tools/prove-all-controls.sh" "$d5/tools/prove-control.sh" \
+              "$d5/tools/staged-controls-gate.sh"
 out7=$(bash "$d5/tools/prove-all-controls.sh" 2>&1); rc7=$?
 chk "P10 stdin を食う対照の**後ろ**も一覧に出る(2本とも効いている=rc 0)" 0 $rc7 "z-controls.sh" "" "$out7"
 chk "P10b 食う側も出る(前だけ出て終わっていない)" 0 0 "a-controls.sh" "" "$out7"
