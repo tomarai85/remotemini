@@ -286,18 +286,21 @@ composer を開けたままでも fail-closed はサーバ側で成立する。
 
 ## §5. Definition of Done
 
-| # | 行 | 判定 |
-|---|---|---|
-| 1 | `SendClient` が `POST` / 正しい path / `Authorization` / `{text}` body を出す | 単体(4次元とも記録欄で観測) |
-| 2 | `display` の全分岐がテーブル駆動で緑(§3-b) | 単体 |
-| 3 | `display` 欠落を握り潰さず応答契約違反として出す | 単体(負の対照) |
-| 4 | `keepText` の真偽で入力欄の残り方が変わる | 単体(負の対照) |
-| 5 | 401 → Key-entry / 404+`SESSION_NOT_FOUND` → `.notFound` | 単体 |
-| 6 | **404+`NO_SUCH_ROUTE` が一覧へ戻らない**(§0-c ②) | 単体(負の対照) |
-| 7 | CHOICE / UNKNOWN で composer が無効、poll 不読では**活性のまま** | 単体 |
-| 8 | 既存4 client の検査が body 次元を読む(または理由付き `EXEMPT`) | `request-shape.test.mjs` が緑 |
-| 9 | **実機**: edith のテストセッションへ実送信し `delivered:"verified"` を観測、対象 jsonl の末尾行が増えた事を `ssh edith` で確認 | 実機 → **済(2026-08-05)**。`ios/tools/live-send-check.sh` で5項目とも ok(`evidence-2026-08-05/live-send-row9-20260805.md`)。★但し**行数の増分では閉じていない**: 使い捨ての会話は転写が無い所から始まるので `0 → 8 行` には起動が書いた行が混ざる。閉じたのは**送った本文そのものを転写の中で数えた**方(1 件、陰性対照 0 件) |
-| 10 | §0-d の3行を観測して §0 を更新(または**未測定と明記**) | 観測 → **済(2026-08-05)**。3行とも edith の線の上で観測(`evidence-2026-08-05/live-http-0d-rows-20260805.md`)。未測定として残した行は無い |
+全行の裏付けは 2026-08-05 に取った。単体の走行は `ios/tools/build.sh --sim`(headless)で
+**290 件 / 失敗 0 件**、`node --test test/request-shape.test.mjs` が **5 / 5**。
+
+| # | 行 | 判定 | 閉じた根拠(2026-08-05) |
+|---|---|---|---|
+| 1 | `SendClient` が `POST` / 正しい path / `Authorization` / `{text}` body を出す | 単体(4次元とも記録欄で観測) | **済**。`testRequestIsAPOSTToTheMessagesPathWithTheBearerKeyAndTheTextAsJSON` / `testTextIsSentUntrimmed`。★body 次元だけは緑では閉じない ので**変異を1つ植えて赤を見た**(`RequestBody` の鍵を `message` へ改名 → 290 中 **2 本だけ**赤、288 本は緑)= `evidence-2026-08-05/send-body-recording-control-20260805.md`。**残り3次元(method / path / header)は同種の変異を植えていない = 未測定** |
+| 2 | `display` の全分岐がテーブル駆動で緑(§3-b) | 単体 | **済**。`testEveryDisplayBranchIsCarriedThroughVerbatim`(本文は `view.mjs` から逐語)+ `testInternalEnglishFrom400IsNotLocalizedByThePhone` + `testUnknownKindStillCarriesItsTextAndFallsBackToWarnTone`、対照 `testToneIsNotAlwaysWarnNegativeControl`。画面側は `testEveryDisplayToneReachesTheBannerUnchanged` |
+| 3 | `display` 欠落を握り潰さず応答契約違反として出す | 単体(負の対照) | **済**。欠落の 4 形(欄が無い / 本文が空 / `display` に `text` が無い / 読めない)+ 対照 `testContractViolationCarriesTheObservedStatusNegativeControl` `testContractViolationIsNotCollapsedIntoDisplayNegativeControl` |
+| 4 | `keepText` の真偽で入力欄の残り方が変わる | 単体(負の対照) | **済**。`testKeepTextFalseClearsTheDraft` / `testKeepTextTrueKeepsTheDraft` / 対照 `testClearingFollowsKeepTextNotKindNegativeControl`。★**欠落時は残す**をブリーフ §2 step5 から意図的に外しており、その旨を検査文に明記(`testKeepTextAbsentKeepsTheDraftDeliberateDeviationFromTheBrief`)—— 消し過ぎは復元不能、残し過ぎは目に見えて消せる、の非対称 |
+| 5 | 401 → Key-entry / 404+`SESSION_NOT_FOUND` → `.notFound` | 単体 | **済**。client 側 `testStatus401IsUnauthorizedWithoutConsultingTheBody` / `testStatus404WithSessionNotFoundCodeIsSessionNotFound`、画面側 `testUnauthorizedRoutesOutAndKeepsWhatTheUserTyped` / `testSessionNotFoundOnSendTearsTheScreenDown` |
+| 6 | **404+`NO_SUCH_ROUTE` が一覧へ戻らない**(§0-c ②) | 単体(負の対照) | **済**。`testStatus404WithNoSuchRouteCodeIsContractViolation` + **本命の対照** `testTheTwo404MeaningsAreNotCollapsedNegativeControl`(status だけで分岐する Sprint 3 の実装がこれで落ちる)。画面側 `testContractViolationOnSendIsABannerOverAnIntactScreen` / `testTheSameViolationBecomesThePhaseOnLoadButNotOnSendNegativeControl` |
+| 7 | CHOICE / UNKNOWN で composer が無効、poll 不読では**活性のまま** | 単体 | **済**。`testComposerIsDisabledOnCHOICEWithTheSpecsFixedWording` / `…OnUNKNOWN…` / 対照 `testAnUnreadablePollDoesNotDisableTheComposerNegativeControl` / `testEnablementIsNotAConstantNegativeControl`。BUSY で活性のままは owner 発話(「返答待ちであれ作業中であれいつでも見て、干渉できれば」)の直系 = `testComposerStaysEnabledOnBUSY` |
+| 8 | 既存4 client の検査が body 次元を読む(または理由付き `EXEMPT`) | `request-shape.test.mjs` が緑 | **済**。`# tests 5 / # pass 5 / # fail 0`。自身の陰性対照(「判定が見分けている = 常に緑を返してはいない」)を含む |
+| 9 | **実機**: edith のテストセッションへ実送信し `delivered:"verified"` を観測、対象 jsonl の末尾行が増えた事を `ssh edith` で確認 | 実機 | **済(2026-08-05)**。`ios/tools/live-send-check.sh` で5項目とも ok(`evidence-2026-08-05/live-send-row9-20260805.md`)。★但し**行数の増分では閉じていない**: 使い捨ての会話は転写が無い所から始まるので `0 → 8 行` には起動が書いた行が混ざる。閉じたのは**送った本文そのものを転写の中で数えた**方(1 件、陰性対照 0 件) |
+| 10 | §0-d の3行を観測して §0 を更新(または**未測定と明記**) | 観測 | **済(2026-08-05)**。3行とも edith の線の上で観測(`evidence-2026-08-05/live-http-0d-rows-20260805.md`)。未測定として残した行は無い |
 
 ---
 
