@@ -139,11 +139,33 @@ built to catch it:
 3. The control itself expected the evidence row to be green when both files exist. It is
    unmeasured by design. The control's expectation was what was wrong, not the subject.
 
+## Screenshot content — viewed directly (DoD row 6's substance)
+
+The DoD script leaves row 6 unmeasured on purpose: it can prove the files exist, not that
+the right thing is in them. I opened both.
+
+| | degraded (stage 1) | stalled (stage 2) |
+|---|---|---|
+| notice | grey, "更新が遅れています" | **red**, "応答が確認できません" |
+| buttons | none | 再試行 and 読み直す both present |
+| last-checked stamp | 13:49:13 | 13:49:16 |
+| conversation body | fixture only — no account, no real name, no device identifier | same |
+
+The two states are genuinely distinguishable, and the stage-2 shot is the only artifact in
+the sprint that shows the two buttons actually rendering. Both were untracked; on a clean
+clone row 6 would have been red for everyone but this machine. Now committed, after being
+viewed rather than before.
+
+**One gap the pictures reveal.** The stamps are three seconds apart. §5-c escalates to
+stage 2 by *either* of two paths — three consecutive unreadable marks, or ten seconds
+elapsed — and a three-second gap can only be the first. So the visual evidence covers one
+escalation path of two. The ten-second path has a test and no picture. Not a defect; worth
+naming, because "we have screenshots of the stalled state" reads as covering both.
+
 ## Read but not independently re-derived
 
 - The plant → red → revert → green table for the seven negative controls. I verified the
   seven tests exist and that no mutation markers remain; I did not re-plant all seven.
-- The screenshots' visual content.
 - The backend-side poll route behaviour beyond what the suite asserts.
 
 ## Carry-over, named
