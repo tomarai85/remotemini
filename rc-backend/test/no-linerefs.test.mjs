@@ -118,31 +118,88 @@ const outOfRepo = (c) => OUT_OF_REPO.find(([pre]) => c.startsWith(pre));
  *   commit の門は通り、変異走行の中でだけ落ちる —— `test/mutation-controls.py` の
  *   凍結の節に在る、以降の変異が全部「検出」に化ける事故と同じ入口だった。
  */
-function resolves(cite, fromFile) {
+function resolves(cite, fromFile, repoIntact = REPO_INTACT) {
   if (cite.startsWith("./") || cite.startsWith("../")) {
-    return isFile(resolve(dirname(fromFile), cite));
+    return isFile(resolve(dirname(fromFile), cite)) ? OK : BROKEN;
   }
   const own = LIVE_TREES.find((t) => fromFile.startsWith(t.root + "/"));
   const order = [own, ...LIVE_TREES.filter((t) => t !== own)].filter(Boolean);
   if (cite.includes("/")) {
-    return order.some((t) => isFile(join(t.root, cite))) || isFile(join(REPO, cite));
+    if (order.some((t) => isFile(join(t.root, cite)))) return OK;
+    if (isFile(join(REPO, cite))) return OK;
+    // ★未解決。だが「無い」には2種類在り、**片方は赤ではない**:
+    //   ① 根が在るのに解決しない = 本物の腐り(改名の置き去り)
+    //   ② 根ごと此処に無い       = **検めていない**だけ
+    //   ②を赤にしていたのが、下の実測の事故。
+    return repoIntact ? BROKEN : UNVERIFIABLE;
   }
-  return order.some((t) => t.bare.some((d) => isFile(join(t.root, d, cite))));
+  return order.some((t) => t.bare.some((d) => isFile(join(t.root, d, cite)))) ? OK : BROKEN;
 }
 const isFile = (p) => existsSync(p) && statSync(p).isFile();
+
+const OK = "ok", BROKEN = "broken", UNVERIFIABLE = "unverifiable";
+
+/**
+ * repo の**根が本物か**。`rc-backend/` だけを写した木では偽になる(写し先の親は
+ * ただの一時 dir で、そこに repo 直下の物は1つも無い)。
+ *
+ * ★2026-08-05 実測。`tools/run-controls.sh` が repo 直下の照合表を backtick で
+ *   引いた —— 引用として正しい(現にその台本を走らせている)。だが完全な木では
+ *   repo 直下で解決して緑、`rc-backend/` だけの写しでは解決せず**赤**になった。
+ *   commit の門は通り、**変異走行の中だけで落ちる** = `test/mutation-controls.py`
+ *   の凍結の節に在る、以降の変異が全部「検出」に化ける事故の入口そのもの。
+ *   **同じ入口を踏むのは2件目**(1件目は §2.18-10 (e) の、説明文に実在する名前を
+ *   例示した件)。1件目は引用の書き方を直して終わりにした —— 今回それでは足りないと
+ *   判ったので**検査の側**を直した: 此処に無い物を「実在しない」と言い切っていた事が
+ *   誤りで、引用の側は最初から正しかった(現にその台本を走らせている)。
+ *
+ * ★先に「入れ物(先頭の一節)が此処に在るか」で分ける案を書いて、**実測で捨てた**。
+ *   同じ綴りの入れ物が repo 直下と `rc-backend/` の両方に在り(前者は照合表、
+ *   後者は証拠の置き場)、写しの中では後者だけが在る。入れ物は在って中身が無い、
+ *   という見え方になるので、腐りと区別が付かない。**写しの中には区別に要る情報が
+ *   端から無い** —— だから根の有無そのもので分ける。
+ *
+ * ★目印に `DESIGN.md` を使う。拡張子が引用の規則(`EXT_CITE`)に入っていないので、
+ *   この行自体が引用として数えられる事は無い。
+ *
+ * ★残る上限を黙らせない: **裸の名前**(`/` を含まない引用)と `../` 始まりは、
+ *   根が欠けていても厳格なまま。`ios/` にしか無い名前を backend 側が裸で引くと、
+ *   部分木で偽の赤になる。今日の実測では**該当 0件**(部分木の赤は3件、全部
+ *   `/` を含む repo 直下の引用)なので、居ない物の為に規則を増やしていない。
+ */
+const REPO_INTACT = isFile(join(REPO, "DESIGN.md"));
 
 /** 走査の本体。buffer を渡せる形にして、陰性対照が同じ道を通れるようにする。 */
 function findLinerefs(text) {
   return [...text.matchAll(numRe())].map((m) => m[0]);
 }
-function findBrokenCites(text, fromFile) {
+/**
+ * @param sink 省略可。**検めきれなかった**引用の置き場(部分木でだけ埋まる)。
+ *   戻り値に混ぜないのは、混ぜた瞬間に「赤の一覧」と「測れなかった一覧」が
+ *   同じ配列になって、片方を数えたつもりが両方を数える形になるから
+ *   (道具の出口は 0=緑 / 1=赤 / 2=測っていない で分けてある。此処も同じ分け方)。
+ */
+function findBrokenCites(text, fromFile, sink, repoIntact = REPO_INTACT) {
   const bad = [];
   for (const m of text.matchAll(citeRe())) {
     const c = m[1];
     if (outOfRepo(c)) continue;
-    if (!resolves(c, fromFile)) bad.push(c);
+    const v = resolves(c, fromFile, repoIntact);
+    if (v === BROKEN) bad.push(c);
+    else if (v === UNVERIFIABLE && sink) sink.push(c);
   }
   return bad;
+}
+
+/** 走査全体で「検めきれなかった」引用。完全な木では必ず 0 件。 */
+function unverifiedCites() {
+  const out = [];
+  for (const f of scanFiles()) {
+    const sink = [];
+    findBrokenCites(readFileSync(f, "utf8"), f, sink);
+    for (const c of sink) out.push(`${rel(f)}: ${c}`);
+  }
+  return out;
 }
 
 // ── ① 行番号の参照はゼロ ────────────────────────────────────────────
@@ -189,6 +246,38 @@ test("陰性対照: 実在しない名前を1件混ぜれば見つかる", () =>
   assert.deepEqual(findBrokenCites(planted, join(ROOT, "tools", "x.sh")), [ghost]);
   assert.deepEqual(findBrokenCites("# 出し先は `tools/health-observer.sh` を見る",
     join(ROOT, "tools", "x.sh")), []);
+});
+
+// ── 「此処に無い」と「実在しない」を分ける ────────────────────────────────
+// ★根の有無を**引数で渡せる**形にしてある。渡せないと、この分岐は「根が欠けた木」
+//   でしか動かず、普段走る完全な木の中では**一度も試されない道**になる。
+//   (免除の分岐が試されないまま育つのは、今夜4回踏んだ形の中で一番静かなやつ)
+test("★根ごと此処に無い時だけ『赤』が『検めていない』へ落ちる(免除の分岐を両側から踏む)", () => {
+  const from = join(ROOT, "tools", "x.sh");
+  const ghost = "tools/" + "ghost" + "-" + "probe" + "." + "sh";
+  const text = "# `" + ghost + "` を走らせる";
+
+  // 根が在る木として見る → 未解決は赤。免除は一切効かない。
+  const sinkWhole = [];
+  assert.deepEqual(findBrokenCites(text, from, sinkWhole, true), [ghost],
+    "完全な木で免除が効いたら、改名の置き去りを取り逃がす");
+  assert.deepEqual(sinkWhole, []);
+
+  // 根が欠けた木として見る → 赤には数えず、置き場へ回す。
+  const sinkPartial = [];
+  assert.deepEqual(findBrokenCites(text, from, sinkPartial, false), []);
+  assert.deepEqual(sinkPartial, [ghost],
+    "黙って捨てたら『検めた』と見分けが付かない。名指しで残す事");
+});
+
+test(`★『検めていない』引用は木が欠けている時だけ許す(根が本物: ${REPO_INTACT})`, () => {
+  const unver = unverifiedCites();
+  if (unver.length) console.log(`# 検めきれなかった引用 ${unver.length}件: ${unver.join(" / ")}`);
+  assert.deepEqual(
+    REPO_INTACT ? unver : [], [],
+    "完全な木なのに『検めていない』が出た = 免除の条件が緩い。" +
+      "repo 直下に在る物は完全な木では必ず解決するはずで、解決しないなら本物の腐り",
+  );
 });
 
 // ── 走査した範囲を**毎回名乗る** ──────────────────────────────────────
