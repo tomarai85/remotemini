@@ -102,9 +102,51 @@ _scan_ctls() { # $1=対照の居る dir(根から) $2=宣言の基点(根から�
 # ★この名前を backtick で囲まない事。囲むと「引いた名前が実在するか」の検査が走り、
 #   ios の居ない**写しの木**(変異走行が使う)でだけ赤くなる —— commit の門は通って
 #   走行の中で落ちる形になる。今夜これで2度倒した。
-_scan_ctls rc-backend/test rc-backend
-_scan_ctls ios/tools ""
+
+# ★★★2026-08-05: 走査先の一覧を **1本にする**(根治。band-aid を止めた)。
+#
+#   `.harness/` を足そうとして判った事: この門は同じ一覧を**手で同期する形で3箇所**
+#   持っていた —— ①走査 dir の呼び出し ②「この staged path は見る木か」の case
+#   ③「この staged path は対照そのものか」の case。①だけ広げても ② が
+#   `rc-backend/*|ios/*` で弾くので、`.harness` の対照は**発見されても一度も回らない**。
+#   実測: ① だけ足した状態で `STAGED_LIST_CMD='printf .harness/dod-sprint-3.sh'` を
+#   撃つと「触れた対照は無い」。
+#
+#   これが 2026-08-02(`tools/` 欠落)/ 08-05 朝(`.git/hooks/pre-commit` の絞り込み)
+#   と**同じ形が4回**続いた真因。1箇所広げた人は「広げた」と思い、残りが黙って縮める。
+#   だから広げ方を直すのではなく、**一覧を1つにして残り2箇所を導出**する。
+SCAN_SPECS=(
+    "rc-backend/test|rc-backend"   # 宣言は rc-backend からの相対(tools/foo.sh)
+    "ios/tools|"                   # 宣言は repo の根から(ios/tools/foo.sh)
+    ".harness|"                    # 同上。harness の道具は木を跨いで見張る
+)
+TREES=()   # 「この staged path を見るか」を決める木(走査 dir の第1成分)
+for _spec in "${SCAN_SPECS[@]}"; do
+    _d="${_spec%%|*}"; _b="${_spec#*|}"
+    _scan_ctls "$_d" "$_b"
+    _t="${_d%%/*}"
+    case " ${TREES[*]-} " in *" $_t "*) ;; *) TREES+=("$_t") ;; esac
+done
 NCTL=${#CTLS[@]}
+
+# 導出①: staged path がこの門の見る木の中に在るか
+_in_tree() {
+    local _t
+    for _t in "${TREES[@]}"; do
+        case "$1" in "$_t"/*) return 0 ;; esac
+    done
+    return 1
+}
+# 導出②: staged path が**発見済みの対照そのもの**か(pattern の一覧を持たない。
+#   走査で実際に見つけた物と突き合わせる = 定義上ズレようが無い)
+_is_ctl() {
+    local i=0
+    while [ "$i" -lt "$NCTL" ]; do
+        [ "${CTLS[$i]}" = "$1" ] && return 0
+        i=$((i+1))
+    done
+    return 1
+}
 
 # staged な path を、その対照の基点から見た形に直す。基点の木の外なら**空**を返す
 # (= その対照の宣言とは照合しない)。
@@ -140,24 +182,21 @@ done
 undecl=""
 while IFS= read -r f; do
     [ -n "$f" ] || continue
-    case "$f" in rc-backend/*|ios/*) ;; *) continue ;; esac
+    _in_tree "$f" || continue          # 導出①(SCAN_SPECS から。手書きの木一覧は持たない)
 
     hit=0
-    # (a) 対照そのものが staged
-    case "$f" in
-        rc-backend/test/*-control*.sh|ios/tools/*-control*.sh)
-            if [ -f "$ROOT/$f" ]; then                 # 削除された対照は回さない
-                add_sel "$f"; hit=1
-                # ★宣言の無い対照は「静かに回らない対照」になる。書く瞬間に止める。
-                i=0
-                while [ "$i" -lt "$NCTL" ]; do
-                    if [ "${CTLS[$i]}" = "$f" ] && [ -z "${DECLS[$i]// /}" ]; then
-                        undecl="$undecl ${f##*/}"
-                    fi
-                    i=$((i+1))
-                done
-            fi ;;
-    esac
+    # (a) 対照そのものが staged —— 導出②
+    if _is_ctl "$f" && [ -f "$ROOT/$f" ]; then         # 削除された対照は回さない
+        add_sel "$f"; hit=1
+        # ★宣言の無い対照は「静かに回らない対照」になる。書く瞬間に止める。
+        i=0
+        while [ "$i" -lt "$NCTL" ]; do
+            if [ "${CTLS[$i]}" = "$f" ] && [ -z "${DECLS[$i]// /}" ]; then
+                undecl="$undecl ${f##*/}"
+            fi
+            i=$((i+1))
+        done
+    fi
 
     # (b) この file を見張ると宣言している対照(名前の一致には頼らない)
     i=0
@@ -176,7 +215,11 @@ while IFS= read -r f; do
     # (c) 見張る物が1本も無い道具は名前を出す(止めない)
     if [ "$hit" -eq 0 ] && [ -f "$ROOT/$f" ]; then
         case "$f" in
-            rc-backend/tools/*|rc-backend/test/*.py|ios/tools/*) orphan="$orphan ${f##*/}" ;;
+            # ★`.harness/*.sh` も入れる: 木を足した時に**注記の側だけ痩せる**のを塞ぐ。
+            #   走査と選択は SCAN_SPECS から導出されるが、此処は「道具らしい path」の
+            #   形の話なので導出できない。木を足したら1行足す事(この行が忘れられても
+            #   commit は止まらない = 静かに分母が痩せる形なので、対照 S38 で見張る)。
+            rc-backend/tools/*|rc-backend/test/*.py|ios/tools/*|.harness/*.sh) orphan="$orphan ${f##*/}" ;;
         esac
     fi
 done <<EOF
