@@ -168,10 +168,84 @@ naming, because "we have screenshots of the stalled state" reads as covering bot
   seven tests exist and that no mutation markers remain; I did not re-plant all seven.
 - The backend-side poll route behaviour beyond what the suite asserts.
 
+## Closing pass — both reds closed, verified on this desk (2026-08-05 14:45)
+
+Re-ran the DoD script after the Generator's fix pass. Rows 8-b and 9 are green, and
+the script itself is byte-identical to the version that failed them — a red closed by
+weakening the check is not closed, so that was checked before the result was read.
+
+- **Finding 1.** All three entry points are now driven directly. The load-bearing part
+  is not that they are called but that the retry/re-read split is asserted as a
+  *difference*: retry must not refetch and must not clear the live buffer, re-read must
+  do both. An implementation that collapses the two into one call fails that test —
+  which is exactly what the Generator's own mutation of it produced, with the failure
+  numbers recorded. The scene-phase guard was extracted into a pure predicate and
+  mutated two ways, the second being the case named in Finding 1: dropping the
+  background half of the edge so that launch itself would fire a spurious resync.
+- **Finding 2.** 42 cited test names, all resolving.
+- **Finding 3.** 216 on disk, 216 in the log, one run, zero failures.
+
+Committed after the full gate chain, no `--no-verify`. The gate stopped the first
+attempt: the progress-file paragraph describing the removal of a line-number citation
+had reproduced the removed numbers in order to describe them. Naming a bad citation is
+not an exemption from the ratchet.
+
+## A row the DoD script was missing, found while verifying it
+
+Reading the run log to confirm the count, the tail turned out to be a second target:
+the UI tests, a separate scheme target living outside the unit-test directory the
+script scans. They ran and passed in the same run — but the script could not see them.
+Deleting every UI test would have left the table fully green. Same shape as the rest of
+this sprint's findings: a scope that quietly excludes something, reported as coverage.
+
+Added as its own row, matched **by test name**, not by count — the log prints a
+per-class `Executed N tests` line, so a count-based check would have matched an
+unrelated class of the same size and gone green for the wrong reason. Its control
+fires that specific case: a log with the right count and the wrong names must be red.
+Without that assertion, "matched by name" would be an unproven design claim.
+
+Controls: 27 → 31, all green. DoD: 8 green / 0 red / 4 unmeasured.
+
+## The citation-accuracy question, and why it produced no tool
+
+Line-number citations across the two long design documents were measured, since the
+commit gate freezes their count but does nothing about the ones already written.
+
+The measurement failed, repeatedly, and the failures are the result worth recording.
+Five different numbers were produced and every one was an artifact of the instrument
+rather than a property of the documents: a mismatch count that came from scoping
+keywords to a single line when the citations sit on bare list lines; a revised count
+whose "matching" side was then shown by hand to contain false greens; and a
+missing-file count that was entirely composed of files that exist perfectly well
+outside this repository, which the path resolver never looked in.
+
+Two content-level alarms were raised from it and both were wrong, in the same way: a
+table was judged without reading the section containing it. In one case the section was
+a dated pre-implementation diagnosis, and the document's own stated convention is to
+annotate such sections rather than rewrite them; the fix it planned is recorded as
+landed further down. That is the same error as the false red this sprint's DoD script
+produced against a doc comment — a fragment judged outside its enclosing context.
+
+What survives is only what was read by hand: three sampled citations in the design
+document all pointed at unrelated lines, two of them displaced by exactly the same
+offset, which is the signature of a single insertion near the top of the file rather
+than gradual drift. Two of three sampled *matches* were false. An earlier hand pass,
+quoted in the commit gate's own advice text, found 13 of 33 stale. No citation was ever
+out of range — a reader always lands somewhere plausible, which is why this rots
+without anyone noticing.
+
+The conclusion is a negative one and it is deliberate: no instrument was committed. A
+proximity check cannot see document structure, and shipping one immediately after it
+produced five wrong numbers and two wrong alarms would be repeating this sprint's own
+central finding rather than acting on it. The mechanism that does work is already in
+the repository — the ratchet that refuses new line-number citations and directs writers
+to cite content instead. It stopped a commit tonight, which is the evidence for it.
+
 ## Carry-over, named
 
-- (i) Entry-point tests and the citation fix — dispatched to the Generator this pass; both
-  must turn green in the DoD script without weakening it.
+- (i) ~~Entry-point tests and the citation fix~~ — **closed**, see the closing pass above.
+  Both turned green with the DoD script unchanged, and the difference between the two
+  manual-refetch buttons is asserted rather than assumed.
 - (ii) `port-coverage.py` structurally cannot verify the history-merge function — it has no
   matchable literals. Unchanged from Sprint 3, still not a Sprint 4 regression.
 - (iii) Two documentation ratchets diverge: the citation gate scans tracked and indexed
