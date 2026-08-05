@@ -1244,3 +1244,238 @@ confirm it renders correctly.
    cannot dispatch to a `mutating` struct method; the fixture's internal
    `callCount`-driven state machine needs mutation across calls.
 
+# Interstitial task — Generator progress: request-shape test coverage (pre-Sprint-5)
+
+Not Sprint 5. Assigned by team-lead as a gap-fill before Sprint 5 (POST /send,
+POST /interrupt) enters a tree that had zero tests distinguishing GET from POST
+anywhere. Trigger: a mutation audit (`d44dcb1`) reported 6 survivors in
+`SessionsClient.swift`/`SessionsModels.swift`; team-lead triaged them down to 3
+real gaps + 2 equivalent mutations, and asked me to close the 3 real gaps and
+record why the other 2 are not being chased.
+
+## Codex delegation evaluation
+No match. This is < 100 lines total, touching 5 already-open files (1 test-support
+fixture + 4 test files), no new pattern repeated 5+ times, no shell/DevOps config,
+nothing that has failed twice. Below the Layer A bar — done directly.
+
+## Scope discipline
+- `rc-backend/` untouched (checked via `git status --short -uall` after finishing:
+  zero files under `rc-backend/` appear in this task's diff).
+- Source behavior unchanged: `SessionsClient.swift`, `SessionsModels.swift`,
+  `HistoryClient.swift`, `PollClient.swift` all show **zero net diff** against
+  their pre-task state (`git diff -- <those 4 files>` is empty) — every mutation
+  planted for the red/green cycles below was reverted before moving on, verified
+  by that same empty diff, not by memory.
+- Only 5 files touched: `Tests/Support/MockURLProtocol.swift` (new `requestedMethods`
+  record slot) + 4 test files (`SessionsClientTests.swift`, `HistoryClientTests.swift`,
+  `PollClientTests.swift`, `SessionsModelsTests.swift`).
+- No line-number citations added: `grep -rn '\.mjs:[0-9]\|\.swift:[0-9]\|\.sh:[0-9]\|\.py:[0-9]\|\.js:[0-9]\|\.yml:[0-9]\|\.json:[0-9]' ios/Sources ios/Tests ios/UITests` → 0 hits.
+- `grep -rn 'MUTATION' ios/Sources ios/Tests ios/UITests` → 0 hits (no leftover markers).
+- Not committed, per instruction — left staged/unstaged for team-lead to review.
+
+## What was built
+
+1. **`MockURLProtocol.requestedMethods: [String]`** — appended once per request
+   (`request.httpMethod ?? "<nil>"`, same append-not-overwrite shape as the
+   existing `requestedURLs`), cleared in `reset()`. Before this, no fixture in
+   the tree recorded HTTP method at all, so a client's `"GET"` silently becoming
+   `"POST"` was invisible to every existing suite.
+2. **URL + method checks on all 3 clients** (`SessionsClient` had neither;
+   `HistoryClient`/`PollClient` already had URL checks, both got method checks):
+   - `SessionsClientTests.testRequestURLIsApiSessions`
+   - `SessionsClientTests.testRequestMethodIsGET`
+   - `HistoryClientTests.testRequestMethodIsGET` (URL check pre-existed:
+     `testRequestURLCarriesSessionIDAndLimit`)
+   - `PollClientTests.testRequestMethodIsGET` (URL check pre-existed:
+     `testRequestURLCarriesSessionIDAndWait`)
+3. **`displayTitle` coverage** (`SessionsModelsTests.swift`, new `decodeRow(id:title:)`
+   helper decoding a minimal `SessionRow`):
+   - `testDisplayTitleReturnsTheTitleWhenNonEmpty`
+   - `testDisplayTitleFallsBackToTheIDsFirst8CharactersWhenTitleIsEmpty`
+   - `testDisplayTitleWithAnIDShorterThan8CharactersReturnsTheWholeIDWithoutCrashing`
+     (locks in that the fallback is `String(id.prefix(8))`, not a fixed-length
+     slice — a future rewrite to e.g. `id[0..<8]` would crash on a short id and
+     this catches it before a phone does)
+   - `testDisplayTitleWithAnEmptyIDAndEmptyTitleIsAnEmptyStringNegativeControl`
+
+## Plant → red → revert → green (all 3 mutations team-lead specified, run via
+targeted `xcodebuild -only-testing:` for speed; full-suite confirmation below)
+
+| # | Mutation planted | File | Ran | Result |
+|---|---|---|---|---|
+| 1a | `"api/sessions"` → `"api/session"` | `SessionsClient.swift` | `SessionsClientTests` (14 tests) | RED: exactly `testRequestURLIsApiSessions` failed (`"/api/session"` ≠ `"/api/sessions"`); other 13 unaffected |
+| 1b | revert | — | `SessionsClientTests` | GREEN (folded into final full-suite run below) |
+| 2a | `"GET"` → `"POST"` | `SessionsClient.swift` | `SessionsClientTests` (14 tests) | RED: exactly `testRequestMethodIsGET` failed (`"POST"` ≠ `"GET"`); other 13 unaffected |
+| 2b | revert | — | `SessionsClientTests` | GREEN |
+| 3a | `prefix(8)` → `prefix(7)` | `SessionsModels.swift` | `SessionsModelsTests` (12 tests) | RED: exactly `testDisplayTitleFallsBackToTheIDsFirst8CharactersWhenTitleIsEmpty` failed (`"sess-00"` ≠ `"sess-000"`); other 11 unaffected |
+| 3b | revert | — | `SessionsModelsTests` | GREEN |
+
+Extra diligence beyond team-lead's 3-row table, since `HistoryClientTests`/
+`PollClientTests.testRequestMethodIsGET` are new tests too and the audit never
+ran against those two files:
+
+| # | Mutation planted | File | Ran | Result |
+|---|---|---|---|---|
+| 4a | `"GET"` → `"POST"` | `HistoryClient.swift` | `HistoryClientTests` (16 tests) | RED: exactly `testRequestMethodIsGET` failed; other 15 unaffected |
+| 4b | `"GET"` → `"POST"` (same run) | `PollClient.swift` | `PollClientTests` (17 tests) | RED: exactly `testRequestMethodIsGET` failed; other 16 unaffected |
+| 4c | both reverted | — | — | GREEN (folded into final full-suite run below) |
+
+Each RED table row shows the specific failing assertion text captured from the
+`xcodebuild` output at the time (not paraphrased after the fact), and each
+row's "other N unaffected" was read off the same run, not assumed.
+
+## Judgment calls: 2 audit-flagged survivors NOT chased (as instructed, with reasons)
+
+1. **Header-name casing (`"Authorization"` vs `"authorization"`) — not tested.**
+   Verified directly (not just cited from team-lead's message): `URLRequest.setValue(_:forHTTPHeaderField:)`
+   normalizes the header's stored key regardless of what casing is passed in, so
+   `allHTTPHeaderFields` always comes back keyed `["Authorization": ...]` — a
+   lowercase call site and the current mixed-case one are indistinguishable on
+   the wire and indistinguishable in `MockURLProtocol.lastRequestHeaders`. A
+   mutation that swaps the literal's casing is a no-op mutation, not a missed
+   test: adding an assertion here would pin an implementation detail
+   (`URLRequest`'s own normalization) that has no independent behavior to lock.
+2. **`guard let http = response as? HTTPURLResponse else { ... }` else-branch —
+   not made reachable.** `MockURLProtocol.deliver(url:)` has exactly one response
+   construction path and it always builds `HTTPURLResponse` (see that file);
+   production traffic is always http(s), which `URLSession` always answers with
+   an `HTTPURLResponse`. Reaching the `else` would require either forking the
+   fixture to fabricate a non-`HTTPURLResponse` `URLResponse` (a shape that
+   cannot occur on the real wire, so a test built to reach it would be testing
+   the fixture's own contortion, not the client) or hand-rolling a fake
+   `URLProtocolClient`, neither of which buys coverage of anything that can
+   actually happen on a phone.
+
+Next reader hitting the same mutation-audit report on this pair of files should
+land on the same 2 non-fixes rather than re-deriving them — that's the point of
+writing this section out rather than silently dropping the 2 rows.
+
+## Build/test command and result
+
+- `./ios/tools/build.sh --sim` (headless, `iPhone-dogfood`, already booted) —
+  `テスト 225件 実行 / 失敗 0件`, `** TEST SUCCEEDED **`. Full log:
+  `ios/build/xcodebuild-sim.log`.
+- Baseline (before this task's edits, same command via targeted
+  `-only-testing:` on the 4 touched suites) was already green — 60/60 across
+  `SessionsClientTests`/`HistoryClientTests`/`PollClientTests`/`SessionsModelsTests`
+  combined, confirmed before any mutation was planted.
+- Net new tests added: 8 (`SessionsClientTests` +2, `HistoryClientTests` +1,
+  `PollClientTests` +1, `SessionsModelsTests` +4).
+- `rc-backend/` not touched, not run this task — out of scope per the brief's
+  standing constraint and this task's own instruction.
+
+## Files changed (this interstitial task only)
+
+- Modified: `ios/Tests/Support/MockURLProtocol.swift` (new `requestedMethods`
+  record slot + `reset()` clearing it)
+- Modified: `ios/Tests/Core/SessionsClientTests.swift` (+2 tests: URL, method)
+- Modified: `ios/Tests/Core/HistoryClientTests.swift` (+1 test: method)
+- Modified: `ios/Tests/Core/PollClientTests.swift` (+1 test: method)
+- Modified: `ios/Tests/Core/SessionsModelsTests.swift` (+4 tests: `displayTitle`)
+- Not modified (net zero diff after mutation-cycle reverts, verified via
+  `git diff`): `ios/Sources/Core/SessionsClient.swift`, `ios/Sources/Core/SessionsModels.swift`,
+  `ios/Sources/Core/HistoryClient.swift`, `ios/Sources/Core/PollClient.swift`
+- Not touched at all: everything under `rc-backend/`
+
+## Addendum — 4th client found (team-lead correction, same task)
+
+The section above was written believing the scope was 3 clients
+(`SessionsClient`/`HistoryClient`/`PollClient`). team-lead mechanically
+enumerated `ios/Sources/Core/*Client.swift` and found a 4th —
+`HealthzClient.swift` — that both the original mutation audit and team-lead's
+own first pass had missed. Framed explicitly as the same "hand-written list
+vs. actual filesystem" mismatch this repo has hit repeatedly the same night.
+Recording the correction here rather than silently folding it into the section
+above, so a future reader sees that the 3-client framing was wrong, not that
+Healthz was always in scope.
+
+team-lead also landed (not yet placed under `rc-backend/test/`, to avoid
+blocking `npm test`/the commit gate mid-task) a mechanical check that derives
+both the client list and the dimension list from the tree itself: target
+clients = every `ios/Sources/Core/*Client.swift`; dimensions = every
+`MockURLProtocol.swift` `static var` named `requested…`/`lastRequest…`; rule =
+each client's own test file must read every such dimension at least once. The
+`requestedMethods` field name chosen in the section above already satisfies
+this convention (starts with `requested`) — no rename was needed.
+
+Before this addendum, the per-client × per-dimension table (team-lead's
+measurement, method excluded since the field didn't exist yet) was:
+
+| client | `requestedURLs` | `lastRequestHeaders` |
+|---|---|---|
+| `HealthzClient` | 0 | 0 |
+| `HistoryClient` | 1 | 1 |
+| `PollClient` | 3 | 1 |
+| `SessionsClient` | 0 | 1 |
+
+### What was added for `HealthzClient`
+
+`ios/Tests/Core/HealthzClientTests.swift` had 5 existing tests and read zero
+`MockURLProtocol` `requested…`/`lastRequest…` dimensions. Added 3 tests under
+a new "MARK: - Request shape: URL, method, and the ABSENCE of an Authorization
+header" section:
+
+- `testRequestURLIsHealthz` — asserts `requestedURLs.last?.path == "/healthz"`
+- `testRequestMethodIsGET` — asserts `requestedMethods.last == "GET"`
+- `testRequestCarriesNoAuthorizationHeaderByDesign` — asserts
+  `lastRequestHeaders?["Authorization"]` is `nil`
+
+The third test is the design-judgment call team-lead flagged explicitly:
+`HealthzClient.swift`'s own doc comment states `/healthz` is the
+unauthenticated liveness probe, deliberately never carrying the API key, so
+that Key-entry can tell "wrong URL" (healthz itself fails) apart from "wrong
+key" (only authenticated calls fail) per spec §2-1/§5-1. Read the source
+before writing the assertion: `check(baseURL:)` never calls
+`setValue(_:forHTTPHeaderField:)` at all. The correct test therefore asserts
+*absence*, not a decoy value — asserting some arbitrary header value would
+pin down a distinction that doesn't exist, the same shape as the header-name-
+casing equivalent mutation already excluded above.
+
+### Mutation cycles (plant → RED → revert → GREEN), `HealthzClient.swift`
+
+Baseline before any mutation: 8/8 `HealthzClientTests` green.
+
+| # | Mutation planted | Command | RED result | Revert | GREEN result |
+|---|---|---|---|---|---|
+| 1 | `appendingPathComponent("healthz")` → `("health")` | `-only-testing:RemoteMiniTests/HealthzClientTests` | exactly `testRequestURLIsHealthz` failed (`Optional("/health")` != `Optional("/healthz")`); other 7 passed | restored `"healthz"` | 8/8 |
+| 2 | `request.httpMethod = "GET"` → `"POST"` | same | exactly `testRequestMethodIsGET` failed (`Optional("POST")` != `Optional("GET")`); other 7 passed | restored `"GET"` | 8/8 |
+| 3 | added `request.setValue("Bearer mutation-cycle-3", forHTTPHeaderField: "Authorization")` | same | exactly `testRequestCarriesNoAuthorizationHeaderByDesign` failed (`XCTAssertNil failed: "Bearer mutation-cycle-3"`); other 7 passed | removed the added line entirely | 8/8 |
+
+Each cycle isolated to exactly the one test it was meant to catch, no
+collateral failures. `git diff -- ios/Sources/Core/HealthzClient.swift` after
+all 3 cycles: empty — zero net diff, matching the discipline applied to the
+other 3 clients' source files above.
+
+### Final verification (post-addendum)
+
+- Repo-wide line-number-citation grep (scope includes `ios/UITests` per
+  team-lead's scope-widening), rerun after the `HealthzClientTests.swift`
+  additions: `grep -rn '\.mjs:[0-9]\|\.swift:[0-9]\|\.sh:[0-9]\|\.py:[0-9]\|\.js:[0-9]\|\.yml:[0-9]\|\.json:[0-9]' ios/Sources ios/Tests ios/UITests` — 0 hits.
+- `./ios/tools/build.sh --sim` (headless, `iPhone-dogfood`) — `テスト 227件
+  実行 / 失敗 0件`, `** TEST SUCCEEDED **`.
+- Cross-checked 227 against source directly rather than trusting arithmetic
+  from the earlier section: `grep -rc 'func test' ios/Tests/` sums to 227,
+  matching the runner's count exactly (no silently-skipped test). `ios/UITests/`
+  has 3 more `func test` declarations, not part of this run — a separate
+  target, unaffected by this task.
+- `git status --short -uall` at the repo root shows, besides this task's own
+  files, two modified files under `rc-backend/`
+  (`rc-backend/test/run-controls-controls.sh`, `rc-backend/tools/run-controls.sh`)
+  that this task did not create — a concurrent session's in-flight work in the
+  same shared repo, confirmed via `git diff --stat` to be outside anything
+  this task opened or edited. Left untouched, consistent with the standing
+  `ios/`-only constraint.
+
+### Final per-client × per-dimension state (all 4 clients, all dimensions)
+
+| client | `requestedURLs` | `requestedMethods` | `lastRequestHeaders` |
+|---|---|---|---|
+| `HealthzClient` | 1 | 1 | 1 |
+| `HistoryClient` | 1 | 1 | 1 |
+| `PollClient` | 3 | 1 | 1 |
+| `SessionsClient` | 1 | 1 | 1 |
+
+Every cell ≥ 1 — the condition team-lead specified as this task's completion
+criterion. Not committed, per instruction; team-lead runs their own check
+against this state and lands together.
+

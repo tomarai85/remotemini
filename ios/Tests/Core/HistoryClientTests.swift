@@ -127,6 +127,17 @@ final class HistoryClientTests: XCTestCase {
         XCTAssertEqual(requested?.query, "limit=150")
     }
 
+    // 2026-08-05: `SessionsClient`/`SessionsModels`'s mutation-audit gap (no method
+    // check anywhere in the tree) applies to this client too -- added alongside it.
+    func testRequestMethodIsGET() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validBody.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.fetch(baseURL: baseURL, apiKey: "x", sessionID: "sess-0001", limit: 50)
+
+        XCTAssertEqual(MockURLProtocol.requestedMethods.last, "GET")
+    }
+
     // MARK: - Negative controls: the four cases are not collapsed pairwise
 
     func test401And5xxAreNotCollapsedIntoOneOutcomeNegativeControl() async {

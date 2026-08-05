@@ -84,6 +84,49 @@ final class SessionsModelsTests: XCTestCase {
         XCTAssertThrowsError(try decode(Self.missingRowDisplayFixture))
     }
 
+    // MARK: - `displayTitle` (brief §3-a): empty-title fallback, id-prefix(8) truncation.
+    // Added 2026-08-05 -- the mutation audit found `displayTitle` had zero coverage
+    // despite being rendered from two places in `ListView`.
+
+    private func decodeRow(id: String, title: String) throws -> SessionRow {
+        let json = """
+        { "id": "\(id)", "title": "\(title)", "updatedAt": "2026-08-05T09:00:00.000Z",
+          "display": { "route": { "kind": "tmux", "short": "s", "text": "t", "screen": "" }, "subtitle": "s" } }
+        """
+        return try JSONDecoder().decode(SessionRow.self, from: Data(json.utf8))
+    }
+
+    func testDisplayTitleReturnsTheTitleWhenNonEmpty() throws {
+        let row = try decodeRow(id: "sess-0000000001", title: "机で開いているセッション")
+
+        XCTAssertEqual(row.displayTitle, "机で開いているセッション")
+    }
+
+    func testDisplayTitleFallsBackToTheIDsFirst8CharactersWhenTitleIsEmpty() throws {
+        let row = try decodeRow(id: "sess-0000000001", title: "")
+
+        XCTAssertEqual(row.displayTitle, "sess-000", "truncation rule is exactly 8 characters, not 7 or 9")
+    }
+
+    // Brief §3-a's fallback is `String(id.prefix(8))`, not a fixed-length slice --
+    // `prefix(8)` on a shorter string returns the whole string rather than crashing
+    // or padding. Locking this in means a future rewrite as e.g. `id[0..<8]` (which
+    // WOULD crash on a short id) fails this test instead of failing on a real phone.
+    func testDisplayTitleWithAnIDShorterThan8CharactersReturnsTheWholeIDWithoutCrashing() throws {
+        let row = try decodeRow(id: "abc", title: "")
+
+        XCTAssertEqual(row.displayTitle, "abc")
+    }
+
+    // Negative control for the above: both inputs empty must still resolve to an
+    // empty string, not a placeholder invented by a future "improvement" (e.g.
+    // falling back to a literal "Untitled") that the brief never asked for.
+    func testDisplayTitleWithAnEmptyIDAndEmptyTitleIsAnEmptyStringNegativeControl() throws {
+        let row = try decodeRow(id: "", title: "")
+
+        XCTAssertEqual(row.displayTitle, "")
+    }
+
     // MARK: - Fixtures (values lifted from `routeLabel()`'s own example strings in view.mjs, not invented)
 
     private static let fourRowFixture = """

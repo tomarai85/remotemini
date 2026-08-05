@@ -132,6 +132,27 @@ final class SessionsClientTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.lastRequestHeaders?["Authorization"], "Bearer correct-fixture-key")
     }
 
+    // MARK: - Request shape: URL and method (2026-08-05 mutation-audit finding --
+    // this client was the only one of the three with zero checks on either)
+
+    func testRequestURLIsApiSessions() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validBody.utf8))]
+        let client = SessionsClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.fetch(baseURL: baseURL, apiKey: "x")
+
+        XCTAssertEqual(MockURLProtocol.requestedURLs.last?.path, "/api/sessions")
+    }
+
+    func testRequestMethodIsGET() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validBody.utf8))]
+        let client = SessionsClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.fetch(baseURL: baseURL, apiKey: "x")
+
+        XCTAssertEqual(MockURLProtocol.requestedMethods.last, "GET")
+    }
+
     // MARK: - Negative controls: the four cases are not collapsed pairwise
 
     func test401And5xxAreNotCollapsedIntoOneOutcomeNegativeControl() async {
