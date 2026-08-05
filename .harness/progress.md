@@ -1287,7 +1287,7 @@ nothing that has failed twice. Below the Layer A bar — done directly.
    - `HistoryClientTests.testRequestMethodIsGET` (URL check pre-existed:
      `testRequestURLCarriesSessionIDAndLimit`)
    - `PollClientTests.testRequestMethodIsGET` (URL check pre-existed:
-     `testRequestURLCarriesSessionIDAndWait`)
+     `testRequestURLCarriesSessionIDCursorAndWait`)
 3. **`displayTitle` coverage** (`SessionsModelsTests.swift`, new `decodeRow(id:title:)`
    helper decoding a minimal `SessionRow`):
    - `testDisplayTitleReturnsTheTitleWhenNonEmpty`
