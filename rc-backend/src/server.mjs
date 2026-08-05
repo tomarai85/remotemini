@@ -870,6 +870,35 @@ function speaks(res, fn) {
   res[DISPLAY] = fn;
 }
 
+/**
+ * 「操作の結果」ではなく、**操作へ入る手前で決まった事**の応答。
+ *
+ * 契約 (2026-08-05, Codex 助言を受けて明文化): client は表示する文言を status や本文から
+ * 独自に導出してはならず、`display`(系統B)をそのまま描く。**但しこの2つだけは表示判断
+ * ではなく復旧・遷移の制御**として扱ってよい —— 認証要求は鍵入力へ、対象セッション不在は
+ * 一覧へ。除外の理由は「`speaks()` の宣言より手前に在るから」という実装上の偶然ではなく、
+ * **操作処理より手前のプロトコル / 資源解決の結果だから**である。
+ *
+ * ★`code` を持たせる理由が「将来 404 の意味が増えるかもしれない」ではない事。
+ *   2026-08-05 に数えたら 404 は既に3箇所・意味は2種類在った:
+ *     ① `/api/` 以外の道 ② `/api/` だが道が無い ③ セッション id が不明
+ *   電話側は status だけで分岐して**全部を「セッションが見つかりません → 一覧へ戻る」**に
+ *   していたので、①②(= client が組み立てた path が間違っている)を「セッションが消えた」と
+ *   表示していた。しかも path は変異監査で「変えても 214 件が緑」と実測された一番弱い所で、
+ *   その弱さを**利用者向けの誤った説明で覆い隠す**形になっていた。
+ *   `code` で分ければ、path のバグは一覧へ戻らず「応答契約違反」として目に見える。
+ *
+ * ★これを**定数**にするのは、意味の一覧を呼び口に配らない為。呼び口に直書きすると、
+ *   404 を1本足した人が新しい意味を作った事に誰も気付かない(この案件で最も多い型)。
+ *
+ * ★`freeze` する理由: 定数は全リクエストで**同じ物**を指す。`json()` は写しを作ってから
+ *   `display` を足すので今は安全だが、後から誰かが本文へ1欄書き足すと、その値が
+ *   次のリクエストへ持ち越される。凍らせておけば黙って漏れずに其の場で例外になる。
+ */
+const AUTH_REQUIRED = Object.freeze({ error: "unauthorized", code: "AUTH_REQUIRED" });
+const SESSION_NOT_FOUND = Object.freeze({ error: "unknown session", code: "SESSION_NOT_FOUND" });
+const NO_SUCH_ROUTE = Object.freeze({ error: "not found", code: "NO_SUCH_ROUTE" });
+
 function json(res, code, obj) {
   const fn = res[DISPLAY];
   // ★既に `display` を持つ本文には触らない。一覧のように**枝の中で**組み立てる応答が
@@ -960,8 +989,8 @@ const server = createServer(async (req, res) => {
 
     // ★表に無いパスはここで落ちる = 総当たりの静的ファイルサーバを作らない。
     //   パスから file 名を組み立てる実装にすると `/../keys/api.key` の入口ができる。
-    if (!path.startsWith("/api/")) return json(res, 404, { error: "not found" });
-    if (!authorized(req)) return json(res, 401, { error: "unauthorized" });
+    if (!path.startsWith("/api/")) return json(res, 404, NO_SUCH_ROUTE);
+    if (!authorized(req)) return json(res, 401, AUTH_REQUIRED);
 
     if (path === "/api/sessions" && req.method === "GET") {
       // ペイン一覧と登録簿は1回だけ引いて全セッションで使い回す
@@ -1061,7 +1090,7 @@ const server = createServer(async (req, res) => {
     // ★道の一覧は `reqlog.mjs` の1本だけ(写しを持たない)。振り分けとログが別々に持つと、
     //   道を1本足した時に片方だけが古くなり、ログは新しい道を `(other)` と書き続ける。
     const m = SESSION_ROUTE_RE.exec(path);
-    if (!m) return json(res, 404, { error: "not found" });
+    if (!m) return json(res, 404, NO_SUCH_ROUTE);
     const [, sessionId, action] = m;
     const file = findSessionFile(sessionId);
     // 登録簿は1リクエストにつき1回だけ読む。2回読むと、その間に書き手(statusLine が
@@ -1070,7 +1099,7 @@ const server = createServer(async (req, res) => {
     // jsonl は最初の発言まで作られない(2026-07-31 edith 実測)。開いただけの会話は
     // 登録簿にしか居ないので、そこにペインがあるなら操作対象として通す。
     const registeredOnly = !file && regEntries.some((e) => e.sessionId === sessionId);
-    if (!file && !registeredOnly) return json(res, 404, { error: "unknown session" });
+    if (!file && !registeredOnly) return json(res, 404, SESSION_NOT_FOUND);
     // cwd は jsonl 由来。無い場合は空 = 突き合わせを省く(resolveSessionPane の仕様)。
     // ★ここは送信・割り込みの度に通る。全部読むと 280 MB のファイルで毎回それを払う一方、
     //   cwd 経路は仕様上 "ok" を返せない(registry.mjs: 同定は名乗りだけ)ので、
