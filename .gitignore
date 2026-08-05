@@ -1,0 +1,4 @@
+
+# python の中間物(tools/*.py を import して動かすと出る。2026-08-05 に一度 stage されかけた)
+__pycache__/
+*.pyc
