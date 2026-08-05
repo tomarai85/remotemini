@@ -75,6 +75,17 @@ LOCAL_CTLS=(
                                      # live の木には**足すだけ**で既存 file には触らない。
                                      # ★部分木(変異の作業コピー)でも緑である事を測る項が本体 ——
                                      # 此処が赤い造りだと変異走行の**全件**が「検出」に化ける
+    test/disposable-session-controls.sh
+                                     # ★2026-08-05 に此処へ入れた。DoD 9行目を閉じた計器
+                                     # (`tools/disposable-session.mjs`)そのものの対照。守る本命は
+                                     # **破壊側** —— `down` は tmux を殺し file を消すので、名前の
+                                     # 検査(`rc-e2e-<数字>` 以外は畳まない)が緩めば Tom の実
+                                     # セッションを殺せる。だから「殺さない事」を戻り値ではなく
+                                     # **行為**で測る(偽 tmux に argv を記録させ `kill-session` が
+                                     # 0 回である事を数える)。⑯ は検査を外した写しで ⑦ が
+                                     # **赤になる**事まで見るので、対照が空振りしている状態を緑で
+                                     # 隠せない。砂場は mktemp、実物の `~/.rc-backend` にも
+                                     # `~/.claude` にも触らない。実測1秒未満
     test/child-reaping-controls.sh   # 実際に変異台本を起こして殺す。実測10秒だが e2e の子が
                                      # 上がるまで待つので状況で伸びる(上限90秒で測定不成立)
     test/health-observer-controls.sh # 本物の HTTP サーバを立てて probe を測る。実測3秒
