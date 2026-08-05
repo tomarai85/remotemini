@@ -50,6 +50,11 @@ LOCAL_CTLS=(
     test/prove-control-controls.sh   # 判定する道具そのものの対照。これが壊れると
                                      # 全ての対照の判定が静かに嘘になるので、砂場の
                                      # repo(RC_ROOT)で測定経路まで通す
+    test/prove-all-scope-controls.sh # ★2026-08-05。prove-all が **どの dir を探すか**
+                                     # の対照。継ぎ目は毎回探すのに探す範囲が手書きで、
+                                     # .harness/ と ios/tools/ の 5 本が視野の外に居た。
+                                     # 縮める方向と伸ばす方向の両方を持つ(伸ばす方が本命 —
+                                     # 生きた導出と「今の値と等しい定数」を見分けるのは此方)
     test/verify-script-controls.sh
     test/deploy-dirt-controls.sh
     test/session-guard-controls.sh   # ★2026-08-05 に此処へ入れた。電話側の HTTP が
@@ -401,7 +406,37 @@ declare -a red_names=() unm_names=()
 #     一覧を1本に畳んだが、此処は走らせる順番と ALL の分岐を持つので配列は残す ——
 #     代わりに**照合の網だけ**を門と同じ導出(走査 dir 全部)に合わせる。
 #   単数形も拾う(`*-control*.sh`)。rc-backend 側の集合は変わらない(34 → 34、実測)。
-for _f in test/*-control*.sh ../ios/tools/*-control*.sh ../.harness/*-control*.sh; do
+#
+# ★★★2026-08-05(同日・後): 上の「合わせる」が**写しだった**。走査 dir 3つを此処に
+#   手で書いてあったので、門の SCAN_SPECS に4つ目が入った日に、此処だけが黙って
+#   3つのまま残る。門側は同じ問題を「一覧を1つにして残りを導出」で根治したのに、
+#   その導出の**外側**に写しが1枚残っていた —— 6箇所目、そして初めて
+#   「踏む前に数えて見つけた」1件(他の5件は全部、赤か事故が先に来た)。
+#   同じ一覧が2箇所に居る限り、要素を足す作業が片方を置き去りにするのは
+#   注意力の問題ではなく**既定の結果**。だから網は門から取り出す。
+#   取り出せなければ空にせず**未測定(2)で止める** —— 網が空だと全部が「登録済み」に
+#   見えるので、黙って 0 本を走査するのがこの道具の一番危ない壊れ方。
+GATE_FOR_SPECS="${GATE_FOR_SPECS:-$ROOT/tools/staged-controls-gate.sh}"
+SCAN_DIRS=()
+while IFS= read -r _d; do
+    [ -n "$_d" ] || continue
+    # SCAN_SPECS は repo の根から。此処の cwd は rc-backend なので基点を移す。
+    case "$_d" in
+        rc-backend/*) SCAN_DIRS+=("${_d#rc-backend/}") ;;
+        *)            SCAN_DIRS+=("../$_d") ;;
+    esac
+done < <(/usr/bin/sed -n '/^SCAN_SPECS=(/,/^)/p' "$GATE_FOR_SPECS" 2>/dev/null \
+         | /usr/bin/sed -n 's/^[[:space:]]*"\([^|"]*\)|.*/\1/p')
+
+if [ "${#SCAN_DIRS[@]}" -eq 0 ]; then
+    echo "UNMEASURED  門の走査 dir を取り出せなかった: $GATE_FOR_SPECS"
+    echo "            SCAN_SPECS の書き方を変えたなら、此処の取り出しも同じ commit で直す事"
+    echo "--- 合計: green=0 red=0 未測定=1(照合の網が空)---"
+    exit 2
+fi
+
+for _dir in "${SCAN_DIRS[@]}"; do
+  for _f in "$_dir"/*-control*.sh; do
     [ -f "$_f" ] || continue
     case " ${LOCAL_CTLS[*]} ${EDITH_CTLS[*]} ${EXCLUDED_CTLS[*]:-} " in
         *" $_f "*) : ;;
@@ -409,6 +444,7 @@ for _f in test/*-control*.sh ../ios/tools/*-control*.sh ../.harness/*-control*.s
            echo "         直し方: LOCAL_CTLS へ足す(既定)か、EXCLUDED_CTLS へ**理由付きで**入れる"
            red=$((red+1)); red_names+=("$(basename "$_f")(未登録)") ;;
     esac
+  done
 done
 
 for c in "${list[@]}"; do

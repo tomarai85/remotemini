@@ -64,11 +64,29 @@ export function unobservedDimensions(clientName, testSource, recorders, exempt =
   return recorders.filter((r) => !Object.hasOwn(skip, r) && !testSource.includes(r)).sort();
 }
 
+/**
+ * 電話側の木そのものが**居ない**時(= `rc-backend/` だけを写した部分木。変異走行と
+ * `test/copied-tree-controls.sh` がこの形で回す)は、赤ではなく**測っていない**。
+ *
+ * ★「木が無い」と「木は在るのに走査が何も拾わない」を1つの籠に入れない。前者は測る対象が
+ *   此処に無いだけで、後者は走査が的を外している = 守っているつもりの物が守られていない。
+ *   混ぜると、部分木で回る全ての道(変異走行を含む)がこの file だけの理由で赤になり、
+ *   走行そのものが起動できなくなる —— 実際に 2026-08-05 の commit A でそれを出した。
+ *   出所は `test/session-guard.test.mjs` の同じ判断(そちらが先行)。
+ */
+const IOS_PRESENT = existsSync(IOS);
+function skipIfPartialTree() {
+  if (IOS_PRESENT) return false;
+  console.log(`測っていない: 電話側の木が居ない (${IOS}) = 部分木で回されている`);
+  return true;
+}
+
 const CLIENTS = existsSync(CORE)
   ? readdirSync(CORE).filter((f) => f.endsWith("Client.swift")).sort()
   : [];
 
 test("★client を1本も見つけられない = 走査が的を外している(空振りで緑にしない)", () => {
+  if (skipIfPartialTree()) return;
   assert.ok(
     CLIENTS.length > 0,
     `${CORE} に \`*Client.swift\` が1本も無い。木が動いたか、走査の場所が古い`,
@@ -76,6 +94,7 @@ test("★client を1本も見つけられない = 走査が的を外している
 });
 
 test("★記録欄を1つも見つけられない = 判定の基準が空(全 client が自動で合格になる)", () => {
+  if (skipIfPartialTree()) return;
   assert.ok(existsSync(MOCK), `${MOCK} が無い。この検査の基準はこの file から導いている`);
   assert.ok(
     recordersIn(readFileSync(MOCK, "utf8")).length > 0,
@@ -85,12 +104,16 @@ test("★記録欄を1つも見つけられない = 判定の基準が空(全 cl
 });
 
 test("client ごとに、対になる検査 file が在る", () => {
+  // ★ここは木が無いと `CLIENTS` が空 → `missing` も空 → **黙って緑**になる。
+  //   空振りの緑は「全 client 合格」に見えるので、名指しで測っていないと言わせる。
+  if (skipIfPartialTree()) return;
   const missing = CLIENTS.map((f) => basename(f, ".swift"))
     .filter((n) => !existsSync(join(CORE_TESTS, `${n}Tests.swift`)));
   assert.deepEqual(missing, [], "検査 file を持たない client が在る");
 });
 
 test("★★各 client の検査が、request の全次元を実際に見ている", () => {
+  if (skipIfPartialTree()) return;
   const recorders = recordersIn(readFileSync(MOCK, "utf8"));
   const bad = [];
   for (const f of CLIENTS) {

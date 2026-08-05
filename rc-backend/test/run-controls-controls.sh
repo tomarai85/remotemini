@@ -50,6 +50,14 @@ trap '/usr/bin/find "$SANDBOX" -type f -print0 2>/dev/null | /usr/bin/xargs -0 /
 BE="$SANDBOX/repo/rc-backend"
 /bin/mkdir -p "$BE/tools" "$BE/test" "$SANDBOX/repo/ios/tools" "$SANDBOX/repo/.harness"
 /bin/cp "$RUNNER" "$BE/tools/run-controls.sh" || { echo "★継ぎ目の台本が読めない: $RUNNER"; exit 2; }
+# ★2026-08-05: 照合の網の走査 dir は、台本の中でなく**門**(`staged-controls-gate.sh` の
+#   `SCAN_SPECS`)から取り出される様になった。だから砂場にも門を据える。
+#   ★**合成せず本物を複製する**。此処で `SCAN_SPECS=(...)` を手で書くと、門の書き方が
+#     変わった日に「対照だけが古い形の門を相手に緑」になる —— この file が冒頭の規則 (1)
+#     で禁じているまさにその形(入力は本物の生成元から取る)。
+GATE_SRC="$ROOT/tools/staged-controls-gate.sh"
+SBGATE="$BE/tools/staged-controls-gate.sh"
+/bin/cp "$GATE_SRC" "$SBGATE" || { echo "★門が読めない: $GATE_SRC"; exit 2; }
 
 # ★一覧は測る台本から取る(規則 (1))。手書きしない。
 # ★2026-08-05 に相対パスの許容範囲を広げた: 電話側(`ios/tools/`)の対照は
@@ -241,26 +249,56 @@ for _tree in ios/tools .harness; do
   /bin/rm -f "$ORPHAN2"
 done
 
-# ── R24/R25 ★陰性対照: 網を旧版(test/ だけ)に戻したら R22 は鳴らなくなる ────────
-#   これが無いと R22 の緑は「網が広がったから」か「未登録なら何でも鳴るから」か
-#   区別が付かない。台本の**複製**の網の1行だけを旧版へ戻して測る。
-OLDNET="$BE/tools/run-controls-oldnet.sh"
-/usr/bin/sed 's|^for _f in test/\*-control\*\.sh .*$|for _f in test/*-controls.sh; do|' \
-    "$BE/tools/run-controls.sh" > "$OLDNET"
-if /usr/bin/grep -qE '^for _f in test/\*-controls\.sh; do$' "$OLDNET"; then
-  ORPHAN3="$SANDBOX/repo/.harness/zz-not-registered-control.sh"
-  printf '#!/bin/bash\necho "偽の子 zz3"\nexit 0\n' > "$ORPHAN3"
-  /bin/bash "$OLDNET" > "$OUTF" 2>&1; RUN_RC=$?
-  chk "R24 ★陰性対照: 旧版の網は .harness の未登録を見逃す" 0 \
-      "$(/bin/cat "$OUTF" | /usr/bin/grep -c 'UNREG')"
-  chk "R25 ★陰性対照: 見逃すので緑のまま(= R22 は網の広さを測っている)" 0 "$RUN_RC"
-  /bin/rm -f "$ORPHAN3"
+# ── R24-R28 ★★網が**門から導出されている**事(2026-08-05・同日後)──────────────
+#   R22/R23 は「網が3つの木を見る」までしか測らない。**その3つが何処から来るか**は
+#   測っていなかったので、台本の中に手書きされていても緑だった —— そして実際に
+#   手書きだった。門(`staged-controls-gate.sh` の `SCAN_SPECS`)は同じ一覧を
+#   1本へ畳んであるのに、走らせる側だけが写しを持っていた形。
+#   導出に付ける対照は**2本要る**(壊す方向だけだと、生きた導出か、たまたま今の値と
+#   等しい定数かを区別できない)。下は 縮む/伸びる/読めない の3方向 + 平時の偽陽性。
+ORPHAN4="$SANDBOX/repo/.harness/zz-not-registered-control.sh"
+printf '#!/bin/bash\necho "偽の子 zz4"\nexit 0\n' > "$ORPHAN4"
+
+# ★縮む方向: 門から `.harness` を外すと、網もそこを見なくなる。
+#   これが R22 の緑と対になる —— 「未登録なら何でも鳴る」のではなく
+#   「門が見ると言った木だけを見る」事の証明。
+/usr/bin/sed '/^[[:space:]]*"\.harness|/d' "$SBGATE" > "$SBGATE.tmp" && /bin/mv "$SBGATE.tmp" "$SBGATE"
+if /usr/bin/grep -qE '^[[:space:]]*"\.harness\|' "$SBGATE"; then
+  echo "NG  R24-prep ★門から .harness を外せていない -- R24/R25 は測定不成立"
+  fail=$((fail+1))
 else
-  # 差し替えが当たらなければ R24/R25 は「旧版」でなく sed を測る事になる。黙って緑にしない。
-  echo "NG  R24-prep ★網の差し替えが当たらない -- R24/R25 は測定不成立"
+  run; out=$(readout)
+  chk "R24 ★陰性対照: 門が見ない木の未登録は鳴らない" 0 \
+      "$(printf '%s' "$out" | /usr/bin/grep -c 'UNREG')"
+  chk "R25 ★陰性対照: 鳴らないので緑(= 網の広さは門が決めている)" 0 "$RUN_RC"
+fi
+
+# ★伸びる方向(本命)。門に**架空の木**を1つ足す。台本を1文字も直さずに追随するか。
+#   壊す方向だけでは「生きた導出」と「今の値と偶然等しい定数」を見分けられない。
+/bin/mkdir -p "$SANDBOX/repo/zz-new-tree"
+printf '#!/bin/bash\necho "偽の子 zz5"\nexit 0\n' > "$SANDBOX/repo/zz-new-tree/zz-fresh-control.sh"
+/usr/bin/sed 's|^SCAN_SPECS=($|SCAN_SPECS=(\n    "zz-new-tree\|"|' "$SBGATE" > "$SBGATE.tmp" \
+    && /bin/mv "$SBGATE.tmp" "$SBGATE"
+if /usr/bin/grep -qE '^[[:space:]]*"zz-new-tree\|' "$SBGATE"; then
+  run; out=$(readout)
+  chk "R26 ★★門に木を足すと、台本を直さずに網が追随する" 1 \
+      "$(printf '%s' "$out" | /usr/bin/grep -c 'UNREG.*zz-fresh-control.sh')"
+else
+  echo "NG  R26-prep ★門へ架空の木を足せていない -- R26 は測定不成立"
   fail=$((fail+1))
 fi
-/bin/rm -f "$OLDNET"
+/bin/rm -f "$SANDBOX/repo/zz-new-tree/zz-fresh-control.sh" "$ORPHAN4"
+
+# ★読めない方向: 門が消えた/形が変わった時に**緑を返さない**事。
+#   網が空だと未登録が1本も出ないので、全部が「登録済み」に見える —— 一番危ない壊れ方。
+#   0 に丸めず未測定(2)で止める(この台本の三値の規則そのもの)。
+/bin/rm -f "$SBGATE"
+setup
+run; out=$(readout)
+chk "R27 ★門が読めない -> 未測定(2)。緑に丸めない" 2 "$RUN_RC"
+chk "R28 ★その時に緑の集計を出さない" 0 \
+    "$(printf '%s' "$out" | /usr/bin/grep -c "green=$N_LOCAL red=0 未測定=0")"
+/bin/cp "$GATE_SRC" "$SBGATE"
 
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]
