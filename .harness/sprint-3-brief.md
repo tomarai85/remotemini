@@ -110,7 +110,7 @@ ssh $H "cd $D && RC_KEY=\$(cat ~/.rc-backend/api.key) RC_SESSION_INDEX=2 \
 | 物 | 置き場所 | 中身 |
 |---|---|---|
 | `HistoryClient` | `ios/Sources/Core/HistoryClient.swift` | `GET /api/sessions/<id>/history?limit=N`。`SessionsClient` と同じ形(protocol + struct、`BackendSession`) |
-| 履歴のモデル | `ios/Sources/Core/HistoryModels.swift` | `HistoryResponse` / `HistoryEntry` / `EntryRole` |
+| 履歴のモデル | `ios/Sources/Core/HistoryModels.swift` | `HistoryResponse` / `HistoryEntry` / `EntryRole`(**★`EntryRole` は素の `String: Decodable` enum にしない**。理由と形は §3-a) |
 | `MergeHistory` | `ios/Sources/Core/MergeHistory.swift` | C群の移植(§2) |
 | `NextHistoryLimit` | 同上 file で可 | C群の移植(§2) |
 | `ConversationViewModel` | `ios/Sources/Screens/Conversation/ConversationViewModel.swift` | 取得・状態・「以前を読む」 |
@@ -194,9 +194,39 @@ Sprint 3 の検査が守っていた性質が黙って外れる。
 | `tool` | 左寄せ・**1行の細い行**。本文用の吹き出しに入れない | `display.who`(= 「道具」) |
 
 - 表示名は**必ず `display.who` を描く**。`role` から自分で「Tom」を組み立てない(§0-a-3)。
-- `role` が上の3つ以外だった時は**落とさず** `assistant` と同じ形で描く。`SessionsModels.swift` の
-  `RouteLabel.Kind` が unknown へ倒すのと同じ判断 —— 古い電話が新しいサーバを見た時に
-  画面が真っ白になってはいけない。
+
+**★未知の `role`(2026-08-05 追記。初版は裁定だけ書いて、それを満たす実装形を要求していなかった)**
+
+`role` が上の3つ以外でも**落とさず**描く。ただし「落とさない」は書き方で決まる:
+
+```swift
+enum EntryRole: String, Decodable { case user, assistant, tool }   // ← 禁止
+```
+
+これだと未知の `role` を**1件**含むだけで `HistoryResponse` **全体**のデコードが例外で落ちる。
+健全な会話まるごとが `.malformedBody` になり、画面は「応答の形が読めません」——
+**「画面が真っ白になってはいけない」の別形そのもの**。しかも §3-c が前提にする
+「`{history:[]}` は成功 / `malformedBody` は別」の分岐が、この1点で崩れる。
+
+→ **`SessionsModels.swift` の `RouteLabel.Kind` と同じ形**(カスタム `init(from:)` で
+未知値を `.unknown` へ倒す)にする。壊れる入力を検査に入れる事:
+`{"history":[{"role":"system","text":"hello","display":{"who":"道具"}}],"truncated":false}`。
+
+★重さの比較を残す: `truncated` の鍵欠けは**1フィールド**の話なのに DoD に専用行を作り、
+こちらは**応答全体**を巻き込むのに DoD 行が無かった。初版の数え落とし。
+
+**★未知 `role` の見え方 —— 偶然そうなるのではなく、決めた事として書く**
+
+`whoOf` は user/assistant 以外を**全部**「道具」へ倒す(`view.mjs`)。上の2つの規則
+(未知は本文の吹き出し / ラベルは必ず `display.who`)を両方守ると、未知 `role` は
+**本文の吹き出し + 「道具」ラベル**で出る —— 本物の `tool` 行(細い1行 + 同じラベル)と
+**ラベルが同じで形が違う**。この形のまま行く。理由:
+
+- 形は `role` が決める。未知 → **本文の吹き出し**。細い1行にすると長い本文を切る事になり、
+  下の「切り詰めない」に反する。
+- ラベルは `display.who` のまま。ここで独自ラベルを発明すると**表示名の出所が2つ**になり、
+  §0-a-3 が防いでいる物を壊す。見た目の気持ち悪さより、出所が2つになる方が高く付く。
+- **その場に一行コメントで理由を書く事**(次に読む人が「バグだ」と直しに来るので)。
 - 本文は `text` をそのまま描く。Markdown の解釈や折り返しの独自加工はしない(v1)。
 - 長い本文を**切り詰めない**。切り詰めるなら「切り詰めた」と画面に出す(黙って上限を掛けない)。
 
@@ -263,13 +293,31 @@ Sprint 3 の検査が守っていた性質が黙って外れる。
 
 ### §3-c. 失敗の見せ方
 
-`SessionsFetchError` と**同じ 4 分類**を使う(`unreachable` / `unauthorized` / `malformedBody` /
-`cancelled`)。新しい分類を作らない —— 分類が2組あると、Sprint 4 以降で「どちらの言葉で話すか」を
-毎回決める羽目になる。
+`SessionsFetchError` を使う。**並行する別の分類体系を作らない** —— 2組あると、Sprint 4 以降で
+「どちらの言葉で話すか」を毎回決める羽目になる。ただし**共有している分類を拡張する**のは
+その逆であって、下の `.notFound` は足す。
+
+**★`.notFound` を足す(2026-08-05 追記。初版は 404 を `.unreachable` に畳んでいた)**
+
+会話ごとの口は **404 が現実に起きる**。source(`src/server.mjs:1072`):
+
+```js
+if (!file && !registeredOnly) return json(res, 404, { error: "unknown session" });
+```
+
+一覧を撮ってから開くまでの間に会話が消えれば普通に踏む —— Sprint 3 の導線は
+「一覧 → 行をタップ → 会話」なので、**一覧が古いのは常態**。
+`SessionsClient.swift` の `.unreachable` は「200/401 以外の全ステータス + 到達不能」を畳む判断で、
+doc に「List には 403/404 で使える物が無いから」と理由が書いてある ——
+**Conversation ではその理由が成り立たない。**
+
+畳んだままにすると、**構造的に絶対直らない状態に、直りうる状態と同じ UI(再試行)を与える**。
+これは このスプリントが潰して回っている欠陥(§3-b の「押しても何も起きないボタン」)と**同じ型**。
 
 | 分類 | Conversation 画面での扱い |
 |---|---|
 | `unauthorized` (401) | Key-entry へ戻す(List と同じ扱い。Sprint 2 §4-b) |
+| **`notFound`** (404) | **「この会話はもう在りません(一覧が古いのかもしれません)」+ 一覧へ戻る。★再試行を出さない** |
 | `unreachable` | 画面に理由を出し、**再試行ボタン**。会話の題は残す(遷移し直しを強いない) |
 | `malformedBody` | 「応答の形が読めません」。**空の会話として描かない**(空と壊れを混ぜない) |
 | `cancelled` | 何も出さない(画面を離れた等。失敗として数えない) |
@@ -288,14 +336,25 @@ Sprint 3 の検査が守っていた性質が黙って外れる。
 
 | 標的 | 測る事 |
 |---|---|
-| `MergeHistoryTests` | §2-a の 6 ケース全部。★6 は「既知限界」と判る名前で |
+| `MergeHistoryTests` | §2-a の 6 ケース全部。★6 は「既知限界」と判る名前で。**+ `role` と `text` が同じで `display.who` だけ違う2件が1件に畳まれる事**(下の ★等値) |
 | `NextHistoryLimitTests` | `50→150` / `450→500` / **`500→500`**(§3-b(1) の根拠) |
-| `HistoryModelsTests` | ★**`truncated` の鍵が無い本文がデコードでき、`false` になる**(§0-a-1)。`role` の未知値が落ちない事。`tool` 行がデコードできる事 |
-| `HistoryClientTests` | `MockURLProtocol` 経由で 200/401/500/壊れた本文/キャンセルの5経路。`SessionsClientTests` と同じ形 |
-| `ConversationViewModelTests` | ①初回取得 → 描画配列が `mergeHistory` の結果と一致 ②「以前を読む」が `nextHistoryLimit` の値で再取得する ③**`current==500` でボタンが引っ込み、上限の文言が出る** ④**一番古い発言が変わらなければ、ボタンは残ったまま「今回は読み込めませんでした」が出る**(§3-b-2 の3行目)⑤**件数は増えたのに一番古い発言が変わらない**時も④と同じ(= 新しい発言が増えただけ。★これが初版で数え落としていた道)⑥`truncated:false` ならボタンも1行も出ない ⑦401 で Key-entry へ ⑧二重押しで2本走らない |
+| `HistoryModelsTests` | ★**`truncated` の鍵が無い本文がデコードでき、`false` になる**(§0-a-1)。★**未知の `role` が来ても応答全体が生き残る**事(§3-a。`{"history":[{"role":"system","text":"hello","display":{"who":"道具"}}],"truncated":false}` を食わせて `history.count == 1`。**「その項目が落ちない」ではなく「応答が落ちない」を測る**)。`tool` 行がデコードできる事 |
+| `HistoryClientTests` | `MockURLProtocol` 経由で 200/401/**404**/500/壊れた本文/キャンセルの6経路。`SessionsClientTests` と同じ形。★**404 が `.notFound` になる**事(`.unreachable` に畳まれていない事。§3-c) |
+| `ConversationViewModelTests` | ①初回取得 → 描画配列が `mergeHistory` の結果と一致 ②「以前を読む」が `nextHistoryLimit` の値で再取得する ③**`current==500` でボタンが引っ込み、上限の文言が出る** ④**一番古い発言が変わらなければ、ボタンは残ったまま「今回は読み込めませんでした」が出る**(§3-b-2 の3行目)⑤**件数は増えたのに一番古い発言が変わらない**時も④と同じ(= 新しい発言が増えただけ。★これが初版で数え落としていた道)⑥`truncated:false` ならボタンも1行も出ない ⑦401 で Key-entry へ ⑧二重押しで2本走らない ⑨★**`truncated:true` / 上限未達 / 一番古い発言が更新された → 「以前を読む」が出ていて、居座り文は無い** ⑩404 で `.notFound` の文言 + 一覧へ戻る導線が出て、**再試行は出ない** |
 
 ★`HistoryModelsTests` の1件目は**この Sprint で一番落としやすい検査**。`truncated` を
 非 optional で書いても、鍵が在る本文しか食わせなければ緑になる。**鍵が無い本文を明示的に食わせる事**。
+
+★**⑨は「出ない事」の検査群に対する錨**(2026-08-05 追記)。③〜⑥は全部「引っ込む / 残る /
+出ない」を測っていて、**普通に出ている事を測る検査が1本も無かった**。旗を2つ持つ実装
+(`showLoadMore` と `showRetry`)を書いて `showLoadMore` を常に false に固定すると、
+③⑤⑥は素通りする —— ④は在るのでボタンの存在自体は1本測っているが、それは**失敗経路での存在**
+であって、**正常経路で出る事は誰も測っていない**。錨が要る。
+
+★**等値は `display` を見ない**(`MergeHistoryTests`)。`mergeHistory` の一致判定は
+`role` と `text` だけで、`display.who` は見ない —— これは JS の写しとして**正しい**
+(`view.mjs:23`)。だが Swift の `HistoryEntry` を `Equatable` で自動合成すると `display` まで
+比較に入り、**同じ発言が二重に出る**。「合成された等値を使っていない」事を検査で固定する。
 
 ### §4-b. Simulator スクリーンショット(DoD)
 
@@ -344,6 +403,10 @@ bash rc-backend/tools/run-controls.sh  # 対照一式(前景で。背景走行�
 - [ ] **一番古い発言が変わらなかった時**に「今回は読み込めませんでした」が出て、**ボタンは残る**検査が在る
 - [ ] ★**件数は増えたが一番古い発言は変わらない**(押している間に新しい発言が増えた)場合の検査が在る
 - [ ] 上の2つの文言が**別物**である事(500 に達していない時に「上限 500 件」と書かない)
+- [ ] ★**未知の `role` を1件含む本文で、応答**全体**がデコードできる**検査が在る(§3-a)
+- [ ] ★404 が `.notFound` になり、Conversation では**再試行を出さない**検査が在る(§3-c)
+- [ ] ★正常経路の錨 —— **「以前を読む」が出ていて居座り文が無い**検査(⑨)が在る
+- [ ] ★`display.who` だけ違う2件が `mergeHistory` で1件に畳まれる検査が在る
 - [ ] `bash rc-backend/tools/run-controls.sh` が**前景で** `red=0 未測定=0`
 - [ ] `.harness/progress.md` に、**仕様と食い違った所・判断した所**が書いてある
 
