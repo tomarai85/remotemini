@@ -1946,6 +1946,16 @@ try {
     // --- poll: gap ---
     const pollD = async (sid, q) =>
       (await (await fetch(`${B}/api/sessions/${sid}/poll?${new URLSearchParams(q)}`, { headers: H })).json());
+    /** `pollUntilScreen` が何回撃ったかの置き場。Symbol = サーバの本文と衝突しない。 */
+    const POLL_SPEND = Symbol("pollUntilScreen.spend");
+    /** 赤の本文の末尾に足す一言。緑の時は誰も読まないので、出るのは失敗した時だけ。 */
+    const pollSpend = (r) => {
+      const s = r && typeof r === "object" ? r[POLL_SPEND] : undefined;
+      if (!s) return " [撃ち直しの記録なし = この道具を通っていない]";
+      return s.exhausted
+        ? ` [撃ち直し ${s.rounds}/${s.tries} 回を**使い切った** = 待ち足りない可能性がある。直すなら回数を増やす(眠りを足すのではない)]`
+        : ` [撃ち直し ${s.rounds}/${s.tries} 回で来た]`;
+    };
     /**
      * 画面が1枚来るまで poll を撃ち直す。**眠って待たない**為の道具。
      * 保留中の poll は `feedBroadcast` が起こすが、起こす口は screen 専用ではない ——
@@ -1954,13 +1964,28 @@ try {
      * 栞を繋いで撃ち直すので、遅い機械は回数ではなく**待つ時間**が伸びるだけ。
      * `want` を渡すと「その画面が来るまで」。来なければ回数を使い切って最後の物を返す
      * (= 呼び側の check が赤くなる。ここで投げない = 何が来たかを検査文に出す為)。
+     *
+     * ★**使い切った事を赤の本文に出す**(2026-08-06)。初版は最後に来た物だけを返して
+     *   いたので、赤は「その画面には成らなかった」としか読めなかった —— 実際には
+     *   「10 回撃って成らなかった」と「1 回目で諦めた(呼び方を間違えた)」と
+     *   「回数は残っているが別の枝で抜けた」が**同じ顔**になる。壊れているのか
+     *   測れていないのかを赤の本文で分けられないと、次に直す人は待ち時間を伸ばす
+     *   band-aid へ引き寄せられる(正しい直し方は回数を増やす事で、眠りではない)。
+     *   欄は Symbol に置く: サーバの本文と綴りが衝突しない上に、`JSON.stringify` にも
+     *   乗らないので**既存の検査文は1文字も変わらない**(出るのは赤の時だけ)。
      */
     const pollUntilScreen = async (sid, { cursor, tries = 10, wait = "2000", want } = {}) => {
       let r = { cursor, screen: null };
+      let rounds = 0;
       for (let i = 0; i < tries; i++) {
+        rounds++;
         r = await pollD(sid, { ...(r.cursor ? { cursor: r.cursor } : {}), wait });
-        if (r.screen && (!want || want(r.screen))) return r;
+        if (r.screen && (!want || want(r.screen))) {
+          if (r && typeof r === "object") r[POLL_SPEND] = { rounds, tries, exhausted: false };
+          return r;
+        }
       }
+      if (r && typeof r === "object") r[POLL_SPEND] = { rounds, tries, exhausted: true };
       return r;
     };
     // 世代の合わない栞 = 必ず gap(12-g で実測済み)。`tail-attached` と違って**文面が出る**側
@@ -2022,7 +2047,8 @@ try {
     await pollD(SID_CHOICE, { wait: "0" });
     const pc1 = await pollUntilScreen(SID_CHOICE);
     check("13-D 土台: 選択待ちの画面が1枚来る",
-      Boolean(pc1.screen) && pc1.screen.screen === "CHOICE", JSON.stringify(pc1.screen).slice(0, 160));
+      Boolean(pc1.screen) && pc1.screen.screen === "CHOICE",
+      JSON.stringify(pc1.screen).slice(0, 160) + pollSpend(pc1));
     if (pc1.screen) {
       argCheck("★poll の `display.choice` は **画面の本体**から組む(poll の本文ではない)",
         pc1.display?.choice, choiceView(pc1.screen),
@@ -2051,7 +2077,7 @@ try {
     const fz1 = await pollUntilScreen(SID_FEEDREG);
     check("13-Z 土台: 登録された会話の画面が1枚来る(登録先の %28 から撮れている)",
       Boolean(fz1.screen) && fz1.screen.pane === "%28" && fz1.screen.screen === "SENDABLE",
-      JSON.stringify(fz1.screen).slice(0, 160));
+      JSON.stringify(fz1.screen).slice(0, 160) + pollSpend(fz1));
     putRegistry(SID_FEEDREG, "%29"); // 登録先を付け替える(心拍は打ち続ける = 生きた登録)
     // 「%29 が来るまで」撃ち直す。★`windowMs` は観測窓が埋まるまで tick ごとに伸びるので、
     // **画面が変わった = 付け替わった**ではない(1回で判定すると %28 のまま版だけ上がった
@@ -2060,7 +2086,7 @@ try {
     const fz2 = await pollUntilScreen(SID_FEEDREG, { cursor: fz1.cursor, want: (s) => s.pane === "%29" });
     check("★★配信は登録簿を毎 tick 読み直す(付け替えに追随して %29 の選択画面になる)",
       Boolean(fz2.screen) && fz2.screen.pane === "%29" && fz2.screen.screen === "CHOICE",
-      JSON.stringify(fz2.screen).slice(0, 200));
+      JSON.stringify(fz2.screen).slice(0, 200) + pollSpend(fz2));
 
     {
       const cctl = new AbortController();
