@@ -37,8 +37,19 @@ chk() { # chk <名前> <期待> <実際>
 # 砂場の `tools/` に置けば砂場の `test/` を見る。
 SANDBOX="$(/usr/bin/mktemp -d /tmp/rc-runctl.XXXXXX)"
 trap '/usr/bin/find "$SANDBOX" -type f -print0 2>/dev/null | /usr/bin/xargs -0 /bin/rm -f 2>/dev/null; /usr/bin/find "$SANDBOX" -type d -depth -print0 2>/dev/null | /usr/bin/xargs -0 /bin/rmdir 2>/dev/null' EXIT
-/bin/mkdir -p "$SANDBOX/tools" "$SANDBOX/test"
-/bin/cp "$RUNNER" "$SANDBOX/tools/run-controls.sh" || { echo "★継ぎ目の台本が読めない: $RUNNER"; exit 2; }
+# ★★2026-08-05: 砂場に **repo と同じ深さ**を持たせる(`$SANDBOX/repo/rc-backend/`)。
+#   以前は台本を 砂場直下の tools/ に置いていたので、`LOCAL_CTLS` の
+#   「..(スラッシュ)ios(スラッシュ)tools(スラッシュ)…」形の項目が `$SANDBOX/..` =
+#   **/tmp** に解決し、偽の子を `/tmp/ios/tools/` と `/tmp/.harness/` へ書いていた。
+#   trap は `$SANDBOX` の下しか畳まないので、それは**消えずに残る**。
+#   実測(2026-08-05 11:03): `/tmp/ios/tools/` に3本、`/tmp/.harness/` に1本が残存、
+#   最古は 08:47(= ios の項目を LOCAL_CTLS へ入れた時刻)。
+#   害は2つ: (a) 手元に恒久物を残す(この repo の禁止事項)
+#            (b) 砂場が密閉でなくなる —— 別 session が同時に回すと /tmp を共有し、
+#               R19(登録漏れの偽陽性なし)が**他人の残骸**次第で色を変える。
+BE="$SANDBOX/repo/rc-backend"
+/bin/mkdir -p "$BE/tools" "$BE/test" "$SANDBOX/repo/ios/tools" "$SANDBOX/repo/.harness"
+/bin/cp "$RUNNER" "$BE/tools/run-controls.sh" || { echo "★継ぎ目の台本が読めない: $RUNNER"; exit 2; }
 
 # ★一覧は測る台本から取る(規則 (1))。手書きしない。
 # ★2026-08-05 に相対パスの許容範囲を広げた: 電話側(`ios/tools/`)の対照は
@@ -57,7 +68,7 @@ trap '/usr/bin/find "$SANDBOX" -type f -print0 2>/dev/null | /usr/bin/xargs -0 /
 #   この配列ブロック内では必ず行頭が `#` なので、`test|tools` の縛りを外しても
 #   誤って拾う行は無い(確認済み: 新旧の抽出結果の差分は追加した2項目のみ)。
 mapfile_names() { # mapfile_names <配列名>
-  /usr/bin/sed -n "/^$1=(/,/^)/p" "$SANDBOX/tools/run-controls.sh" \
+  /usr/bin/sed -n "/^$1=(/,/^)/p" "$BE/tools/run-controls.sh" \
     | /usr/bin/grep -oE '^ *[A-Za-z0-9._/-]+\.(sh|py)' \
     | /usr/bin/tr -d ' '
 }
@@ -79,16 +90,16 @@ setup() { # setup [<basename> <rc>]...
   #   `run-controls.sh` 自身が `*-controls.sh` に一致するので、掃除の網に掛かる。
   #   一度これで 19 本全部が rc=127(台本が無い)で落ちた。名前が似ている道具を
   #   glob で掃除する時の定番の事故。
-  /usr/bin/find "$SANDBOX/test" "$SANDBOX/tools" -name '*-controls.sh' -type f \
-    ! -path "$SANDBOX/tools/run-controls.sh" -print0 2>/dev/null \
+  /usr/bin/find "$BE/test" "$BE/tools" "$SANDBOX/repo/ios/tools" "$SANDBOX/repo/.harness" -name '*-controls.sh' -type f \
+    ! -path "$BE/tools/run-controls.sh" -print0 2>/dev/null \
     | /usr/bin/xargs -0 /bin/rm -f 2>/dev/null
-  /bin/rm -f "$SANDBOX/ran.txt" "$SANDBOX/tools/rc-backend-launch-check.sh"
+  /bin/rm -f "$SANDBOX/ran.txt" "$BE/tools/rc-backend-launch-check.sh"
   : > "$SANDBOX/ran.txt"
   while IFS= read -r n; do
     [ -n "$n" ] || continue
-    /bin/mkdir -p "$SANDBOX/$(/usr/bin/dirname "$n")"
+    /bin/mkdir -p "$BE/$(/usr/bin/dirname "$n")"
     printf '#!/bin/bash\necho "%s" >> "%s/ran.txt"\necho "偽の子 %s"\nexit 0\n' \
-      "$(/usr/bin/basename "$n")" "$SANDBOX" "$n" > "$SANDBOX/$n"
+      "$(/usr/bin/basename "$n")" "$SANDBOX" "$n" > "$BE/$n"
   done <<EOF
 $LOCAL_NAMES
 $EDITH_NAMES
@@ -96,9 +107,9 @@ EOF
   while [ $# -gt 0 ]; do
     n="$1"; rc="$2"; shift 2
     if [ "$rc" = "missing" ]; then
-      /bin/rm -f "$SANDBOX/test/$n" "$SANDBOX/tools/$n"
+      /bin/rm -f "$BE/test/$n" "$BE/tools/$n"
     else
-      local p="$SANDBOX/test/$n"; [ -f "$p" ] || p="$SANDBOX/tools/$n"
+      local p="$BE/test/$n"; [ -f "$p" ] || p="$BE/tools/$n"
       printf '#!/bin/bash\necho "%s" >> "%s/ran.txt"\necho "偽の子 %s(rc=%s)"\nexit %s\n' \
         "$n" "$SANDBOX" "$n" "$rc" "$rc" > "$p"
     fi
@@ -111,7 +122,7 @@ EOF
 OUTF="$SANDBOX/out.txt"
 RUN_RC=0
 run() { # run [--all] -> 出力は $OUTF、rc は $RUN_RC
-  /bin/bash "$SANDBOX/tools/run-controls.sh" "$@" > "$OUTF" 2>&1
+  /bin/bash "$BE/tools/run-controls.sh" "$@" > "$OUTF" 2>&1
   RUN_RC=$?
 }
 readout() { /bin/cat "$OUTF"; }
@@ -199,7 +210,7 @@ chk "R19 平時は登録漏れを鳴らさない(偽陽性なし)" 0 \
     "$(printf '%s' "$out" | /usr/bin/grep -c 'UNREG')"
 
 # 一覧に無い対照を1本植える。名前は既存のどれとも重ならない形にする。
-ORPHAN="$SANDBOX/test/zz-not-registered-controls.sh"
+ORPHAN="$BE/test/zz-not-registered-controls.sh"
 printf '#!/bin/bash\necho "偽の子 zz"\nexit 0\n' > "$ORPHAN"
 run; out=$(readout)
 chk "R20 ★未登録の対照を**名指しで**出す" 1 \
@@ -207,6 +218,49 @@ chk "R20 ★未登録の対照を**名指しで**出す" 1 \
 #   赤(1)であって未測定(2)ではない —— 回せなかったのではなく、回す物が無い事が確定している。
 chk "R21 ★未登録は赤(未測定に丸めない)" 1 "$RUN_RC"
 /bin/rm -f "$ORPHAN"
+
+# ── R22-R25 ★★網が **3つの木**を見る事(2026-08-05)────────────────────────────
+#   R19-R21 は `test/` の中しか植えないので、網が `test/*-controls.sh` だけを見ていた
+#   間もずっと緑だった。その間、電話側(ios/tools/)と harness 側(.harness/)の対照は
+#   **登録を忘れても誰も言わない**状態で、実測 38 本中 1 本が実際にどの一覧にも無かった
+#   (`.harness/dod-sprint-3-controls.sh` = 2026-08-05 に書いた物)。
+#   ios 側が無事だったのは手で入れていたからで、計器が見ていたからではない。
+#   ★これは「守りの届く範囲が欠陥と一緒に縮む」形(DESIGN §2.18-10)の5箇所目 ——
+#     門(staged-controls-gate)側は SCAN_SPECS へ一本化したが、**走らせる側の網**は
+#     別に在るので、そちらが縮んだまま残っていた。
+#   ★実測(2026-08-05。`$RUN_CONTROLS` に HEAD 版を差した): R22/R23 が木2つ分=4件
+#     倒れ、他は全部通る(24/28)。素の版は 28/28。R24/R25 は HEAD でも通る ——
+#     あれが測るのは「旧い網は見逃す」であって、HEAD は既に旧い網だから。
+for _tree in ios/tools .harness; do
+  ORPHAN2="$SANDBOX/repo/$_tree/zz-not-registered-control.sh"
+  printf '#!/bin/bash\necho "偽の子 zz2"\nexit 0\n' > "$ORPHAN2"
+  run; out=$(readout)
+  chk "R22 ★${_tree} の未登録の対照も名指しする" 1 \
+      "$(printf '%s' "$out" | /usr/bin/grep -c 'UNREG.*zz-not-registered-control.sh')"
+  chk "R23 ★${_tree} の未登録も赤" 1 "$RUN_RC"
+  /bin/rm -f "$ORPHAN2"
+done
+
+# ── R24/R25 ★陰性対照: 網を旧版(test/ だけ)に戻したら R22 は鳴らなくなる ────────
+#   これが無いと R22 の緑は「網が広がったから」か「未登録なら何でも鳴るから」か
+#   区別が付かない。台本の**複製**の網の1行だけを旧版へ戻して測る。
+OLDNET="$BE/tools/run-controls-oldnet.sh"
+/usr/bin/sed 's|^for _f in test/\*-control\*\.sh .*$|for _f in test/*-controls.sh; do|' \
+    "$BE/tools/run-controls.sh" > "$OLDNET"
+if /usr/bin/grep -qE '^for _f in test/\*-controls\.sh; do$' "$OLDNET"; then
+  ORPHAN3="$SANDBOX/repo/.harness/zz-not-registered-control.sh"
+  printf '#!/bin/bash\necho "偽の子 zz3"\nexit 0\n' > "$ORPHAN3"
+  /bin/bash "$OLDNET" > "$OUTF" 2>&1; RUN_RC=$?
+  chk "R24 ★陰性対照: 旧版の網は .harness の未登録を見逃す" 0 \
+      "$(/bin/cat "$OUTF" | /usr/bin/grep -c 'UNREG')"
+  chk "R25 ★陰性対照: 見逃すので緑のまま(= R22 は網の広さを測っている)" 0 "$RUN_RC"
+  /bin/rm -f "$ORPHAN3"
+else
+  # 差し替えが当たらなければ R24/R25 は「旧版」でなく sed を測る事になる。黙って緑にしない。
+  echo "NG  R24-prep ★網の差し替えが当たらない -- R24/R25 は測定不成立"
+  fail=$((fail+1))
+fi
+/bin/rm -f "$OLDNET"
 
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]

@@ -278,6 +278,15 @@ LOCAL_CTLS=(
                                      # 別ファイルへ出して log を引数で受ける形にしたので、作り物の log で
                                      # 全分岐を測れる。測るのに数分掛かる造りだと対照は書かれない
                                      # (上の ui-fixture 2本が実際に数十秒〜数分掛かっている)。実測1秒未満。
+    ../.harness/dod-sprint-3-controls.sh # ★2026-08-05。Sprint 3 の DoD 照合表
+                                     # (`.harness/dod-sprint-3.sh`)の対照 = 15 行のうち 12 行が
+                                     # **本当に赤にも緑にもなる**事を測る。照合表は「全部緑」を
+                                     # 出した瞬間から誰も疑わなくなるので、逆向き(測っていないのに
+                                     # 緑)を見張る物が要る。実際に初回で私の regex の基準点の誤りを
+                                     # 3件捕まえた。ios/ を scratch へ写して**複製だけ**を壊す
+                                     # (主作業木では Generator が xcodebuild を回している)。実測2秒。
+                                     # ★sprint が閉じたら EXCLUDED_CTLS へ理由付きで移す事。
+                                     #   消すのではなく移す —— 消すと「対照が在った」記憶だけが残る。
 )
 # ── ★ここに**わざと入れていない**物(消えた訳ではない)────────────────────────
 # `test/verdict-mutants.sh` = `test/mutation-verdict-controls.sh` の陰性対照
@@ -327,7 +336,16 @@ declare -a red_names=() unm_names=()
 #
 # 未測定(2)ではなく**赤(1)**にする。回せなかったのではなく、回す物が無い事が
 # 確定しているから —— 「測れなかった」と「守りが欠けている」を同じ籠に入れない。
-for _f in test/*-controls.sh; do
+# ★★2026-08-05: 見る範囲を **3つの木**へ広げる(門と同じ集合)。
+#   此処は `test/*-controls.sh` しか見ていなかったので、`ios/tools/` と `.harness/` の
+#   対照は**登録を忘れても誰も言わない**状態だった。実測: disk 上 38 本に対し、
+#   どの一覧にも無い物が 1 本(`.harness/dod-sprint-3-controls.sh` = 今夜書いた物)。
+#   ios 側が今まで無事だったのは手で入れていたからで、instrument が見ていたからではない。
+#   ★これで「守りの届く範囲が欠陥と一緒に縮む」形の**5箇所目**。門(SCAN_SPECS)側は
+#     一覧を1本に畳んだが、此処は走らせる順番と ALL の分岐を持つので配列は残す ——
+#     代わりに**照合の網だけ**を門と同じ導出(走査 dir 全部)に合わせる。
+#   単数形も拾う(`*-control*.sh`)。rc-backend 側の集合は変わらない(34 → 34、実測)。
+for _f in test/*-control*.sh ../ios/tools/*-control*.sh ../.harness/*-control*.sh; do
     [ -f "$_f" ] || continue
     case " ${LOCAL_CTLS[*]} ${EDITH_CTLS[*]} ${EXCLUDED_CTLS[*]:-} " in
         *" $_f "*) : ;;

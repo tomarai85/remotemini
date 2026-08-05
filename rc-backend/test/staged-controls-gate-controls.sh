@@ -259,5 +259,86 @@ out=$(run_gate 'rc-backend/src/server.mjs')
 chk "S33 ★ios の対照の宣言先が実在しなければ名指しする" 0 $? "kk-control.sh→ios/Sources/gone-away.swift" "" "$out"
 chk "S34 ★★実在する ios の宣言を stale に出さない(基点が効いている)" 0 0 "" "ii-control.sh→" "$out"
 
+# ══ S35-S41 ★木の一覧を**1本**にした分(2026-08-05 の第3波)══════════════════════
+#   第2波(S26-S34)で `ios/` を足した時、広げたのは走査 dir だけだった。同じ一覧が
+#   ①走査の呼び出し ②「見る木か」の case ③「対照そのものか」の case と**手で同期
+#   する形で3箇所**在ったので、`.harness/` を足そうとして初めて判った ——
+#   ① だけ足すと対照は**発見されるが一度も選ばれない**(実測: 「触れた対照は無い」)。
+#   今は SCAN_SPECS が唯一の出所で ②③ はそこから導出する。
+#   S35-S38 は `.harness` が本当に届く事、**S39-S41 が導出そのものの対照**。
+#
+# ★実測(2026-08-05。4通りを `$STAGED_GATE` から差した。素の版は 44/44):
+#   | 差した物                                    | 倒れた assertion                     |
+#   |---|---|
+#   | HEAD(木を2本しか見ない版)                  | S35 S36 S37 S38 S40-prep S40 S41     |
+#   | ①走査 dir だけ広げた版(今夜の実際の途中形) | 同上(= ①だけでは何も変わらない)   |
+#   | 導出①`_in_tree` を手書きの一覧に戻した版    | S35 S36 S37 S38 S40 S41              |
+#   | 導出②`_is_ctl` を手書きの pattern に戻した版 | S36 S37 **S41**(← これだけ)       |
+#   読み方: S41 は 導出② が痩せた時だけ倒れ、S40 は倒れない —— **2本は別の物を測って
+#   いる**。HEAD/①だけの版で S40-prep が倒れるのは正しい: そこには SCAN_SPECS が無く、
+#   差し込みが空振りするので S40/S41 の赤は「導出」でなく「sed」を測った赤になる。
+/bin/mkdir -p "$R/.harness"
+mkctl .harness/hh-control.sh 0 "GREEN: hh" ".harness/dod-x.sh"
+mkctl .harness/nodecl-control.sh 0 "GREEN: nodecl"      # 宣言なし
+: > "$R/.harness/dod-x.sh"
+: > "$R/.harness/lonely-harness.sh"   # 誰も見張っていない harness の道具
+: > "$R/.harness/notes.md"            # 書類は道具ではない(注記に出さない)
+
+# ── S35 ★.harness の道具を触ったら .harness の対照が回る ─────────────────────
+out=$(run_gate '.harness/dod-x.sh')
+chk "S35 ★.harness の file を触ったら .harness の対照が回る" 0 $? "hh-control.sh" "触れた対照は無い" "$out"
+
+# ── S36 .harness の対照そのものが staged でも回る(導出②が効いている事)───────
+#     ここが今夜の穴の**本体**。①だけ広げた版はこの入力で「触れた対照は無い」を出す。
+out=$(run_gate '.harness/hh-control.sh')
+chk "S36 ★.harness の対照そのものが staged -> 回る" 0 $? "GREEN: hh" "触れた対照は無い" "$out"
+
+# ── S37 宣言の無い .harness の対照も止める ────────────────────────────────────
+out=$(run_gate '.harness/nodecl-control.sh')
+chk "S37 ★宣言の無い .harness の対照 -> rc=1" 1 $? "宣言していない対照: nodecl-control.sh" "" "$out"
+
+# ── S38 見張る物の無い .harness の道具は名前を出す / 書類は出さない ───────────
+out=$(run_gate '.harness/lonely-harness.sh')
+chk "S38 ★対照の無い .harness の道具 -> 注記に名前(rc=0)" 0 $? "lonely-harness.sh" "" "$out"
+out=$(run_gate '.harness/notes.md')
+chk "S38b 書類(.md)は道具として注記しない" 0 $? "" "notes.md" "$out"
+
+# ── S39-S41 ★★導出の対照: SCAN_SPECS に**1行足すだけ**で3つの道が全部届くか ──
+#     これが4回続いた再発の再発を見張る唯一の assertion。もし誰かが将来
+#     「見る木」や「対照の pattern」を手書きの一覧に戻したら、①(走査)は新しい木を
+#     見つけるのに ②③ が知らない —— まさに今夜の形 —— ので S40/S41 が倒れる。
+#     測り方: 門の**複製**の SCAN_SPECS に `newtree|` を1行だけ差し込む。他は触らない。
+VARIANT="$SB/gate-with-4th-tree.sh"
+/bin/cp "$GATE" "$VARIANT"
+/usr/bin/sed -i '' 's|^    "\.harness|\    "newtree\|"                 # 対照 S39-S41 が差し込む4本目\
+    "\.harness|' "$VARIANT"
+/bin/mkdir -p "$R/newtree"
+mkctl newtree/tt-control.sh 0 "GREEN: tt" "newtree/thing.txt"
+: > "$R/newtree/thing.txt"
+run_variant() { RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' '$1'" bash "$VARIANT" 2>&1; }
+
+# ★S40-prep: **差し込みが本当に当たったか**を先に測る。
+#   当たらないと $VARIANT は門そのものと同一になり、S40/S41 は倒れる —— が、その赤は
+#   「導出が壊れている」ではなく「対照が変異を掛けそこねた」。今日この形を DoD の
+#   対照(行4)で既に踏んでいる。誤診する赤は、緑を装う赤より始末が悪い。
+if grep -q '^    "newtree|"' "$VARIANT"; then
+  chk "S40-prep 4本目の差し込みが当たっている" 0 0 "" "" ""
+else
+  echo "NG  S40-prep ★差し込みが当たっていない -- 以降の S40/S41 は導出でなく sed を測っている"
+  fail=$((fail+1))
+fi
+
+# S39 陰性対照が先: **足す前**は届かない。これが無いと S40/S41 は「元から通る」と
+#     区別が付かない(S26-S34 で `ios` を、S35-S38 で `.harness` を既に足してあるので、
+#     木の一覧が導出でなく単に長いだけでも緑になり得る)。
+out=$(run_gate 'newtree/thing.txt')
+chk "S39 ★陰性対照: SCAN_SPECS に無い木は届かない" 0 $? "触れた対照は無い" "tt-control.sh" "$out"
+# S40 1行足したら **導出①(見る木)+ 宣言経由**で届く
+out=$(run_variant 'newtree/thing.txt')
+chk "S40 ★★1行足すだけで新しい木の対照が回る(導出①)" 0 $? "tt-control.sh" "触れた対照は無い" "$out"
+# S41 同じ1行で **導出②(対照そのもの)** も届く。①②を別々に持っていた版はここで倒れる
+out=$(run_variant 'newtree/tt-control.sh')
+chk "S41 ★★同じ1行で「対照そのもの」の道も届く(導出②)" 0 $? "GREEN: tt" "触れた対照は無い" "$out"
+
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]
