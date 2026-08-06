@@ -18,6 +18,13 @@
 #
 # 使い方: ios/tools/live-send-check.sh [--url URL] [--host SSH先] [--keep]
 #   --keep = 終わってもセッションを畳まない(人が画面を見たい時だけ)
+#
+# 終了コード: 0 = 全部通った / 1 = 測って赤い(直す物が在る) / 2 = 準備段で中断(何も測れていない)
+#            3 = 運ぶ層は通ったが相手が答えていない(**利用上限**。直す物は無い、待つ)
+#   意味と順序(2 > 1 > 3 > 0)の正本は `rc-backend/tools/exit-codes.mjs`。
+#   ★3 を足したのは 2026-08-06。同じ日に `.mjs` の計器4本を揃えた時、census が
+#     `tools/live-*.mjs` しか数えておらず shell の2本を落としていた —— 教訓を一部にしか
+#     運ばない型が、其れを直す為の道具自身に出た。census は `test/live-exit-codes.test.mjs`。
 set -uo pipefail
 
 URL="${RC_LIVE_URL:-https://desk.tailnet.example}"
@@ -31,9 +38,64 @@ while [ $# -gt 0 ]; do
     --url) URL="$2"; shift 2 ;;
     --host) SSH_HOST="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
+    # 判定だけを撃つ入口。引数はそのまま残して輪を抜ける(受けるのは send_verdict の下)。
+    --verdict) break ;;
     *) echo "知らない引数: $1" >&2; exit 2 ;;
   esac
 done
+
+# ── 判定 ──────────────────────────────────────────────────────────────────────
+# 観測値だけを受け取って終了コードを決める。**実機に一切触らない**ので、対照
+# (`live-send-check-control.sh`)から真理値表で直に駆動できる。
+#
+# なぜ関数に切ったか(2026-08-06): 此処は 0/1/3 を決める分岐なのに、edith が要るせいで
+# **一度も走った事が無い**まま書かれていた。この session で `.mjs` 側の
+# `exitCodeFor` に真理値表を当てた(`rc-backend/test/live-exit-codes.test.mjs`)のと
+# 同じ物が shell 側にも要る —— shell からは正本を import 出来ないので、写しの側が
+# 黙ってずれる余地が此処にだけ残る。
+#
+# 引数: <RC> <MISS> <K1 kind=ok> <K2 keepText> <K3 転写に居る> <limited の答え> [転写の詳細]
+# 戻り: 0 = 全部通った / 1 = 測って赤い / 3 = 上限で測れていない
+send_verdict() {
+  local rc="$1" miss="$2" k1="$3" k2="$4" k3="$5" limited="$6" detail="${7:-}"
+  local fail=0 lim=0
+  [ "$limited" = "limited" ] && lim=1
+
+  # 上限に依らない足 —— 此処が赤いなら上限では説明が付かない = 本物の欠陥(だから 1 > 3)。
+  if [ "$rc" = "0" ]; then echo "  ok  : 電話のコードが display を受け取った"
+  else echo "  NG  : display が届いていない(終了コード $rc)"; fail=1; fi
+  if [ "$miss" = "0" ]; then echo "  ok  : 陰性対照 0 件(数える口は生きている)"
+  else echo "  NG  : 陰性対照が $miss 件(上の一致は測定になっていない)"; fail=1; fi
+
+  # 上限に依る足 —— 上限が観測されている回は赤ではなく **未測定** へ倒す。
+  # ★倒し忘れると `rc-backend/tools/exit-codes.mjs` の順序が牙を剥く
+  #   (「待てば直る物」を「直す物」として報告する計器になる)。
+  # ★bash の動的スコープで、上の `fail` / `lim` は此の中から見える(local のまま書ける)。
+  mark() { # mark <ok か> <本文>
+    if [ "$1" = "1" ]; then echo "  ok  : $2"
+    elif [ "$lim" = "1" ]; then echo "  --  : $2 —— **測っていない**(上限の告知が出ている)"
+    else echo "  NG  : $2"; fail=1; fi
+  }
+  mark "$k1" "kind=ok"
+  mark "$k2" "keepText=false(= サーバは verified と言っている)"
+  mark "$k3" "送った本文が転写に居る(${detail:-増分は上の行})"
+
+  if [ "$fail" != "0" ]; then echo "→ DoD 9行目: 閉じていない"; return 1; fi
+  if [ "$lim" = "1" ] && [ "$k1$k2$k3" != "111" ]; then
+    echo "→ DoD 9行目: **測れていない**。運ぶ層は通ったが相手が上限で答えていない。"
+    echo "   直す物は無い。解除を待って回し直す事(転写は残す)。"
+    return 3
+  fi
+  echo "→ DoD 9行目: 観測で閉じた"
+  return 0
+}
+
+# 対照からの入口。実機も ssh も要らない —— 判定だけを撃つ。
+if [ "${1:-}" = "--verdict" ]; then
+  shift
+  send_verdict "$@"
+  exit $?
+fi
 
 IOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
@@ -116,12 +178,21 @@ MISS="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs contains '$SI
 echo "陰性対照(送っていない本文)= $MISS 件"
 
 echo
+echo "=== 6. 相手が上限で答えられない状態か(赤の意味が変わるので判定の前に訊く)==="
+# ★2026-08-06 に足した。上限だと画面が入力欄でなく告知になり得て、其の時サーバは
+#   「送れない」と答える。それは**経路の欠陥ではない**のに、下の kind=ok / keepText /
+#   転写の3行が揃って赤くなり、読み手は在りもしない欠陥を探しに行く。8/02 に
+#   `live-inject-check.mjs` が解いた束ねと同じ形。分類器は最初から `limited` を立てている。
+LIMITED="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs limited '$SID'" 2>/dev/null || echo "")"
+echo "利用上限の告知 = ${LIMITED:-訊けなかった}"
+
+echo
 echo "=== 判定 ==="
-FAIL=0
-if [ "$RC" = "0" ]; then echo "  ok  : 電話のコードが display を受け取った"; else echo "  NG  : display が届いていない(終了コード $RC)"; FAIL=1; fi
-if printf '%s' "$OUT" | grep -q "kind=ok"; then echo "  ok  : kind=ok"; else echo "  NG  : kind が ok ではない"; FAIL=1; fi
-if printf '%s' "$OUT" | grep -q "keepText=false"; then echo "  ok  : keepText=false(= サーバは verified と言っている)"; else echo "  NG  : keepText が false ではない"; FAIL=1; fi
-if [ "$HITS" -gt 0 ]; then echo "  ok  : 送った本文が転写に $HITS 件 居る(行数は $BEFORE → $AFTER)"; else echo "  NG  : 送った本文が転写に居ない(サーバの verified と実物が食い違う)"; FAIL=1; fi
-if [ "$MISS" = "0" ]; then echo "  ok  : 陰性対照 0 件(数える口は生きている)"; else echo "  NG  : 陰性対照が $MISS 件(上の一致は測定になっていない)"; FAIL=1; fi
-if [ "$FAIL" = "0" ]; then VERDICT_OK=1; echo "→ DoD 9行目: 観測で閉じた"; else echo "→ DoD 9行目: 閉じていない"; fi
-exit "$FAIL"
+printf '%s' "$OUT" | grep -q "kind=ok" && K1=1 || K1=0
+printf '%s' "$OUT" | grep -q "keepText=false" && K2=1 || K2=0
+[ "$HITS" -gt 0 ] && K3=1 || K3=0
+send_verdict "$RC" "$MISS" "$K1" "$K2" "$K3" "$LIMITED" "$HITS 件 / 行数は $BEFORE → $AFTER"
+CODE=$?
+# ★VERDICT_OK は 0 の時だけ立てる = 上限で落ちた回の転写は**消さない**(後から読む物が要る)。
+[ "$CODE" = "0" ] && VERDICT_OK=1
+exit "$CODE"

@@ -1,4 +1,5 @@
-// 実機を触る4本の台本(tools/live-*.mjs)が、終了コードの意味で**合意しているか**を測る。
+// 実機を触る台本が、終了コードの意味で**合意しているか**を測る。
+// 対象は2つの言語に散っている: `rc-backend/tools/live-*.mjs` 4本 + `ios/tools/live-*.sh` 2本。
 //
 // ── なぜ要るか(2026-08-02 の再発を 2026-08-06 に数えて見つけた)──────────────
 // 8/02、同じ機械を同じ時刻に測った2本が逆の事を言った。inject 側は exit 3
@@ -15,8 +16,13 @@
 //
 // 直した上で、**次に台本が増えた日に同じ事が起きない様に**この検査を置く。
 // 一覧(下の INSTRUMENTS)は手で書くが、**手で同期する2本目の一覧にはしない** ——
-// disk 上の tools/live-*.mjs を数えて一覧と突き合わせるので、5本目を足した人は
+// disk 上の live-* を数えて一覧と突き合わせるので、7本目を足した人は
 // 此処で必ず止まる(止まった人がする事は1行足す事、ではなく 3 を持たせる事)。
+//
+// ★同日の続き: 上の census を書いた時、私は `rc-backend/tools/live-*.mjs` しか数えず
+//   shell の2本を落としていた —— 直後に数え直したら**どちらも上限を知らなかった**。
+//   「教訓を N 箇所のうち一部にしか運ばない」型が、其れを直す為の道具自身に出た。
+//   だから住処は `HOMES` に2つとも持つ。3つ目の言語が増える日は、また此処で止まる。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -24,17 +30,48 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exitCodeFor, EXIT_MEANING } from "../tools/exit-codes.mjs";
 import { limitNoticeIn } from "../src/inject.mjs";
+import { requireOutside } from "./subtree.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TOOLS = join(ROOT, "tools");
 const read = (rel) => readFileSync(join(ROOT, rel), "utf8");
 
-const INSTRUMENTS = [
+// ★shell の2本は**木の外**(`ios/`)に居る。rc-backend だけを写した木では在って当然
+// 無いので、素の `readdirSync` は throw = **赤**になる —— 変異走行はその写しの中で
+// 回るので、対照1が落ちて以降の変異が全部「検出」に化ける(2026-08-05 に実際に起きた形)。
+// 「写しなので測っていない」と「消えた/改名された」を分ける口が `requireOutside`。
+const OUTSIDE = requireOutside([
+  "ios",
+  "ios/tools/live-send-check.sh",
+  "ios/tools/live-interrupt-check.sh",
+]);
+
+// ★実機を触る台本は**2つの言語に散っている**。8/06 に4本を揃えた時、此の一覧は
+//   `rc-backend/tools/live-*.mjs` しか数えていなかった —— shell の2本
+//   (`ios/tools/live-*.sh`)は census の外に居て、どちらも上限を知らないままだった。
+//   「教訓を N 箇所のうち一部にしか運ばない」型が、其れを直す為の道具自身に出た形。
+//   だから住処は2つとも書き、disk との突き合わせも2つとも回す。
+const HOMES = [
+  { dir: join(ROOT, "tools"), rel: (n) => `tools/${n}`, ext: ".mjs" },
+  { dir: join(ROOT, "..", "ios", "tools"), rel: (n) => `../ios/tools/${n}`, ext: ".sh" },
+];
+
+// 木の中(この写しでも必ず在る)と、木の外(写しでは無い)を**分けて持つ**。
+// 混ぜた1本の一覧にすると、写しの中で「無い」を赤と読むか未測定と読むかが書けない。
+const MJS_INSTRUMENTS = [
   "tools/live-inject-check.mjs",
   "tools/live-fork-check.mjs",
   "tools/live-http-check.mjs",
   "tools/live-choice-check.mjs",
 ];
+const SH_INSTRUMENTS = [
+  "../ios/tools/live-send-check.sh",
+  "../ios/tools/live-interrupt-check.sh",
+];
+// ★写しでも**一覧からは落とさない**。落とすと TAP から名前ごと消えて「測っていない」が
+//   誰にも見えなくなる(= 黙って範囲が縮む)。skip として名前を残し、理由を言わせる。
+const INSTRUMENTS = [...MJS_INSTRUMENTS, ...SH_INSTRUMENTS];
+const gateFor = (rel) => (rel.endsWith(".sh") ? OUTSIDE.skip : false);
 
 // 3 を返す道として認める形。新しい書き方を足すなら此処に足す = 増やした事が diff に残る。
 const RETURNS_THREE = [
@@ -42,7 +79,14 @@ const RETURNS_THREE = [
   /exitCode\s*=\s*3/, // process.exitCode へ直に置く
   /\bexit\(3\)/, // 直に撃つ
   /\?\s*3\s*:/, // fail(lim ? 3 : 2, ...) の形
+  /\bexit\s+3\b/, // shell
+  /\breturn\s+3\b/, // shell の関数(判定を切り出すと `exit` は呼び側へ移る)
 ];
+// ★`return 3` を足したのは 2026-08-06、`ios/tools/live-send-check.sh` の判定を `send_verdict()` へ
+//   切り出した時に此処が赤くなったから(commit の門が捕まえた = 切り出した後に一式を
+//   回し直していなかった)。**緩めた訳ではない**: shell 側の本当の証拠は
+//   `ios/tools/live-send-check-control.sh` の真理値表 —— 終了コードが実際に 3 で出る事を
+//   21 通りで撃っている。此処の静的検査が守るのは「3 へ行く道が1本も無い」台本だけ。
 
 // ── A. 順序そのもの ────────────────────────────────────────────────────────
 // 8 通り全部。実機でしか走らない台本の**結論**なので、手元で撃てるのは此処だけ。
@@ -97,11 +141,18 @@ test("4つの意味が言葉でも残っている", () => {
 });
 
 // ── B. 4本が合意しているか ────────────────────────────────────────────────
-test("★disk 上の live-* と一覧が一致している(5本目が黙って増えない)", () => {
-  const onDisk = readdirSync(TOOLS)
-    .filter((n) => n.startsWith("live-") && n.endsWith(".mjs"))
-    .map((n) => `tools/${n}`)
-    .sort();
+test("★disk 上の live-* と一覧が一致している(7本目が黙って増えない)", { skip: OUTSIDE.skip }, () => {
+  // ★対照(`*-control.sh` / `*-controls.sh`)は計器ではないので数えない。
+  //   `ios/tools/live-send-check-control.sh` を書いた日に此処が赤くなった(2026-08-06)——
+  //   名前が `live-` で始まるので「7本目の計器が黙って増えた」に見えた。
+  //   対照の登録漏れを見るのは `rc-backend/tools/run-controls.sh` の方の照合。
+  //   此処で除くのは**対照だけ**。名前が `live-` の計器を足せば従来通り赤くなる。
+  const onDisk = HOMES.flatMap(({ dir, rel, ext }) =>
+    readdirSync(dir)
+      .filter((n) => n.startsWith("live-") && n.endsWith(ext))
+      .filter((n) => !/-controls?\.(sh|mjs)$/.test(n))
+      .map(rel),
+  ).sort();
   assert.deepEqual(
     onDisk,
     [...INSTRUMENTS].sort(),
@@ -111,7 +162,7 @@ test("★disk 上の live-* と一覧が一致している(5本目が黙って�
 });
 
 for (const rel of INSTRUMENTS) {
-  test(`${rel} は上限を知っている`, () => {
+  test(`${rel} は上限を知っている`, { skip: gateFor(rel) }, () => {
     const src = read(rel);
     // ★**呼んでいる**事を見る。import や注釈に名前が在るだけでは認めない ——
     //   陰性対照で実測(2026-08-06): 判定の枝を `if (false)` に潰しても import 行は残るので、
@@ -122,13 +173,16 @@ for (const rel of INSTRUMENTS) {
     const callsOwn = ownDetector
       ? new RegExp(ownDetector[1] + "\\s*\\([^)]").test(src.replace(ownDetector[0], ""))
       : false;
+    // shell の2本は自前で画面を読まない。訊く口が `disposable-session.mjs limited`
+    // (= 同じ `classifyScreen.limited` を出す)なので、**呼んでいる事**を同じ強さで見る。
+    const asks = /disposable-session\.mjs\s+limited\b/.test(src);
     assert.ok(
-      calls || callsOwn,
+      calls || callsOwn || asks,
       "上限の判定を持たない台本は、上限の機械を「壊れている」と報告する(= 待てば直る物を直す物として出す)",
     );
   });
 
-  test(`${rel} は 3 を返す道を持っている`, () => {
+  test(`${rel} は 3 を返す道を持っている`, { skip: gateFor(rel) }, () => {
     const src = read(rel);
     assert.ok(
       RETURNS_THREE.some((re) => re.test(src)),
@@ -136,7 +190,7 @@ for (const rel of INSTRUMENTS) {
     );
   });
 
-  test(`${rel} の頭書きが 3 の意味を書いている`, () => {
+  test(`${rel} の頭書きが 3 の意味を書いている`, { skip: gateFor(rel) }, () => {
     // 読み手が最初に見るのは頭のコメント。ここに無い意味は無いのと同じ。
     const head = read(rel).split("\n").slice(0, 40).join("\n");
     assert.match(head, /3\s*=/, "終了コード 3 の説明が頭書きに無い");
@@ -144,6 +198,30 @@ for (const rel of INSTRUMENTS) {
     assert.match(line, /上限/, `3 の説明が上限に触れていない: ${line.trim()}`);
   });
 }
+
+// ── B-2. shell が訊く先が、実際に答えられる事 ──────────────────────────────
+// shell の2本は自前で画面を読まず `disposable-session.mjs limited` に訊く。訊く側だけ
+// 在って答える側が消えると、`LIM` は空になり **黙って上限を知らない台本に戻る**
+// (`ios/tools/live-send-check.sh` は3本の足が hard check に戻り、上限の機械をまた赤で報告する)。
+// 答える側は木の中に在るので、**写しの中でも measurable**。だから gate を掛けない。
+test("★答える側: disposable-session.mjs が `limited` を実装している", () => {
+  const src = read("tools/disposable-session.mjs");
+  assert.match(src, /cmd === "limited"/, "分岐が無い = shell の問いに誰も答えない");
+  assert.match(src, /function cmdLimited\s*\(/, "実体が無い");
+  assert.match(
+    src,
+    /limited\s*\?\s*"limited"\s*:\s*"not-limited"/,
+    'shell 側は "limited" の一語一致で読む。出す語を変えるなら台本2本も同時に直す事',
+  );
+  assert.match(src, /\|limited <id>\|/, "使い方の1行に出ていない = 人が見つけられない");
+});
+
+// 訊く側は木の外。片方だけ直る日を作らない為に綴りを固定するが、写しでは測れない。
+test("★訊く側: shell の2本が同じ綴りで訊いている", { skip: OUTSIDE.skip }, () => {
+  for (const rel of SH_INSTRUMENTS) {
+    assert.match(read(rel), /disposable-session\.mjs limited '/, `訊き方が変わっている: ${rel}`);
+  }
+});
 
 // ── C. 逃げ道の錨 ──────────────────────────────────────────────────────────
 // 上の B は「文字列が在るか」しか見ていないので、正本へ委ねた2本については

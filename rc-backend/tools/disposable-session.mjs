@@ -269,26 +269,33 @@ function cmdContains(sessionId, needle) {
  * ★`unknown` は「待機中」ではなく「観測できなかった」(M3)。スピナーの被覆は
  * 61-82% なので、呼ぶ側は1枚で決めずに輪で回す事。
  */
-function cmdBusy(sessionId) {
+/**
+ * 会話 id → その画面の分類。`busy` と `limited` の**共通の前段**。
+ * 戻り = `{ code }`(読めなかった。理由は `say` 済み)か `{ c }`(分類できた)。
+ *
+ * ★1つに纏めた理由: 2026-08-06 に `limited` を足す時、此処を写して2本目を作りかけた。
+ *   登録簿の読み方が2箇所に在ると、片方だけ直る日が来る —— この repo が何度も踏んだ型。
+ */
+function classifyFor(sessionId) {
   if (!/^[0-9a-f-]{8,64}$/i.test(sessionId)) {
     say("会話 id の形ではない");
-    return 1;
+    return { code: 1 };
   }
   const p = join(PANE_DIR, `${sessionId}.json`);
   if (!existsSync(p)) {
     say("登録簿にこの会話が無い");
-    return 1;
+    return { code: 1 };
   }
   let pane;
   try {
     pane = JSON.parse(readFileSync(p, "utf8")).pane;
   } catch {
     say("登録簿が読めない");
-    return 1;
+    return { code: 1 };
   }
   if (!pane) {
     say("登録簿に pane が無い");
-    return 1;
+    return { code: 1 };
   }
   const injector = new TmuxInjector({ tmux: makeTmuxRunner({
     tmuxBin: TMUX_BIN,
@@ -300,10 +307,34 @@ function cmdBusy(sessionId) {
     screen = injector.capture(pane);
   } catch {
     say("ペインが撮れない(畳まれた後かもしれない)");
-    return 1;
+    return { code: 1 };
   }
-  const c = classifyScreen(screen);
-  process.stdout.write(`${c.activity} ${c.activityFrom || "-"}\n`);
+  return { c: classifyScreen(screen) };
+}
+
+function cmdBusy(sessionId) {
+  const r = classifyFor(sessionId);
+  if (r.code) return r.code;
+  process.stdout.write(`${r.c.activity} ${r.c.activityFrom || "-"}\n`);
+  return 0;
+}
+
+/**
+ * そのペインに**利用上限の告知**が出ているか。出すのは `limited` か `not-limited` の1語だけ。
+ *
+ * 何に使うか(2026-08-06): shell の実機検査2本(`ios/tools/live-*.sh`)が、上限で答えが
+ * 返らない機械を「経路が壊れている」と報告していた —— 8/02 に `live-inject-check.mjs` が
+ * 解いた束ねと同じ形が、**shell 側にだけ残っていた**。分類器は最初から `limited` を
+ * 立てていて(`classifyScreen`)、サーバも `/…` で返している(`server.mjs`)。
+ * 足りなかったのは shell から訊く口だけ。
+ *
+ * ★`busy` と別の subcommand にした理由: 判定の時に要るのは上限だけで、其の時 `busy` は
+ *   訊いていない。1行に混ぜると呼ぶ側の prefix 一致(`observed*`)に意味の無い依存が増える。
+ */
+function cmdLimited(sessionId) {
+  const r = classifyFor(sessionId);
+  if (r.code) return r.code;
+  process.stdout.write(`${r.c.limited ? "limited" : "not-limited"}\n`);
   return 0;
 }
 
@@ -361,6 +392,7 @@ if (cmd === "up") code = await cmdUp(rest);
 else if (cmd === "lines") code = cmdLines(rest[0] || "");
 else if (cmd === "contains") code = cmdContains(rest[0] || "", rest.slice(1).join(" "));
 else if (cmd === "busy") code = cmdBusy(rest[0] || "");
+else if (cmd === "limited") code = cmdLimited(rest[0] || "");
 else if (cmd === "down") code = cmdDown(rest[0] || "", rest[1] || "", rest.includes("--purge-transcript"));
-else say("使い方: disposable-session.mjs up|lines <id>|contains <id> <本文>|busy <id>|down <session> <id> [--purge-transcript]");
+else say("使い方: disposable-session.mjs up|lines <id>|contains <id> <本文>|busy <id>|limited <id>|down <session> <id> [--purge-transcript]");
 process.exit(code);

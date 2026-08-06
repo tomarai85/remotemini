@@ -318,6 +318,16 @@ LOCAL_CTLS=(
                                      # ズレは rc-backend/test/mutation-recovery-copy.test.mjs が毎 commit 測る)。
                                      # 実測 2026-08-06: DerivedData が温まっていて 3.6 分
                                      # (基準 37s + 変異 39/48/49s)。冷えていればその分伸びる。
+    ../ios/tools/live-send-check-control.sh # ★2026-08-06。`ios/tools/live-send-check.sh` の
+                                     # **判定だけ**の真理値表(21 本)。本体は edith と実機の会話が
+                                     # 要るので、判定を `--verdict` へ切り出して観測値を引数で受ける
+                                     # 形にした(conversation-ui-control.sh と同じ手)。実測1秒未満。
+                                     # ★据えた理由: 終了コードの正本(rc-backend/tools/exit-codes.mjs)を
+                                     #   shell からは import 出来ない = 写しの側だけが黙ってずれる。
+                                     #   3(上限で測れていない)を 1(赤)より弱く扱う順序が要。
+                                     # ★7 節(出力の文言)は陰性対照で穴が見つかって足した:
+                                     #   上限の足を `--(測っていない)` でなく `ok` と印字する細工でも
+                                     #   終了コードは 3 のままで、1-6 節は全部緑だった。
     ../.harness/dod-sprint-3-controls.sh # ★2026-08-05。Sprint 3 の DoD 照合表
                                      # (`.harness/dod-sprint-3.sh`)の対照 = 15 行のうち 12 行が
                                      # **本当に赤にも緑にもなる**事を測る。照合表は「全部緑」を
