@@ -8,8 +8,10 @@ team-lead から届いた S/C 分割の binding ruling を本文に折り込み�
 先行して同名パスに別版(113行、team-lead が Planner subagent を経由させず直接書いた版)が置かれて
 いたが、その後 team-lead から届いた binding ruling メッセージが「sprint 形を変える」「spec に折り
 込め」と明示していたため、本版が正としてこれを置き換えた(旧版は
-`/private/tmp/claude-501/-Users-tomtim/cfb56563-2f6e-46ed-b085-6503b245cfed/scratchpad/spec-original-113.md`
-に team-lead が保全済み)。差分の要点は §0-1(先行版の Sprint 3 は `/stream` を叩く設計だったが、
+`.harness/spec-native-shell-2026-08-05-superseded-113.md` に保全済み。2026-08-07 に session の
+scratchpad から repo へ移した = 元の置き場は session と一緒に消える物で、「保全済み」が
+そのままでは嘘になる為。中身は1バイトも変えていない — 変えると §0-1 の差分の主張が
+原本に対して検めえなくなる)。差分の要点は §0-1(先行版の Sprint 3 は `/stream` を叩く設計だったが、
 それは死んでいる経路 — §0-1 で根拠を示す)。
 
 **改版履歴**: 本版(466行版)は `7f3641f` に未読のまま commit された。その後 team-lead から3件の
