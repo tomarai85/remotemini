@@ -21,7 +21,11 @@
 #       **戻った事を git status で確かめる**(想定ではなく観測する)。
 #   なので作業木で変異させる。ただし条件付きで:
 #     - 走る前に対象 file の**中身を複製**し、復元はそこから戻す。
-#     - trap EXIT で必ず復元。中断されても作業木は元に戻る。
+#     - trap EXIT で復元。**ただし「必ず」ではない**(2026-08-06 に測って訂正した。
+#       元の文面はここで「中断されても作業木は元に戻る」と言い切っていた)。
+#       実測: trap EXIT + SIGTERM -> 戻る / trap EXIT + SIGKILL -> **戻らない** /
+#             trap EXIT INT TERM HUP + SIGKILL -> **やはり戻らない**。
+#       signal を足しても直らないので、下の「前回の取り残しの復旧」で受ける。
 #     - 最後に**複製と shasum が一致する事**を確かめ、違えば 2(未測定)で落ちる。
 #
 # ★復元の基準点を「index」から「走る前の中身」へ替えた(2026-08-06、測って直した)。
@@ -37,7 +41,11 @@
 #   強くなる —— `git status` が清潔なのは「index と一致」の意味しか無く、元から staged
 #   だった file にはそもそも間違った問いだった。shasum の一致は**バイトが戻った事**を言う。
 #
-# 既知の費用(黙って隠さない): xcodebuild を 14 回(基準1 + 変異13)回すので **11 分前後**。
+# 既知の費用(黙って隠さない): xcodebuild を 14 回(基準1 + 変異13)回すので **27 分前後**。
+#   ★「11 分前後」と書いてあったのを 2026-08-06 の実測で訂正した(門から呼ばれて 1651s)。
+#     見積りが 2.5 倍ずれていた実害: この見積りを信じて `git commit` を 2 分・9 分20秒の
+#     timeout で 2 回切り、2 回目の SIGKILL が変異を作業木に取り残した。
+#     **待ち時間の見積りは、待つ側の道具の設定値になる。ずれた見積りは中断を作る。**
 #   (2026-08-06 に DoD 1 の method / path / header を足して 10 → 13 になった。実測 471s → 下記)
 #   commit の門から呼ばれるとその分待つ。`--no-verify` で外すのは、この repo が
 #   一番繰り返している失敗の形なので、待つ側に倒してある。短くするなら「staged な物に
@@ -53,6 +61,9 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-s6.XXXXXX")"
 # 失敗した回の全文だけ WORK の外へ残す(WORK は EXIT で畳まれるので、中に置くと
 # 「なぜ緑だったのか」を後から読めない)。
 LOGDIR="${TMPDIR:-/tmp}"
+# 殺された回の後始末に使う目印。**固定 path** である事が全て —— WORK は毎回名前が
+# 変わるので、次の走行から前回の WORK を見つける手掛かりがここにしか無い。
+INFLIGHT="${TMPDIR:-/tmp}/rc-dod-sprint6-inflight.tsv"
 PASS=0; FAIL=0; UNMEASURED=0
 
 VM="$IOS/Sources/Screens/Conversation/ConversationViewModel.swift"
@@ -90,11 +101,48 @@ cleanup() {
         restore_one "$i"
         i=$((i+1))
     done
+    # 目印は復元より**後**に消す。順序が逆だと、消した直後に殺された時に
+    # 「戻っていないのに手掛かりも無い」状態が作れてしまう。
+    /bin/rm -f "$INFLIGHT"
     [ -n "${WORK:-}" ] && [ -d "$WORK" ] || return 0
     find "$WORK" -type f -print0 2>/dev/null | xargs -0 /bin/rm -f 2>/dev/null
     find "$WORK" -type d -depth -exec /bin/rmdir {} + 2>/dev/null
 }
 trap cleanup EXIT
+
+# ---- 前回の走行が殺されていたら、その取り残しを先に戻す(ここから)-------------
+# ★これは机上の心配ではない。2026-08-06、この対照を走行中に SIGKILL した所、
+#   `ReachabilityMeter.swift` の変異(`consecutiveFailures = 0` を減衰式へ)が
+#   **未 staged のまま**作業木に残った。`git add -A` は未 staged を拾うので、
+#   気付かなければ変異が commit に載る —— 対照が本文を守るどころか汚す側に回る。
+# ★signal を足す修正は効かない(冒頭の実測)。効くのは「次に起きた時に拾う」側だけ。
+# ★この位置でなければならない: 下の複製 loop より**前**。後に置くと、変異したバイトを
+#   「走る前の中身」として複製してしまい、復元の基準点そのものが汚染される。
+if [ -f "$INFLIGHT" ]; then
+    recovered=""; lost=""
+    while IFS="$(printf '\t')" read -r rf rs; do
+        [ -n "${rf:-}" ] || continue
+        if [ -f "$rs" ] && [ -f "$rf" ]; then
+            if ! cmp -s "$rs" "$rf"; then
+                /bin/cp "$rs" "$rf"
+                recovered="$recovered ${rf#$ROOT/}"
+            fi
+        else
+            lost="$lost ${rf#$ROOT/}"
+        fi
+    done < "$INFLIGHT"
+    /bin/rm -f "$INFLIGHT"
+    if [ -n "$recovered" ]; then
+        echo "復旧: 前回の走行が殺されて残っていた変異を戻した:$recovered"
+    fi
+    if [ -n "$lost" ]; then
+        # 複製が消えている = 戻せない。清潔だと言い張らず、測れなかったと言う。
+        echo "UNMEASURED  前回の変異を戻せない(複製が消えている):$lost"
+        echo "            何が変わっているかは git diff で見え、戻すのは git checkout -- で足りる。"
+        exit 2
+    fi
+fi
+# ---- 前回の取り残しの復旧(ここまで)-----------------------------------------
 
 # 複製が取れない = 復元できない = 走ってはいけない。此処だけは走る前に止める。
 i=0
@@ -108,6 +156,15 @@ while [ "$i" -lt "${#TARGETS[@]}" ]; do
         echo "UNMEASURED  複製を取れなかった: ${f#$ROOT/}(復元手段が無いので走らない)"
         exit 2
     fi
+    i=$((i+1))
+done
+
+# 複製が全部取れた**後**に目印を書く。先に書くと、複製に失敗して exit 2 した回が
+# 「戻せる複製が在る」と嘘の申告を残す。
+: > "$INFLIGHT"
+i=0
+while [ "$i" -lt "${#TARGETS[@]}" ]; do
+    printf '%s\t%s\n' "${TARGETS[$i]}" "$(snap_path "$i")" >> "$INFLIGHT"
     i=$((i+1))
 done
 
