@@ -3271,3 +3271,112 @@ C7b が要る理由: C7 は「1本でも在るか」しか見ないので、他�
 - 同じ穴に落ちた直後は、同じ形が全部穴に見える。**現物の前置きを読んでから数える**。
 - 「罠を知っていて防いである」コードは、**防御が消えた時に赤くなる物**と対で置かないと、
   次の人が1行消した瞬間に静かに戻る。
+
+---
+
+## 2026-08-06 — 全ての要求が1本の 30 秒を共有していた、そしてそれを見張る検査が **2箇所で届いていなかった**(commit `9cf08f0`)
+
+入口は機能追加ではなく **REQUIREMENTS §5-6「Loading で待たされない」の数字を実測しに行った事**。
+置いてあった 2.3〜3.2 秒は `-p --resume` 時代の値で、**この設計はもうそれを使っていない**
+(常駐 tmux + `capture-pane` に替わっている)。測り直した数字が、置き去りの欠陥を1つ照らした。
+
+| 測った物 | 実測 |
+|---|---|
+| 折衝された版 | **HTTP/2** |
+| 同一接続の使い回し | **10.6ms**(TLS 0.000) |
+| 新規接続1本(TLS 込) | 45〜52ms |
+| 経路が冷えていた1回目 | **870ms**(1回だけ) |
+| `/history?limit=50` | 1〜5ms(14 B〜2.6 KB) |
+| `/api/sessions`(41本) | 38〜65ms(30,085 B) |
+
+★上は全部 **Jervis(同一 LAN の Mac)からの数字で、電話の数字ではない**。
+実機側は `HANDOFF-NEXT-SESSION.md` §4 の **8-a** に Tom 項目として出した(見るだけ・Yes/No)。
+
+### 出てきた欠陥
+
+要求は全部 `URLSessionConfiguration.timeoutIntervalForRequest = 30` の**1本**を共有していた。
+接続は受け付けるが応答を返さない網 —— ホテル/空港の captive portal、寝ている tailnet 相手、
+**つまりこのアプリが存在する理由そのものの「移動中」** —— で、会話画面と一覧画面が
+**30 秒間ただの ProgressView** を出してから再試行を出す。
+**RC を却下した理由1(「connecting」で作業が止まる)を、自分のアプリで再現していた。**
+
+3本に割った(正本 = `ios/Sources/Core/BackendSession.swift`):
+
+| 定数 | 値 | 対象 | 根拠 |
+|---|---|---|---|
+| `interactiveTimeout` | 8s | history / sessions / healthz / auth probe | 生きている経路(10〜65ms)に対して約2桁の余裕。沈黙した経路だけが到達する |
+| `pollTimeout` | 30s | long-poll | server の `POLL_MAX_WAIT_MS`(20s)を**写した値** + 余裕。手で 30 と書かない |
+| `writeTimeout` | 30s | 送信 / 割り込み | ★**短くしないのが仕様**(下) |
+
+★**書く側を短くしなかった理由 —— 此処で一番大事な判断**。
+`POST /api/sessions/<id>/messages` に **idempotency key が無い**(`server.mjs` を実読して確認)。
+諦める窓を広げると「client は諦めた・server は注入済み」が起き、再送が
+**Claude の composer へ二重に打ち込む**。読む物は再発行が無料なので短くしてよく、
+**書く物は無料ではない**。server 側に鍵を入れるのが本当の直しだが v1 の4項目の外なので、
+実装せず `BackendSession.writeTimeout` の doc に記録だけ残した。
+
+依存する挙動を仮定で置かず、3件とも実測に変えた:
+
+| 決めたい事 | 実測 |
+|---|---|
+| 要求側の値が session の config を上回るか | 5s→**5.03秒** / 2s→**2.01秒**(config=30s、`URLError` -1001) |
+| 要求が黙った時は config が効くか | 既定 **60.0 と読める**が config=3s では **3.02秒**で終了 |
+| `POST /messages` に idempotency key は在るか | **無い** |
+
+= **要求が喋れば要求が勝ち、黙れば config が governs。** 分割が成立する土台。
+★従って `MockURLProtocol.requestedTimeouts` が記録するのは**宣言した値**であって効いた値ではない。
+効く事の証明は上の実測の側に在る。**両方 `RequestTimeoutTests` の頭に書いた** ——
+でないと「打ち切りまで測っている」と読まれる。
+
+### ★★検査の穴が2つ。どちらも「無い」ではなく「**届かない**」だった
+
+| # | 穴 | 直し | 見張る物 |
+|---|---|---|---|
+| ① | `request-shape.test.mjs` が対象を `ios/Sources/Core/*Client.swift` という**綴り**で選んでいた。`SessionsAuthProbe.swift` は `…Probe` なので走査に一度も掛からず、**bearer 鍵を載せた要求**の URL / method / body が全部無監視で緑だった | **`URLRequest(url:` を実際に作っているか**で選ぶ(`requestBuildersIn`)。`…Poller` でも `…Uploader` でも掛かる。欠けていた4本の assertion を足した | 陰性対照「対象の導出は綴りでなく `URLRequest` を作っているかで選ぶ」= 綴りが `…Probe` の物を拾い、**注釈の中の `URLRequest` は拾わない**事を同時に確認 |
+| ② | 判定が file 全文への `includes` だった。各 client の検査に足した doc 注釈が `requestedTimeouts` に言及しているので、**assertion を消しても注釈だけで緑にできた** | 注釈行(`//` / `*` / `/*`)を除いてから数える | 既存の陰性対照に「注釈だけの言及は観測と数えない」2本を追加 |
+
+★①は **この検査が書かれた元の finding と同じ形**。②は**直している最中に自分の注釈で気付いた**
+= 綴りの出現を観測と読む形で、この repo が「数えるのは一致であって存在ではない」と
+何度も呼んでいる物と同じ。
+
+★**規約側を緩めなかった事を記録しておく**。初版は7本の timeout 検査を topic で束ねた
+`RequestTimeoutTests.swift` 1本に置き、それが `request-shape` の赤を踏んだ。
+「`Tests/Core` の何処かで綴りが出ていればよい」に**広げる**のは簡単だったが、そうすると
+**全 client 名と全次元名を注釈で並べた file が1本在るだけで全部緑**になる。
+検査に合わせて**置き場所の方を直した**。`RequestTimeoutTests` に残したのは
+**1本の file には書けない物だけ** = 定数どうしの関係と、計器そのものの陰性対照2本
+(素の要求は 8 と記録**されない** / 同一 session で読みと poll が違う値で出る)。
+
+### 対照が実際に噛む事の証明(全部その場で観測。hash 変化と綴り 0 を先に確かめた)
+
+| 破壊 | 結果 |
+|---|---|
+| `HistoryClient` の待ち時間の**行**を削除 | sim **赤2件を名指し**(`HistoryClientTests` / `RequestTimeoutTests`)、`build.sh --sim` exit 65。hash `5dcaa395a5f2`→`cf20d420887c`、復元一致 |
+| 探査の **assertion だけ**削除(注釈は残す) | **gate 赤** `SessionsAuthProbe: requestedTimeouts`。hash `d3369ae0551d`→`33475c7ddfdc`、復元一致 |
+| `SendClient` の待ち時間の行を削除 | 出所走査が**赤**。hash `41f6a9aa4dca`→`73fe45e7b1f4`、復元一致 |
+
+### 走らせた物と結果
+
+| | |
+|---|---|
+| headless sim(`ios/tools/build.sh --sim`) | exit 0、`** TEST SUCCEEDED **`。**377 pass / 0 fail** —— 報告値でなく `ios/build/xcodebuild-sim.log` の生 `Test Case … passed` を数えて一致を確認 |
+| `npm test`(rc-backend) | **728 / 728 pass / 0 fail** |
+| `tools/pre-commit-gates.sh` | exit **0**(`doc-linerefs` 緑 / 的の照合 241件・当たらない 0 / commit-suite 728/728 / `vacuous-gate` 0本 SELF-TEST 17/0 / `staged-controls-gate` 2/2) |
+| commit | `9cf08f0`(main、20 file を1件ずつ読み上げてから) |
+
+★`${PIPESTATUS[0]}` が空を刷ったのが**この repo で5回目**。
+`bash … | tail -40` の終了コードは末尾のコマンドの物。log へ落として `$?` を直に読む形に戻した。
+
+### 持ち帰り
+
+- **合格条件に数字が書いてあっても、それが今の設計の数字とは限らない。**
+  §5-6 の 2.3〜3.2 秒は正しく測られた値で、**測った対象がもう存在しなかった**。
+  条件を満たしに行く前に「これは何を測った数字か」を1回だけ確かめる。
+- **1つの定数が複数の目的を兼ねていたら、目的ごとの制約を書き出す。**
+  ここでは「server の 20 秒より長い」と「人が空白を見ている時間」が同じ 30 に乗っていて、
+  **前者が後者を人質に取っていた**。
+- **書く側と読む側で「諦める」の意味が違う。** 再発行が無料な物だけ短くしてよく、
+  無料かどうかは**サーバに冪等の鍵が在るか**で決まる = client 側だけ見ても判断できない。
+- **検査が赤くなった時、まず疑うのは検査ではなく自分の置き場所。**
+  緩める方に手が伸びたら「**緩めた後、何を1本置けば全部緑にできるか**」を数える。
+  1本で全部緑にできるなら、それは検査ではなく飾りになる。
