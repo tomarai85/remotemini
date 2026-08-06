@@ -21,7 +21,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -36,11 +36,25 @@ const SCAN_EXT = [".mjs", ".sh", ".py", ".swift"];
 // ★守りの**届く範囲**が、守られる側の木構造から自動で決まっていなかった、という事。
 //   同じ夜に別の形で3回踏んでいる(DESIGN §2.18-10)。名前や場所の一致で対象を
 //   導出すると、新しい木は**元から一覧に居ない**ので、緑のまま素通りする。
+//
+// ★2026-08-07、**同じ形の3件目**。今度は「木の中の dir」ではなく**木そのもの**が
+//   一覧に無かった: repo 直下の `.harness/` に DoD の台本と其の対照が 11 本(実測)
+//   在るのに、木が2つしか宣言されていないので此処は一度も走っていない。
+//   実測で当ててみると行番号引用 0 件 / backtick 引用 16 種は全部解決した ——
+//   つまり**赤が無かったのではなく、見ていなかった**。緑と区別が付かないのが此の病気。
 const TREES = [
   { name: "rc-backend", root: ROOT, dirs: ["src", "test", "tools"], floor: 20,
     bare: ["src", "test", "tools", "test/fixtures", "."] },
   { name: "ios", root: join(REPO, "ios"), dirs: ["Sources", "Tests", "UITests", "tools"], floor: 15,
-    bare: ["Sources", "Tests", "tools", "."] },
+    bare: ["Sources", "Tests", "tools", "."], outside: true },
+  // 台本は全部 `.harness/` の直下に在り、下の evidence-* / feedback には走査対象の
+  // 拡張子が 1 件も無い(実測 2026-08-07: 11 件は全部直下)。それでも `dirs` を
+  // 直下の名前で並べず `["."]` にしたのは、**証拠の置き場が日付で増える**から ——
+  // 名前で並べると増える度に一覧を書き足す事になり、書き忘れた日から静かに範囲外になる。
+  // ★`outside` = repo 直下から**別に写される**木。欠けてよい事の宣言で、下の
+  //   「起点の木が欠けたら赤」の判定は此の印から導く(名前の直書きを置かない為)。
+  { name: "harness", root: join(REPO, ".harness"), dirs: ["."], floor: 8,
+    bare: ["."], outside: true },
 ];
 // ★`UITests` を `bare` に足していない。`bare` は**拡張子を持たない裸の名前**を解決する
 //   為の一覧で、引用の側の拡張子は `mjs|sh|py` だけ(EXT_CITE)。UITests の中身は
@@ -62,7 +76,9 @@ const NOT_SCANNED = {
     ["node_modules", "依存の展開先。今この木には無いが `npm install` した瞬間に現れる" +
       " = 先に書いておかないと、その時に全員の commit が偽の赤で止まる"],
     [".harness", "実行の記録と証拠の置き場(実測 2026-08-05: json 48 / txt 15 / md 10 / log 8、" +
-      "走査対象の拡張子は 0 件)。source を置く場所ではない"],
+      "走査対象の拡張子は 0 件)。source を置く場所ではない。" +
+      "★repo 直下の `.harness/` とは**別の dir**。あちらは台本が 11 本在るので " +
+      "TREES に木として足した(2026-08-07)。綴りが同じなので混同しない事"],
     [".claude", "この木で走った agent の作業用。追跡 0 件(実測 2026-08-05)"],
     [".git", "**手元の木には無い**。edith の本番の木 `~/rc-backend` にだけ在る他レーンの物" +
       "(2026-08-03 の整備で置かれた。私の物ではないので消さない)。実測 2026-08-07: " +
@@ -75,10 +91,34 @@ const NOT_SCANNED = {
     ["RemoteMini.xcodeproj", "生成物(実測 2026-08-05: 追跡 0 件)"],
   ],
 };
+
+/**
+ * repo 直下で**木にしない** dir と、その理由。
+ *
+ * ★上の NOT_SCANNED が「木の中」を守るのに対し、此処は「木の一覧そのもの」を守る。
+ *   2026-08-07 に `.harness/` が抜けていたのは前者では原理的に捕まらない —— どの木の
+ *   中にも無いから、どの木の直下の照合にも掛からない。**守りの範囲を、守る側の
+ *   一覧から導いている限り、一覧の外は永久に見えない**という同じ形の3件目。
+ */
+const NOT_A_TREE = [
+  [".git", "版の記録。走査対象の拡張子 0 件(実測 2026-08-07: 拡張子を持つのは " +
+    "hooks の見本 14 件の .sample だけ)"],
+  ["research", "調査の記録。中身は md 3 件だけで走査対象の拡張子は 0 件(実測 2026-08-07)"],
+];
 /** 実在する木だけ走る。**居ない事は下の検査が必ず名指しで報告する**(黙って減らさない)。 */
 const present = (t) => existsSync(t.root) && statSync(t.root).isDirectory();
 const LIVE_TREES = TREES.filter(present);
 const MISSING_TREES = TREES.filter((t) => !present(t)).map((t) => t.name);
+/**
+ * 欠けたら赤にする木 = `outside` の印を持たない物。
+ *
+ * ★2026-08-07 まで此処は `!== "ios"` と**名前を直に書いて**いた。木を1つ足した瞬間、
+ *   足した木は其の直書きに引っ掛からず「欠けたら赤」の側に落ちる —— つまり
+ *   `rc-backend/` だけを写す経路(`test/mutation-controls.py` の凍結と
+ *   `tools/deploy-to-edith.sh` の送信)で、足しただけで赤くなる。
+ *   一覧に書いた物と木の実態がずれる形が此の file の主題なので、判定も印から導く。
+ */
+const MISSING_REQUIRED = TREES.filter((t) => !present(t) && !t.outside).map((t) => t.name);
 
 /**
  * 走査の対象。**この file 自身も含む**(上の注釈の理由)。
@@ -361,6 +401,11 @@ test("陰性対照: 隣の木にしか無い名前を裸で引けば見つかる
  * ★名前の配列を受ける形にして、陰性対照が同じ道を通れるようにする。
  */
 export function unlistedDirs(names, tree) {
+  // ★木ごと走る指定(`dirs` に `.` を持つ木)は、直下の dir が**全部走査済み**なので
+  //   一覧に無い事が範囲外を意味しない。此処を短絡させないと、証拠の置き場が
+  //   日付で1つ増える度に偽の赤が出て、しかも直し方が「一覧に書き足す」= 此の検査が
+  //   元々潰した筈の「一覧と木のずれ」を自分の手で作る事になる。
+  if (tree.dirs.includes(".")) return [];
   const known = new Set([...tree.dirs, ...(NOT_SCANNED[tree.name] || []).map(([d]) => d)]);
   return names.filter((n) => !known.has(n)).sort();
 }
@@ -394,6 +439,63 @@ test("陰性対照: 一覧に無い dir を1件混ぜれば見つかる", () => 
   assert.deepEqual(unlistedDirs([".git"], { name: "rc-backend", dirs: [] }), []);
   assert.deepEqual(unlistedDirs([".git"], { name: "ios", dirs: [] }), [".git"]);
   assert.deepEqual(unlistedDirs(["Sources"], { name: "ios", dirs: ["Sources"] }), []);
+  // ★木ごと走る木(`dirs` が `.`)は直下を挙げない。**が、それは走っているからで
+  //   免除だからではない** —— 同じ名前を「走らない木」に渡せば挙がる事を並べて撃つ。
+  //   片側だけだと、短絡が広過ぎて全部の木を黙らせていても緑になる。
+  const rooms = ["evidence-2026-08-1x", "feedback"];
+  assert.deepEqual(unlistedDirs(rooms, { name: "harness", dirs: ["."] }), []);
+  assert.deepEqual(unlistedDirs(rooms, { name: "harness", dirs: ["src"] }), rooms);
+});
+
+// ── ③-b 木の一覧そのものが repo 直下を覆っている ──────────────────────────
+/**
+ * 木でも免除でもない repo 直下の dir。
+ *
+ * ★覆っている側(`covered`)も**引数で受ける**。最初は木の根を `join(REPO, 名前)` と
+ *   突き合わせる形で書いて、実測で捨てた: 部分木では backend の写し先が `rc` 等の
+ *   別名になるので `rc-backend` が根と一致せず、**完全な木では緑・写しの中でだけ赤**に
+ *   なった(2026-08-07、この file の頭が警告している形そのものを陰性対照でやった)。
+ *   陰性対照が木の実際の並びに依存した時点で、それは純関数の検査ではない。
+ */
+export function uncoveredRepoDirs(names, covered = TREES.map((t) => basename(t.root))) {
+  const known = new Set([...covered, ...NOT_A_TREE.map(([d]) => d)]);
+  return names.filter((n) => !known.has(n)).sort();
+}
+
+test(`★木の一覧が repo 直下を覆っている(根が本物: ${REPO_INTACT})`, () => {
+  // 部分木では repo 直下が「写し先の一時 dir」なので、覆いは**測れない**。
+  // 空配列を渡して緑にするのではなく、測っていない事を log に出してから緑にする
+  //   —— 出さないと「覆いを確かめた」と見分けが付かない(此の file の主題)。
+  if (!REPO_INTACT) {
+    console.log("# repo 直下の覆いは**測っていない**(部分木で走っている)");
+    return;
+  }
+  const names = readdirSync(REPO, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name);
+  assert.deepEqual(
+    uncoveredRepoDirs(names), [],
+    "repo 直下に、木でもなく免除の理由も書いていない dir が在る。" +
+      "TREES に木として足すか、NOT_A_TREE に**実測した理由**を付けて足すか、必ずどちらかを選ぶ事",
+  );
+  // 免除の側も腐る。実在しない dir の免除は畳む(完全な木でだけ判る)。
+  assert.deepEqual(
+    NOT_A_TREE.map(([d]) => d).filter((d) => !existsSync(join(REPO, d))), [],
+    "repo 直下に実在しない dir の免除が残っている",
+  );
+});
+
+test("陰性対照: repo 直下に木でも免除でもない dir を1件混ぜれば見つかる", () => {
+  // 覆う側も渡す = 木の実際の並びに一切依存しない(上の注釈の理由)。
+  const covered = ["rc-backend", "ios", ".harness"];
+  assert.deepEqual(uncoveredRepoDirs([...covered, ".git", "research"], covered), []);
+  assert.deepEqual(uncoveredRepoDirs(["rc-backend", "shared"], covered), ["shared"]);
+  // 覆う側から1つ落とせば、其の木が挙がる(覆いの判定が現に効いている事)
+  assert.deepEqual(uncoveredRepoDirs(covered, ["rc-backend", "ios"]), [".harness"]);
+  // ★`.harness` は**木として**覆われているのが正しい。免除の一覧に落ちると
+  //   「覆っている」の判定は緑のまま、中の 11 本はまた走らなくなる —— 今日直した形に戻る。
+  assert.ok(!NOT_A_TREE.some(([d]) => d === ".harness"),
+    "免除で黙らせると、走らせずに緑になる形へ逆戻りする");
 });
 
 // ── 「此処に無い」と「実在しない」を分ける ────────────────────────────────
@@ -442,10 +544,16 @@ test(`★走査した木: ${LIVE_TREES.map((t) => t.name).join(" + ")}` +
   // rc-backend だけは**欠けてよい木ではない**。ここが欠けるのは走査の起点が
   // 壊れた時なので、部分木として黙認せず赤にする。
   assert.deepEqual(
-    MISSING_TREES.filter((n) => n !== "ios"), [],
+    MISSING_REQUIRED, [],
     "起点の木が見つからない = ROOT の求め方が壊れている(部分木の話ではない)",
   );
   assert.ok(LIVE_TREES.length >= 1);
+  // ★印の側が腐るのも見る。`outside` を全部の木に付ければ上の判定は永久に緑になる
+  //   ので、**必須の木が現に1つ在る**事を綴りごと固定する。増やす時は此処も動かす。
+  assert.deepEqual(
+    TREES.filter((t) => !t.outside).map((t) => t.name), ["rc-backend"],
+    "欠けたら赤にする木が 0 個 = 上の判定が何も見ていない(印の付け過ぎ)",
+  );
 });
 
 // ── 免除の側も腐る。使われていない前置きは畳む ──────────────────────────
