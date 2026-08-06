@@ -36,8 +36,32 @@ final class PollFetchingFixture: PollFetching {
 
     func poll(baseURL: URL, apiKey: String, sessionID: String, cursor: PollCursor, waitMs: Int) async -> PollOutcome {
         callCount += 1
+
+        // 2026-08-06: the two states that are *readable*. Everything below this point
+        // returns `.unreadable` forever, which is why `ConversationViewModel.screen`
+        // stayed `nil` in every fixture and the composer/interrupt table -- the rule
+        // the screen is shaped around -- had no UI-level coverage at all.
+        //
+        // One readable response, then hold: the classification must STICK for the
+        // duration of a UI test's assertions. Returning it repeatedly would work too,
+        // but a fixture that keeps resolving instantly spins the poll loop as fast as
+        // the CPU allows; the same 60s hold the branch below uses is the honest shape
+        // of a long-poll the server has not answered yet.
+        if let classification = Self.readableClassification(for: historyState) {
+            if callCount == 1 {
+                return .success(Self.screenResponse(classification: classification))
+            }
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            return .unreadable
+        }
+
         let unreadableTarget: Int
         switch historyState {
+        case .busy, .choice:
+            // Unreachable: handled by the readable branch above. Kept explicit rather
+            // than folded into a `default` so adding a 6th state is a compile error
+            // here instead of a silent `unreadableTarget = 0`.
+            unreadableTarget = 0
         case .threeRoles:
             // No degradation intended for this state -- 0 means the very first call
             // already falls through to the "hold forever" branch below, so
@@ -61,6 +85,68 @@ final class PollFetchingFixture: PollFetching {
         // test's assertion timeout.
         try? await Task.sleep(nanoseconds: 60_000_000_000)
         return .unreadable
+    }
+
+    /// `nil` = this state is one of the unreadable ones (its whole point is the
+    /// degradation banner), so it must not be handed a readable response.
+    private static func readableClassification(for state: HistoryFetchingFixture.State) -> ScreenBody.Classification? {
+        switch state {
+        case .busy: return .busy
+        case .choice: return .choice
+        case .threeRoles, .degraded, .stalled: return nil
+        }
+    }
+
+    /// The readable poll response that carries a classification, plus **one live
+    /// message** -- the anchor, and the reason this is not `items: []`.
+    ///
+    /// The first draft sent no items, reasoning that a transcript assertion would
+    /// couple the composer test to rendering. Measuring it killed that reasoning:
+    /// `BUSY` and "no screen observed yet" produce a **pixel-identical** screen
+    /// (`composerEnabled`/`interruptEnabled` both return `true` from their `guard let
+    /// screen else` path), so `testBusyLeavesBothTheComposerAndTheInterruptButtonUsable`
+    /// passed whether or not the readable branch above ran at all. A test that cannot
+    /// fail is not evidence -- it is a green light wired to nothing.
+    ///
+    /// `applyReadablePoll` assigns `screen` and appends `entries` in the same call with
+    /// no branch between them, so the live line showing up on screen IS the proof that
+    /// the classification landed. That is what makes the composer assertion, which has
+    /// no observable of its own for `BUSY`, mean something.
+    ///
+    /// `display.choice` is attached only for `.choice`, because that is the shape the
+    /// real server sends -- `view.mjs` fills `choiceView(state)` exactly when the desk
+    /// is sitting on a menu. Omitting it would make the fixture's CHOICE screen a
+    /// state the backend never actually produces.
+    private static func screenResponse(classification: ScreenBody.Classification) -> PollResponse {
+        PollResponse(
+            items: [
+                .message(MessageItem(
+                    entries: [HistoryEntry(
+                        role: .assistant,
+                        text: liveAnchorText(for: classification),
+                        display: .init(who: "Claude")
+                    )],
+                    seq: 1
+                ))
+            ],
+            screen: ScreenBody(classification: classification),
+            display: classification == .choice
+                ? PollDisplay(choice: ChoiceView(show: true, reason: "編集の確認"))
+                : nil,
+            queued: nil,
+            cursor: PollCursor.empty,
+            more: false
+        )
+    }
+
+    /// Distinct per classification on purpose: one shared string would let a test that
+    /// launched the wrong fixture still find its anchor and report green.
+    private static func liveAnchorText(for classification: ScreenBody.Classification) -> String {
+        switch classification {
+        case .busy: return "ライブ(作業中)の行が届いた"
+        case .choice: return "ライブ(確認待ち)の行が届いた"
+        case .sendable, .unknown, .unrecognized: return "ライブの行が届いた"
+        }
     }
 }
 

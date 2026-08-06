@@ -71,7 +71,16 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-s6.XXXXXX")"
 LOGDIR="${TMPDIR:-/tmp}"
 # 殺された回の後始末に使う目印。**固定 path** である事が全て —— WORK は毎回名前が
 # 変わるので、次の走行から前回の WORK を見つける手掛かりがここにしか無い。
-INFLIGHT="${TMPDIR:-/tmp}/rc-dod-sprint6-inflight.tsv"
+# ★2026-08-06: 名前から sprint を外して ios の変異対照で**共有**にした
+#   (旧 `rc-dod-sprint6-inflight.tsv`)。理由は ios/tools/conversation-ui-control.sh が
+#   同じ `ConversationViewModel.swift` を変異させるから —— 目印が別々だと、片方が
+#   殺されて残した変異を、もう片方が「走る前の中身」として複製し、復元の基準点ごと
+#   汚染する。共有して安全なのは2本が**直列にしか走らない**から(門は
+#   `staged-controls-gate.sh` の `for c in $sel`、全掃きは `run-controls.sh` の
+#   `for c in "${list[@]}"`。どちらも1本ずつ)。並行に走らせる口が出来た日は此処が最初に壊れる。
+#   `dod-sprint-6-recovery-controls.sh` は INFLIGHT を外から与えて区間だけ回すので、
+#   この改名の影響を受けない(= 対照は生きたまま)。
+INFLIGHT="${TMPDIR:-/tmp}/rc-ios-mutation-inflight.tsv"
 PASS=0; FAIL=0; UNMEASURED=0
 
 VM="$IOS/Sources/Screens/Conversation/ConversationViewModel.swift"

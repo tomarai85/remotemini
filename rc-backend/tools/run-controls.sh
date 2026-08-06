@@ -303,6 +303,21 @@ LOCAL_CTLS=(
                                      # 別ファイルへ出して log を引数で受ける形にしたので、作り物の log で
                                      # 全分岐を測れる。測るのに数分掛かる造りだと対照は書かれない
                                      # (上の ui-fixture 2本が実際に数十秒〜数分掛かっている)。実測1秒未満。
+    ../ios/tools/conversation-ui-control.sh # ★2026-08-06。会話画面の UI 検査
+                                     # (ios/UITests/ConversationUITests.swift の4本)の負の対照。
+                                     # 据えた理由が「書いた検査が空振りだった」なので、他の対照より
+                                     # 一段直接的: 初版の4本は fixture が readable な応答を返そうが
+                                     # 返すまいと緑だった(BUSY と「まだ screen を観測していない」は
+                                     # 画面上まったく同じ = どちらも guard の既定へ落ちる)。
+                                     # 錨(ライブの行1本)を足して直したので、その錨が効いている事を
+                                     # 変異で確かめる。M2 = fixture の readable の枝を殺す、が要。
+                                     # 作業木の Swift を変異させるので、殺された回の取り残しは
+                                     # 固定 path の目印で次の走行が拾う(dod-sprint-6 と**共有**。
+                                     # 同じ ConversationViewModel.swift を変異させる2本なので、
+                                     # 目印を分けると互いの取り残しを基準点として複製してしまう。
+                                     # ズレは rc-backend/test/mutation-recovery-copy.test.mjs が毎 commit 測る)。
+                                     # 実測 2026-08-06: DerivedData が温まっていて 3.6 分
+                                     # (基準 37s + 変異 39/48/49s)。冷えていればその分伸びる。
     ../.harness/dod-sprint-3-controls.sh # ★2026-08-05。Sprint 3 の DoD 照合表
                                      # (`.harness/dod-sprint-3.sh`)の対照 = 15 行のうち 12 行が
                                      # **本当に赤にも緑にもなる**事を測る。照合表は「全部緑」を
