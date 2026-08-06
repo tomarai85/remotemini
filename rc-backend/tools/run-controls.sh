@@ -374,6 +374,75 @@ LOCAL_CTLS=(
     test/vacuous-scan-controls.sh    # 同・走査の本体(10本)。
     test/test-discovery-controls.sh  # 新しい test file が単体スイートに**拾われる**か。
                                      # 拾われない検査は書いた本人にだけ緑に見える。
+
+    # ── ★2026-08-06、8本まとめて此処へ入れた(**登録漏れ、2度目**)─────────────
+    # 前回(上の段落)は 2026-08-05 21:41 の commit `a3d6b58` で6本を登録した。
+    # **この file はその時刻から今日まで一度も触られていない**。その間に書いた対照は8本、
+    # 全部 08-06 の一日のうちで、**8本とも未登録**だった:
+    #   00:41 live-interrupt-wording / dod-sprint-6   01:02 live-shell-key
+    #   01:13 poll-spend   01:21 restart-epoch   16:26 verify-state-judgment
+    #   17:27 phone-window-judgment   20:47 dod-sprint-6-recovery
+    # 実測 2026-08-06: disk 上 **57 本** / 未登録 8 本。
+    # (同日の progress.md に「56 本」と書いたが、それは `conversation-ui-control.sh` を
+    #  昇格させる前の値で、書く時点で測り直していなかった。正は 57)
+    # ★前回の教訓(「緑を出した instrument が何を測っているのかを言える事」)は**言える様に
+    #   なる**事しか要求しておらず、次に書く対照が登録されるかは私の記憶に懸かったままだった。
+    #   記憶に懸けた守りは、1日で同じ形に戻る。此処に足すのは今日の8本の**始末**であって、
+    #   再発の防止ではない。防止は門の側 = `tools/controls-registration-gate.sh`
+    #   (対照を新設した commit が此の file を触っていなければ止める。同じ commit で足した)。
+    test/controls-registration-gate-controls.sh
+                                     # ★その門自身の対照(9本、陰性対照つき)。偽の repo を
+                                     # `git init` して門を撃ち、新設だけ=赤 / 一覧も触った=緑 /
+                                     # 変更だけ=素通し / 走査 dir の外でも赤 / 改名でも赤 /
+                                     # 対照が無い commit は**無言**の緑 / 降ろす口は理由を残す /
+                                     # git でなければ exit 2 を測る。8番目が陰性対照 = 門の
+                                     # `exit 1` を潰した写しでは「新設だけ」が緑に変わる事の確認。
+                                     # ssh も xcodebuild も要らず 3 秒。**この行自体が門の初仕事**
+                                     # (門は自分の対照を新設した commit にも同じ要求をする)。
+    test/phone-window-judgment-controls.sh
+                                     # `tools/verify-phone-window.sh` の**判定**の対照。
+                                     # 鎖③④の証拠 JSON を作る側なので、観測できなかった物を
+                                     # 緑にすると本番判断が丸ごと嘘になる。観測(ssh / tmux /
+                                     # launchctl / 8787)は測らない —— 本物のバイトを切り出して
+                                     # mktemp の砂場で判定だけを撃つ。ssh は1回も呼ばない。
+    test/poll-spend-controls.sh      # e2e の待ち道具(`pollUntilScreen`)が「回数を使い切った」
+                                     # を赤の本文に出すか。言わないと赤が3通りに読め、次に直す人が
+                                     # 「眠りを足す」band-aid に引き寄せられる。砂場の probe で撃つ。
+    test/restart-epoch-controls.sh   # 再起動を跨いだ栞が**偶然一致しない**事。epoch が連番だと
+                                     # 再起動後に古い栞が通り、電話は「最新です」と表示したまま
+                                     # 永久に凍る —— 赤くなる場所がどこにも無い、此の系で最悪の
+                                     # 壊れ方。SSE 側に実在した穴なので、対照が要る側の典型。
+    test/verify-state-judgment-controls.sh
+                                     # `tools/verify-rc-backend-state.sh` の**判定**の対照。
+                                     # safety-core HARD GATE 1 が食う artifact を作る道具なので、
+                                     # 此処が主観に落ちると「止まっている」「動いている」の
+                                     # 判断が全部まとめて嘘になる。プローブ側は駆動しない
+                                     # (本物の launchd と 8787 に触るので edith の上でしか動かない)。
+    ../.harness/live-interrupt-wording-controls.sh
+                                     # 実機の割り込み検査が掴む**文言**が、`view.mjs` と
+                                     # 実機側で片側だけ変わっていないか。当たらないプローブが
+                                     # 「無い」と報告する形を塞ぐ。grep だけで走るので瞬時。
+    ../.harness/live-shell-key-controls.sh
+                                     # 実機の殻(`ios/tools/*-main.swift` と呼び側の `.sh`)が
+                                     # **鍵を漏らさない**事。argv にも環境変数にも置かない /
+                                     # 印字しない / 既定のホストを書かない / 鍵に触る行が許した
+                                     # 4形以外に無い。全部「書かれていない事」で守られている規律
+                                     # なので、書かれていない事を測る物が要る。
+    ../.harness/dod-sprint-6-recovery-controls.sh
+                                     # `.harness/dod-sprint-6-controls.sh` の**復旧区間だけ**を的の本文から
+                                     # 切り出して回す(写しは作らない)。xcodebuild も Swift も
+                                     # 要らないので数秒。SIGKILL された回の変異が作業木に残る事を
+                                     # 実測して据えた対照で、その復旧手順は今 ios の変異対照2本の
+                                     # 共有物になっている(ズレは test/mutation-recovery-copy.test.mjs)。
+    ../.harness/dod-sprint-6-controls.sh
+                                     # Sprint 6 の負の対照(13 変異 x xcodebuild)。**一番高い**が
+                                     # 除外しない: 費用は実測 248 秒(2026-08-06、commit の門の中。
+                                     # DerivedData が温まっている時)で、既に一覧に居る
+                                     # `conversation-ui-control.sh` の 156 秒と同じ桁である。
+                                     # 冷えていれば数倍に伸びる —— その時は**外すのではなく
+                                     # 温めてから回す**(`ios/tools/build.sh --sim` を先に1回)。
+                                     # ★`test/verdict-mutants.sh`(下の「わざと入れていない」)との
+                                     #   違いは桁: 向こうは既定で exit 2 を返し、全部回すと 20 分超。
 )
 # ── ★ここに**わざと入れていない**物(消えた訳ではない)────────────────────────
 # `test/verdict-mutants.sh` = `test/mutation-verdict-controls.sh` の陰性対照

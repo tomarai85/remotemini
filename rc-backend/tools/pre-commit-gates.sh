@@ -70,6 +70,18 @@ staged="$(git -C "$ROOT" diff --cached --name-only)"
 #     また「手で同期する一覧」が1本増える —— それが4回続いた再発の真因だった。
 bash "$ROOT/rc-backend/tools/doc-linerefs-gate.sh" || exit $?
 
+# ★2026-08-06 追加: 対照を**新設**した commit が、全掃きの一覧を触っていなければ止める。
+#   本体 = rc-backend/tools/controls-registration-gate.sh
+#   対照 = rc-backend/test/controls-registration-gate-controls.sh(9 本、陰性対照つき)
+#   経緯: 2026-08-05 21:41 の `a3d6b58` で「登録漏れ6本」を直した。以後 `run-controls.sh` は
+#   一度も触られておらず、その翌日に書いた対照 8 本が**8本とも未登録**だった
+#   (実測 2026-08-06: disk 57 本 / 未登録 8 本)。登録を守っていたのは私の記憶だけで、
+#   記憶に懸けた守りは1日で戻った。だから機械に置く。0.02 秒。
+#   ★上と同じ理由で**無条件・下の絞り込みより前**に呼ぶ。自分の対象は門自身が決める
+#     (ここに「対照が入っているか」の条件を書くと、手で同期する一覧がまた1本増える)。
+#   非ゼロ(未登録 1 / 未測定 2)はどちらも止める。降ろすなら RC_CTLREG_OK に理由を書く。
+bash "$ROOT/rc-backend/tools/controls-registration-gate.sh" || exit $?
+
 if ! echo "$staged" | grep -qE '^(rc-backend/(src|test|tools)|ios/(Sources|Tests|tools))/|^ios/project\.yml$|^\.harness/[^/]*\.sh$'; then
     # ★2026-08-06: regex が外れても**まだ即断しない**。対照の見張り先の一覧を
     #   ここで推測するのをやめ、**持っている側に聞く**。
