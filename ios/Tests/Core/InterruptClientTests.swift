@@ -14,6 +14,8 @@ import XCTest
 /// single property those tests cannot check from their side: **whatever the raw fields
 /// say, the sentence shown is `display.text`.** The precedence and blindness controls
 /// below are that property.
+// not-a-port: JS の検査を名指ししているのは「あちらが見られない性質」を指す為で、移植ではない。
+// 生の欄が何であれ表示は display.text である事だけを測るので、あちらに対応する行は無い。
 final class InterruptClientTests: XCTestCase {
     private let baseURL = URL(string: "https://unit-test.invalid")!
 

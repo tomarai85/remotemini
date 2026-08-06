@@ -88,11 +88,11 @@ DEFAULT_PORTS = {
 #
 # ★受理の一覧もまた腐る手動の一覧なので、**使われていない受理は赤にする**。
 #   `test/no-linerefs.test.mjs` の「死んだ免除を残さない」と同じ形。
-DEFAULT_ACCEPTED = {
-    ("nextHistoryLimit", "480"):
-        "Swift は同じ上限の節を `450` で踏んでいる(450+100=550 で栓が効く事まで見える)。"
-        "入力の綴りが違うだけで、JS の `480` が測っている性質は移っている。",
-}
+# ★空でよい。空である事に意味が在る —— 下の「死んだ受理は赤」が効いている証拠。
+#   2026-08-07 に唯一の項 nextHistoryLimit(480) を畳んだ: Swift 側がその入力を
+#   literal で踏む様になったので、受理が当たらなくなった(= 自分で赤を出した)。
+#   受理を足す時は必ず理由を書く事。理由の無い受理は、次に読む人には黙らせた跡と同じ。
+DEFAULT_ACCEPTED = {}
 
 
 def load_accepted():
@@ -232,6 +232,18 @@ def found_in(arg, kind, swift_text):
     return False
 
 
+# ★疑いの網には「違う」と言う口が要る。無いと、散文で JS の検査 file 名に触れただけの
+#   注釈が**永久に**未測定として残り、出口が 2 に貼り付いて計器ごと無視される
+#   (実測 2026-08-07: 未測定2件は両方とも「JS 側が見ている性質」を説明する doc コメント。
+#    出口は 0 から 2 に落ちたまま、誰も走らせていないので気付かれなかった)。
+#   ★印の置き場は**Swift の file の中**。道具の側に一覧を持つと、file を動かした時に
+#     一覧だけ残って腐る(同じ日の DESIGN §2.18-10 (k) と同じ判断)。
+#   ★印もまた腐るので、当たらなくなった印は `DEFAULT_ACCEPTED` の死んだ受理と同じく**赤**。
+#     理由の無い印も赤 —— 理由を書かせない口は、ただの黙らせ方になる。
+NOT_A_PORT = re.compile(r"(?://|#)\s*not-a-port:\s*(\S[^\n]*)")
+MIN_REASON = 8
+
+
 def unlisted_ports(ports):
     """★disk の側から逆に数える。JS の検査 file を名指ししている Swift の検査で、
     移植表に居ない物を返す。
@@ -239,21 +251,43 @@ def unlisted_ports(ports):
     表に書いた物が実在するかは P8 が見ている。此処が見るのは**逆向き** ——
     「実在するのに表に書き忘れた」。訂正6-1 で落ちたのはこちらの向きだった。
     名前は `JS_TEST` の basename から取るので `PC_JS` の継ぎ目に追随する。
+
+    返す物は3つ組: (表に無い = 未測定, 印で外した, 印が腐っている = 赤)。
     """
     listed = {p for paths in ports.values() for p in paths}
     tests_root = ROOT / "ios" / "Tests"
     if not tests_root.is_dir():
-        return []
-    out = []
+        return [], [], []
+    unlisted, disposed, rotten = [], [], []
     for p in sorted(tests_root.rglob("*.swift")):
         try:
-            if JS_TEST.name not in p.read_text():
-                continue
+            text = p.read_text()
         except OSError:
             continue
-        if str(p.relative_to(ROOT)) not in listed:
-            out.append(str(p.relative_to(ROOT)))
-    return out
+        rel = str(p.relative_to(ROOT))
+        mark = NOT_A_PORT.search(text)
+        mentions = JS_TEST.name in text
+        if mark and not mentions:
+            # 印は在るが、その file はもう JS の検査を名指ししていない = 印だけが残った
+            rotten.append((rel, "もう JS の検査を名指ししていない = 印を畳む事"))
+            continue
+        if not mentions:
+            continue
+        if mark and rel in listed:
+            # 表にも印にも在る。どちらが本当か出力から判らないので黙って通さない
+            rotten.append((rel, "移植表に在るのに印も付いている = どちらか一方にする事"))
+            continue
+        if rel in listed:
+            continue
+        if mark:
+            reason = mark.group(1).strip()
+            if len(reason) < MIN_REASON:
+                rotten.append((rel, f"印の理由が短すぎる({len(reason)}字)= 黙らせているだけ"))
+            else:
+                disposed.append((rel, reason))
+            continue
+        unlisted.append(rel)
+    return unlisted, disposed, rotten
 
 
 def main():
@@ -329,10 +363,13 @@ def main():
             print(f"   照合できない: {len(opaque)} 件({detail})-- 人が読む")
         print()
 
-    for p in unlisted_ports(ports):
+    unlisted, disposed, rotten = unlisted_ports(ports)
+    for p in unlisted:
         print(f"■ ★測れない -- JS の検査を名指ししているのに移植表に無い: {p}")
+        print("   移していないのが正しいなら、その file に not-a-port の印を理由付きで置く事")
         unmeasured.append(f"{p}(移植表に行が無い)")
         print()
+    red += [f"腐った印 {p}({why})" for p, why in rotten]
 
     # ★受理の一覧も腐る。当たらなくなった受理は**残っている事自体が偽の主張**なので赤。
     #   (`test/no-linerefs.test.mjs` の「死んだ免除を残さない」と同じ)
@@ -354,6 +391,11 @@ def main():
     print(f"  受理した差し替え: {len(accepted_hit)} / 死んでいる受理: {len(dead)}")
     for fn, a in dead:
         print(f"      - ★{fn}({a}) はもう見当たらない入力ではない = 受理を畳む事")
+    # ★印で外した物は**必ず件数と理由を刷る**。黙って落とすと「移した」と見分けが付かない
+    #   (= 受理を件数で出しているのと同じ作法)。
+    print(f"  印で外した検査: {len(disposed)}")
+    for p, why in disposed:
+        print(f"      - {p} -- {why}")
 
     if unmeasured:
         return 2

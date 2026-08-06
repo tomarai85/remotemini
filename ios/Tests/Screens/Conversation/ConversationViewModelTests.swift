@@ -1337,6 +1337,9 @@ final class ConversationViewModelTests: XCTestCase {
 
     // MARK: §2-b: what the interrupt banner says, and who wrote it
 
+    // not-a-port: JS の検査を名指ししているのは「あちらが見られない性質」を指す為で、移植ではない。
+    // 測るのは継ぎ目の側(SendOutcome が ResultDisplay しか運ばない)なので、あちらに対応する行は無い。
+
     /// ★The property `rc-backend/test/view.test.mjs` cannot check from its side. All
     /// four `stopped` sentences the server writes reach the banner unchanged -- no
     /// suffix, no rewording. Note what the view model never even sees: `SendOutcome`

@@ -405,6 +405,9 @@ LOCAL_CTLS=(
                                      # 壊れない事と、既存の hook を黙って上書きしない事。
     test/vacuous-gate-controls.sh    # 「錨の無い検査」を書いた瞬間に止める門(11本)。
     test/vacuous-scan-controls.sh    # 同・走査の本体(10本)。
+    test/port-coverage-gate-controls.sh # 移植の照合を**走らせる**門(10本)。道具側の対照は
+                                     # 上の port-coverage-controls.sh。★対照が在る事は道具が
+                                     # 回っている事を意味しない、が此処を足した理由(実測 08-07)。
     test/test-discovery-controls.sh  # 新しい test file が単体スイートに**拾われる**か。
                                      # 拾われない検査は書いた本人にだけ緑に見える。
 
