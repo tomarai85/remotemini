@@ -743,6 +743,19 @@ final class ConversationViewModel: ObservableObject {
         case .unauthorized:
             onUnauthorized()
             return false
+        case .sessionNotFound:
+            // The conversation ended (or was deleted) while this screen was watching
+            // it. Same destination as a 404 on the initial load and on "load earlier"
+            // -- one phase for one fact, reached from all three doors.
+            //
+            // Returning `false` is the substance of the fix, not `phase` alone: with
+            // `true`, the screen would say 「この会話は見つかりません」 while a loop
+            // underneath it kept asking a dead session for updates, with `Backoff`
+            // stretching the interval forever. A phase that says "gone" over a loop
+            // that behaves like "maybe not" is the same class of contradiction the
+            // `.unreadable` arm above refuses.
+            phase = .notFound
+            return false
         case .unreachable:
             // `Backoff.attempt` already advanced inside `PollLoop`; §3-a: a transport
             // failure must not touch `UnreadableMeter` in either direction.

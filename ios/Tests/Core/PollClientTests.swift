@@ -52,6 +52,53 @@ final class PollClientTests: XCTestCase {
         XCTAssertEqual(outcome, .unreachable)
     }
 
+    // MARK: - 404: the two 404s this endpoint produces are not the same event
+
+    func testStatus404WithSessionNotFoundIsItsOwnOutcome() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 404, body: Data(Self.sessionNotFoundBody.utf8))]
+
+        let outcome = await makeClient().poll(baseURL: baseURL, apiKey: "k", sessionID: "s", cursor: .empty, waitMs: 0)
+
+        XCTAssertEqual(outcome, .sessionNotFound)
+    }
+
+    /// The property, not the mapping: `PollClient` was the last client in this app
+    /// still answering "the conversation is gone" and "the backend is unreachable"
+    /// with the same value. Equal values cannot drive different behaviour no matter
+    /// what the loop above them does, so the loop's fix rests on this inequality.
+    /// Same assertion `HistoryClientTests` already makes for its own error type.
+    func testSessionNotFoundIsNotEqualToUnreachable() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 404, body: Data(Self.sessionNotFoundBody.utf8))]
+        let gone = await makeClient().poll(baseURL: baseURL, apiKey: "k", sessionID: "s", cursor: .empty, waitMs: 0)
+
+        MockURLProtocol.stubQueue = []
+        let offline = await makeClient().poll(baseURL: baseURL, apiKey: "k", sessionID: "s", cursor: .empty, waitMs: 0)
+
+        XCTAssertNotEqual(gone, offline)
+    }
+
+    /// A 404 the server did NOT label `SESSION_NOT_FOUND` means the phone asked for a
+    /// path this server does not serve -- a version skew across a deploy, which the
+    /// next deploy fixes. Deliberately still `.unreachable` so the loop keeps retrying
+    /// into that recovery, unlike `SendClient` (one-shot, no loop to heal into, so it
+    /// reports a contract violation instead). Getting this backwards would turn every
+    /// mid-deploy poll into a dead screen requiring a manual reopen.
+    func testStatus404WithoutTheCodeStaysUnreachableSoADeployCanHealIt() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 404, body: Data(#"{"error":"no such route","code":"NO_SUCH_ROUTE"}"#.utf8))]
+
+        let outcome = await makeClient().poll(baseURL: baseURL, apiKey: "k", sessionID: "s", cursor: .empty, waitMs: 0)
+
+        XCTAssertEqual(outcome, .unreachable)
+    }
+
+    func testStatus404WithAnUndecodableBodyStaysUnreachable() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 404, body: Data("<html>404</html>".utf8))]
+
+        let outcome = await makeClient().poll(baseURL: baseURL, apiKey: "k", sessionID: "s", cursor: .empty, waitMs: 0)
+
+        XCTAssertEqual(outcome, .unreachable)
+    }
+
     // MARK: - The two-pass read (§2-a steps 2-4)
 
     func testStatus200WithInvalidJSONIsUnreadable() async {
@@ -260,4 +307,9 @@ final class PollClientTests: XCTestCase {
     private static let validBody = """
     { "items": [], "screen": null, "queued": null, "cursor": "t.abc.1.0", "more": false }
     """
+
+    /// Byte-for-byte the object `server.mjs` freezes as `SESSION_NOT_FOUND` and
+    /// returns from the shared session-route guard, which sits BEFORE the action
+    /// dispatch -- so `poll` gets it on exactly the same terms `history` does.
+    private static let sessionNotFoundBody = #"{"error":"unknown session","code":"SESSION_NOT_FOUND"}"#
 }
