@@ -50,6 +50,7 @@ import {
   tmuxChildEnv,
   COMPOSER_PLACEHOLDER,
 } from "../src/inject.mjs";
+import { exitCodeFor } from "./exit-codes.mjs";
 
 const HOME = homedir();
 const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -897,9 +898,16 @@ async function main() {
   }
 }
 
+// 終了コードの意味と順序(2 > 1 > 3 > 0)は `tools/exit-codes.mjs` に1本だけ置いてある。
+// 三項演算子を此処に直に書くと、この台本の**結論そのもの**が一度も検査されない1行になる ——
+// 実機でしか走らない台本なので、順序が入れ替わっても手元では永久に気付かない。
+// 8 通り全部と、4本の台本の合意は `test/live-exit-codes.test.mjs` が毎 commit 撃つ。
+// ★上限で赤くなり得る枝は、此の台本の側で check ではなく note へ倒してある
+//   (★相手が答えたか / ★割り込みは測れていない / ★unverified は測っていない)。
+//   倒し忘れると 1 が 3 を隠す =「待てば直る物」を「直す物」として報告する計器になる。
+//
 // 終了コードは main の外で決める(try の中の return は finally を通って main を抜けるので、
 // main の中に置いた process.exit には届かない = 8/01 に live-choice-check.mjs で踏んだ穴)。
-// 壊れている(1)を上限(3)より先に見せる。直せる物が先。
 // この台本は import もされる(`test/reply-route.test.mjs` が `replyRoute` に陰性対照を当てる)。
 // import した側で1周走り出さない様に、**直接叩かれた時だけ** main を回す。
 //   - argv[1] は symlink のままで渡る事があるので realpath で揃える。揃えないと symlink 経由の
@@ -919,5 +927,5 @@ const invokedDirectly = (() => {
   return norm(arg) === norm(fileURLToPath(import.meta.url));
 })();
 if (invokedDirectly) {
-  main().then(() => process.exit(prepAbort ? 2 : failed ? 1 : limitedReply ? 3 : 0));
+  main().then(() => process.exit(exitCodeFor({ prepAbort, failed, limitedReply })));
 }
