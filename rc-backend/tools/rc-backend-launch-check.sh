@@ -1,5 +1,11 @@
 #!/bin/bash
+# controls-for: tools/rc-backend-launch.sh tools/serve-decision.sh
 # rc-backend-launch-check.sh — 起動ラッパ(rc-backend-launch.sh)を**実際に走らせて**測る。
+#
+# ★宣言が2本なのは、下の「何を偽物にしているか」に `serve-decision.sh の判定` が
+#   **本物のまま**と書いてあるから。判定を直せば此処も一緒に動く = 見張る対象は2つ。
+#   2026-08-07 まで宣言が無く、起動ラッパを直す commit は対照を1本も回していなかった。
+#   実測 4 秒。
 #
 # なぜ要るのか:
 #   このラッパが間違えた時の症状は「edith の上では全部緑、電話からだけ永久に到達できない」。
