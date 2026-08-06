@@ -96,6 +96,15 @@ LOCAL_CTLS=(
     test/fork-check-controls.sh      # `--fork-session` を測る台本が、**測れていない時に
                                      # 測れていないと言う**か。偽の claude を7通りに振る舞わせる
                                      # ので上限を1トークンも食わない。実測2秒。網も不要
+    test/resume-cwd-controls.sh      # `--resume` の引き当てが起動 cwd に固定されているか
+                                     # (HANDOFF §3-V)を測る台本の対照。偽の claude を9通りに
+                                     # 振る舞わせるので上限を食わない。実測2秒。
+                                     # ★姉家族の fork-check より1段むずかしい —— あちらは
+                                     # 「全部通る前提で中身を比べる」が、こちらは**③が落ちる事**
+                                     # を根拠に結論を書く。落ちた理由の取り違えが唯一の穴なので、
+                                     # `anchor-broken`(同じ cwd でも引き当てない)と
+                                     # `weird`(断り文句だけ違う)の2つが対照の本体。
+                                     # どちらも③の観測だけ見ると正解筋と**見分けが付かない**
     test/limit-lifted-controls.sh    # 「上限が明けたか」の門番が両方向に壊れていないか。
                                      # fake HOME なので edith も上限も要らない。実測1秒。
                                      # ★据えた初回に2件捕まえた: haiku を根拠にする誤答と、
@@ -112,6 +121,12 @@ LOCAL_CTLS=(
                                      # 起動ラッパを実走する対照 38 本。実測2秒、本物の
                                      # `tailscale serve` は撃たない。`test/` ではなく `tools/`
                                      # に在るのは置き場所の歴史的な揺れで、性質は対照
+    tools/serve-decision-check.sh    # ★2026-08-07 に此処へ入れた。上と**同じ病気の2件目**で、
+                                     # 今度は 誰も気付いていなかった: 宣言(controls-for)は
+                                     # 在るのに名前が `*-control*.sh` に当たらないので、
+                                     # 「未登録の対照」を数える網が構造的に見られなかった。
+                                     # = 一度も回っていない。実測 0 秒、全 19 ケース + 旧判定
+                                     # との対比(動いた 14 行それぞれで旧が誤りだった事まで確認)
     test/remote-mini-root-controls.sh # ★測る相手が **この repo の外**(`~/.claude/tools/
                                      # remote-mini.sh`)に在る唯一の対照。それでも此処に居るのは、
                                      # 回す物が此処しか無いから ——「誰も回さない対照は対照でない」。
@@ -553,27 +568,41 @@ declare -a red_names=() unm_names=()
 #   注意力の問題ではなく**既定の結果**。だから網は門から取り出す。
 #   取り出せなければ空にせず**未測定(2)で止める** —— 網が空だと全部が「登録済み」に
 #   見えるので、黙って 0 本を走査するのがこの道具の一番危ない壊れ方。
+#
+# ★★★★2026-08-07: 上の「門から取り出す」が**半分だけ**だった。取り出していたのは
+#   SCAN_SPECS の**1列目(走査 dir)だけ**で、3列目の拾い方(`name` / `decl`)は捨てて
+#   此処で `*-control*.sh` の名前 glob を当て直していた。写しは dir の一覧ではなく
+#   **述語**の側に残っていた、という事。門は同じ名前 glob を 2026-08-05 に測って
+#   捨てている(門の `_scan_ctls` の直前の注釈)のに、此処だけが拾い直していた。
+#   実測 2026-08-07(disk の現物に両方の網を当てた):
+#     偽陽性 4件  tools/{run-controls,staged-controls-gate,prove-control,prove-all-controls}.sh
+#                 = 宣言が無いのに名前が当たる。**門が自分自身を「未登録の対照」と呼ぶ**
+#     偽陰性 2件  tools/rc-backend-launch-check.sh / tools/serve-decision-check.sh
+#                 = 宣言は在るが名前が当たらない
+#   ★後者の `serve-decision-check.sh` は**どの一覧にも無く一度も回っていなかった**。
+#     「一度も回らない対照」を数える為の検査が、その1本を構造的に隠していた。
+#   ★直し方として「此処でも3列目を読む」を先に捨てた —— 述語の写しが2枚になるだけで、
+#     6回続いた再発と同じ手。**持っている側に聞く**(門の `--all-controls`)。
 GATE_FOR_SPECS="${GATE_FOR_SPECS:-$ROOT/tools/staged-controls-gate.sh}"
-SCAN_DIRS=()
-while IFS= read -r _d; do
-    [ -n "$_d" ] || continue
-    # SCAN_SPECS は repo の根から。此処の cwd は rc-backend なので基点を移す。
-    case "$_d" in
-        rc-backend/*) SCAN_DIRS+=("${_d#rc-backend/}") ;;
-        *)            SCAN_DIRS+=("../$_d") ;;
+REPO_ROOT_FOR_GATE="$(cd "$ROOT/.." && pwd)"
+SCAN_CTLS=()
+while IFS= read -r _p; do
+    [ -n "$_p" ] || continue
+    # 門の答えは repo の根から。此処の cwd は rc-backend なので基点を移す。
+    case "$_p" in
+        rc-backend/*) SCAN_CTLS+=("${_p#rc-backend/}") ;;
+        *)            SCAN_CTLS+=("../$_p") ;;
     esac
-done < <(/usr/bin/sed -n '/^SCAN_SPECS=(/,/^)/p' "$GATE_FOR_SPECS" 2>/dev/null \
-         | /usr/bin/sed -n 's/^[[:space:]]*"\([^|"]*\)|.*/\1/p')
+done < <(RC_GATE_ROOT="$REPO_ROOT_FOR_GATE" /bin/bash "$GATE_FOR_SPECS" --all-controls 2>/dev/null)
 
-if [ "${#SCAN_DIRS[@]}" -eq 0 ]; then
-    echo "UNMEASURED  門の走査 dir を取り出せなかった: $GATE_FOR_SPECS"
-    echo "            SCAN_SPECS の書き方を変えたなら、此処の取り出しも同じ commit で直す事"
+if [ "${#SCAN_CTLS[@]}" -eq 0 ]; then
+    echo "UNMEASURED  門から対照の一覧を取れなかった: $GATE_FOR_SPECS"
+    echo '            --all-controls の口を消した/壊したなら、此処の呼び出しも同じ commit で直す事'
     echo "--- 合計: green=0 red=0 未測定=1(照合の網が空)---"
     exit 2
 fi
 
-for _dir in "${SCAN_DIRS[@]}"; do
-  for _f in "$_dir"/*-control*.sh; do
+for _f in "${SCAN_CTLS[@]}"; do
     [ -f "$_f" ] || continue
     case " ${LOCAL_CTLS[*]} ${EDITH_CTLS[*]} ${EXCLUDED_CTLS[*]:-} " in
         *" $_f "*) : ;;
@@ -581,7 +610,6 @@ for _dir in "${SCAN_DIRS[@]}"; do
            echo "         直し方: LOCAL_CTLS へ足す(既定)か、EXCLUDED_CTLS へ**理由付きで**入れる"
            red=$((red+1)); red_names+=("$(basename "$_f")(未登録)") ;;
     esac
-  done
 done
 
 for c in "${list[@]}"; do
@@ -605,7 +633,10 @@ for c in "${list[@]}"; do
 done
 
 echo ""
-echo "RUN-CONTROLS: green=$green red=$red 未測定=$unmeasured  (対象 ${#list[@]}本$([ "$ALL" -eq 1 ] || echo '、edith専用2本は除外'))"
+# ★除外の本数は**配列から数える**。手で書いた数は必ず腐る —— 実測 2026-08-07:
+#   `EDITH_CTLS` は3本在るのに此処は「2本」と刷っていて、門の一覧(65)と掃引の出力(62)を
+#   突き合わせるまで誰も気付かなかった。1本が黙って落ちているのと見分けが付かない。
+echo "RUN-CONTROLS: green=$green red=$red 未測定=$unmeasured  (対象 ${#list[@]}本$([ "$ALL" -eq 1 ] || echo "、edith専用${#EDITH_CTLS[@]}本は除外"))"
 [ "$red" -gt 0 ] && echo "  赤: ${red_names[*]}"
 [ "$unmeasured" -gt 0 ] && echo "  未測定(緑ではない): ${unm_names[*]} ← 条件が揃ってから回し直す事"
 

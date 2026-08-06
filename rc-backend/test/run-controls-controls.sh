@@ -300,5 +300,69 @@ chk "R28 ★その時に緑の集計を出さない" 0 \
     "$(printf '%s' "$out" | /usr/bin/grep -c "green=$N_LOCAL red=0 未測定=0")"
 /bin/cp "$GATE_SRC" "$SBGATE"
 
+# ── R29-R31 ★★網の**拾い方**も門から来ている事(2026-08-07)────────────────────
+#   R24-R26 は「どの木を見るか」が門から来る事までしか測っていない。**その木の中で
+#   何を対照と見なすか**(SCAN_SPECS の3列目 = `name` / `decl`)は測っていなかったので、
+#   走らせる側が `*-control*.sh` の名前 glob を持ち続けていても全部緑だった。
+#   実測 2026-08-07(disk の現物に両方の網を当てた):
+#     偽陽性 4件 = tools/ の道具(run-controls / staged-controls-gate / prove-control /
+#                  prove-all-controls)を「未登録の対照」と呼ぶ。門が自分自身を対照と言う形
+#     偽陰性 2件 = tools/rc-backend-launch-check.sh / tools/serve-decision-check.sh
+#                  (宣言は在るが名前が当たらない)
+#   ★後者の serve-decision-check.sh は**どの一覧にも無く一度も回っていなかった** ——
+#     「一度も回らない対照」を数える為の検査が、その1本を構造的に隠していた。
+#   ★だから対照は**2本要る**: 宣言が在れば名前が外れていても鳴る / 宣言が無ければ
+#     名前が当たっても鳴らない。片方だけだと「名前で拾う旧い網」と区別が付かない。
+setup
+ORPHAN5="$BE/tools/zz-orphan-decl-check.sh"   # ← 名前は `*-control*.sh` に**当たらない**
+printf '#!/bin/bash\n# controls-for: tools/zz-nothing.sh\necho "偽の子 zz6"\nexit 0\n' > "$ORPHAN5"
+run; out=$(readout)
+chk "R29 ★宣言が在れば名前が当たらなくても未登録として名指しする" 1 \
+    "$(printf '%s' "$out" | /usr/bin/grep -c 'UNREG.*zz-orphan-decl-check.sh')"
+chk "R30 ★それは赤(未測定に丸めない)" 1 "$RUN_RC"
+# ★R30 だけだと**理由が合っているか**を測れない —— 旧い名前 glob へ戻した変異体でも
+#   `run-controls.sh` 等の道具4本を自分で未登録と呼ぶので rc は 1 になり、R30 は
+#   **間違った理由で緑**になる(実測 2026-08-07: 変異体で R29/R31 は赤、R30 は緑)。
+#   同じ一回の走行の中で「鳴るのは植えた1本だけ」まで言わせる。
+chk "R30b ★★鳴っているのはその1本だけ(門が自分自身を対照と呼んでいない)" 1 \
+    "$(printf '%s' "$out" | /usr/bin/grep -c 'UNREG')"
+
+# ★陰性対照: 同じ file から**宣言だけ**外す。名前も置き場所も変えていない。
+#   ここが鳴ると、道具が同居する木で「門が自分自身を対照と呼ぶ」旧い形に戻る。
+printf '#!/bin/bash\necho "偽の子 zz6"\nexit 0\n' > "$ORPHAN5"
+run; out=$(readout)
+chk "R31 ★陰性対照: 宣言が無ければ鳴らない(= 拾い方は名前でなく宣言)" 0 \
+    "$(printf '%s' "$out" | /usr/bin/grep -c 'UNREG')"
+/bin/rm -f "$ORPHAN5"
+
+# ── R32-R33 ★除外の**本数**も配列から来ている事(2026-08-07)──────────────────
+#   集計の行は除外の本数を**手で書いた数字**で刷っていた。実測 2026-08-07: 配列は3本
+#   在るのに「2本」と刷っており、門の一覧(65)と掃引の出力(62)を突き合わせるまで
+#   誰も気付かなかった —— 62+2=64 で1本足りないが、**足りない事は出力のどこにも出ない**。
+#   1本が黙って落ちているのと、数字が古いのとが、見分けられない形だった。
+#   ★測るのは「3と刷る事」ではない(それも手で書いた数字の写しになる)。測るのは
+#     **配列の長さに追随する事** = 配列を伸ばしたら刷る数も伸びる、を陰性対照で言わせる。
+setup
+run; out=$(readout)
+EXCL_N=$(printf '%s' "$out" | /usr/bin/sed -n 's/.*edith専用\([0-9][0-9]*\)本は除外.*/\1/p')
+chk "R32 ★除外の本数は配列の長さと一致する" "$N_EDITH" "$EXCL_N"
+
+# ★陰性対照: 砂場の写しの EDITH_CTLS を1本伸ばす。刷る数が付いて来なければ、
+#   その数字は配列でなく手書きの literal から来ている。
+EXTRA="$BE/test/zz-edith-extra-controls.sh"
+printf '#!/bin/bash\necho "偽の edith 専用"\nexit 0\n' > "$EXTRA"
+/usr/bin/awk '
+  /^EDITH_CTLS=\(/ { inb = 1 }
+  inb && /^\)/     { print "    test/zz-edith-extra-controls.sh"; inb = 0 }
+  { print }
+' "$BE/tools/run-controls.sh" > "$SANDBOX/rc-plus1.sh"
+/bin/cp "$SANDBOX/rc-plus1.sh" "$BE/tools/run-controls.sh"
+run; out=$(readout)
+EXCL_N2=$(printf '%s' "$out" | /usr/bin/sed -n 's/.*edith専用\([0-9][0-9]*\)本は除外.*/\1/p')
+chk "R33 ★陰性対照: 配列を1本伸ばせば刷る数も1増える(手書きの数字なら増えない)" \
+    "$((N_EDITH + 1))" "$EXCL_N2"
+/bin/cp "$RUNNER" "$BE/tools/run-controls.sh"   # 砂場の写しを元へ戻す
+/bin/rm -f "$EXTRA"
+
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]

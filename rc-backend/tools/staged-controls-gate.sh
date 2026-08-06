@@ -61,7 +61,10 @@ ROOT="${RC_GATE_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"
 LIST_CMD="${STAGED_LIST_CMD:-git diff --cached --name-only}"
 
 staged="$(cd "$ROOT" && eval "$LIST_CMD" 2>/dev/null)"
-if [ -z "$staged" ]; then
+# ★`--all-controls`(下の口)は staged に一切依らない = 空でも答えられる。
+#   この門を「何が対照か」を知る為だけに呼ぶ側が在るので、そこを staged の有無で
+#   止めない。止める側の意味は変えていない —— 選択・判断の道は下でそのまま空を弾く。
+if [ -z "$staged" ] && [ "${1:-}" != "--all-controls" ]; then
     echo "staged-controls-gate: staged の一覧が空 = 測れていない(何を触ったか判らない)"
     exit 2
 fi
@@ -153,6 +156,26 @@ for _spec in "${SCAN_SPECS[@]}"; do
     case " ${TREES[*]-} " in *" $_t "*) ;; *) TREES+=("$_t") ;; esac
 done
 NCTL=${#CTLS[@]}
+
+# ── 口: 見つけた対照を**全部**列挙する(2026-08-07)────────────────────────────
+# なぜ足したか: 掃きの走行(`tools/run-controls.sh`)が「一覧に無い対照」を数える時、
+# 走査 dir だけを此処の SCAN_SPECS から取り出して、**拾い方(3列目)は自前の名前 glob**
+# を当てていた。上の注釈が名前 glob を測って捨てた理由をそのまま踏んでいる:
+#   実測 2026-08-07:
+#     偽陽性 4件 = tools/{run-controls,staged-controls-gate,prove-control,prove-all-controls}.sh
+#                  (宣言が無いのに名前が当たる = 門が自分自身を対照だと言う)
+#     偽陰性 2件 = tools/rc-backend-launch-check.sh / tools/serve-decision-check.sh
+#                  (宣言は在るが名前が当たらない)。後者は**どの一覧にも無く、
+#                  一度も回っていなかった** —— 「一度も回らない対照」を捕まえる為の
+#                  検査が、まさにその1本を構造的に隠していた。
+# ★直し方として「走行側で3列目も取り出す」を先に捨てた。それは述語の**写しが2枚**に
+#   なるだけで、5回連続の再発を作ったのと同じ手。持っている側に聞く形にする。
+# ★この口は `--would-select` と同じ規律で**判断しない**: undecl の停止も edith の除外も
+#   通さず、見つけた物をそのまま出す。判断は本番の走行が出すのが正しい。
+if [ "${1:-}" = "--all-controls" ]; then
+    for _c in ${CTLS[@]+"${CTLS[@]}"}; do printf '%s\n' "$_c"; done
+    exit 0
+fi
 
 # 導出①: staged path がこの門の見る木の中に在るか
 _in_tree() {
