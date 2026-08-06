@@ -60,6 +60,24 @@ final class SendClientTests: XCTestCase {
         XCTAssertNotEqual(MockURLProtocol.requestedBodies.first ?? nil, MockURLProtocol.requestedBodies.last ?? nil)
     }
 
+    /// The fourth recorded dimension (2026-08-06). ★A send keeps the LONG timeout on
+    /// purpose. The reads were shortened to 8s because re-issuing a read is free; a
+    /// send is not free to re-issue. `POST /api/sessions/<id>/messages` carries no
+    /// idempotency key (checked against `server.mjs` the same day -- it resolves a
+    /// pane and calls the injector), so a client that gives up early cannot tell
+    /// "never arrived" from "arrived and the reply is slow", and the retry types the
+    /// user's message into Claude's composer a second time.
+    /// What `requestedTimeouts` does and does not prove: see `RequestTimeoutTests`.
+    func testSendKeepsTheWriteTimeoutRatherThanTheShortenedReadTimeout() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 202, body: Data(Self.okBody.utf8))]
+        let client = SendClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "こんにちは")
+
+        XCTAssertEqual(MockURLProtocol.requestedTimeouts, [BackendSession.writeTimeout])
+        XCTAssertGreaterThan(BackendSession.writeTimeout, BackendSession.interactiveTimeout)
+    }
+
     /// The text goes on the wire exactly as typed. The phone does NOT trim: `server.mjs`
     /// trims, and a phone that also trimmed would be a second place deciding what the
     /// user's message is -- the difference becomes visible the day the two disagree

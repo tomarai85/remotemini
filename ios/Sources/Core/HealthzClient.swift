@@ -33,6 +33,7 @@ struct HealthzClient: HealthzChecking {
     func check(baseURL: URL) async -> Result<HealthzResult, HealthzError> {
         var request = URLRequest(url: baseURL.appendingPathComponent("healthz"))
         request.httpMethod = "GET"
+        request.timeoutInterval = BackendSession.interactiveTimeout
 
         let data: Data
         let response: URLResponse

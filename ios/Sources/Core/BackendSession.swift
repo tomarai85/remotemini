@@ -29,16 +29,72 @@ final class BackendSession {
     static let shared = BackendSession()
 
     /// Spec §3-1: the server holds long-poll requests up to `POLL_MAX_WAIT_MS`
-    /// (20s, `POLL_MAX_WAIT_MS` in `server.mjs`). The client timeout must exceed that or a normal
-    /// "nothing happened" 200 reads as a network error. Applied to every request
-    /// (not only poll) so there is one timeout value to keep in sync with the
-    /// server constant, not two call sites that can drift apart.
-    static let requestTimeout: TimeInterval = 30
+    /// (20s, `POLL_MAX_WAIT_MS` in `server.mjs`). The client timeout must exceed that
+    /// or a normal "nothing happened" 200 reads as a network error.
+    ///
+    /// Mirrors the server constant rather than restating 30 by hand, so the two
+    /// numbers cannot drift apart -- that non-drift property is the reason the
+    /// original shape used ONE timeout for every request, and splitting the timeouts
+    /// below keeps it rather than trading it away.
+    static let serverPollMaxWait: TimeInterval = 20
+    static let pollTimeout: TimeInterval = serverPollMaxWait + 10
+
+    /// Everything the user is *staring at a blank screen* for (REQUIREMENTS §5-6,
+    /// measured 2026-08-06).
+    ///
+    /// Why this is not `pollTimeout`: until this split, one 30s value covered every
+    /// request, so a network that accepts a connection and then never answers -- a
+    /// hotel/airport captive portal, or a tailnet peer asleep, i.e. precisely the
+    /// 移動中 case this app exists for -- left the Conversation and List screens
+    /// showing a bare `ProgressView` for a full 30 seconds before offering 再試行.
+    /// That is RC 却下理由 1 (「connecting」で作業が止まる) reproduced in this app.
+    ///
+    /// 8s is sized off measured payloads, not guessed: `/api/sessions` is the largest
+    /// read at ~30 KB (41 conversations) and `/history?limit=50` runs 14 B - 2.6 KB,
+    /// with server-side work of 1-5 ms and 38-65 ms respectively. A round trip over
+    /// the tailnet measured 10.6 ms on a warm connection and 45-52 ms on a new one.
+    /// 8s is therefore ~2 orders of magnitude of headroom on a working link, and only
+    /// a link that is silent -- not merely slow -- reaches it.
+    ///
+    /// Reads only. Re-issuing a read is free, which is what makes a shorter give-up
+    /// window strictly better here.
+    static let interactiveTimeout: TimeInterval = 8
+
+    /// Sends and interrupts keep the long timeout, deliberately.
+    ///
+    /// `POST /api/sessions/<id>/messages` carries **no idempotency key** (checked
+    /// 2026-08-06: `server.mjs` has no dedup/nonce on that path -- it resolves a pane
+    /// and calls `injector.send`). So a client that gives up while the request is
+    /// still in flight cannot know whether the text was injected, and a retry types
+    /// it into Claude's composer twice. Shortening this would widen exactly that
+    /// window. The blank-screen complaint this split fixes is a *read* problem
+    /// anyway: a send happens on an already-loaded screen that has the reachability
+    /// banner, not behind a spinner.
+    ///
+    /// The real fix for the write side is an idempotency key on the server, which is
+    /// a backend change outside v1's four items -- recorded rather than smuggled in.
+    static let writeTimeout: TimeInterval = pollTimeout
 
     let session: URLSession
 
     init(configuration: URLSessionConfiguration = .default) {
-        configuration.timeoutIntervalForRequest = Self.requestTimeout
+        // The session-wide default stays the LONGEST of the three. A client that
+        // forgets to set a per-request value therefore behaves exactly as this tree
+        // did before the split -- the failure mode of forgetting is "no improvement,"
+        // never "a working request now times out."
+        //
+        // That fallback is measured, not assumed (2026-08-06, plain Swift against an
+        // unroutable address): a request that sets nothing still *reads* 60.0 from
+        // `URLRequest.timeoutInterval`, but under a session whose configuration says
+        // 3s it fails at 3.02s with `URLError` -1001 -- so the configuration governs
+        // when the request stays silent, and the request governs when it speaks
+        // (5s -> 5.03s, 2s -> 2.01s under the same 30s configuration).
+        //
+        // The consequence for tests: `MockURLProtocol.requestedTimeouts` records the
+        // request's DECLARED value (60 for a bare request), not the effective one.
+        // `RequestTimeoutTests` says so in its own header rather than implying the
+        // suite proves enforcement -- enforcement is what the measurement above is for.
+        configuration.timeoutIntervalForRequest = Self.pollTimeout
         self.session = URLSession(configuration: configuration, delegate: RedirectRefusingDelegate(), delegateQueue: nil)
     }
 

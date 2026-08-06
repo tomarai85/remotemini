@@ -32,6 +32,7 @@ struct SessionsAuthProbe: SessionsAuthChecking {
     func check(baseURL: URL, apiKey: String) async -> Outcome {
         var request = URLRequest(url: baseURL.appendingPathComponent("api/sessions"))
         request.httpMethod = "GET"
+        request.timeoutInterval = BackendSession.interactiveTimeout
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         let response: URLResponse

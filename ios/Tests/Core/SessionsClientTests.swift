@@ -115,6 +115,20 @@ final class SessionsClientTests: XCTestCase {
         XCTAssertEqual((MockURLProtocol.requestedBodies.last ?? nil)?.count ?? 0, 0)
     }
 
+    /// The fourth recorded dimension (2026-08-06). This is the request behind the
+    /// first screen of the app, so it is the one whose give-up window the user feels
+    /// most directly: `interactiveTimeout`, not the 30s poll length. Sized off the
+    /// measured payload -- 41 conversations came to ~30 KB in 38-65 ms server-side.
+    /// What `requestedTimeouts` does and does not prove: see `RequestTimeoutTests`.
+    func testRequestUsesTheInteractiveTimeout() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validBody.utf8))]
+        let client = SessionsClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.fetch(baseURL: baseURL, apiKey: "x")
+
+        XCTAssertEqual(MockURLProtocol.requestedTimeouts, [BackendSession.interactiveTimeout])
+    }
+
     func testConnectionFailureIsUnreachable() async {
         MockURLProtocol.stubQueue = []
         let client = SessionsClient(session: MockURLProtocol.makeSession())

@@ -82,6 +82,7 @@ struct PollClient: PollFetching {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.timeoutInterval = BackendSession.pollTimeout
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         let data: Data

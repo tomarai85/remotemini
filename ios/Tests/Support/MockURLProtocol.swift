@@ -40,6 +40,19 @@ final class MockURLProtocol: URLProtocol {
     /// `nil == nil`, and the suite would report a body-shape guard it does not have --
     /// which is worse than having no guard, because it stops anyone from adding one.
     static var requestedBodies: [Data?] = []
+    /// The fourth request-shape dimension, added 2026-08-06 for the timeout split.
+    /// Same reason `requestedMethods` exists: until this field existed, nothing in
+    /// this tree recorded how long a request was willing to wait, so every client
+    /// could have its `timeoutInterval` line deleted and all 362 tests would stay
+    /// green -- the guard would be documented and unwatched, which this repo has
+    /// measured to mean it silently reverts.
+    ///
+    /// Recording it here (rather than asserting on the `URLRequest` a client builds,
+    /// which would only prove the client *set* a field) is also what makes the
+    /// assertion non-vacuous: `URLSession` is what decides whether a per-request
+    /// value beats `URLSessionConfiguration.timeoutIntervalForRequest`, and a value
+    /// observed at this layer is one that survived that decision.
+    static var requestedTimeouts: [TimeInterval] = []
     static var lastRequestHeaders: [String: String]?
 
     /// Sprint 2: when non-zero, `startLoading()` schedules its response
@@ -60,7 +73,8 @@ final class MockURLProtocol: URLProtocol {
     /// the same test process silently fell through to real networking and timed out
     /// against the `.invalid` host instead of ever reaching `startLoading()` again
     /// (reproduced 2026-08-05: the four alphabetically-last `SessionsClientTests`
-    /// cases each failed at ~30s, exactly `BackendSession.requestTimeout`, only when
+    /// cases each failed at ~30s, exactly `BackendSession.pollTimeout` (named
+    /// `requestTimeout` at the time, before the 2026-08-06 split), only when
     /// run after the blocking version of this test). Scheduling instead of blocking
     /// never occupies that shared queue, so it cannot repeat that failure mode.
     static var deliveryDelay: TimeInterval = 0
@@ -79,6 +93,7 @@ final class MockURLProtocol: URLProtocol {
         requestedURLs = []
         requestedMethods = []
         requestedBodies = []
+        requestedTimeouts = []
         lastRequestHeaders = nil
         deliveryDelay = 0
         injectedError = nil
@@ -119,6 +134,7 @@ final class MockURLProtocol: URLProtocol {
         // rather than silently defaulted to "GET", which would hide that finding.
         Self.requestedMethods.append(request.httpMethod ?? "<nil>")
         Self.requestedBodies.append(Self.readBody(of: request))
+        Self.requestedTimeouts.append(request.timeoutInterval)
         Self.lastRequestHeaders = request.allHTTPHeaderFields
 
         if Self.deliveryDelay > 0 {

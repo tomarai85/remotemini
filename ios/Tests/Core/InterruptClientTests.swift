@@ -62,6 +62,22 @@ final class InterruptClientTests: XCTestCase {
         XCTAssertNil(MockURLProtocol.lastRequestHeaders?["Content-Type"], "…and therefore no Content-Type")
     }
 
+    /// The fourth recorded dimension (2026-08-06). ★An interrupt keeps the LONG
+    /// timeout on purpose, even though the user is waiting on it. Shortening the
+    /// give-up window on a write does not cancel the write -- it only removes the
+    /// client's knowledge of whether it landed, and this endpoint carries no
+    /// idempotency key, so a retry after a premature give-up is a second interrupt.
+    /// What `requestedTimeouts` does and does not prove: see `RequestTimeoutTests`.
+    func testInterruptKeepsTheWriteTimeoutRatherThanTheShortenedReadTimeout() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.verifiedBody.utf8))]
+
+        _ = await InterruptClient(session: MockURLProtocol.makeSession())
+            .interrupt(baseURL: baseURL, apiKey: "k", sessionID: "s")
+
+        XCTAssertEqual(MockURLProtocol.requestedTimeouts, [BackendSession.writeTimeout])
+        XCTAssertGreaterThan(BackendSession.writeTimeout, BackendSession.interactiveTimeout)
+    }
+
     /// N5 (spec §3-7). `InterruptClient` takes a `BackendSession`, never a bare
     /// `URLSession`, so possessing one IS the proof that redirects are refused --
     /// `BackendSession`'s initializer installs `RedirectRefusingDelegate` itself and

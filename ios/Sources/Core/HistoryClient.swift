@@ -33,6 +33,7 @@ struct HistoryClient: HistoryFetching {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.timeoutInterval = BackendSession.interactiveTimeout
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         let data: Data
