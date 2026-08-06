@@ -383,8 +383,12 @@ LOCAL_CTLS=(
     #   01:13 poll-spend   01:21 restart-epoch   16:26 verify-state-judgment
     #   17:27 phone-window-judgment   20:47 dod-sprint-6-recovery
     # 実測 2026-08-06: disk 上 **57 本** / 未登録 8 本。
-    # (同日の progress.md に「56 本」と書いたが、それは `conversation-ui-control.sh` を
-    #  昇格させる前の値で、書く時点で測り直していなかった。正は 57)
+    # (同日の progress.md に「56 本」と書いたが、それは `ios/tools/conversation-ui-control.sh`
+    #  を昇格させる前の値で、書く時点で測り直していなかった。正は 57)
+    # ★引用は木の名前から書く事。`ios/` にしか無い名前を此処で**裸**で引くと、完全な木では
+    #   隣の木で解決して緑・`rc-backend/` だけの写しの中でだけ赤になる(2026-08-06 に此処で
+    #   2回踏んだ)。写しは変異走行の判定器なので、そこでの赤は以降の変異を全部「検出」に
+    #   化けさせる。今は `test/no-linerefs.test.mjs` の②-b が完全な木の側で此れを捕まえる。
     # ★前回の教訓(「緑を出した instrument が何を測っているのかを言える事」)は**言える様に
     #   なる**事しか要求しておらず、次に書く対照が登録されるかは私の記憶に懸かったままだった。
     #   記憶に懸けた守りは、1日で同じ形に戻る。此処に足すのは今日の8本の**始末**であって、
@@ -438,7 +442,7 @@ LOCAL_CTLS=(
                                      # Sprint 6 の負の対照(13 変異 x xcodebuild)。**一番高い**が
                                      # 除外しない: 費用は実測 248 秒(2026-08-06、commit の門の中。
                                      # DerivedData が温まっている時)で、既に一覧に居る
-                                     # `conversation-ui-control.sh` の 156 秒と同じ桁である。
+                                     # `ios/tools/conversation-ui-control.sh` の 156 秒と同じ桁。
                                      # 冷えていれば数倍に伸びる —— その時は**外すのではなく
                                      # 温めてから回す**(`ios/tools/build.sh --sim` を先に1回)。
                                      # ★`test/verdict-mutants.sh`(下の「わざと入れていない」)との
