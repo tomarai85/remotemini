@@ -88,13 +88,35 @@ add_sel() { case " $sel " in *" $1 "*) ;; *) sel="$sel $1" ;; esac; }
 # ios 側を根からにするのは、ios の対照が backend の道具を見張る事が在り得るから
 # (逆向きは既に注釈で起きている)。基点を根に取れば両方書ける。
 CTLS=(); DECLS=(); BASES=()
-_scan_ctls() { # $1=対照の居る dir(根から) $2=宣言の基点(根から。空 = 根そのもの)
-    local d="$1" base="$2" _c
-    for _c in "$ROOT/$d"/*-control*.sh; do
+# 拾い方は2つ。**名前**で拾うか、**宣言**で拾うか(SCAN_SPECS の3つ目で指定)。
+#
+# ★2026-08-07: 「対照であるか」を名前で、「何を見張るか」を宣言で決めていた =
+#   一覧が2本在る形。実際にズレていた: `tools/serve-decision-check.sh` と
+#   `tools/rc-backend-launch-check.sh` は**本物の負の対照**(前者は全ケースを旧判定にも
+#   通して退行を捕まえる / 後者は偽の tailscale と node を噛ませて起動ラッパを駆動する)
+#   なのに、名前の末尾が -check.sh で置き場が `tools/` なので、この門から見ると**ただの道具**
+#   だった。つまり起動ラッパを直す commit は、対照を1本も回さずに通っていた。
+#   ラッパを壊した時の症状は「edith の上では全部緑、電話からだけ永久に到達できない」
+#   (`rc-backend-launch-check.sh` の冒頭がそう書いている)= 一番気付けない形。
+#
+#   直し方として「名前の glob を広げる」「`tools/` を走査 dir に足す」を先に測って両方捨てた:
+#     - `*-check.sh` を足す -> `ios/tools/live-*-check.sh` を巻き込む(edith が要る = commit で回せない)
+#     - `tools/` を名前で走査 -> `run-controls.sh` `staged-controls-gate.sh`
+#       `prove-control.sh` `prove-all-controls.sh` が対照扱いになり、宣言が無いので
+#       **全 commit が落ちる**(門が自分自身を対照だと言い出す)
+#   だから名前ではなく**宣言を持つ事**を条件にする。宣言を書いた file だけが対照になる。
+_scan_ctls() { # $1=対照の居る dir(根から) $2=宣言の基点(根から。空 = 根そのもの) $3=name|decl
+    local d="$1" base="$2" mode="${3:-name}" _c decl pat='*-control*.sh'
+    [ "$mode" = decl ] && pat='*.sh'
+    for _c in "$ROOT/$d"/$pat; do
         [ -f "$_c" ] || continue
+        decl="$(/usr/bin/sed -n 's/^# *controls-for:[[:space:]]*//p' "$_c" | /usr/bin/tr '\n' ' ')"
+        # 宣言で拾う木では、宣言の無い file は対照ではない(道具と門自身を弾く)。
+        # 名前で拾う木では、宣言が無い事**それ自体**を下の `undecl` が赤にする。
+        if [ "$mode" = decl ] && [ -z "${decl// /}" ]; then continue; fi
         CTLS+=("$d/${_c##*/}")
         BASES+=("$base")
-        DECLS+=("$(/usr/bin/sed -n 's/^# *controls-for:[[:space:]]*//p' "$_c" | /usr/bin/tr '\n' ' ')")
+        DECLS+=("$decl")
     done
 }
 # glob を `*-controls.sh` から `*-control*.sh` へ広げてある: ios 側は単数形
@@ -115,15 +137,18 @@ _scan_ctls() { # $1=対照の居る dir(根から) $2=宣言の基点(根から�
 #   これが 2026-08-02(`tools/` 欠落)/ 08-05 朝(`.git/hooks/pre-commit` の絞り込み)
 #   と**同じ形が4回**続いた真因。1箇所広げた人は「広げた」と思い、残りが黙って縮める。
 #   だから広げ方を直すのではなく、**一覧を1つにして残り2箇所を導出**する。
+# 形は `走査 dir|宣言の基点|拾い方`。3つ目は省略可(既定 = name = 名前で拾う)。
 SCAN_SPECS=(
-    "rc-backend/test|rc-backend"   # 宣言は rc-backend からの相対(tools/foo.sh)
-    "ios/tools|"                   # 宣言は repo の根から(ios/tools/foo.sh)
-    ".harness|"                    # 同上。harness の道具は木を跨いで見張る
+    "rc-backend/test|rc-backend"        # 宣言は rc-backend からの相対(tools/foo.sh)
+    "ios/tools|"                        # 宣言は repo の根から(ios/tools/foo.sh)
+    ".harness|"                         # 同上。harness の道具は木を跨いで見張る
+    "rc-backend/tools|rc-backend|decl"  # ★道具と対照が同居する木。宣言を持つ物だけ拾う
 )
 TREES=()   # 「この staged path を見るか」を決める木(走査 dir の第1成分)
 for _spec in "${SCAN_SPECS[@]}"; do
-    _d="${_spec%%|*}"; _b="${_spec#*|}"
-    _scan_ctls "$_d" "$_b"
+    _d="${_spec%%|*}"; _rest="${_spec#*|}"; _b="${_rest%%|*}"; _m="${_rest#*|}"
+    [ "$_m" = "$_b" ] && _m=name        # 3つ目が無い(= 2 field)時は名前で拾う
+    _scan_ctls "$_d" "$_b" "$_m"
     _t="${_d%%/*}"
     case " ${TREES[*]-} " in *" $_t "*) ;; *) TREES+=("$_t") ;; esac
 done

@@ -1,5 +1,10 @@
 #!/bin/bash
+# controls-for: tools/serve-decision.sh
 # serve-decision-check.sh — `serve-decision.sh` を実物 + 負の対照で駆動する。
+#
+# ★この宣言が無かった間(〜2026-08-07)、`serve-decision.sh` だけを直す commit は
+#   対照を1本も回さずに通っていた。名前の末尾が -check.sh で置き場が `tools/` なので、
+#   commit の門から見ると此処は**ただの道具**だった。実測 0 秒。
 #
 # ★負の対照が本体: 「常に ok を返す実装」でも通ってしまう表には意味が無い。
 #

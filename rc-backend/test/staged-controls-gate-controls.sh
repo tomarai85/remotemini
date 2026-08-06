@@ -432,5 +432,61 @@ else
   fi
 fi
 
+# ── S49-S52 ★道具と対照が同居する木を「宣言で」拾う(2026-08-07)──────────────
+#
+#   きっかけは実測: `rc-backend/tools/serve-decision-check.sh` と
+#   `rc-backend/tools/rc-backend-launch-check.sh` は中身も註も紛れも無く陰性対照なのに、
+#   名前の末尾が -check.sh で置き場が `tools/` なので門から見ると**ただの道具**だった。
+#   結果、起動ラッパ `rc-backend-launch.sh` を直す commit は対照を1本も回さずに通っていた
+#   —— その道具の documented な壊れ方は「edith の上では全部緑、電話からだけ永久に
+#   到達できない」。緑が届かない側を見張る対照が、緑のまま回っていなかった。
+#
+#   `tools/` を **名前で** 走査する案は測って捨てた: `prove-control.sh`
+#   `prove-all-controls.sh` が `*-control*.sh` に当たり、宣言が無いので
+#   `undecl` が発火する = 門が自分の道具を対照だと言い出す。だから拾い方を
+#   `SCAN_SPECS` の3つ目 (`decl`) で切り替え、**宣言を持つ file だけ**を対照にする。
+#
+#   下の4本は両向き。S49/S50 が「そう振る舞う」、S51/S52 が「その2行が効いている」。
+#   ★fixture は此処で作る(先頭に置くと S1-S48 の本数・注記が動く)。
+mkctl rc-backend/tools/gg-check.sh 0 "全ケース OK" "tools/gg.sh"
+: > "$R/rc-backend/tools/gg.sh"
+# 宣言を持たない `*-control*.sh`。名前で拾うと対照扱いになる**現物と同じ形**。
+mkctl rc-backend/tools/prove-control.sh 0 "prover: ok"
+
+# S49 正の向き: 名前が対照らしくなくても、宣言が在れば道具から導かれて回る
+out=$(run_gate 'rc-backend/tools/gg.sh')
+chk "S49 ★tools/ に居ても宣言が在れば対照として回る" 0 $? "gg-check.sh" "触れた対照は無い" "$out"
+
+# S50 負の向き: 同じ木の**宣言を持たない** `*-control*.sh` を staged にしても止めない
+out=$(run_gate 'rc-backend/tools/prove-control.sh')
+chk "S50 ★宣言の無い道具は対照ではない(門が自分の道具で止まらない)" 0 $? "" "commit しない" "$out"
+
+# S51 ★陰性対照: 宣言で弾く1行を消すと S50 が倒れる
+MUT2="$SB/gate-no-decl-filter.sh"
+/usr/bin/sed '/= decl \] && \[ -z/d' "$GATE" > "$MUT2"
+if /usr/bin/cmp -s "$GATE" "$MUT2"; then
+  echo "NG  S51-prep ★変異が当たっていない(S50 の緑は測られていない)"
+  fail=$((fail+1))
+else
+  RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' 'rc-backend/tools/prove-control.sh'" \
+    bash "$MUT2" >/dev/null 2>&1
+  chk "S51 ★弾く1行を消すと prove-control.sh で commit が止まる(= S50 に歯が在る)" 1 $? "" "" ""
+fi
+
+# S52 ★陰性対照: 走査先の1行を消すと S49 が**黙って**緑になる(一番危ない壊れ方)
+MUT3="$SB/gate-no-tools-spec.sh"
+/usr/bin/sed '/rc-backend\/tools|rc-backend|decl/d' "$GATE" > "$MUT3"
+if /usr/bin/cmp -s "$GATE" "$MUT3"; then
+  echo "NG  S52-prep ★変異が当たっていない(S49 の緑は測られていない)"
+  fail=$((fail+1))
+else
+  mut_out=$(RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' 'rc-backend/tools/gg.sh'" \
+            bash "$MUT3" 2>&1)
+  chk "S52 ★走査先を消すと gg-check.sh が回らなくなる(= S49 に歯が在る)" \
+      0 $? "触れた対照は無い" "gg-check.sh" "$mut_out"
+fi
+/bin/rm -f "$R/rc-backend/tools/gg-check.sh" "$R/rc-backend/tools/gg.sh" \
+           "$R/rc-backend/tools/prove-control.sh"
+
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]
