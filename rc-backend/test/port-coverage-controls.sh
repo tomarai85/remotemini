@@ -291,6 +291,69 @@ else
     fail=$((fail+1))
 fi
 
+# --- P16-P20: ★疑いの網に「違う」と言う口(2026-08-07)-------------------------
+# P13 は「表に無いのに名指ししている」を全部 2(測っていない)にする。だが名指しの中には
+# **散文であちらの検査に触れているだけ**の物が在り、それは永久に 2 のまま消えない。
+# 実測 2026-08-07: 出口は 0 から 2 に落ちたまま、誰も走らせていないので気付かれなかった。
+# 永久に赤(此処では永久に未測定)の計器は読まれなくなる = 何も守らなくなる。
+# ★だから口を足す。ただし P14/P15 の受理と同じ規律で: 理由を書かせ、件数で刷り、腐ったら赤。
+js <<'EOF'
+test("f", () => { assert.equal(f(1), 1); });
+EOF
+sw FTests.swift <<'EOF'
+final class FTests: XCTestCase { func testOne() { XCTAssertEqual(F.f(1), 1) } }
+EOF
+sw NotAPortTests.swift <<'EOF'
+// MARK: - fixture.test.mjs: あちらが見られない性質を測る
+// not-a-port: あちらが見られない継ぎ目の側を測るので、対応する行は無い
+final class NotAPortTests: XCTestCase { func testNothing() {} }
+EOF
+run "f=ios/Tests/Core/FTests.swift"
+chk "P16a ★印が在れば未測定にしない(2 で貼り付かない)" 0 "$RC"
+chk "P16b ★それでも件数と理由を刷る(黙って落とさない)" "在る" \
+    "$(printf '%s' "$OUT" | /usr/bin/grep -q '印で外した検査: 1' && echo 在る || echo 無い)"
+
+# ★陰性対照: 同じ file から**印だけ**外す。名前も置き場所も中身も変えていない。
+sw NotAPortTests.swift <<'EOF'
+// MARK: - fixture.test.mjs: あちらが見られない性質を測る
+final class NotAPortTests: XCTestCase { func testNothing() {} }
+EOF
+run "f=ios/Tests/Core/FTests.swift"
+chk "P17 ★陰性対照: 印が無ければ未測定に戻る(= P16 は印を測っている)" 2 "$RC"
+
+# ★理由の無い口は、ただの黙らせ方。短い理由は受け付けず赤にする。
+sw NotAPortTests.swift <<'EOF'
+// MARK: - fixture.test.mjs: あちらが見られない性質を測る
+// not-a-port: なし
+final class NotAPortTests: XCTestCase { func testNothing() {} }
+EOF
+run "f=ios/Tests/Core/FTests.swift"
+chk "P18 ★理由が短い印は赤(黙らせるだけの口を作らない)" 1 "$RC"
+
+# ★印もまた腐る。名指しをやめた file に印だけ残ったら、それは偽の主張。
+sw NotAPortTests.swift <<'EOF'
+// not-a-port: あちらが見られない継ぎ目の側を測るので、対応する行は無い
+final class NotAPortTests: XCTestCase { func testNothing() {} }
+EOF
+run "f=ios/Tests/Core/FTests.swift"
+chk "P19 ★腐った印は赤(死んだ受理と同じ作法)" 1 "$RC"
+
+# ★表と印の両方に在る = どちらが本当か出力から判らない。黙って通さない。
+sw NotAPortTests.swift <<'EOF'
+// MARK: - fixture.test.mjs: あちらが見られない性質を測る
+// not-a-port: あちらが見られない継ぎ目の側を測るので、対応する行は無い
+final class NotAPortTests: XCTestCase { func testNothing() {} }
+EOF
+# ★最初に書いた形は捨てた: 表に別の関数 g を足して其処へ置く案。g は JS 側に呼び出しが
+#   無いので**それ自体が「測れない」を出し**、出口は 2 になる。狙った赤とは別の理由で
+#   2 が出るので、この項は何も測っていなかった(実測 2026-08-07、期待1/実測2)。
+#   既に在る関数の**2本目の移植先**として置けば、出口の理由は矛盾ひとつに絞れる。
+run "f=ios/Tests/Core/FTests.swift,ios/Tests/Core/NotAPortTests.swift"
+chk "P20a ★表にも印にも在れば赤(どちらか一方にさせる)" 1 "$RC"
+chk "P20b ★その理由を名指しする(出口の数字だけで正しさを言わない)" "在る" \
+    "$(printf '%s' "$OUT" | /usr/bin/grep -q '移植表に在るのに印も付いている' && echo 在る || echo 無い)"
+/bin/rm -f "$R/ios/Tests/Core/NotAPortTests.swift"
+
 echo
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" -eq 0 ] || exit 1

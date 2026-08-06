@@ -124,6 +124,19 @@ bash "$ROOT/rc-backend/tools/commit-suite-gate.sh" || exit $?
 #   非ゼロ(錨なし 1 / 未測定 2)はどちらも止める。降ろすなら RC_VACUOUS_OK に理由を書く。
 bash "$ROOT/rc-backend/tools/vacuous-gate.sh" || exit $?
 
+# ★2026-08-07 追加: **上の段落と同じ病気の2件目**。
+#   本体 = rc-backend/tools/port-coverage-gate.sh(追跡されるのはそちら)
+#   対照 = rc-backend/test/port-coverage-controls.sh(道具の側を 36 本)
+#   経緯: `tools/port-coverage.py` にも対照が在り、掃きにも登録されていたのに、
+#   **道具そのものを呼ぶ物が repo のどこにも無かった**。結果、出口が 0 から 2 へ
+#   落ちても誰も気付かないまま残っていた(実測 2026-08-07。前に緑を記録したのは
+#   2026-08-05)。`vacuous-scan.py` が同じ形を免れているのは門が在るからで、
+#   設計の差ではない。0.2 秒。非ゼロ(赤 1 / 未測定 2)はどちらも止める。
+#   ★`python3 …` と直に書かない理由は皮の頭に書いた —— 上の対照は
+#     bash "$ROOT/rc-backend/tools/<名前>.sh" の形から門を**数え上げる**ので、
+#     直書きはその網に掛からない(実測: 直書きのまま回したら対照が 3 本倒れた)。
+bash "$ROOT/rc-backend/tools/port-coverage-gate.sh" || exit $?
+
 # ★2026-08-03 追加(同日2件目): **この commit が触れた対照**を回す。
 #   本体 = rc-backend/tools/staged-controls-gate.sh
 #   対照 = rc-backend/test/staged-controls-gate-controls.sh(15 本)
