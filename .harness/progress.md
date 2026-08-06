@@ -2359,3 +2359,42 @@ Tom の記録済み action B は「friday と edith」の 2 台。**この一覧
 
 観測: `test/health-observer-controls.sh` → ok 116 / ng 0 / rc=0、§10 は a〜l 全部が走った
 (`測定不成立` の行なし = 本物の tailscale から骨組みが採れている)。
+
+### 6-4. 本当に暗かった 7 本のうち、**証拠 JSON を作る 2 本**を先に潰した
+
+7 本は等価ではない。`hint-statusline-control.mjs` / `inflight-under-statusline.mjs` /
+`spinner-glyph-probe.mjs` / `make-icon.py` は**一度だけ回して事実を確定させた計測器**で、
+対照を足しても買える物が無い。`serve-decision-check.sh` は検査そのもの。残る 2 本だけが違う ——
+`verify-rc-backend-state.sh` と `verify-phone-window.sh` は、**safety-core HARD GATE 1 が読む
+証拠 JSON を作る側**である。ここが嘘を吐くと、嘘の上に「停止を確認した」が積まれる。だから
+この 2 本から潰した。孤児 17 → 16 → 15。
+
+どちらも**本番に一切触れずに**測っている。判定のバイトを本物から切り出し、合成した観測値で
+駆動する。ssh も launchctl も 1 回も呼ばない。
+
+| 対照 | 的 | 観測 |
+|---|---|---|
+| `test/verify-state-judgment-controls.sh` | `tools/verify-rc-backend-state.sh` の判定 | PASS 23 / FAIL 0 |
+| `test/phone-window-judgment-controls.sh` | `tools/verify-phone-window.sh` の判定 | PASS 25 / FAIL 0 |
+
+**この 2 本目で名指しにした一番高くつく壊れ方** —— `i(k, d=-1)` の既定値である。
+観測の欄が**無い**時、`-1` は `0 <= att <= fresh_s` を外して赤になる。ここを `0` にすると
+`0 <= 0 <= 180` が成立し、**観測が 1 つも無いのに「心拍は新鮮」**になる。欄が消える壊れ方
+(観測側の変更・ssh の途中切れ)と同時にしか起きないので、一番起きやすく、一番静かで、
+一番高くつく。§6 の変異がここを撃ち、`listed == "unknown"` を緑に倒す改変を §7 が撃つ。
+
+★`chains` が `verdict` と別に居るのは設計であって重複ではない。`verdict` は 2 値だが
+`chains["4_listed"]` は `ok` / `fail` / **`unknown`** の 3 値を保つ。1 つに丸めると
+「window が消えた」と「一覧に出るか測れなかった」が同じ赤になり、後で読んだ時に
+どちらが壊れたのか分からない。対照はこの 3 値目を明示的に固定している。
+
+**歯が在る事の確認**(対照そのものを敵対的に測った):
+判定の `fail.append(` を全部 no-op に潰した的で回すと、19 件中 **13 件が赤へ転ぶ**。
+緑のまま残る 6 件は元から緑を期待している側だけ(「常に赤ではない」の対照 2 件・
+`chains` の 2 件・§6 の変異 1 件・健康時の exit 0)。空振りの検査はゼロ。
+
+★`check-mutation-targets.sh` の「241 件」は**この 2 本を足しても動かない。それが正しい**。
+あの数が数えているのは `test/mutation-controls.py` の W 族の的一覧(= `src/` を壊す方)だけで、
+対照 script の中に埋めた `sed` 変異は元から対象外である。動かない数字を見て穴だと疑ったが、
+測っている物が違った。対照 script 側の空撃ちは中央では見ておらず、**各 file が自前の
+`cmp -s` で見張って exit 2 を返す**(この 2 本は両方そうしてある)。
