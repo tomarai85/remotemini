@@ -55,6 +55,10 @@ actor PollLoop {
             /// tree, or the typed decode failed. Cursor was NOT advanced.
             case unreadable
             case unauthorized
+            /// The conversation is gone (404 + `SESSION_NOT_FOUND`). Terminal: unlike
+            /// every other non-success kind here, no amount of retrying reaches a
+            /// different answer, so the drive loop stops rather than backing off.
+            case sessionNotFound
             case unreachable
         }
         let kind: Kind
@@ -162,6 +166,13 @@ actor PollLoop {
 
         case .unauthorized:
             return StepResult(kind: .unauthorized, nextWaitMs: 20_000, localBackoffMs: 0)
+
+        case .sessionNotFound:
+            // `attempt` is deliberately NOT advanced. `Backoff`'s ladder exists to pace
+            // retries, and there is no retry after this -- climbing it here would leave
+            // a stale rung behind for a later loop on this same actor (a resync reuses
+            // the instance) to inherit a delay it never earned.
+            return StepResult(kind: .sessionNotFound, nextWaitMs: 20_000, localBackoffMs: 0)
 
         case .cancelled:
             // A deliberate cancellation (teardown, or a resync racing this request)

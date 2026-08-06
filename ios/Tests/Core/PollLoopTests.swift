@@ -171,4 +171,41 @@ final class PollLoopTests: XCTestCase {
 
         XCTAssertEqual(localBackoffs, [1_000, 2_000, 4_000], "3 consecutive unreachable failures, opened-and-closed instantly, must climb Backoff's ladder")
     }
+
+    // MARK: - 404 SESSION_NOT_FOUND: terminal, and outside Backoff's counter
+
+    func testSessionNotFoundSurfacesAsItsOwnKindWithNoLocalBackoff() async {
+        let stub = StubPollFetching()
+        stub.outcomes = [.sessionNotFound]
+        let loop = makeLoop(client: stub)
+
+        let result = await loop.step(waitMs: 20_000)
+
+        XCTAssertEqual(result?.kind, .sessionNotFound)
+        XCTAssertEqual(result?.localBackoffMs, 0, "there is no next attempt to pace -- a delay before a retry that never happens is a delay nobody waits")
+    }
+
+    /// The non-obvious half. `.sessionNotFound` must leave `attempt` exactly where it
+    /// found it, which is only observable through what a LATER `.unreachable` is
+    /// charged. This actor outlives the drive loop (a resync reuses the instance), so
+    /// an `attempt` silently advanced here becomes a rung a future loop inherits
+    /// without ever having failed -- the phone waiting 4s before its first retry on a
+    /// connection that has not yet gone wrong once.
+    func testSessionNotFoundDoesNotAdvanceTheBackoffLadderForALaterRealFailure() async {
+        let stub = StubPollFetching()
+        stub.outcomes = [.unreachable, .sessionNotFound, .unreachable]
+        let loop = makeLoop(client: stub)
+
+        var localBackoffs: [Int] = []
+        for _ in 0..<3 {
+            let result = await loop.step(waitMs: 20_000)
+            localBackoffs.append(result?.localBackoffMs ?? -1)
+        }
+
+        XCTAssertEqual(
+            localBackoffs,
+            [1_000, 0, 2_000],
+            "the third value is the assertion: 2000 means the 404 was not charged to Backoff, 4000 means it was"
+        )
+    }
 }

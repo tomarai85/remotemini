@@ -29,6 +29,13 @@ enum PollOutcome: Equatable {
     /// distinction, it only answers yes/no).
     case unreadable
     case unauthorized
+    /// 404 carrying `SESSION_NOT_FOUND`: the conversation this loop is attached to is
+    /// gone. Kept distinct from `.unreachable` for the same reason `HistoryClient`,
+    /// `SendClient` and `InterruptClient` already keep it distinct -- collapsing them
+    /// makes a deleted session look like a network problem, sending the user to check
+    /// their signal while the real cause sits on the desk. This client was the last
+    /// one still collapsing it.
+    case sessionNotFound
     case unreachable
     case cancelled
 }
@@ -96,6 +103,33 @@ struct PollClient: PollFetching {
             break
         case 401:
             return .unauthorized
+        case 404:
+            // The two 404s this endpoint can produce are NOT the same event, and the
+            // difference is exactly "can retrying ever succeed?":
+            //
+            //   `SESSION_NOT_FOUND` -- the session is gone. A deleted session does not
+            //   come back under the same id, so the loop must stop. Reported as
+            //   `.unreachable` (what this client did until now) it instead drove
+            //   `reachability.recordFailure()` forever, showing a connectivity banner
+            //   over a screen whose real problem was that the conversation had ended.
+            //
+            //   Any other 404 (no code, or `NO_SUCH_ROUTE`) -- the phone asked for a
+            //   path this server does not serve, i.e. a version skew across a deploy.
+            //   That CAN heal: the next deploy restores the route and the very next
+            //   poll succeeds. So it stays `.unreachable` and keeps retrying.
+            //
+            // ★This is a deliberate divergence from `SendClient`, which turns the same
+            // second case into a contract violation. Send is one-shot: it has no retry
+            // loop to heal into, so its only options are "act on it" or "lie". A poll
+            // loop has the third option, and taking it is strictly better than telling
+            // the user 「送れたかどうかは確認できていません」 -- prose that belongs to a
+            // send and would be simply false printed under a poll.
+            guard (try? JSONDecoder().decode(RecoveryCode.self, from: data))?.code
+                == RecoveryCode.sessionNotFound
+            else {
+                return .unreachable
+            }
+            return .sessionNotFound
         default:
             return .unreachable
         }

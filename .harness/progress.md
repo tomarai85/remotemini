@@ -1612,9 +1612,10 @@ against this state and lands together.
   転写が無い所から始まるので `0 → 8 行` には起動が書いた行が混ざる = 「増えた」は
   「私の本文が着いた」を意味しない。閉じたのは**送った本文を転写の中で数えた**方
   (1 件、送っていない本文は 0 件 = 陰性対照)。
-- **`.notFound` / `sessionNotFound` は poll loop を止めない**(Sprint 4 の挙動の
+- ~~**`.notFound` / `sessionNotFound` は poll loop を止めない**(Sprint 4 の挙動の
   まま、意図的に変えていない)。brief §1-b が範囲外の追加を禁じている為。
-  次の Sprint で扱うなら、止める側が正しいかは別途裁く必要が在る。
+  次の Sprint で扱うなら、止める側が正しいかは別途裁く必要が在る。~~
+  → **2026-08-06 に裁いて直した。§6-5 を見よ**(「止める側が正しいか」= 止めるのが正しい)。
 - **一覧画面の契約違反は log のみ**で、画面には出ない。会話画面と非対称。
 - 会話画面の `RC_UI_FIXTURE` を使った UI 検査は未着手(UITests は今も一覧画面だけ)。
 
@@ -2032,8 +2033,8 @@ commit `a0be498`(11 file、1721 挿入 / 21 削除)。
   `rc-backend/tools/live-http-check.mjs` を**見張ると宣言している対照が 1 本も無い**。
   門は名前を出すだけで止めない(そういう設計)ので、見えている穴として残る。
   (`live-interrupt-check.sh` だけは下の節で埋めた。残り 3 本はそのまま。)
-- Conversation 画面の `RC_UI_FIXTURE` UI 検査、List 画面の契約違反が log だけの件、
-  `.notFound` が poll を止めない件は、引き続き未着手。
+- Conversation 画面の `RC_UI_FIXTURE` UI 検査、List 画面の契約違反が log だけの件は、
+  引き続き未着手。(`.notFound` が poll を止めない件は 2026-08-06 に閉じた = §6-5)
 
 ## Tom の裁定待ち(Sprint 6 は止まらなかったが、次に効く)
 
@@ -2398,3 +2399,76 @@ Tom の記録済み action B は「friday と edith」の 2 台。**この一覧
 対照 script の中に埋めた `sed` 変異は元から対象外である。動かない数字を見て穴だと疑ったが、
 測っている物が違った。対照 script 側の空撃ちは中央では見ておらず、**各 file が自前の
 `cmp -s` で見張って exit 2 を返す**(この 2 本は両方そうしてある)。
+
+## 6-5. 持ち越しだった「`.notFound` が poll を止めない」を裁いて直した(2026-08-06)
+
+積み残しの文面は「止める側が正しいかは別途裁く必要が在る」だった。裁いた。**止めるのが正しい**。
+
+### 何が壊れていたか
+
+`PollClient` は 4 つあるクライアントの中で**最後の 1 本**で、404 を本文に関係なく
+`.unreachable` へ潰していた。結果、会話が消えた端末では:
+
+1. 画面は「通信できません」と言う。実際には**会話が無い**。原因が違うので、
+   ユーザが取る行動(電波を疑う / 一覧に戻る)も違う。
+2. `reachability.recordFailure()` が回り続け、`Backoff` が間隔を延ばし続ける。
+   **二度と別の答えが返らない相手**に、永久に問い合わせる。
+
+`HistoryClient` / `SendClient` / `InterruptClient` は既に分けてあった。ここだけ残っていた。
+
+### 404 は 1 つの出来事ではない —— 分けた基準
+
+基準は 1 つだけ:「**retry がいつか成功し得るか**」。
+
+| 404 の中身 | 成功し得るか | 扱い |
+|---|---|---|
+| 本文 `code: SESSION_NOT_FOUND` | いいえ。会話が消えている | `.sessionNotFound`(終端) |
+| code 無し / `NO_SUCH_ROUTE` / 本文が壊れている | **はい**。deploy 中の版ズレは次の deploy で治る | `.unreachable` のまま(retry 継続) |
+
+サーバ側で裏を取ってある: `src/server.mjs` の `SESSION_ROUTE_RE` が経路名を列挙していて、
+`SESSION_NOT_FOUND` を返す guard は**動作の振り分けより手前**に居る。つまり
+「経路は在るが会話が無い」と「経路自体が無い」は、サーバでも別の場所から出ている。
+
+★**`SendClient` とは意図的に振る舞いを変えた**。送信は「送れたか分からない」としか言えないが、
+poll には第 3 の選択肢(止める)が在る。送信の文面をそのまま poll に貼ると、
+止まれる場面で「確認できていません」と言い続ける事になる。
+
+### 反証を先に潰した
+
+対抗仮説:「新規会話の初回 poll が、登録前の一瞬だけ 404 を返すのでは。止めたら誤爆する」。
+主張ではなく**観測で潰した**。`startPolling()` の呼び出し元は
+`ConversationViewModel` の初回 `/history` 読み込みの `case .success` の中**だけ**。
+poll が回り始める時点で、その会話は既に一度 200 で応答している。
+
+### 直した所(4 file)
+
+| file | 変更 |
+|---|---|
+| `ios/Sources/Core/PollClient.swift` | `PollOutcome` に `.sessionNotFound` を追加。404 を本文の `code` で振り分け。判定は既存の `RecoveryCode`(`Decodable`)を使い、3 つ目の private な封筒型は作らない |
+| `ios/Sources/Core/PollLoop.swift` | `StepResult.Kind` に `.sessionNotFound`。**`attempt` を進めない** —— `Backoff` のはしごは retry を刻む物で、この先に retry は無い。ここで登らせると、同じ actor を再利用する後のループ(resync は instance を使い回す)が、自分では一度も失敗していないのに段を引き継ぐ |
+| `ios/Sources/Screens/Conversation/ConversationViewModel.swift` | `applyPollStep` に腕を追加。`phase = .notFound` かつ **`return false`**。`false` の方が本体で、`true` だと「この会話は見つかりません」と表示しながら下でループが死んだ会話に問い続ける —— 上の `.unreadable` の腕が拒んでいるのと同じ型の矛盾になる |
+| 検査 3 file | 8 本追加(`PollClientTests` 4 / `PollLoopTests` 2 / `ConversationViewModelTests` 2) |
+
+### 歯の測定 —— 8 本すべて、対応する 1 つの変異でだけ赤くなる
+
+緑は「歯が在る」の証拠にならないので、**直す前の形を植え直して赤くなるかを測った**。
+片側だけでは足りない:「消えた事に気付く」検査と「消えていない物を消えたと言わない」検査は
+逆向きの変異でしか落ちない。だから逆側(M4 / M5)も植えた。
+
+| 変異 | 何に戻したか | 赤くなった検査 |
+|---|---|---|
+| M1 | `PollClient`: 404 を全部 `.unreachable`(= 直す前) | `testStatus404WithSessionNotFoundIsItsOwnOutcome` / `testSessionNotFoundIsNotEqualToUnreachable` |
+| M2 | `ConversationViewModel`: `.sessionNotFound` でも `return true`(= ループを止めない、直す前の実質挙動) | `testSessionNotFoundStepStopsTheDriveLoopAndShowsTheNotFoundPhase` |
+| M3 | `PollLoop`: 終端扱いをやめ `Backoff` を課金 | `testSessionNotFoundSurfacesAsItsOwnKindWithNoLocalBackoff` / `testSessionNotFoundDoesNotAdvanceTheBackoffLadderForALaterRealFailure` |
+| M4 | `PollClient`: 404 を全部 `.sessionNotFound`(逆向きの誤り) | `testStatus404WithoutTheCodeStaysUnreachableSoADeployCanHealIt` / `testStatus404WithAnUndecodableBodyStaysUnreachable` |
+| M5 | `ConversationViewModel`: `.unreachable` でもループを止める(逆向きの誤り) | `testUnreachableStepKeepsTheDriveLoopRunningUnlikeSessionNotFound` |
+
+**8 本 / 8 本。空振りゼロ。** かつ、どの変異も**関係の無い検査は落としていない**
+(M1 は client 層の 2 本だけ、M3 は loop 層の 2 本だけ)。層が混ざっていない事の証拠でもある。
+
+★M2 が殺したのが 1 本だけなのは正しい。あの検査は phase と戻り値の両方を主張していて、
+M2 は戻り値だけを壊す —— つまり `XCTAssertFalse` の側が独立に効いている事が測れた。
+
+観測: 変異ごとに `bash ios/tools/build.sh --sim` を実行。
+358 件中 M1=2 赤 / M2=1 赤 / M3=2 赤 / M4+M5=3 赤、**全復旧後に 358 件 / 失敗 0 件**。
+(M4 と M5 は層が離れていて互いに届かないので、1 回の走行にまとめて植えた)

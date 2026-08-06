@@ -556,6 +556,42 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertEqual(unauthorizedCallCount, 1)
     }
 
+    // MARK: - 404 SESSION_NOT_FOUND during polling also stops the drive loop
+
+    func testSessionNotFoundStepStopsTheDriveLoopAndShowsTheNotFoundPhase() async {
+        let client = RecordingClient()
+        client.resultQueue = [.success(HistoryResponse(history: [], truncated: false))]
+        let vm = makeViewModel(client: client)
+        await vm.load()
+        XCTAssertEqual(vm.phase, .loaded)
+
+        let shouldContinue = vm.applyPollStep(PollLoop.StepResult(kind: .sessionNotFound, nextWaitMs: 20_000, localBackoffMs: 0))
+
+        // `false` is the substance here, not the phase. A phase saying the conversation
+        // is gone, over a loop that keeps asking it for updates, is the contradiction
+        // this whole change exists to remove.
+        XCTAssertFalse(shouldContinue, "a deleted session does not come back under the same id -- retrying it is unbounded and cannot succeed")
+        XCTAssertEqual(vm.phase, .notFound)
+        XCTAssertEqual(unauthorizedCallCount, 0, "a 404 is not an auth problem and must not eject to Key entry")
+    }
+
+    /// Negative control for the pair above: `false` is not simply what every non-
+    /// `.readable` kind returns. `.unreachable` -- the value a `SESSION_NOT_FOUND`
+    /// used to arrive as -- keeps the loop running, which is correct for it and was
+    /// the bug for the 404. If this ever returns `false` too, the test above stops
+    /// distinguishing anything.
+    func testUnreachableStepKeepsTheDriveLoopRunningUnlikeSessionNotFound() async {
+        let client = RecordingClient()
+        client.resultQueue = [.success(HistoryResponse(history: [], truncated: false))]
+        let vm = makeViewModel(client: client)
+        await vm.load()
+
+        let shouldContinue = vm.applyPollStep(PollLoop.StepResult(kind: .unreachable, nextWaitMs: 20_000, localBackoffMs: 1_000))
+
+        XCTAssertTrue(shouldContinue, "a transport failure can heal on the next attempt -- that loop must not stop")
+        XCTAssertEqual(vm.phase, .loaded, "and it must not tear the loaded screen down either")
+    }
+
     // MARK: - Sprint 4 Evaluator RED 2: the three entry points (N4 resume, 再試行,
     // 読み直す) driven directly, not only reached indirectly through the gap tests
     // above. Same observation form the gap tests already use: count the requested
