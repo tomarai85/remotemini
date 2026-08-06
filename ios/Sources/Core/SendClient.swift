@@ -59,6 +59,7 @@ struct SendClient: MessageSending {
         let url = baseURL.appendingPathComponent("api/sessions/\(sessionID)/messages")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = BackendSession.writeTimeout
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 

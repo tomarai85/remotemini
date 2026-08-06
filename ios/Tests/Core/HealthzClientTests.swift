@@ -97,6 +97,19 @@ final class HealthzClientTests: XCTestCase {
         XCTAssertEqual((MockURLProtocol.requestedBodies.last ?? nil)?.count ?? 0, 0)
     }
 
+    /// The fourth recorded dimension (2026-08-06). A read the user is watching a
+    /// spinner for: it gives up at `interactiveTimeout`, not at the 30s poll length.
+    /// Why the split exists, and what `requestedTimeouts` does and does not prove,
+    /// is in `RequestTimeoutTests`.
+    func testRequestUsesTheInteractiveTimeout() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(#"{"ok":true,"pid":1,"uptime":1,"version":"x"}"#.utf8))]
+        let client = HealthzClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.check(baseURL: baseURL)
+
+        XCTAssertEqual(MockURLProtocol.requestedTimeouts, [BackendSession.interactiveTimeout])
+    }
+
     func testRequestCarriesNoAuthorizationHeaderByDesign() async {
         // `HealthzClient.check` never calls `setValue(_:forHTTPHeaderField:)` at
         // all -- Key-entry uses this exact endpoint to tell "wrong URL" apart from

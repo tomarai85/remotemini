@@ -76,6 +76,7 @@ struct SessionsClient: SessionsListing {
     func fetch(baseURL: URL, apiKey: String) async -> Result<SessionsResponse, SessionsFetchError> {
         var request = URLRequest(url: baseURL.appendingPathComponent("api/sessions"))
         request.httpMethod = "GET"
+        request.timeoutInterval = BackendSession.interactiveTimeout
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         let data: Data

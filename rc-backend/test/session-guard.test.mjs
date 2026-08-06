@@ -93,6 +93,50 @@ test("電話側で URLSession を掴んでよいのは BackendSession だけ", (
   );
 });
 
+/**
+ * 要求を組み立てる file と、待ち時間を載せる file が**一致**するか(2026-08-06)。
+ *
+ * 経緯: REQUIREMENTS §5-6 の実測で、全要求が1本の 30 秒を共有していた事が
+ * 「接続は通るが応答が来ない網で 30 秒の白画面」として出た。読む側だけ 8 秒に分けたが、
+ * その1行は **client 7 本にそれぞれ手で書いた行**なので、8 本目の client を足して
+ * 書き忘れても既存のテストは全部緑のまま通る。
+ *
+ * ★「1本でも在るか」で見ない理由: この repo は同じ形を 2026-08-06 に踏んでいる —
+ *   `verify-script-controls.sh` の C7 は「採点される足が1本でも在るか」しか見ておらず、
+ *   6本目を足して採点を書き忘れた回を素通しした。**数えるのは一致であって存在ではない**。
+ */
+test("要求を組み立てる file は全部、待ち時間を自分で載せている", () => {
+  if (!existsSync(SOURCES)) {
+    console.log(`測っていない: 電話側の木が居ない (${SOURCES}) = 部分木で回されている`);
+    return;
+  }
+
+  const builds = new Set();
+  const declares = new Set();
+  for (const file of swiftFiles(SOURCES)) {
+    const rel = relative(SOURCES, file);
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      if (isComment(line)) continue;
+      if (/URLRequest\(url:/.test(line)) builds.add(rel);
+      if (/\.timeoutInterval\s*=/.test(line)) declares.add(rel);
+    }
+  }
+
+  // 空振り防止。走査が何も見つけない形になったら、下の deepEqual は [] === [] で緑になる。
+  assert.ok(
+    builds.size > 0,
+    "要求を組み立てる file が 0 本 = 走査が木に届いていない。この検査は測定になっていない",
+  );
+
+  assert.deepEqual(
+    [...builds].filter((f) => !declares.has(f)).sort(),
+    [],
+    "この file は URLRequest を作るのに待ち時間を載せていない。session の既定(pollTimeout=30秒)に" +
+      "落ちるので、利用者が空白の画面で 30 秒待つ道が1本増える。" +
+      "読む物なら BackendSession.interactiveTimeout、送る物なら writeTimeout を載せる",
+  );
+});
+
 test("許可した file が実際に走査に掛かっている(検査が空振りしていない)", () => {
   if (!existsSync(SOURCES)) return; // 上のテストが名指しで報告済み
 

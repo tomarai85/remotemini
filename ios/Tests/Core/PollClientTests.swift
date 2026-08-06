@@ -257,6 +257,21 @@ final class PollClientTests: XCTestCase {
         XCTAssertEqual((MockURLProtocol.requestedBodies.last ?? nil)?.count ?? 0, 0)
     }
 
+    /// The fourth recorded dimension (2026-08-06). ★This is the one client that must
+    /// NOT take the shortened read timeout. The server deliberately holds this request
+    /// up to `POLL_MAX_WAIT_MS` (20s) and answers 200-with-nothing-new; a client that
+    /// gave up at `interactiveTimeout` (8s) would read that designed silence as a
+    /// network failure and show the offline banner on a perfectly healthy link.
+    /// What `requestedTimeouts` does and does not prove: see `RequestTimeoutTests`.
+    func testPollKeepsTheLongTimeoutRatherThanTheShortenedReadTimeout() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validBody.utf8))]
+
+        _ = await makeClient().poll(baseURL: baseURL, apiKey: "k", sessionID: "s", cursor: .empty, waitMs: 20_000)
+
+        XCTAssertEqual(MockURLProtocol.requestedTimeouts, [BackendSession.pollTimeout])
+        XCTAssertGreaterThan(BackendSession.pollTimeout, BackendSession.interactiveTimeout)
+    }
+
     func testEmptyCursorIsSentAsAnEmptyQueryValueNotOmitted() async {
         // The fresh sentinel (`PollCursor.empty`) must still appear on the wire as
         // `cursor=` -- an omitted `cursor` param entirely would be a different

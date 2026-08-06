@@ -260,6 +260,22 @@ final class HistoryClientTests: XCTestCase {
         XCTAssertEqual((MockURLProtocol.requestedBodies.last ?? nil)?.count ?? 0, 0)
     }
 
+    // MARK: - Wait budget (the fourth recorded dimension, 2026-08-06)
+
+    /// This is the request behind 会話を開く. Until the timeouts were split it waited
+    /// the poll length (30s), so opening a conversation on a network that accepts the
+    /// connection and then goes silent showed a bare `ProgressView` for half a minute
+    /// before offering 再試行 -- RC 却下理由 1 reproduced inside this app.
+    /// What `requestedTimeouts` does and does not prove: see `RequestTimeoutTests`.
+    func testRequestUsesTheInteractiveTimeout() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validBody.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.fetch(baseURL: baseURL, apiKey: "x", sessionID: "sess-0001", limit: 50)
+
+        XCTAssertEqual(MockURLProtocol.requestedTimeouts, [BackendSession.interactiveTimeout])
+    }
+
     // MARK: - Fixture
 
     /// What `server.mjs` actually sends from its `SESSION_NOT_FOUND` frozen constant.

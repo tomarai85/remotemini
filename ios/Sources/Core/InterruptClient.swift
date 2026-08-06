@@ -45,6 +45,7 @@ struct InterruptClient: Interrupting {
         let url = baseURL.appendingPathComponent("api/sessions/\(sessionID)/interrupt")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = BackendSession.writeTimeout
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         let data: Data
