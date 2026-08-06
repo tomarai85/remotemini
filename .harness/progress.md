@@ -2693,3 +2693,155 @@ grep して一覧にしている。新しく足した**探りの一行も同じ�
 陰性対照は 2 本: S48(口のブロックごと削ると無言でなくなる = ④に歯が在る)と
 10c(入口の「聞く枝」を `if true` に潰すと素通しに戻る)。どちらも
 「変異が当たったか」を `cmp -s` / `grep -q` で先に確かめてから測る。
+
+## 6-8. 画面の芯にある規則に、UI 側の検査が1本も無かった(2026-08-06)
+
+Tom の裁定「返答待ちであれ作業中であれいつでも見て、干渉できればいいんじゃないかな?」は、
+会話画面の形をまるごと決めている規則で、実装では2つの述語に落ちている:
+
+| 状態 | 打ち込む口 | 割り込む釦 |
+|---|---|---|
+| BUSY(作業中) | **開いたまま** | 開いたまま |
+| CHOICE(確認待ち) | 閉じる + 理由を出す | 開いたまま |
+
+`ConversationViewModel` の単体検査はこの表を持っていた。**画面には無かった** —— UI の検査で
+この表を通る物が 0 本。理由は実装の穴ではなく、**足場の穴**だった。
+
+### なぜ書けなかったか: 治具が永久に `.unreadable` を返していた
+
+`PollFetchingFixture.poll()` は `RC_UI_FIXTURE` のどの状態でも最終的に `.unreadable` を返す。
+`.unreadable` は `screen` を更新しない ⇒ `ConversationViewModel.screen` は**どの治具でも永久に `nil`**。
+`composerEnabled` / `interruptEnabled` は `guard let screen else { return true }` を通り、
+BUSY も CHOICE も「まだ画面を観測していない」と同じ枝に落ちる。つまり
+**表を通す UI 検査は書こうにも書けなかった**。degradation banner(`.degraded` / `.stalled`)を撮る為の
+治具なので、読める応答を返す道が最初から存在しなかった。
+
+足したのは治具の2状態と、読める枝1本:
+
+- `HistoryFixture.State` に `case busy = "conversation-busy"` / `case choice = "conversation-choice"`
+- `PollFetchingFixture` に `readableClassification(for:)` —— この2状態にだけ `ScreenBody` を返し、
+  1回返したら 60 秒 hold(判定が assertion の間 **持続する**必要が在る。毎回即返すと
+  poll loop が CPU 速度で回り、待たされている long-poll の形から離れる)
+- `.busy` / `.choice` は `switch` の `unreadableTarget` 側にも**明示的に**残した。`default` に畳むと
+  6つ目の状態を足した日に黙って `0` になる —— 畳まなければ compile error で気付ける
+
+### ★書いた検査が、書いた直後は**何も測っていなかった**
+
+最初の版は `items: []`(本文を送らない)にした。理由は「本文の assertion を足すと
+打ち込む口の検査が描画に結合する」。測ったら、その理由ごと死んだ:
+
+> **BUSY の画面と「まだ画面を観測していない」の画面は、ピクセル単位で同一**。
+> どちらも `composerEnabled` / `interruptEnabled` が `true` を返す。
+
+つまり `testBusyLeavesBothTheComposerAndTheInterruptButtonUsable` は、
+**読める枝が走っても走らなくても緑**だった。治具を丸ごと殺しても通る検査 =
+何にも繋がっていない緑ランプ。この repo が 2026-07-31 に踏んだ
+「全項目 PASS なのに人の目には違って見える」と同じ形で、今度は逆向き(人の目には同じ、
+中身が違う)。
+
+直しは `items` に**ライブの行を1本**入れる事:
+
+- `applyReadablePoll` は `screen` の代入と `entries` の追記を**同じ呼び出しの中で枝無しに**やる。
+  だから画面にライブの行が出た事が、分類が着地した事の証拠になる。
+- 文言は分類ごとに別(`ライブ(作業中)の行が届いた` / `ライブ(確認待ち)の行が届いた`)。
+  共有の1文字列だと、**別の治具で起動した検査が自分の錨を見つけて緑を出す**。
+- `display.choice` は `.choice` の時だけ付ける。`view.mjs` の `choiceView(state)` が
+  実際にそう埋めるので、付けっぱなしだと**サーバが決して作らない状態**を治具が作る事になる。
+
+検査4本には「ライブの行は**出てはいけない**」側の assertion も入れた(陰性)。
+
+### 変異で測った —— 3本すべて赤
+
+`ios/tools/conversation-ui-control.sh`(scratchpad から昇格)。実測 2026-08-06:
+
+| 変異 | 何を潰すか | 落ちた検査 |
+|---|---|---|
+| M1 | `composerEnabled` の BUSY を `false` に | `testBusyLeavesBothTheComposerAndTheInterruptButtonUsable` |
+| M2 | 治具の**読める枝**ごと削る | 同上(= 錨が効いている証明) |
+| M3 | `composerEnabled` の CHOICE を `true` に | `testChoiceDisablesTheComposerAndSaysWhy` + `testTheChoiceSentenceAndTheInterruptButtonNeverDisagree` |
+
+`--- 合計: PASS 4 / FAIL 0 / UNMEASURED 0 ---` / `復元を確認`。
+費用の実測: DerivedData が温まっていて **3.6 分**(基準 37s + 変異 39/48/49s)。冷えていれば伸びる。
+
+測り方で守った点が3つ:
+
+1. **基準は「名前」で固定、件数では固定しない**。`vacuous-scan.py` の教訓どおり、
+   的にしている検査**2本の名前**が基準走行で緑だった事を確かめる。「4本緑」で固定すると
+   5本目を足した日に理由なく UNMEASURED になる。
+2. **変異が当たらなかった回は UNMEASURED(exit 2)**、赤(exit 1)と同じ籠に入れない。
+   バイトが動いていないのに緑を「合格」と読むのが、この repo の最初の穴だった。
+3. **sed は範囲指定**(`/var composerEnabled: Bool {/,/^    }$/`)。範囲を切らないと
+   `composerDisabledReason` の switch にも当たって非網羅 = compile error になり、
+   それを「検査が赤くなった」と読み違える。
+
+なお xcodebuild の log は `-[RemoteMiniUITests.ConversationUITests …]` と module 付きで出る。
+素の class 名で grep すると 0 件 = 「走らなかった」に見える。判定は module 付きで取る。
+
+### 序でに見つけた: 対照の**測る範囲**と**発火条件**がまたズレていた
+
+`ios/tools/ui-fixture-absence-control.sh` は治具3本を測っているのに、`controls-for:` は
+その一部しか宣言していなかった —— 宣言していない file を触った commit では**門が選ばない**。
+2026-08-02 から6回踏んでいる同じ形(門の走査 dir / 対照の宣言 / 的の数)。宣言を広げた。
+
+昇格した新しい対照は、変異させる**実装 file**(`ConversationViewModel.swift`)も宣言に入れた。
+「Conversation の実装を宣言している対照が1本も無い」という穴の一部が塞がった。
+
+### 同じ Swift を変異させる対照が2本になった = 目印を共有しないと**復元の基準点が汚れる**
+
+`trap EXIT` は SIGKILL では走らない(`dod-sprint-6-controls.sh` の header の実測)。殺された回の
+変異は作業木に残り、それを拾うのは「次に起きた対照」。目印(`INFLIGHT`)の path が食い違うと:
+
+> 片方が残した変異を、もう片方が「走る前の中身」として複製する
+> ⇒ **復元の基準点ごと汚染され、その変異は以後どちらにも戻せない**。
+> しかも両対照は自分の仕事を正しく終えるので、**緑のまま作業木だけが汚れる**。
+
+だから `rc-dod-sprint6-inflight.tsv` → `rc-ios-mutation-inflight.tsv` に改名して**共有**にした。
+共有して安全なのは2本が**直列にしか走らない**から(門も定期掃きも対照を1本ずつ回す)。
+`dod-sprint-6-recovery-controls.sh` は `INFLIGHT` を外から与えて区間だけ回すので改名の影響を受けない ——
+改名後に走らせて `PASS 19 / FAIL 0`。
+
+**手順そのものが2箇所に写った**(復旧区間)。括り出しが筋だが、`dod-sprint-6` 側は
+13 変異 x xcodebuild の 27 分物で、書き換えたら丸ごと回して確かめる必要が在る。今夜の commit に
+乗せるには重い。so 写しは残したまま、**ズレを毎 commit 測る**方を足した:
+`rc-backend/test/mutation-recovery-copy.test.mjs`(3本、`npm test` 常駐)。
+
+- 錨の間を切り出す。錨が一意でなければ**測定不能として落とす**(黙って空を返さない)
+- 「2つが等しい」は両方空でも緑になるので、先に**実在する行の名前**で
+  切り出しが本物を掴んでいる事を固定(`/bin/cp "$rs" "$rf"` と `/bin/rm -f "$INFLIGHT"`)
+- 注釈と空行は落として比べる —— 文脈の説明は2本で**違ってよい**
+- 目印の path も一致を測る
+
+陰性対照を scratchpad で回した(`prove-recovery-copy.sh`):目印の path をズラす / 復旧の1行を落とす /
+錨を改名する の3変異、いずれも `^not ok` が出る事を確認 → `PASS 3 / NG-or-UNM 0`、復元を確認。
+括り出した日にこの検査は不要になる(その時消す)。
+
+### ★定期掃きの一覧に**載っていない対照が8本**在った
+
+新しい対照を `run-controls.sh` の `LOCAL_CTLS` に足す時に、ついでに数えた。
+disk 上の対照 **56 本**、どの一覧にも載っていない物 **8 本**:
+
+```
+test/phone-window-judgment-controls.sh
+test/poll-spend-controls.sh
+test/restart-epoch-controls.sh
+test/verify-state-judgment-controls.sh
+.harness/dod-sprint-6-controls.sh
+.harness/dod-sprint-6-recovery-controls.sh
+.harness/live-interrupt-wording-controls.sh
+.harness/live-shell-key-controls.sh
+```
+
+これは「門が選ばない」とは別の穴。門(`staged-controls-gate.sh`)は**commit が触った**対照しか
+回さない。定期掃き(`run-controls.sh`)が**常に回る**方で、そこに載っていなければ
+UNREG として赤く数えられるだけで**一度も回らない**。上の4本は今週 commit した物で、
+自分で書いて自分で載せ忘れている。
+
+今夜の commit では自分の1本だけ登録した(だから 9 本にはならなかった)。8本の処遇は
+**別建ての commit**にする —— 1本ずつ LOCAL に載せるか、EXCLUDED にするなら**理由を書く**
+(この file の掟が理由なしの除外を禁じている)。まとめて片付ける作業ではない。
+
+数える時に2回外した事も記録しておく:① zsh で `for d in $SCAN` を回して
+`no matches found`(改行入りの変数を zsh は分割しない)→ `bash -c` で包んだ。
+② bash 版が「56本ぜんぶ UNREG」と答えたのを**信じずに**debug した —— 原因は
+`case " $REG "` を改行区切りの一覧に当てていた事(項目の前後に空白が無い)。`tr "\n" " "` で
+本当の答えが出た。**信じずに debug した**のは正しいが、報告する前に気付けたのは運が良い。

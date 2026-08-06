@@ -19,13 +19,23 @@ struct HistoryFetchingFixture: HistoryFetching {
         /// Sprint 4 brief §7 DoD item 6: the warning + `[再試行]`/`[読み直す]` banner
         /// (`UnreadableMeter.Stage.stalled`). Same reasoning as `.degraded`.
         case stalled = "conversation-stalled"
+        /// 2026-08-06: the two screen classifications the composer/interrupt table
+        /// actually turns on. Every state above drives `poll()` to `.unreadable`, so
+        /// `screen` stays `nil` in all of them and the UI layer had **no** way to
+        /// reach the rule Tom's ruling is about (「返答待ちであれ作業中であれいつでも
+        /// 見て、干渉できればいい」). History content is irrelevant to both -- what
+        /// makes them differ is `PollFetchingFixture`, selected off these same cases.
+        case busy = "conversation-busy"
+        /// The one classification that legitimately takes the composer away, and the
+        /// only place `interruptAllowedOnChoiceScreen` is observable end-to-end.
+        case choice = "conversation-choice"
     }
 
     let state: State
 
     func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
         switch state {
-        case .threeRoles, .degraded, .stalled:
+        case .threeRoles, .degraded, .stalled, .busy, .choice:
             return .success(Self.threeRolesResponse)
         }
     }

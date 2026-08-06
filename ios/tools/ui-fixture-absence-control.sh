@@ -1,5 +1,15 @@
 #!/bin/bash
-# controls-for: ios/Sources/Core/SessionsListingFixture.swift ios/project.yml
+# controls-for: ios/Sources/Core/SessionsListingFixture.swift ios/Sources/Core/HistoryFixture.swift ios/project.yml
+#
+# ★宣言に HistoryFixture.swift が居るのは 2026-08-06 に測って足したから。この対照が
+#   測るのは**バイナリ全体**に RC_UI_FIXTURE の文字列が無い事なのに、呼ばれる条件は
+#   ここに書いた file 名だけ —— 範囲と発火条件がズレていた。会話画面側の
+#   ConversationHistoryFactory も同じ環境変数を読むので、其方の #if DEBUG を外す
+#   commit は、この対照を一度も呼ばずに通っていた。
+#   ★一覧を手で保つのをやめた訳ではない。**ズレを毎 commit 測る**方を足した:
+#   rc-backend/test/fixture-reader-declared.test.mjs(commit-suite-gate 経由で必ず走る)が
+#   「環境変数を読む file」を grep して、この行に全部載っているかを見る。3つ目の
+#   読み手が現れた日に黙って痩せるのを止めるのはそちら。
 # 対照(a) -- 文字列走査: `RC_UI_FIXTURE` が Release バイナリの文字列表に
 # 一切出ない事を測る(Sprint 2 brief §5-b)。
 #
