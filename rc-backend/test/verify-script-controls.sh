@@ -143,5 +143,55 @@ else
       "消えた" "$([ -d "$victim2" ] && echo 残る || echo 消えた)"
 fi
 
+# --- C7 / C8 / C9: 落ちた足が本当に合算へ乗るか -----------------------------
+# 検査段の足は `cmd 2>&1 | tail -N; rc=$((rc + $?))` の形で並んでいる。パイプの後の
+# `$?` は **tail の物**なので、素のままなら足が赤くても 0 に化ける —— 検査台本にとって
+# 一番害の大きい壊れ方(「緑だった」と報告して実際は赤)。
+#
+# それを防いでいるのは remote 台本の前置きに在る `set -o pipefail` の**1行だけ**で、
+# 2026-08-06 の時点でその1行を見張る物は repo に1つも無かった。消しても全部緑のままになる。
+# ここは前置きを**届いた現物の byte から**取り出し、故意に落ちる足を1本足して回す。
+#
+# ★測っていない事: 各段の中身(npm test 等)が正しいか。ここで測るのは
+#   「落ちた段が合算に乗るか」= 採点の配線だけ。
+if [ -z "${stage4:-}" ]; then
+  echo "NG  C7-C9 検査段の台本が無い"; FAIL=$((FAIL+3))
+else
+  preamble=$(/usr/bin/sed -n '1,/^rc=0$/p' "$stage4")
+
+  # 採点される足が実在するか。0 本なら形が変わった合図で、この対照は測定不能。
+  # 黙って緑にすると「守りの届く範囲が欠陥と一緒に縮む」型になる。
+  legs=$(grep -cE '\| *tail[^;]*; *rc=\$\(\(rc \+ \$\?\)\)' "$stage4" || true)
+  chk "C7 採点される足が実在する(0 なら形が変わった = 測定不能)" \
+      "yes" "$([ "$legs" -ge 1 ] && echo yes || echo no)"
+
+  # ★C7 は「足が1本でも在るか」しか見ていないので、**6本目を足して採点を書き忘れた**回を
+  #   素通しする(他の5本が形に当たるので数は 1 以上のまま)。この repo が何度も踏んだ
+  #   「1箇所だけ広げて広げたつもりになる」型そのものなので、比ではなく**一致**で見る。
+  piped=$(grep -cE '2>&1 \| *tail' "$stage4" || true)
+  chk "C7b tail へ流す段は全部 rc に足されている(採点漏れの段が無い)" \
+      "$piped" "$legs"
+
+  mkprobe() { # mkprobe <出力先> <前置きの文字列>
+    printf '%s\n' "$2" > "$1"
+    cat >> "$1" <<'PROBE'
+echo '--- 故意に落ちる足 ---'; false 2>&1 | tail -1; rc=$((rc + $?))
+echo "--- 合算 exit=$rc"; exit $rc
+PROBE
+  }
+
+  mkprobe "$WORK/probe-pf.sh" "$preamble"
+  bash "$WORK/probe-pf.sh" "$WORK" >/dev/null 2>&1; pf_rc=$?
+  chk "C8 落ちた足が合算に乗る(前置きが fail-closed を保っている)" \
+      "not-0" "$([ "$pf_rc" -ne 0 ] && echo not-0 || echo 0)"
+
+  # 負の対照: 同じ前置きから pipefail の行だけを抜くと、同じ足が 0 に化ける。
+  # これが 0 にならないなら C8 は「いつでも赤が出る口」を見ているだけで、測定になっていない。
+  mkprobe "$WORK/probe-nopf.sh" "$(printf '%s\n' "$preamble" | grep -v 'set -o pipefail')"
+  bash "$WORK/probe-nopf.sh" "$WORK" >/dev/null 2>&1; nopf_rc=$?
+  chk "C9 負の対照: pipefail を抜くと同じ足が 0 に化ける(C8 は空振りでない)" \
+      "0" "$nopf_rc"
+fi
+
 printf -- '--- 合計: PASS %d / FAIL %d ---\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
