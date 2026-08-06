@@ -63,6 +63,7 @@ const MJS_INSTRUMENTS = [
   "tools/live-fork-check.mjs",
   "tools/live-http-check.mjs",
   "tools/live-choice-check.mjs",
+  "tools/live-resume-cwd-check.mjs",
 ];
 const SH_INSTRUMENTS = [
   "../ios/tools/live-send-check.sh",

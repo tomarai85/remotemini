@@ -64,6 +64,11 @@ const NOT_SCANNED = {
     [".harness", "実行の記録と証拠の置き場(実測 2026-08-05: json 48 / txt 15 / md 10 / log 8、" +
       "走査対象の拡張子は 0 件)。source を置く場所ではない"],
     [".claude", "この木で走った agent の作業用。追跡 0 件(実測 2026-08-05)"],
+    [".git", "**手元の木には無い**。edith の本番の木 `~/rc-backend` にだけ在る他レーンの物" +
+      "(2026-08-03 の整備で置かれた。私の物ではないので消さない)。実測 2026-08-07: " +
+      "本番の木で `npm test` を撃つと此処だけが赤で、中身は `.mjs/.sh/.py/.swift` 0 件。" +
+      "配備の関門は `.git/` を除いた仮置きで走るので元から見えていない = " +
+      "**赤が出るのは本番の木を直に叩いた時だけ**、そしてその赤は何も意味しない"],
   ],
   ios: [
     ["build", "xcodebuild の出力"],
@@ -384,6 +389,10 @@ test("陰性対照: 一覧に無い dir を1件混ぜれば見つかる", () => 
   //   黙って範囲外になる** —— 一覧を共有した瞬間に必ず起きる形で、今夜の欠陥の本体。
   assert.deepEqual(unlistedDirs(["node_modules"], { name: "ios", dirs: [] }), ["node_modules"]);
   assert.deepEqual(unlistedDirs(["node_modules"], { name: "rc-backend", dirs: [] }), []);
+  // ★`.git` も木ごと。手元では一度も現れないので、免除が効いている事を確かめられるのは
+  //   此処だけ(本番の木でしか赤にならない = 普段の緑は免除の証拠にならない)。
+  assert.deepEqual(unlistedDirs([".git"], { name: "rc-backend", dirs: [] }), []);
+  assert.deepEqual(unlistedDirs([".git"], { name: "ios", dirs: [] }), [".git"]);
   assert.deepEqual(unlistedDirs(["Sources"], { name: "ios", dirs: ["Sources"] }), []);
 });
 
