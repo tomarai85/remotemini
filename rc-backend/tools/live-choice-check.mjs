@@ -17,12 +17,16 @@
  *
  * 使い方: node tools/live-choice-check.mjs [--cwd <信頼済みの dir>] [--bin "claude --model haiku"]
  * 終了コード: 0 = 全項目 OK / 1 = どれかが NG / 2 = 準備段で中断
+ *            **3 = 上限で相手が答えられない**(= 未測定。直す物は無い、待つ)
+ *   意味と順序の正本は `tools/exit-codes.mjs`。此の台本だけ 3 を持っていなかったのを
+ *   2026-08-06 に揃えた(4本のうち上限を知らないのは此処だけ、と数えて判った)。
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TmuxInjector, makeTmuxRunner, classifyScreen, tmuxChildEnv, PANE_SEP } from "../src/inject.mjs";
+import { TmuxInjector, makeTmuxRunner, classifyScreen, limitNoticeIn, tmuxChildEnv, PANE_SEP } from "../src/inject.mjs";
+import { exitCodeFor } from "./exit-codes.mjs";
 
 const TMUX_BIN =
   process.env.RC_TMUX_BIN ||
@@ -126,10 +130,19 @@ async function main() {
     writeFileSync(join(outDir, "00-boot.txt"), boot.text);
     if (!boot.ok) {
       console.error(`起動後 90 秒で入力欄が出ない(state=${boot.c.state})。写し: ${outDir}/00-boot.txt`);
-      console.error("  → 上限や信頼確認の可能性。**Enter は押さない**。");
+      // ★2026-08-06: 此処は「上限や信頼確認の可能性」と**2つを束ねて**いて、しかも
+      //   どちらでも exit 1(= 直す物が在る)を出していた。上限は直す物が無い ——
+      //   待つだけなので 3。inject 側が 8/02 に解いた束ねと同じ形が、此の台本にだけ
+      //   残っていた(4本のうち上限を知らないのは此処だけだった)。画面を見れば区別は付く。
+      if (limitNoticeIn(boot.text)) {
+        limited = true;
+        console.error("  → 画面に**利用上限の告知**が出ている。壊れてはいない。解除を待って回し直す事。");
+      } else {
+        console.error("  → 信頼確認などで止まっている可能性。**Enter は押さない**。");
+        failed = true;
+      }
       // ★`process.exit()` を使わない: try の中で撃つと finally が走らず、
       //   建てた使い捨てセッションが**生きたまま残る**(8/01 の負の対照で実際に1つ残した)。
-      failed = true;
       return;
     }
     console.log(`起動 ok(${boot.waited}ms)`);
@@ -182,4 +195,6 @@ async function main() {
 // ★終了コードは main の**外**で決める。try の中の `return` は finally を通した上で
 //   main を抜けるので、main の中に置いた `process.exit` には届かない(= 失敗しても 0 で終わる)。
 let failed = false;
-main().then(() => process.exit(failed ? 1 : 0));
+let limited = false;
+// 順序は `tools/exit-codes.mjs` の1本に委ねる(此処に三項演算子を書き直さない事)。
+main().then(() => process.exit(exitCodeFor({ failed, limitedReply: limited })));
