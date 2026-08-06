@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// no-control: 実機計器。両腕の字面を撮るだけで、期待値を持たない(対照ではない)
 /**
  * `esc to interrupt` は **statusLine を足した起動でも出るのか**を2本並べて測る。
  *

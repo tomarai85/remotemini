@@ -1,4 +1,5 @@
 #!/bin/bash
+# no-control: 計器。simulator と build 済みの app が要り、commit 時には回せない
 # Sprint 2 DoD screenshots (brief §5-c) -- entirely headless via `xcrun simctl`.
 # `open -a Simulator` is never used here or anywhere in this project: Tom's
 # machine only ever runs a GUI Simulator window if he opens one himself.

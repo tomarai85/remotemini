@@ -66,7 +66,7 @@ if [ -z "$staged" ]; then
     exit 2
 fi
 
-sel=""; orphan=""
+sel=""; orphan=""; exempt=0
 add_sel() { case " $sel " in *" $1 "*) ;; *) sel="$sel $1" ;; esac; }
 
 # ── 宣言の一覧を1度だけ作る(対照 → 見張る対象)────────────────────────────
@@ -244,7 +244,23 @@ while IFS= read -r f; do
             #   走査と選択は SCAN_SPECS から導出されるが、此処は「道具らしい path」の
             #   形の話なので導出できない。木を足したら1行足す事(この行が忘れられても
             #   commit は止まらない = 静かに分母が痩せる形なので、対照 S38 で見張る)。
-            rc-backend/tools/*|rc-backend/test/*.py|ios/tools/*|.harness/*.sh) orphan="$orphan ${f##*/}" ;;
+            rc-backend/tools/*|rc-backend/test/*.py|ios/tools/*|.harness/*.sh)
+                # ★2026-08-07: 「対照が要らない理由」を**その file 自身に**書けば名前を
+                #   引っ込める。理由は 12 字以上でないと数えない —— 空白や `x` で黙らせ
+                #   られるなら、免除は必ず判子になる。短い理由は免除にならず名前が残る
+                #   ので、判子を押しても何も買えない(門を止める必要が無い = 自己強制)。
+                # 区切りは `|`。行頭の飾りに `/` が入る(`// no-control:`)ので、
+                # `/` を区切りにすると bracket の中で切れる実装が在る。
+                _nc="$(/usr/bin/sed -n 's|^[#/[:space:]*]*no-control:[[:space:]]*||p' "$ROOT/$f" \
+                       | /usr/bin/head -1)"
+                _nc="${_nc#"${_nc%%[![:space:]]*}"}"      # 前後の空白を落とす
+                _nc="${_nc%"${_nc##*[![:space:]]}"}"
+                if [ "${#_nc}" -ge 12 ]; then
+                    exempt=$((exempt+1))
+                else
+                    orphan="$orphan ${f##*/}"
+                fi
+                ;;
         esac
     fi
 done <<EOF
@@ -293,6 +309,15 @@ if [ -n "$orphan" ]; then
     #   (しかも `<名前>` は「名前」という file からの入力の意味になる)。
     #   この repo で既に同じ形を踏んでいるので、注記は単一引用符で出す。
     echo '  (対照の頭に `# controls-for: <この道具の path>` を足せば自動で回る。止めはしない)'
+fi
+
+# ★免除は**必ず本数を出す**。0 本の時だけ黙る。
+#   理由: 此処が黙ると「名前が出ていない = 穴が無い」と読める。実際には
+#   2026-08-02〜08-07 の5日間、注記は4本の本物の穴を正しく名指ししていたのに
+#   9本の既知と混ざって読み飛ばされた —— 減らすべきは穴ではなく**紛れ**で、
+#   紛れを消した代わりに「免れた物が何本在るか」は常に見える所へ出す。
+if [ "$exempt" -gt 0 ]; then
+    echo "staged-controls-gate: 注記 — 理由を宣言して免れた道具 ${exempt} 本(no-control:)"
 fi
 
 if [ -n "$stale" ]; then
