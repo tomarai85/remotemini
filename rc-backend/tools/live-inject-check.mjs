@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// no-control: 実機計器。edith と生きた pty が要り、commit 時には回せない
 /**
  * 実機の Claude Code TUI に対する注入の一巡を、**再現できる形**で回す。
  *

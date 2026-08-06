@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// no-control: 実機計器。生きた Claude Code と server が要り、commit 時には回せない
 /**
  * HTTP 面(server.mjs)を**本物の Claude Code TUI 相手に**端から端まで1周させる。
  *

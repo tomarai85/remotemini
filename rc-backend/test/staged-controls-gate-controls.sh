@@ -488,5 +488,44 @@ fi
 /bin/rm -f "$R/rc-backend/tools/gg-check.sh" "$R/rc-backend/tools/gg.sh" \
            "$R/rc-backend/tools/prove-control.sh"
 
+# ── S53-S55 ★「対照が要らない理由」を宣言して注記から降りる(2026-08-07)────────
+#
+#   何を直したか: 注記は 13 本の道具を名指ししていて、その内 4 本が本物の穴だった。
+#   残り 9 本は実機計器(生きた pty や simulator が要る)で、commit 時に回せる物ではない。
+#   つまり穴と既知が同じ字面で並んでいた —— 5日間、注記は正しく名指ししていたのに
+#   読み飛ばされた。減らすべきは穴ではなく**紛れ**。
+#
+#   ★免除の仕組みは、置き方を間違えると警報を殺す。だから2つ課してある:
+#     ① 理由は 12 字以上でないと数えない = 判子(`x` や空白)では黙らせられない。
+#        しかも門は**止めない**ので、判子を押しても何も買えない(自己強制)。
+#     ② 免れた本数は**常に出す** = 名前が消えても「0 本」とは読ませない。
+#   S54 が ① の歯、S53 が ② の目。
+mkctl rc-backend/tools/inst.sh 0 "計器" ""
+/usr/bin/sed -i '' '1a\
+# no-control: 実機計器。生きた pty が要り、commit 時には回せない
+' "$R/rc-backend/tools/inst.sh"
+
+# S53 正の向き: 理由を宣言した道具は名指しされず、代わりに本数が出る
+out=$(run_gate 'rc-backend/tools/inst.sh')
+chk "S53 ★理由を宣言した道具は注記から降りる" 0 $? "免れた道具 1 本" "対照を導けない道具" "$out"
+
+# S54 負の向き: 判子(短すぎる理由)では降りられない
+/usr/bin/sed -i '' '2s/.*/# no-control: x/' "$R/rc-backend/tools/inst.sh"
+out=$(run_gate 'rc-backend/tools/inst.sh')
+chk "S54 ★判子では免除を買えない(名前が残る)" 0 $? "対照を導けない道具" "免れた道具" "$out"
+
+# S55 ★陰性対照: 字数の床を消すと判子が通る(= S54 が床を測っている)
+MUT4="$SB/gate-no-floor.sh"
+/usr/bin/sed 's/\[ "${#_nc}" -ge 12 \]/[ -n "${_nc}" ]/' "$GATE" > "$MUT4"
+if /usr/bin/cmp -s "$GATE" "$MUT4"; then
+  echo "NG  S55-prep ★変異が当たっていない(S54 の緑は測られていない)"
+  fail=$((fail+1))
+else
+  mut_out=$(RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' 'rc-backend/tools/inst.sh'" \
+            bash "$MUT4" 2>&1)
+  chk "S55 ★床を消すと判子が通る(= S54 に歯が在る)" 0 $? "免れた道具 1 本" "" "$mut_out"
+fi
+/bin/rm -f "$R/rc-backend/tools/inst.sh"
+
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]

@@ -1,4 +1,5 @@
 // 実機を触る台本(`tools/live-*.mjs`)が返す終了コードの**意味**を1箇所に置く。
+// no-control: 純粋関数。単体 test/live-exit-codes.test.mjs が commit ごとに回る
 //
 // ── なぜ1箇所に要るか(2026-08-02 に実際に起きた事)────────────────────────
 // 同じ機械を同じ時刻に測った2本が**逆の事を言った**。`tools/live-inject-check.mjs` は

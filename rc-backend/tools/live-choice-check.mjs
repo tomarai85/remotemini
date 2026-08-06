@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// no-control: 実機計器。選択画面を出す生きた TUI が要り、commit 時には回せない
 /**
  * 実機の Claude Code TUI で「**選択画面が出ている時は送らない**」経路を駆動する。
  *
