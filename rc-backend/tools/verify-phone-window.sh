@@ -1,4 +1,5 @@
 #!/bin/bash
+# no-operator: Tom の iPhone が繋がっている時にだけ人が撃つ。機械の側から窓は開けられない
 # verify-phone-window.sh — 鎖③④を**観測値で**確定して JSON に落とす。
 #
 # なぜ専用の物を書くか(safety-core HARD GATE 1 の道具を流用しない理由):

@@ -1,4 +1,5 @@
 #!/bin/bash
+# no-operator: sprint 4 を締める時に人が撃つ。門から回すと 1 commit ごとに実機と本番を叩く
 # Sprint 4 の Definition of Done(ブリーフ §7、9 行)を機械で照合する。
 #
 # ★この道具が証明する事と、しない事

@@ -46,6 +46,10 @@ LOCAL_CTLS=(
                                               # 使う側が居らず、其処が実際に配備を止めた
     test/mutation-run-live-controls.sh
     test/mutation-target-controls.sh
+    test/orphan-instrument-scan-controls.sh  # ★2026-08-07。「対照は在るのに撃つ者が居ない」
+                                             # を挙げる道具の対照。使い捨ての小さな repo を
+                                             # 作って其の中だけで壊す(本物の木は触らない)。
+                                             # 未測定(2)を赤にも緑にも丸めない事まで測る
     test/pii-controls.sh
     test/prove-control-controls.sh   # 判定する道具そのものの対照。これが壊れると
                                      # 全ての対照の判定が静かに嘘になるので、砂場の

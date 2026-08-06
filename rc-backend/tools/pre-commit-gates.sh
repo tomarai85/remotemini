@@ -137,6 +137,19 @@ bash "$ROOT/rc-backend/tools/vacuous-gate.sh" || exit $?
 #     直書きはその網に掛からない(実測: 直書きのまま回したら対照が 3 本倒れた)。
 bash "$ROOT/rc-backend/tools/port-coverage-gate.sh" || exit $?
 
+# ★2026-08-07 追加: 上の2件を**個別に足すのをやめて**、同じ病気を機械で挙げる。
+#   本体 = rc-backend/tools/orphan-instrument-scan.sh
+#   対照 = rc-backend/test/orphan-instrument-scan-controls.sh(14 本)
+#   経緯: `vacuous-scan.py`(08-05)と `port-coverage.py`(08-07)は、どちらも
+#   「対照は在る・掃きにも居る・けれど道具を撃つ者が居ない」で、見つけ方は両方とも
+#   **私が偶々気付いた**だった。3件目を偶然に頼らない為に、対照の宣言
+#   (`# controls-for:`)から組を作り、撃つ者が居ない道具を数える側へ回した。
+#   ★狭めている: 対象は path で撃たれ得る拡張子だけ(実測 08-07 で 92 行中 72)。
+#     Swift は project.yml の glob でまとめて compile されるので file 名で呼ばれる事が
+#     原理的に無く、名前照合を掛ければ 11 本全部が偽の孤児になる。外した件数は毎回出る。
+#   2.3 秒。非ゼロ(赤 1 / 未測定 2)はどちらも止める。
+bash "$ROOT/rc-backend/tools/orphan-instrument-scan.sh" || exit $?
+
 # ★2026-08-03 追加(同日2件目): **この commit が触れた対照**を回す。
 #   本体 = rc-backend/tools/staged-controls-gate.sh
 #   対照 = rc-backend/test/staged-controls-gate-controls.sh(15 本)
