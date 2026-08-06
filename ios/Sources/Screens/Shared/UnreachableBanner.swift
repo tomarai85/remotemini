@@ -52,6 +52,17 @@ struct UnreachableBanner: View {
     /// the threshold, and a phone that has failed 40 times in a row saying "3回連続" is
     /// stating a stale measurement as the current one.
     private var detail: String {
+        Self.detailText(failures: failures, context: context)
+    }
+
+    /// Split out of `detail` (2026-08-07) purely so it can be asserted on. `detail` is
+    /// `private` and a SwiftUI `body` is not readable from a unit test, so until now the
+    /// most consequence-bearing sentences in the app -- the ones Tom reads when the phone
+    /// cannot reach edith from abroad -- had no regression guard at all. The wording here
+    /// is not cosmetic: this view's own doc records that a previous version led with
+    /// 「バックエンドに接続できません」, which asserts one of three indistinguishable causes
+    /// as fact. Nothing stopped an edit from putting that back.
+    static func detailText(failures: Int, context: Context) -> String {
         switch context {
         case .list:
             return "\(failures)回続けて取得に失敗しました。しばらくしてから再試行してください"
