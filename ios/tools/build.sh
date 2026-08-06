@@ -56,6 +56,22 @@ if [ "$MODE" = "sim" ]; then
   # unit bundle never started at all still printed a green-looking line.
   mkdir -p "$DERIVED"
   SIM_LOG="$DERIVED/xcodebuild-sim.log"
+
+  # ★原稿の指紋を log の隣に残す(2026-08-07 追加)。走らせる**前**に取る =
+  #   この log が語っているのはこの中身、という対応を残す為。
+  #
+  # 何を直したか: `.harness/dod-sprint-6.5.sh` は「同じ1本の log に passed として
+  # 名前が在る」を根拠に緑を出す。その log が**今の原稿**の話なのかを log 自身は
+  # 何も語らない。代用を2つ試して両方外した:
+  #   mtime  -> `.harness/dod-sprint-6-controls.sh` は変異を植えて複製から戻す。戻した瞬間
+  #             中身は同一なのに mtime だけ新しくなる = 恒常的に「古い」と読む。
+  #   commit -> 検査は commit の**前**に走る。log が commit より古いのは正常な順序で、
+  #             これを異常と読むと毎回 未測定 になり判定が意味を失う。
+  # どちらも中身の代理として成立しない。だから中身そのものを測る。
+  SRC_SHA="$DERIVED/xcodebuild-sim.sources.sha"
+  ( cd "$HERE" && find Sources Tests UITests -type f -name '*.swift' -print0 \
+      | sort -z | xargs -0 shasum -a 256 ) | shasum -a 256 | awk '{print $1}' > "$SRC_SHA"
+
   rc=0
   xcodebuild -project "$SCHEME.xcodeproj" -scheme "$SCHEME" -configuration Debug \
     -sdk iphonesimulator -destination "platform=iOS Simulator,name=$SIM_NAME" \
