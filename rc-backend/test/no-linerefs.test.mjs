@@ -199,8 +199,16 @@ const OK = "ok", BROKEN = "broken", UNVERIFIABLE = "unverifiable";
  *
  * ★残る上限を黙らせない: **裸の名前**(`/` を含まない引用)と `../` 始まりは、
  *   根が欠けていても厳格なまま。`ios/` にしか無い名前を backend 側が裸で引くと、
- *   部分木で偽の赤になる。今日の実測では**該当 0件**(部分木の赤は3件、全部
- *   `/` を含む repo 直下の引用)なので、居ない物の為に規則を増やしていない。
+ *   部分木で偽の赤になる。2026-08-05 の実測では該当 0件(部分木の赤は3件、全部
+ *   `/` を含む repo 直下の引用)だったので、居ない物の為に規則を増やさなかった。
+ *
+ * ★★2026-08-06、**その 0 件が 2 件になった**。私が `tools/run-controls.sh` の注釈で
+ *   ios の対照を裸で2回引き、完全な木では隣の木で解決して緑・写しの中だけで赤に
+ *   なった。上の段落は「今は居ない」を「増やす必要が無い」と読み替えていた訳で、
+ *   居ないのは**書いていないから**であって、書けば翌日にでも現れる。
+ *   → 下の ②-b を足した。裸の引用は**引いた側の木の中**で解決する事を要求する
+ *   (向きは非対称。ios の注釈が backend の名前を裸で引くのは正常 —— `ios/` だけを
+ *   単独で写す経路がどこにも無いので、その向きは写しの中で壊れない)。
  */
 const REPO_INTACT = isFile(join(REPO, "DESIGN.md"));
 
@@ -222,6 +230,28 @@ function findBrokenCites(text, fromFile, sink, repoIntact = REPO_INTACT) {
     const v = resolves(c, fromFile, repoIntact);
     if (v === BROKEN) bad.push(c);
     else if (v === UNVERIFIABLE && sink) sink.push(c);
+  }
+  return bad;
+}
+
+/**
+ * **単独で写される木**。この木だけを写した状態で単体スイートが回るので、この木の中の
+ * 注釈が隣の木の名前を**裸で**引くと、写しの中でだけ赤くなる(= 変異走行の対照1が
+ * 落ちて、以降の変異が全部「検出」に化ける)。
+ * 出所は2つ、どちらも `rc-backend/` 単位で写す: `test/mutation-controls.py` の凍結と、
+ * `tools/deploy-to-edith.sh` の送信。ios を単独で写す経路は今の所どこにも無い。
+ */
+const COPIED_ALONE = ["rc-backend"];
+
+/** 裸の引用のうち、**引いた側の木の中で解決しない**物。完全な木でも判る形にした所が肝。 */
+function bareOutOfTree(text, fromFile) {
+  const own = LIVE_TREES.find((t) => fromFile.startsWith(t.root + "/"));
+  if (!own || !COPIED_ALONE.includes(own.name)) return [];
+  const bad = [];
+  for (const m of text.matchAll(citeRe())) {
+    const c = m[1];
+    if (outOfRepo(c) || c.includes("/")) continue;
+    if (!own.bare.some((d) => isFile(join(own.root, d, c)))) bad.push(c);
   }
   return bad;
 }
@@ -281,6 +311,39 @@ test("陰性対照: 実在しない名前を1件混ぜれば見つかる", () =>
   assert.deepEqual(findBrokenCites(planted, join(ROOT, "tools", "x.sh")), [ghost]);
   assert.deepEqual(findBrokenCites("# 出し先は `tools/health-observer.sh` を見る",
     join(ROOT, "tools", "x.sh")), []);
+});
+
+// ── ②-b 単独で写される木の**裸の引用**は、その木の中で解決する ──────────────
+// 「完全な木では緑、写しの中でだけ赤」を、完全な木の側で捕まえる為の1本。
+// commit の門が回すのは完全な木なので、この形は今まで門から**構造的に見えず**、
+// 12 分の定期掃きだけが見ていた(2026-08-06 に実際にそうなった)。
+test("★backend の裸の引用が backend の中で解決する(写しでだけ赤くなる形を捕まえる)", () => {
+  const bad = [];
+  for (const f of scanFiles()) {
+    for (const c of bareOutOfTree(readFileSync(f, "utf8"), f)) bad.push(`${rel(f)}: ${c}`);
+  }
+  assert.deepEqual(
+    bad, [],
+    "隣の木にしか無い名前を**裸**で引いている。木の名前から書く事(例: ios/tools/… )。\n" +
+      "  この木は単独で写されるので、裸のままだと写しの中でだけ赤くなる = 変異走行の\n" +
+      "  対照1が落ち、以降の変異が全部『検出』に化ける",
+  );
+});
+
+test("陰性対照: 隣の木にしか無い名前を裸で引けば見つかる(向きは非対称)", () => {
+  // 綴りは組み立てる(この file 自身も走査されるので、素で書くと引用として数えられる)。
+  const iosOnly = "conversation" + "-ui-" + "control" + ".sh";
+  const planted = "# 費用は `" + iosOnly + "` の 156 秒と同じ桁である";
+  assert.deepEqual(bareOutOfTree(planted, join(ROOT, "tools", "x.sh")), [iosOnly]);
+  // ① 木の名前から書けば挙がらない(直し方が本当に直る事の確認)
+  assert.deepEqual(
+    bareOutOfTree("# 費用は `ios/tools/" + iosOnly + "` と同じ桁である", join(ROOT, "tools", "x.sh")),
+    [],
+  );
+  // ② 逆向きは正常: ios の注釈が backend の名前を裸で引くのは写しの中で壊れない
+  assert.deepEqual(bareOutOfTree(planted, join(REPO, "ios", "tools", "x.sh")), []);
+  // ③ 自分の木に在る裸の名前は挙がらない
+  assert.deepEqual(bareOutOfTree("# 掃きは `run-controls.sh` が回す", join(ROOT, "tools", "x.sh")), []);
 });
 
 // ── ③ 走査の範囲が、守られる側の木構造と一致している ──────────────────────

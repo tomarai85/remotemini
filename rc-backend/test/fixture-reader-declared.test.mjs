@@ -24,15 +24,26 @@
 //
 // 取らなかった道: 宣言を ios/Sources/** の様な glob へ広げる。対照は xcodebuild を
 //   2回回すので、Swift を1行直す度に数分待たされる。範囲は狭いまま、ズレだけを見張る。
+//
+// ★2026-08-06 追記(この file が実際に壊した物)。走査先が全部 `ios/` なので、
+//   rc-backend **だけ**を写した木ではこの3本が赤くなる。その写しは
+//   `test/mutation-controls.py` が変異走行の最初に立てる対照1そのもので、落ちれば
+//   `die()` = 変異が1件も回らない。手元 687/687 緑・写しで6本赤の状態を 19 時台から
+//   3時間持っていた。**測る対象が木の外に在る検査は、木の外が居ない木では
+//   「赤」ではなく「測っていない」と名乗る事。** 分岐は `test/subtree.mjs` に1つだけ置く。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { requireOutside, REPO_INTACT } from "./subtree.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = dirname(ROOT);
 const IOS = join(REPO, "ios");
+
+// 木の外を要求する。完全な木では skip=false(= 下の錨も本体も回る)。
+const GATE = requireOutside(["ios", "ios/tools/ui-fixture-absence-control.sh"]);
 const CONTROL = join(IOS, "tools", "ui-fixture-absence-control.sh");
 
 // 綴りを1箇所で組み立てる。この file 自身の中に、探している綴りが素で現れない為
@@ -79,7 +90,7 @@ function declared() {
 // 下の主張は「差集合が空」= 否定だけなので、走査が空回りしても緑になる。
 // だから件数の下限ではなく、**現に走査に掛かった実名**を先に固定する
 // (vacuous-scan.py の言う「数字を発明しない錨」)。
-test(`${VAR} を読む file の走査が実際に当たっている`, () => {
+test(`${VAR} を読む file の走査が実際に当たっている`, { skip: GATE.skip }, () => {
   assert.ok(existsSync(IOS), "ios の木が無い");
   const found = readers();
   assert.ok(
@@ -92,7 +103,7 @@ test(`${VAR} を読む file の走査が実際に当たっている`, () => {
   );
 });
 
-test(`${VAR} を読む file は全部、漏れを測る対照に宣言されている`, () => {
+test(`${VAR} を読む file は全部、漏れを測る対照に宣言されている`, { skip: GATE.skip }, () => {
   const decl = declared();
   const missing = readers().filter((r) => !decl.includes(r));
   assert.deepEqual(
@@ -104,7 +115,14 @@ test(`${VAR} を読む file は全部、漏れを測る対照に宣言されて�
   );
 });
 
-test("対照の宣言に、実在しない path が残っていない", () => {
+// ★逃げ道の錨。上の3本が `GATE.skip` で飛べる様になったので、完全な木で**飛んでいない**
+//   事を1本だけ主張する。此処が壊れて常に飛ぶ様になれば、この錨が完全な木で赤くなる。
+//   (`REPO_INTACT` は `DESIGN.md` の実在だけを見るので、GATE の壊れ方と独立)
+test("この木では『部分木だから測らない』を通っていない", { skip: !REPO_INTACT && "部分木の写し" }, () => {
+  assert.equal(GATE.skip, false, `親は健在なのに ios を測っていない: ${GATE.skip}`);
+});
+
+test("対照の宣言に、実在しない path が残っていない", { skip: GATE.skip }, () => {
   // 逆向き。改名した時に宣言だけ取り残されると、対照は「宣言はしているのに
   // 何にも当たらない」= 静かに回らない対照になる(門の側の stale 注記は
   // glob を素通しするので、素の path はここでも見ておく)。

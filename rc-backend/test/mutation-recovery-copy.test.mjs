@@ -20,11 +20,18 @@
 //   dod-sprint-6 側は 13 変異 x xcodebuild の 27 分物で、書き換えたら丸ごと回して
 //   確かめる必要が在る。今夜の commit で触るには重いので、括り出しは別建てにして、
 //   それまでの間ズレだけを見張る。括り出した日にこの検査は不要になる(その時消す)。
+//
+// ★2026-08-06 追記(この file が実際に壊した物)。対象2本とも rc-backend の**外**なので、
+//   rc-backend だけを写した木では3本とも赤くなる。その写しは `test/mutation-controls.py`
+//   が立てる対照1で、落ちれば `die()` = 変異が1件も回らない。手元 687/687 緑のまま
+//   判定器が死んでいた。木の外を測る検査は、外が居ない木では「赤」ではなく
+//   **「測っていない」と名乗る**事。分岐は `test/subtree.mjs` に1つだけ置く。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { requireOutside, REPO_INTACT } from "./subtree.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = dirname(ROOT);
@@ -33,6 +40,9 @@ const FILES = [
   ".harness/dod-sprint-6-controls.sh",
   "ios/tools/conversation-ui-control.sh",
 ];
+
+// 対象そのものを木の外の要求として立てる(一覧を2本目に写さない)。
+const GATE = requireOutside(FILES);
 
 const BEGIN = "# ---- 前回の走行が殺されていたら、その取り残しを先に戻す(ここから)";
 const END = "# ---- 前回の取り残しの復旧(ここまで)";
@@ -68,11 +78,20 @@ function inflightPath(rel) {
   return hits[0];
 }
 
+// ── 逃げ道の錨 ────────────────────────────────────────────────────────────
+// 下の3本が `GATE.skip` で飛べる様になったので、完全な木で**飛んでいない**事を1本だけ
+// 主張する。常に飛ぶ側へ壊れたら此処が完全な木で赤くなる
+// (`REPO_INTACT` は `DESIGN.md` の実在だけを見るので、GATE の壊れ方と独立)。
+test("この木では『部分木だから測らない』を通っていない", { skip: !REPO_INTACT && "部分木の写し" }, () => {
+  assert.equal(GATE.skip, false, `親は健在なのに対象を測っていない: ${GATE.skip}`);
+  assert.deepEqual(GATE.missing, [], "対象が改名・削除されている");
+});
+
 // ── 錨 ────────────────────────────────────────────────────────────────────
 // 下は「2つが等しい」= 一致の主張なので、両方とも空でも緑になる。だから先に
 // **切り出しが本物の手順を掴んでいる**事を、実在する行の名前で固定する
 // (件数の下限は書かない —— 行が1本増えた日に此処が理由なく赤くなる)。
-test("復旧区間の切り出しが実際に中身を掴んでいる", () => {
+test("復旧区間の切り出しが実際に中身を掴んでいる", { skip: GATE.skip }, () => {
   for (const f of FILES) {
     const c = code(region(f));
     assert.ok(
@@ -86,7 +105,7 @@ test("復旧区間の切り出しが実際に中身を掴んでいる", () => {
   }
 });
 
-test("ios の変異対照2本は、同じ復旧手順を持っている", () => {
+test("ios の変異対照2本は、同じ復旧手順を持っている", { skip: GATE.skip }, () => {
   const [a, b] = FILES.map((f) => code(region(f)));
   assert.deepEqual(
     b,
@@ -97,7 +116,7 @@ test("ios の変異対照2本は、同じ復旧手順を持っている", () => 
   );
 });
 
-test("ios の変異対照2本は、同じ目印(INFLIGHT)を見ている", () => {
+test("ios の変異対照2本は、同じ目印(INFLIGHT)を見ている", { skip: GATE.skip }, () => {
   const [a, b] = FILES.map(inflightPath);
   assert.equal(
     b,
