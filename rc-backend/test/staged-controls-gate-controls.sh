@@ -340,5 +340,97 @@ chk "S40 ★★1行足すだけで新しい木の対照が回る(導出①)" 0 $
 out=$(run_variant 'newtree/tt-control.sh')
 chk "S41 ★★同じ1行で「対照そのもの」の道も届く(導出②)" 0 $? "GREEN: tt" "触れた対照は無い" "$out"
 
+# ══ S42-S48 ★`--would-select`(呼ぶ側が「回る物は在るか」だけ聞く口)══════════
+#   何故要るか: `pre-commit-gates.sh` の絞り込み regex が、この門の `SCAN_SPECS` と
+#   **手で同期する2本目の一覧**になっていた(実測 2026-08-06: 宣言 75 本中 74 本は
+#   届き、`rc-backend/package.json` の1本だけ届かない)。regex に1行足すのは
+#   手書き同期の6個目なので、代わりに**一覧を持っている側に聞く**形にした。
+#   ここで測るのはその口の**契約**4点:
+#     ① 本番と同じ物を選ぶ(別実装を持たない)  ② 選んだ物を**回さない**
+#     ③ **判断しない**(undecl でも止めない/注記も出さない)
+#     ④ 選ぶ物が無ければ**空**(呼ぶ側は空か否かで分岐するので、喋ったら素通しになる)
+run_dry()  { RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' '$1'" bash "$GATE" --would-select 2>&1; }
+run_list() { RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' '$1'" bash "$GATE" --list 2>&1; }
+
+# ── S42 選択を **path で** 1行ずつ答える(2本在る入力で) ──────────────────────
+out=$(run_dry 'rc-backend/tools/dd.sh')
+chk "S42 ★回る対照が在れば path を並べる" 0 $? "rc-backend/test/dd-controls.sh" "" "$out"
+chk "S42b 同じ道具を見張る2本目も出る" 0 0 "rc-backend/test/dd2-controls.sh" "" "$out"
+
+# ── S43 ★聞くだけ = **回さない**。本番が回す事を先に見せてから、口が回さない事を見る ──
+#     片側だけでは意味を持たない: 「回っていない」は入力が外れていても成立する。
+real=$(run_gate 'rc-backend/tools/dd.sh')
+chk "S43-prep 本番はこの入力で対照を実際に回す(= 次行の判別子が効く)" 0 $? "--- 合計: PASS 2 / FAIL 0 ---" "" "$real"
+chk "S43 ★口は同じ入力で対照を回さない" 0 0 "" "--- 合計: PASS 2 / FAIL 0 ---" "$out"
+
+# ── S44 ★本番の選択と一致する(= 別実装を持っていない) ────────────────────────
+#     `--list` は人向けに `  SEL   <名前>` で見せる。基点も装飾も違うので**名前で**
+#     突き合わせる。ここが割れたら、どちらかが選択の道を自前で持ち始めた合図。
+dry_names=$(printf '%s\n' "$out" | /usr/bin/sed 's#.*/##' | /usr/bin/sort | /usr/bin/tr '\n' ' ')
+lst_names=$(run_list 'rc-backend/tools/dd.sh' | /usr/bin/grep '^  SEL ' \
+            | /usr/bin/sed 's/^ *SEL *//' | /usr/bin/sort | /usr/bin/tr '\n' ' ')
+if [ "$dry_names" = "$lst_names" ] && [ -n "$dry_names" ]; then
+  chk "S44 ★選択が --list と一致(選択の道は1本)" 0 0 "" "" ""
+else
+  echo "NG  S44 ★選択が割れた -- dry=[${dry_names}] list=[${lst_names}]"
+  fail=$((fail+1))
+fi
+
+# ── S45 ★**判断しない**: 宣言の無い対照が staged でも止めない ─────────────────
+#     本番はこの入力で rc=1(S13 等で測り済)。口で止めると「聞いただけで commit が
+#     落ちる」= 呼ぶ側が絞り込みを外した瞬間に、書類だけの commit が死ぬ。
+out=$(run_dry 'rc-backend/test/nodecl-controls.sh')
+chk "S45 ★宣言の無い対照でも rc=0(口は裁かない)" 0 $? "rc-backend/test/nodecl-controls.sh" "commit しない" "$out"
+
+# ── S46 ★選ぶ物が無ければ**空**(注記も出さない)────────────────────────────────
+#     呼ぶ側は `[ -z "$(…)" ]` で分岐する。1文字でも喋ると絞り込みが素通しに化ける。
+#     偽の repo の lonely.sh(誰も宣言していない道具)は、本番なら「対照を導けない
+#     道具」の注記が出る入力 —— そこが判別子。★名前を backtick で引かない事:
+#     この repo の書類ラチェットは backtick の名前を**実在の主張**として検査するので、
+#     砂場にしか無い偽の file を引くと単体が赤くなる(2026-08-06 に実際に止められた)。
+out=$(run_dry 'rc-backend/tools/lonely.sh')
+chk "S46-prep 本番はこの入力で注記を出す(= 次行の判別子が効く)" 0 0 "注記" "" "$(run_gate 'rc-backend/tools/lonely.sh')"
+if [ -z "$out" ]; then
+  chk "S46 ★★選ぶ物が無ければ完全に無言(注記も出さない)" 0 0 "" "" ""
+else
+  echo "NG  S46 ★無言でない -- [${out}]"; fail=$((fail+1))
+fi
+
+# ── S47 ★edith 側を**落とす前**の答えを返す(= `--list` の上位集合)────────────
+#     `--list` は手元で回せない対照(ssh が要る物)を落としてから見せる。口はその前に
+#     帰るので落とさない。**わざとの差**なので、latent にせず assertion にしておく。
+#     何故その向きが正しいか: 呼ぶ側が要るのは「門へ進むべきか」で、落ちた結果が空だと
+#     `commit-suite-gate`(npm test)まで飛ぶ。多めに答えて門へ進むのが安全側。
+/bin/cat > "$R/rc-backend/tools/run-controls.sh" <<'EOF'
+EDITH_CTLS=(
+  test/dd-controls.sh
+)
+EOF
+out=$(run_dry 'rc-backend/tools/dd.sh')
+chk "S47 ★edith 側の対照も落とさずに答える" 0 $? "rc-backend/test/dd-controls.sh" "" "$out"
+lst=$(run_list 'rc-backend/tools/dd.sh')
+chk "S47b --list は同じ入力でそれを落とす(= 差が実在する)" 0 $? "此処では回さない" "  SEL   dd-controls.sh" "$lst"
+/bin/rm -f "$R/rc-backend/tools/run-controls.sh"
+
+# ── S48 ★陰性対照: 口を潰したら S46 が倒れる(= S42-S47 に歯が在る)─────────────
+#     潰し方は「ブロックごと削る」。すると `--would-select` は未知の引数として素通りし、
+#     門は**普通に走って喋る** —— 呼ぶ側から見ると「常に非空」= 絞り込みが素通しに
+#     化ける、という本物の壊れ方そのもの。
+MUT="$SB/gate-no-dry-mouth.sh"
+/usr/bin/sed '/だけ答えて帰る口(ここから)/,/だけ答えて帰る口(ここまで)/d' "$GATE" > "$MUT"
+if /usr/bin/cmp -s "$GATE" "$MUT"; then
+  echo "NG  S48-prep ★変異が当たっていない(以降の赤は口でなく sed を測る)"
+  fail=$((fail+1))
+else
+  mut_out=$(RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' 'rc-backend/tools/lonely.sh'" \
+            bash "$MUT" --would-select 2>&1)
+  if [ -n "$mut_out" ]; then
+    chk "S48 ★口を消すと無言でなくなる(= S46 に歯が在る)" 0 0 "" "" ""
+  else
+    echo "NG  S48 ★口を消しても無言のまま -- S46 は元から通る形で、何も測っていない"
+    fail=$((fail+1))
+  fi
+fi
+
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]
