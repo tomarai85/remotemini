@@ -71,7 +71,26 @@ staged="$(git -C "$ROOT" diff --cached --name-only)"
 bash "$ROOT/rc-backend/tools/doc-linerefs-gate.sh" || exit $?
 
 if ! echo "$staged" | grep -qE '^(rc-backend/(src|test|tools)|ios/(Sources|Tests|tools))/|^ios/project\.yml$|^\.harness/[^/]*\.sh$'; then
-    exit 0   # この commit に、的が指している物も検査の本体も対照の見張り先も入っていない
+    # ★2026-08-06: regex が外れても**まだ即断しない**。対照の見張り先の一覧を
+    #   ここで推測するのをやめ、**持っている側に聞く**。
+    #
+    #   何故(初めて数えた): 全対照の `# controls-for:` 宣言 75 本を、この regex に
+    #   1 本ずつ当てた。74 本は届き、**1 本だけ届かない** —— `rc-backend/package.json`
+    #   (`copied-tree-controls.sh` が宣言)。その file だけの commit は、その対照どころか
+    #   下の門を**全部**飛ばす。`npm test` の設定を書き換える commit という、
+    #   一番検査されるべき場面で `commit-suite-gate` が走らない形だった。
+    #   (履歴上の発生は 0 件。原理の穴を、起きる前に塞ぐ)
+    #
+    #   ★`|^rc-backend/package\.json$` を足すのは**手書き同期の6個目**で、上に5回ぶん
+    #     書いてある再発とまったく同じ手。一覧を増やさずに済む形はこれ ——
+    #     `staged-controls-gate.sh` は `SCAN_SPECS` という**唯一の一覧**を既に持っている
+    #     ので、そこに「回すなら何が回るか」だけ聞く。regex は据え置きで、
+    #     届く範囲だけが下流の能力に自動追随する。
+    #   ★聞くだけで走らせない(`--would-select`)。書類だけの commit に足す費用は
+    #     この一往復だけ(実測 0.1 秒未満。本番の走行は 20〜1651 秒)。
+    if [ -z "$(bash "$ROOT/rc-backend/tools/staged-controls-gate.sh" --would-select)" ]; then
+        exit 0   # 的が指す物も、検査の本体も、**どの対照の見張り先も**入っていない
+    fi
 fi
 
 bash "$ROOT/rc-backend/tools/check-mutation-targets.sh" || exit $?

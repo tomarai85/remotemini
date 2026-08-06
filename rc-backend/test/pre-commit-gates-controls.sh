@@ -65,7 +65,12 @@ fi
 # ★門の一覧は**本体から取る**。ここで手打ちすると、この file 自体が
 #   「手で同期する3本目の一覧」になり、門を1本足した日に静かに古くなる ——
 #   この対照が見張っているのと同じ形の穴を、対照の中に作る事になる。
-GATES="$(grep -oE 'bash "\$ROOT/rc-backend/tools/[a-z-]+\.sh"' "$SUBJECT" \
+# ★探り(`--would-select`)は**門の呼び出しではない**ので、一覧から外す(2026-08-06)。
+#   外さないと `staged-controls-gate` が一覧に2回入り、門の本数も `sed -n '2p'` で
+#   選ぶ「赤にする門」の位置も1つずつずれる。実測: 外す前は 12 本中 5 本が赤で、
+#   その5本は全部この1点から派生していた(門の本数 / 書類だけの3通 / 赤の後ろ)。
+GATES="$(grep -v -- '--would-select' "$SUBJECT" \
+         | grep -oE 'bash "\$ROOT/rc-backend/tools/[a-z-]+\.sh"' \
          | sed -E 's#.*/([a-z-]+)\.sh"#\1#')"
 NGATES="$(printf '%s\n' "$GATES" | grep -c . )"
 
@@ -76,6 +81,7 @@ NGATES="$(printf '%s\n' "$GATES" | grep -c . )"
 #     この対照が見張っているのと同じ「手で同期する一覧」がまた1本増える。
 NARROW_LN="$(grep -nE '^if ! echo "\$staged" \| grep -qE' "$SUBJECT" | head -1 | cut -d: -f1)"
 DOC_GATES="$(awk -v n="${NARROW_LN:-0}" 'NR < n' "$SUBJECT" \
+             | grep -v -- '--would-select' \
              | grep -oE 'bash "\$ROOT/rc-backend/tools/[a-z-]+\.sh"' \
              | sed -E 's#.*/([a-z-]+)\.sh"#\1#')"
 NDOC="$(printf '%s\n' "$DOC_GATES" | grep -c . )"
@@ -100,12 +106,23 @@ mk_repo() {  # $1=根 $2=赤にする門の名前(空なら全部緑)
     git -C "$r" config user.email "c@example.invalid"
     git -C "$r" config user.name "controls"
     cp "$SUBJECT" "$r/rc-backend/tools/pre-commit-gates.sh"
+    local code
     for g in $GATES; do
-        if [ "$g" = "$red" ]; then
-            printf '#!/bin/bash\necho "%s" >> "$RCLOG"\nexit 7\n' "$g" > "$r/rc-backend/tools/$g.sh"
-        else
-            printf '#!/bin/bash\necho "%s" >> "$RCLOG"\nexit 0\n' "$g" > "$r/rc-backend/tools/$g.sh"
-        fi
+        code=0; [ "$g" = "$red" ] && code=7
+        # ★偽物も「探り」と「走行」を区別する(2026-08-06)。`--would-select` は
+        #   *聞いただけ* なので **RCLOG に書かない** —— 書くと「呼ばれた門の数」が
+        #   探りで水増しされ、書類だけの commit が code の門を呼んだ様に見える。
+        #   答えは `RC_FAKE_WOULD_SELECT` で外から決める: ここで測るのは
+        #   *下流が正しく選ぶか* ではなく **呼ぶ側がその答えに従うか**。
+        cat > "$r/rc-backend/tools/$g.sh" <<STUB
+#!/bin/bash
+if [ "\${1:-}" = "--would-select" ]; then
+    printf '%s' "\${RC_FAKE_WOULD_SELECT:-}"
+    exit 0
+fi
+echo "$g" >> "\$RCLOG"
+exit $code
+STUB
         chmod +x "$r/rc-backend/tools/$g.sh"
     done
 }
@@ -120,7 +137,8 @@ run_with() {
         git -C "$r" add -- "$p"
     done
     : > "$T/called.log"
-    RCLOG="$T/called.log" bash "$r/rc-backend/tools/pre-commit-gates.sh" > "$T/out.log" 2>&1
+    RCLOG="$T/called.log" RC_FAKE_WOULD_SELECT="${RC_FAKE_WOULD_SELECT:-}" \
+        bash "$r/rc-backend/tools/pre-commit-gates.sh" > "$T/out.log" 2>&1
     echo $?
 }
 ncalled() { wc -l < "$T/called.log" | tr -d ' '; }
@@ -186,6 +204,52 @@ if [ "$rc" = "0" ] && only_doc_gates; then
     ok "6 ios の書類は code の門へ行かない(3 が『ios なら何でも』でない)"
 else
     ng "6 ios の書類は code の門へ行かない" "exit=$rc 呼ばれた門=$(ncalled)本(期待 $NDOC 本)"
+fi
+
+# ── 10: 絞り込みが外れても、下流に聞いてから決める(2026-08-06 に足した口)──────
+#   何故要るか: 絞り込みの regex は「対照の見張り先の一覧」を**手で同期する2本目**
+#   だった。宣言 75 本を当てた実測で 1 本(`rc-backend/package.json`)が届かず、
+#   その file だけの commit は対照どころか `npm test` の門ごと飛んでいた。
+#   regex に 1 行足すのは手書き同期の6個目なので、代わりに**持っている側に聞く**形にした。
+#   ★ここで測るのは下流が正しく選ぶかではない(それは下流の対照の仕事)。
+#     **呼ぶ側がその答えに従うか** —— 進む側と止まる側の両方。
+mk_repo "$T/pkg" || { echo "FAIL  偽 repo を作れない"; exit 1; }
+rc="$(RC_FAKE_WOULD_SELECT="rc-backend/test/copied-tree-controls.sh" \
+      run_with "$T/pkg" "rc-backend/package.json")"
+if [ "$rc" = "0" ] && [ "$(ncalled)" = "$NGATES" ]; then
+    ok "10 regex が外れても、回る対照が在ると下流が答えれば門を全部呼ぶ($NGATES 本)"
+else
+    ng "10 regex が外れても、回る対照が在ると答えれば門を全部呼ぶ($NGATES 本)" \
+       "exit=$rc 呼ばれた門=$(ncalled)本: $(tr '\n' ' ' < "$T/called.log")"
+fi
+
+mk_repo "$T/pkgnone" || { echo "FAIL  偽 repo を作れない"; exit 1; }
+rc="$(RC_FAKE_WOULD_SELECT="" run_with "$T/pkgnone" "rc-backend/package.json")"
+if [ "$rc" = "0" ] && only_doc_gates; then
+    ok "10b 下流が『無い』と答えれば止まる(『聞く』が『常に進む』にすり替わっていない)"
+else
+    ng "10b 下流が『無い』と答えれば止まる" \
+       "exit=$rc 呼ばれた門=$(ncalled)本(期待 $NDOC 本)= 絞り込みが意味を失っている"
+fi
+
+# ── 10c: 陰性対照。聞く枝を潰すと 10 が赤くなるか ──────────────────────────
+#   10 は「全部の門が呼ばれた」で緑になるので、**元の素通しに戻した変異体**を同じ
+#   判定に食わせて赤を確かめる。赤に出来ない検査は緑を主張する資格が無い。
+sed 's#if \[ -z "$(bash "$ROOT/rc-backend/tools/staged-controls-gate.sh" --would-select)" \]; then#if true; then#' \
+    "$SUBJECT" > "$T/mutant-probe.sh"
+if cmp -s "$SUBJECT" "$T/mutant-probe.sh"; then
+    ng "10c 聞く枝を潰すと 10 が赤くなる" "変異の的が消えている = この対照が古い(聞き方が変わった)"
+else
+    mk_repo "$T/pkgmut" || { echo "FAIL  偽 repo を作れない"; exit 1; }
+    cp "$T/mutant-probe.sh" "$T/pkgmut/rc-backend/tools/pre-commit-gates.sh"
+    rc="$(RC_FAKE_WOULD_SELECT="rc-backend/test/copied-tree-controls.sh" \
+          run_with "$T/pkgmut" "rc-backend/package.json")"
+    if [ "$(ncalled)" != "$NGATES" ]; then
+        ok "10c 聞く枝を潰すと素通しに戻る(= 10 に歯が在る)"
+    else
+        ng "10c 聞く枝を潰すと素通しに戻る" \
+           "潰しても門を $NGATES 本呼ぶ = 10 は聞く枝を測っていない"
+    fi
 fi
 
 # ── 7: 門が赤 → そこで止まり、後ろは呼ばれない ────────────────────────────
