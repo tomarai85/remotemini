@@ -1,4 +1,5 @@
 #!/bin/bash
+# no-operator: sprint 6.5 を締める時に人が撃つ。DOD_FULL=1 で実機ビルドまで回るので門には置けない
 # Sprint 6.5(spec §6 Day 7)の Definition of Done を機械で照合する。
 #
 # spec の Day 7 の行(逐語):
