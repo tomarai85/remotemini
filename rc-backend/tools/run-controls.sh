@@ -328,6 +328,14 @@ LOCAL_CTLS=(
                                      # ★7 節(出力の文言)は陰性対照で穴が見つかって足した:
                                      #   上限の足を `--(測っていない)` でなく `ok` と印字する細工でも
                                      #   終了コードは 3 のままで、1-6 節は全部緑だった。
+    ../ios/tools/live-interrupt-check-control.sh # ★2026-08-06。姉家族(上)と同じ手で
+                                     # `ios/tools/live-interrupt-check.sh` の判定2つを撃つ(29 本)。
+                                     # 輪が尽きた時(`--busy-verdict`)と最後の4つの足(`--verdict`)。
+                                     # 本体を1回走らせて通るのは **verified の枝だけ** —— 残りは
+                                     # 一度も走った事が無いまま書かれていた。実測1秒未満。
+                                     # ★`.harness/live-interrupt-wording-controls.sh` とは別物:
+                                     #   向こうは**掴む文が2つの file で一致しているか**、此処は
+                                     #   **掴んだ後にどう裁くか**。同じ台本の別の穴。
     ../.harness/dod-sprint-3-controls.sh # ★2026-08-05。Sprint 3 の DoD 照合表
                                      # (`.harness/dod-sprint-3.sh`)の対照 = 15 行のうち 12 行が
                                      # **本当に赤にも緑にもなる**事を測る。照合表は「全部緑」を

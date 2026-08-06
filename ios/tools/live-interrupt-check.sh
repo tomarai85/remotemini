@@ -54,12 +54,91 @@ classify_interrupt_text() {
     esac
 }
 
+# 生成中を1度も観測できずに輪が尽きた時の判定。
+# 引数: <busy の最後の答え> <limited の答え>
+# 戻り: 3 = 上限(運ぶ層は通った。直す物は無い、待つ)/ 2 = 測れていない(仕込みの側)
+#
+# ★2026-08-06: 上限だと仕込みの番は投げられても生成が始まらないので、輪は必ず尽きる。
+#   元の文面は「仕込みの側の失敗」と断じていて、読み手を在りもしない欠陥へ送っていた。
+busy_exhausted_verdict() {
+    local busy="${1:-}" lim="${2:-}"
+    echo "60 秒回しても生成中を1度も観測できなかった(最後の答え: ${busy:-無})"
+    if [ "$lim" = "limited" ]; then
+        echo "→ 画面に**利用上限の告知**が出ている。仕込みも割り込みも壊れていない。"
+        echo "   運ぶ層は通った(仕込みの送信は終了コード 0)が、相手が答えていないだけ。"
+        echo "   **直す物は無い。解除を待って回し直す事。**"
+        return 3
+    fi
+    echo "→ **測れていない**。割り込みが壊れている証拠ではない(仕込みの側の失敗)"
+    echo "   (上限の告知は出ていない: limited の答え = ${lim:-訊けなかった})"
+    return 2
+}
+
+# 最後の判定。4つの足を観測値として受け、0/1/2/3 を決める。
+# 引数: <割り込みの終了コード> <分類語> <陰性対照A> <陰性対照B> <limited の答え> [B の終了コード]
+#   陰性対照A: clean(verified の文は出なかった)/ verified-again / empty
+#   陰性対照B: 401 / no
+#
+# ★順序が `rc-backend/tools/exit-codes.mjs` の `2 > 1 > 3 > 0` と**違って見える**理由:
+#   此処の 2 は prepAbort(準備段で中断)ではない。準備段の中断は上の 1-4 節が
+#   その場で 2 を返して此処へ来ない。此処の 2 は「主の足が着地しなかった」で、
+#   陰性対照の2本は**それとは独立に測れている** —— だから其処に赤が在るなら
+#   本物の欠陥で、1 が勝つ。同じ数字が2つの意味を持つので、順序も別になる。
+interrupt_verdict() {
+    local rc="${1:-}" kind="${2:-}" ctrl_a="${3:-}" ctrl_b="${4:-}" lim="${5:-}" b_rc="${6:--}"
+    local fail=0 unmea=0
+    if [ "$rc" = "0" ]; then
+        echo "  ok  : 電話のコードが display を受け取った"
+    else
+        echo "  NG  : display が届いていない(終了コード $rc)"; fail=1
+    fi
+    case "$kind" in
+      verified)      echo "  ok  : サーバ側 stopped=verified の文が届いた" ;;
+      already-done)  echo "  --  : already-done(撃つ前に番が自力で終わっていた)= **測れていない**"; unmea=1 ;;
+      not-in-flight) echo "  --  : 止める対象なし(生成中の観測と撃鍵の間に終わった)= **測れていない**"; unmea=1 ;;
+      unverified)    echo "  NG  : unverified(動いていたが期限内に止まりを観測できない)"; fail=1 ;;
+      *)             echo "  NG  : 想定していない文だった($kind)"; fail=1 ;;
+    esac
+    case "$ctrl_a" in
+      clean)          echo "  ok  : 陰性対照A —— verified の文は出なかった" ;;
+      verified-again) echo "  NG  : 陰性対照A —— 止まった後の会話にも verified の文が出た(上の緑は測定ではない)"; fail=1 ;;
+      *)              echo "  NG  : 陰性対照A —— 何も返っていない(対照が成立していない)"; fail=1 ;;
+    esac
+    if [ "$ctrl_b" = "401" ]; then
+        echo "  ok  : 陰性対照B —— でたらめな鍵は 401(本物のサーバに当たっている)"
+    else
+        echo "  NG  : 陰性対照B —— でたらめな鍵が 401 にならない(終了コード $b_rc)"; fail=1
+    fi
+    if [ "$fail" != "0" ]; then
+        echo "→ DoD 9行目: 閉じていない"
+        return 1
+    fi
+    if [ "$unmea" != "0" ]; then
+        if [ "$lim" = "limited" ]; then
+            echo "→ DoD 9行目: **測れていない**が、画面に**利用上限の告知**が出ている。"
+            echo "   仕込みの番が上限で途中終了した = 直す物は無い。解除を待って回し直す事。"
+            return 3
+        fi
+        echo "→ DoD 9行目: **測れていない**(仕込みが生成中を保てなかった。回し直す)"
+        return 2
+    fi
+    echo "→ DoD 9行目: 観測で閉じた"
+    return 0
+}
+
 # `--classify <文>` = 通信も build もせず、判定だけを1語で出して終わる(対照から呼ぶ口)。
+# `--busy-verdict` / `--verdict` も同じ趣旨 —— 実機の会話なしに判定だけを撃つ。
 # ★引数の輪**より前**に置く。輪の既定は「知らない引数は 2 で落とす」なので、
 #   後ろに置くと此の口は永久に届かない(2026-08-06、対照が 5/5 赤で捕まえた)。
 if [ "${1:-}" = "--classify" ]; then
     classify_interrupt_text "${2:-}"
     exit 0
+fi
+if [ "${1:-}" = "--busy-verdict" ]; then
+    shift; busy_exhausted_verdict "$@"; exit $?
+fi
+if [ "${1:-}" = "--verdict" ]; then
+    shift; interrupt_verdict "$@"; exit $?
 fi
 
 URL="${RC_LIVE_URL:-https://desk.tailnet.example}"
@@ -153,22 +232,10 @@ done
 case "$BUSY" in
   observed*) echo "生成中を観測(${BUSY_WAITED}s 目 / 材料 = ${BUSY#observed })" ;;
   *)
-    echo "60 秒回しても生成中を1度も観測できなかった(最後の答え: ${BUSY:-無})"
-    # ★2026-08-06: 此処は一度も走った事が無い枝で、**上限の時に必ず通る枝**でもあった。
-    #   上限だと仕込みの番は投げられても生成が始まらないので、輪は必ず尽きる。
-    #   なのに文面は「仕込みの側の失敗」と断じていて、読み手を在りもしない欠陥へ送る。
-    #   8/02 に inject 側が、8/06 に choice 側が解いた束ねと同じ形が此処にも在った。
-    #   画面に上限の告知が出ているかは分類器が最初から知っている(`classifyScreen.limited`)。
+    # 画面に上限の告知が出ているかは分類器が最初から知っている(`classifyScreen.limited`)。
     LIM="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs limited '$SID'" 2>/dev/null || echo "")"
-    if [ "$LIM" = "limited" ]; then
-      echo "→ 画面に**利用上限の告知**が出ている。仕込みも割り込みも壊れていない。"
-      echo "   運ぶ層は通った(仕込みの送信は終了コード 0)が、相手が答えていないだけ。"
-      echo "   **直す物は無い。解除を待って回し直す事。**"
-      exit 3
-    fi
-    echo "→ **測れていない**。割り込みが壊れている証拠ではない(仕込みの側の失敗)"
-    echo "   (上限の告知は出ていない: limited の答え = ${LIM:-訊けなかった})"
-    exit 2
+    busy_exhausted_verdict "$BUSY" "$LIM"
+    exit $?
     ;;
 esac
 
@@ -199,41 +266,22 @@ KEY=""
 
 echo
 echo "=== 判定 ==="
-FAIL=0
-UNMEA=0
-if [ "$INTR_RC" = "0" ]; then
-  echo "  ok  : 電話のコードが display を受け取った"
-else
-  echo "  NG  : display が届いていない(終了コード $INTR_RC)"; FAIL=1
+# 観測値を語に落としてから判定へ渡す。判定は通信も grep もしない = 対照から撃てる。
+if printf '%s' "$CTRL_A_OUT" | grep -qF "$VERIFIED_TEXT"; then CTRL_A=verified-again
+elif [ -z "$CTRL_A_OUT" ]; then CTRL_A=empty
+else CTRL_A=clean
 fi
+if printf '%s' "$CTRL_B_OUT" | grep -qF "outcome=unauthorized"; then CTRL_B=401; else CTRL_B=no; fi
+# 主の足が着地しなかった時にだけ意味を持つので、其の時だけ訊く(毎回 ssh を1本増やさない)。
+LIMITED=""
 case "$(classify_interrupt_text "$INTR_OUT")" in
-  verified)      echo "  ok  : サーバ側 stopped=verified の文が届いた" ;;
-  already-done)  echo "  --  : already-done(撃つ前に番が自力で終わっていた)= **測れていない**"; UNMEA=1 ;;
-  not-in-flight) echo "  --  : 止める対象なし(生成中の観測と撃鍵の間に終わった)= **測れていない**"; UNMEA=1 ;;
-  unverified)    echo "  NG  : unverified(動いていたが期限内に止まりを観測できない)"; FAIL=1 ;;
-  *)             echo "  NG  : 想定していない文だった"; FAIL=1 ;;
+  already-done|not-in-flight)
+    LIMITED="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs limited '$SID'" 2>/dev/null || echo "")" ;;
 esac
-if printf '%s' "$CTRL_A_OUT" | grep -qF "$VERIFIED_TEXT"; then
-  echo "  NG  : 陰性対照A —— 止まった後の会話にも verified の文が出た(上の緑は測定ではない)"; FAIL=1
-elif [ -z "$CTRL_A_OUT" ]; then
-  echo "  NG  : 陰性対照A —— 何も返っていない(対照が成立していない)"; FAIL=1
-else
-  echo "  ok  : 陰性対照A —— verified の文は出なかった"
-fi
-if printf '%s' "$CTRL_B_OUT" | grep -qF "outcome=unauthorized"; then
-  echo "  ok  : 陰性対照B —— でたらめな鍵は 401(本物のサーバに当たっている)"
-else
-  echo "  NG  : 陰性対照B —— でたらめな鍵が 401 にならない(終了コード $CTRL_B_RC)"; FAIL=1
-fi
 
-if [ "$FAIL" != "0" ]; then
-  echo "→ DoD 9行目: 閉じていない"
-  exit 1
-fi
-if [ "$UNMEA" != "0" ]; then
-  echo "→ DoD 9行目: **測れていない**(仕込みが生成中を保てなかった。回し直す)"
-  exit 2
-fi
-VERDICT_OK=1
-echo "→ DoD 9行目: 観測で閉じた"
-exit 0
+interrupt_verdict "$INTR_RC" "$(classify_interrupt_text "$INTR_OUT")" \
+  "$CTRL_A" "$CTRL_B" "$LIMITED" "$CTRL_B_RC"
+CODE=$?
+# ★VERDICT_OK は 0 の時だけ立てる = 転んだ回・上限の回の転写は**消さない**。
+[ "$CODE" = "0" ] && VERDICT_OK=1
+exit "$CODE"

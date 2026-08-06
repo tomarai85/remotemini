@@ -102,6 +102,10 @@ chk_text no  "ok  : kind=ok" "上限で落ちた足を ok と呼ばない"      
 chk_text yes "ok  : kind=ok" "本当に通った足は ok と言う(対照)"        0 0 1 1 1 limited
 chk_text yes "NG  : kind=ok" "上限でない時に落ちた足は NG と言う"       0 0 0 1 1 not-limited
 chk_text no  "測っていない" "上限でない回に「測っていない」は出さない"  0 0 0 1 1 not-limited
+# ★行頭の印そのものを見る2本(2026-08-06、姉家族の対照の陰性対照⑤が同じ穴で 0 赤だった)。
+#   足の文だけを見ていると、印だけを ok に変える細工を素通りさせる。
+chk_text yes "  --  : " "上限で落ちた足は行頭を -- 印で書く"            0 0 0 1 1 limited
+chk_text no  "  --  : " "全部通った回に -- 印は出さない(対照)"        0 0 1 1 1 limited
 
 echo
 echo "LIVE-SEND-VERDICT-CONTROLS: pass=$PASS fail=$FAIL"

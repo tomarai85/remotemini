@@ -3192,6 +3192,18 @@ libuv は読める stdio を先に流してから `exit` を出す。だから�
 **訊く口。** `node tools/disposable-session.mjs limited <会話 id>` → `limited` / `not-limited`。
 `busy` と前段(`classifyFor`)を共有している。登録簿の読み方を2本に増やさない事。
 
-★**残り(この commit では埋めていない)。** `ios/tools/live-interrupt-check.sh` の枯渇枝は
-3 と 2 に割ったが、**判定を駆動する対照がまだ無い**。`live-send-check.sh` と同じ形
-(判定を関数へ切り出して `--verdict` を生やし、観測値を引数で受ける)で足せる。
+~~★残り: `ios/tools/live-interrupt-check.sh` の判定を駆動する対照がまだ無い~~
+→ **埋めた(00:1x)**。`busy_exhausted_verdict` / `interrupt_verdict` に切り出し、
+`--busy-verdict` / `--verdict` を生やして `ios/tools/live-interrupt-check-control.sh`(29 本)。
+
+**踏むと壊れる1つ(此処だけ順序が正本と違う)。** 最後の判定は **1 > 2** で、
+`rc-backend/tools/exit-codes.mjs` の `2 > 1` と逆に見える。矛盾ではなく 2 の意味が違う ——
+正本の 2 は準備段の中断(下流が走っていない)で、此の台本ではそれは 1-4 節がその場で
+返して最後の判定へ来ない。最後の判定の 2 は「主の足が着地しなかった」で、陰性対照の
+2本は**それとは独立に測れている**。2 を勝たせると、陰性対照が壊れた回を
+「回し直せば直る」と報告する計器になる。対照の5節が此処だけを撃つ(入替えると 10 本赤)。
+
+**対照を書く時に踏んだ穴(2回とも陰性対照が 0 赤で教えた)。** 判定の検査は
+**終了コードと行頭の印の両方**を見る事。足の文だけを見ていると、`  --  : ` を
+`  ok  : ` に変える細工(文は「測れていない」のまま)を素通りさせる。
+姉家族の `ios/tools/live-send-check-control.sh` にも同じ穴が在ったので同じ日に両方直した。
