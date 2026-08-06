@@ -465,6 +465,16 @@ LOCAL_CTLS=(
                                      # 温めてから回す**(`ios/tools/build.sh --sim` を先に1回)。
                                      # ★`test/verdict-mutants.sh`(下の「わざと入れていない」)との
                                      #   違いは桁: 向こうは既定で exit 2 を返し、全部回すと 20 分超。
+    ../.harness/dod-sprint-6.5-controls.sh
+                                     # ★2026-08-07。Sprint 6.5(受入)の照合表
+                                     # `.harness/dod-sprint-6.5.sh` の負の対照(13 変異)。
+                                     # 上の 6 の対照(248 秒)と違って **xcodebuild を回さない** ——
+                                     # 照合表が読む file だけを scratch へ複製して壊すので実測 5 秒。
+                                     # 作業木は触らず、走行の前後で `git status` の差 0 行を観測して
+                                     # 確かめている。
+                                     # ★**build と同時に回さない**(2026-08-07 に踏んだ): `DOD_FULL=1` の
+                                     #   照合と並走させると、複製した log と原稿の指紋が書き込み途中の物に
+                                     #   なり、OK 13 の中身のまま終了コードだけ 1 で出る。単独で回す事。
 )
 # ── ★ここに**わざと入れていない**物(消えた訳ではない)────────────────────────
 # `test/verdict-mutants.sh` = `test/mutation-verdict-controls.sh` の陰性対照
