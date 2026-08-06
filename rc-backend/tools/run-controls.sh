@@ -475,6 +475,16 @@ LOCAL_CTLS=(
                                      # ★**build と同時に回さない**(2026-08-07 に踏んだ): `DOD_FULL=1` の
                                      #   照合と並走させると、複製した log と原稿の指紋が書き込み途中の物に
                                      #   なり、OK 13 の中身のまま終了コードだけ 1 で出る。単独で回す事。
+    ../.harness/build-fingerprint-controls.sh
+                                     # ★2026-08-07。↑の照合表の **0 行目が読む指紋**を作る側
+                                     # (`ios/tools/build.sh --sim`)の対照。commit の門が
+                                     # 「注記 — 対照を導けない道具: build.sh」と名指ししていた穴。
+                                     # 受入の緑 6 行(0 / 1-b / 2-b / 3 / 5-a / 6-b)がこの指紋に
+                                     # 懸かっているのに、指紋を**作る**側は誰も見ていなかった。
+                                     # 測るのは順序(xcodebuild より前か)と範囲(Sources/Tests/
+                                     # UITests のどれを変えても動くか)と、中身か mtime か。
+                                     # 指紋の式は build.sh から切り出して回す = 写しを持たない。
+                                     # xcodebuild は回さないので実測 1 秒未満。
 )
 # ── ★ここに**わざと入れていない**物(消えた訳ではない)────────────────────────
 # `test/verdict-mutants.sh` = `test/mutation-verdict-controls.sh` の陰性対照
