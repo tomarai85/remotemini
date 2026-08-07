@@ -7,10 +7,27 @@
 
 ---
 
-## 1. tailnet 鍵の失効を無効化(edith と friday の2台)★最優先
+## 1. tailnet 鍵の失効を無効化(**5台全部**)★最優先
 
-**期限**: friday = 2026-09-19(残り43日) / edith = 2026-12-25(残り140日)。
-**2台同時に、渡米前にやる。** edith の方が期限は先だが、渡米後はどちらも物理で触れない。
+**訂正(2026-08-07、実測)**: 起票時に「edith と friday の2台」と書いたが、**間違い**。
+`tailscale status --json` で数えたら、期限が付いているのは **5台全部**だった:
+
+| OS | 残り | 効く物 |
+|---|---|---|
+| macOS | 43日 | |
+| macOS | 43日 | |
+| **iOS** | **99日** | **Tom の iPhone** |
+| macOS | 139日 | edith |
+| macOS | 170日 | |
+
+**iPhone を落としていたのが致命的だった。** 電話も tailnet の1ノードなので、
+**電話側の鍵が切れれば edith が無事でも届かない**。しかも気付くのは空港かホテル。
+edith だけ直しても片側しか直っていない。
+
+**5台全部やる。** 1台1クリック、副作用は無い。
+
+**期限の見方**: 上の表は `bash rc-backend/tools/departure-survivability-check.sh` が
+毎回数え直す(機器名は出さない設計なので、どの行がどの機械かは admin console 側で見る)。
 
 **なぜ私にできないか**: control plane 側の設定で、`tailscale set` に期限の flag が無い
 (edith の Tailscale 1.98.5 で実測、subcommand 一覧にも無い)。admin console か API token でしか触れない。
@@ -18,12 +35,16 @@
 **やる事**:
 
 1. Tailscale の admin console を開く → **Machines**
-2. `edith` の行 → **Disable key expiry**
-3. `friday` の行 → 同じく **Disable key expiry**
+2. **各行**の `...` → **Disable key expiry**(5行とも。iPhone の行を飛ばさない)
 
-**成功の確かめ方**: 私が `tailscale status --json` から両機の期限を読めるので、
-押し終わったら「押した」とだけ言ってくれれば私が観測して報告する。
-(Tom 側で見るなら、admin console の当該行に期限の表示が出なくなる)
+**成功の確かめ方**:
+
+```
+bash rc-backend/tools/departure-survivability-check.sh
+```
+
+→ 「期限付き 0 台 / 全 5 台」かつ終了コード 0 になれば済んでいる。
+押し終わったら「押した」とだけ言ってくれれば私が撃って報告する。
 
 **戻し方**: いつでも1クリックで再度有効化できる。
 
@@ -88,8 +109,22 @@ edith の面は tailnet 限定(funnel ではない = 公開されていない)�
 電話を1回開いて**見るだけ**の3点(§8-4 流れがその場で出るか / §8-8「送る」ボタンが見えるか /
 §8-10 待ち時間)。変更は無く、1往復で3件片づく。
 
+## 出発の直前(8/19 目安)に、この1行を撃つ
+
+```
+bash rc-backend/tools/departure-survivability-check.sh
+```
+
+3週間の無人耐久を機械で測り直す。**手で測った物は 8/19 の保証にならない** ——
+OS 更新が `sleep` を戻す・deploy が plist を置き換える・誰かが FileVault を入れる、
+どれも起きる。終了コードは 0=緑 / 1=赤 / 2=未測定(2 を緑と読まない)。
+
+測る中身: 停電から戻る鎖 7 項目(`coldboot-chain.sh` を edith 上で呼ぶ)+
+常駐が今動いている事 + 面が 401 を返す事 + 空き容量 + tailnet の鍵の期限。
+
 ## 私の側の現状(2026-08-07 実測)
 
 - 対照の全掃引 `green=64 / red=0 / 未測定=0`
 - iPhone アプリ headless simulator build 成功・test **384件 / 失敗 0件**
 - edith の常駐 `com.edith.rc-backend` PID 574 稼働中
+- 3週間の無人耐久 = **赤 1 件のみ**。それが上の項目1(tailnet の鍵)。他は全部緑
