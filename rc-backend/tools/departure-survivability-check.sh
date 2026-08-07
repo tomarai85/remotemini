@@ -13,7 +13,7 @@
 #     「上の緑をこの repo のコードの緑として読めない」だけ)。deploy の半端な失敗が
 #     古い道具の緑を新しい保証に見せるのを止める。
 #
-# ここが足すのは、冷起動の鎖の外に在って**渡米すると触れなくなる** 6 つ:
+# ここが足すのは、冷起動の鎖の外に在って**渡米すると触れなくなる** 7 つ:
 #   (1) tailnet の鍵の期限 … 切れると tailnet から落ち、復旧用の ssh も同じ経路なので同時に死ぬ
 #   (2) job が今この瞬間 動いている事 … plist が正しくても、落ちて再起動を繰り返す形は別問題
 #   (3) 面が 401 を返す事      … 200 は鍵が外れている印。tailnet 内の誰でも読める状態
@@ -25,6 +25,13 @@
 #   (6) 今この瞬間、tmux 経路で話せる相手が居る事 … /api/sessions?scope=registered を
 #         **本番の判定コードそのもの**に数えさせる(生死判定を此処で作り直さない)。
 #         0 件 = 「読めるが送れない」(DESIGN §6 の表)
+#   (7) その会話が**返事を返せる**事 … ①〜④が全部緑でも「認証が切れていて返事だけ
+#         来ない」形は作れる。心拍を書く statusLine は認証と無関係に走るので、(6) の
+#         件数は**画面が描けている**証拠であって**返事が返る**証拠ではない。DESIGN §6
+#         の誤読の、一段奥に在る同じ型。電話が使うのと同じ**対話 shell 文脈**で
+#         `claude auth status --json` を読む(鍵は出さない = loggedIn と authMethod だけ)。
+#         今日の緑が旅程25日目の保証にならない事は承知の上で、**出発時点で既に
+#         切れている**形だけは潰す
 #
 # 使い方:
 #   bash rc-backend/tools/departure-survivability-check.sh [--days N] [--host user@host]
@@ -50,7 +57,7 @@ while [ $# -gt 0 ]; do
                 TRIP_DAYS="$2"; shift 2 ;;
         --host) [ $# -ge 2 ] || { echo "--host に値が無い" >&2; exit 2; }
                 HOST="$2"; shift 2 ;;
-        -h|--help) sed -n '2,37p' "$0"; exit 0 ;;   # 2..37 = 冒頭の説明。行を足したらここも直す
+        -h|--help) sed -n '2,44p' "$0"; exit 0 ;;   # 2..44 = 冒頭の説明。行を足したらここも直す
         *) echo "知らない引数: $1" >&2; exit 2 ;;
     esac
 done
@@ -128,6 +135,34 @@ ss = d.get(\"sessions\") or []
 print(\"alive=%d\" % sum(1 for s in ss if ((s.get(\"live\") or {}).get(\"route\") == \"tmux\")))
 print(\"alive_total=%d\" % len(ss))
 "
+
+    # 鎖⑤。**対話 shell 文脈**で測るのが要点 —— tmux の pane は対話 shell なので
+    # ~/.zshrc を読む。launchd 側(非対話)は同じ変数を持たないので、非対話で測ると
+    # 「電話の経路が死んでいる」という**嘘の赤**が出る(2026-08-07 に実際に一度出した)。
+    # 鍵は出さない: python が読むのは loggedIn と authMethod の2つだけで、
+    # 生の出力は一度も印字しない(apiKey 系の値が混ざる可能性を構造で潰す)。
+    # timeout を python 側に持たせているのは、対話 zsh の起動が固まった時に
+    # **この検査ごと**止まるのを防ぐ為(macOS の /bin/sh に timeout が無い)。
+    if command -v zsh >/dev/null 2>&1; then
+        /usr/bin/python3 -c "
+import json, subprocess
+try:
+    r = subprocess.run([\"zsh\", \"-ic\", \"claude auth status --json\"],
+                       capture_output=True, text=True, timeout=25)
+except Exception:
+    print(\"auth=timeout\"); raise SystemExit
+s = r.stdout
+i, j = s.find(\"{\"), s.rfind(\"}\")
+try:
+    d = json.loads(s[i:j+1])
+except Exception:
+    print(\"auth=unparsed\"); raise SystemExit
+print(\"auth=%s\" % (\"yes\" if d.get(\"loggedIn\") else \"no\"))
+print(\"auth_method=%s\" % (d.get(\"authMethod\") or \"-\"))
+" < /dev/null
+    else
+        echo "auth=nozsh"
+    fi
 
     # 401 が正。200 = 鍵が外れている、それ以外 = 面が応答していない。
     p http "$(curl -sS -m 5 -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/api/sessions 2>/dev/null || echo 000)"
@@ -241,6 +276,29 @@ case "$a" in
     ''|*[!0-9]*) say_unm "件数が読めない(${a:-空})" ;;
     0)           say_bad "tmux 経路の相手が 0 件 —— phone 窓が戻っていない。一覧と履歴は読めるが打ち込めない" ;;
     *)           say_ok  "tmux 経路 ${a} 件 / 登録簿 $(g alive_total) 件" ;;
+esac
+
+# --- 鎖⑤(その相手が返事を返せるか)------------------------------------------
+# 上の件数が緑でも此処が赤なら「見えて、打ち込めて、返事だけ来ない」。
+# 一段奥の同じ誤読を潰す為に、件数とは**別の行**として出す。
+echo
+echo "その相手が返事を返せるか(電話と同じ対話 shell 文脈の claude auth status)"
+case "$(g auth)" in
+    yes)
+        m=$(g auth_method)
+        case "$m" in
+            api_key) say_ok "認証は生きている(従量課金の API キー)"
+                     say_note "この経路はサブスクの週次上限に当たらない代わりに、"
+                     say_note "token-failover.sh の予備アカウントに**守られていない**(切れたら手で戻す)" ;;
+            oauth|*) say_ok "認証は生きている(方式 ${m})"
+                     say_note "この経路は週次上限に当たり得る。token-failover.sh が2時間毎に予備へ回す" ;;
+        esac
+        say_note "今日の緑は旅程25日目の保証にならない。切れた時の検知器は「電話から毎日触る」事"
+        ;;
+    no)      say_bad "認証が切れている —— 一覧と履歴は読めるが**返事が返らない**。edith で claude を開いて /login" ;;
+    timeout) say_unm "対話 shell の起動が 25 秒で返らなかった(判定を付けない)" ;;
+    nozsh)   say_unm "edith に zsh が無く、電話と同じ文脈を再現できない" ;;
+    ''|unparsed|*) say_unm "claude auth status が JSON を返さない(claude が PATH に無い等)" ;;
 esac
 
 # --- 余白 --------------------------------------------------------------------
