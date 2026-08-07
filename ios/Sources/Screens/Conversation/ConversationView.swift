@@ -215,6 +215,13 @@ struct ConversationView: View {
                     .accessibilityIdentifier("conversation.composerDisabledReason")
             }
 
+            // Below the reason line on purpose: that line says 「下の選択肢から選んで
+            // ください」, so the card it points at has to be underneath it. And above
+            // the field rather than up in `statusBanners`, because this is the one
+            // thing on screen the user is being asked to *do* -- it belongs where the
+            // thumb already is, not at the far end of the screen from it.
+            choiceCard
+
             HStack(alignment: .bottom, spacing: 8) {
                 // Left of the field, deliberately far from the send button: these two
                 // do opposite things and a mis-tap on a phone in one hand is the
@@ -348,19 +355,139 @@ struct ConversationView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("conversation.gapNotice")
             }
-            // Brief §1-b "D-A": only `reason`, shown as a badge -- the choice's
-            // `options`/buttons are explicitly out of scope this sprint (Sprint 6).
-            if let choice = viewModel.choiceView, choice.show {
-                Text(choice.reason)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("conversation.choiceBadge")
-            }
+            // Sprint 6's `conversation.choiceBadge` lived here and rendered nothing but
+            // `reason`. Sprint 7 moved the whole menu to `choiceCard` down in the
+            // composer, and the badge went with it rather than staying as a second copy
+            // of the same sentence: two places showing one refusal is how the two drift
+            // apart later.
             degradationBanner
         }
         .padding(.horizontal)
         .padding(.top, 6)
+    }
+
+    /// The menu the desk is waiting on, and -- when the server allowed it -- the keys
+    /// that answer it.
+    ///
+    /// ★Nothing here decides what is pressable. `buttons` is computed server-side by
+    /// `view.mjs`'s `choiceView`, which emits keys only for a menu `classifyChoice`
+    /// matched against its allowlist; a permission or trust prompt arrives with an
+    /// empty `buttons` and a `reason` instead. So this view has exactly two jobs: draw
+    /// what arrived, and never draw a control the server did not send. Any local
+    /// "…but this one looks safe" would be the phone re-deciding a safety question that
+    /// was already decided where the screen can actually be read.
+    ///
+    /// The three states, in the order the code tests them:
+    ///
+    /// 1. **keys offered** -- buttons, disabled while a press is in flight or while the
+    ///    card is stale, with `staleChoiceReason` underneath saying which.
+    /// 2. **no keys** -- the server's `reason`, verbatim. This is the hard-stop case
+    ///    among others, and its wording is `view.mjs`'s `CHOICE_BLOCKED`, not this
+    ///    file's.
+    /// 3. **`show == false`** -- nothing at all; the screen is not a menu.
+    @ViewBuilder
+    private var choiceCard: some View {
+        // `visibleChoice` is the ONE place that decides a card exists (`show`, plus the
+        // phone's own check that the last observed screen has not left `CHOICE`). The view
+        // must not re-derive that from `choiceView` -- two answers to one question is how
+        // the composer sentence and the card ended up contradicting each other once already.
+        if let choice = viewModel.visibleChoice {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(choice.head.enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(.caption.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                // Options the server did NOT give a key for, printed as plain text.
+                //
+                // The ones it did are already drawn as buttons carrying the same
+                // 「N. ラベル」 label, so printing every option would show each of those
+                // twice. Printing only the leftovers keeps the property that matters --
+                // the user sees every choice the desk is offering -- while the fact that
+                // an option appears without a button becomes information rather than
+                // noise: it is the server declining to hand the phone that key.
+                ForEach(unkeyedOptions(of: choice), id: \.n) { option in
+                    Text("\(option.n). \(option.label)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if choice.canPress {
+                    // Full width and stacked, not a wrapped row: the `enter`/`escape`
+                    // labels embed the option they would land on (「決定(2. …で決定)」),
+                    // so they are sentences, and a phone-width row would truncate the
+                    // very part that says what the key does.
+                    ForEach(choice.buttons, id: \.key) { button in
+                        Button {
+                            Task { await viewModel.choose(key: button.key) }
+                        } label: {
+                            Text(button.label)
+                                .font(.callout)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!viewModel.choiceEnabled)
+                        .accessibilityIdentifier("conversation.choiceButton.\(button.key)")
+                    }
+
+                    if let stale = viewModel.staleChoiceReason {
+                        Text(stale)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("conversation.choiceStale")
+                    }
+                } else if !choice.reason.isEmpty {
+                    Text(choice.reason)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("conversation.choiceReason")
+                }
+
+                // Its own band for the same reason `interruptBanner` is: this answers a
+                // keystroke, and merging it with the send or interrupt slot would leave
+                // the reader unable to tell which of three operations the surviving
+                // sentence belongs to.
+                if let banner = viewModel.choiceBanner {
+                    Text(banner.text)
+                        .font(.caption)
+                        .foregroundStyle(Self.color(for: banner.tone))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("conversation.choiceBanner")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // ★`.accessibilityElement(children: .contain)` is not decoration -- without
+            // it this identifier propagates DOWN and overwrites every child's own.
+            // Measured 2026-08-08: the card rendered perfectly (screenshot) while
+            // `conversation.choiceButton.1` and `conversation.choiceReason` were both
+            // absent from the accessibility tree, because the container's identifier
+            // had replaced theirs. A UI test that only ever asked "does the card
+            // exist?" would have gone green on a screen whose every button was
+            // unaddressable -- which is also how a VoiceOver user would have met it.
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("conversation.choiceCard")
+        }
+    }
+
+    /// Options with no digit button drawn for them -- see `choiceCard`'s comment.
+    ///
+    /// Compares against the keys the server actually sent rather than against
+    /// `1...options.count`: the two differ exactly when the server withheld a key, and
+    /// that is the case this exists to surface.
+    private func unkeyedOptions(of choice: ChoiceView) -> [ChoiceOption] {
+        guard choice.canPress else { return choice.options }
+        let keyed = Set(choice.buttons.map(\.key))
+        return choice.options.filter { !keyed.contains(String($0.n)) }
     }
 
     /// Brief §3-b's 3-row table, the 2 non-`.normal` rows: a quiet 1-line notice at

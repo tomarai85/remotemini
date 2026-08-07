@@ -44,7 +44,7 @@ permission-notify-only / S-C 判断分割とその v1 適用範囲)は「決定�
 
 | # | 論点 | 選択肢 A | 選択肢 B | 推奨 |
 |---|---|---|---|---|
-| D-A | v1 の CHOICE 画面対応 | 一切対応しない(バッジのみ。割り込みだけ効く) | `POST …/choice` を v1 に含める(サーバ・PWA とも実装済み) | **A**。理由 §1-a。サーバ側の `choiceView`/`choiceResult` 配線は Sprint 0.5 で完了済みで D-A に依存しない(§0-4 訂正2)— この選択が決めるのは Swift 側が `POST …/choice` を呼ぶ画面を作るかどうかだけ |
+| D-A | v1 の CHOICE 画面対応 | 一切対応しない(バッジのみ。割り込みだけ効く) | `POST …/choice` を v1 に含める(サーバ・PWA とも実装済み) | **A**。理由 §1-a。サーバ側の `choiceView`/`choiceResult` 配線は Sprint 0.5 で完了済みで D-A に依存しない(§0-4 訂正2)— この選択が決めるのは Swift 側が `POST …/choice` を呼ぶ画面を作るかどうかだけ。**→ 2026-08-08、Sprint 7 で B へ改訂(理由は §1-a の訂正)** |
 | D-B | 端末側の一覧・履歴の永続化 | セッション内メモリのみ | ディスクへ書く | **A**。理由 §4-2 |
 | D-C | 一覧画面のライブ性 | `GET /api/sessions` の定期取得のみ | 各行にも poll を張る | **A**。理由 §3-4 |
 
@@ -317,6 +317,26 @@ D-A(CHOICE 画面全般)は D4 の「許可プロンプト」除外とは別物:
 実機到達させる制約下、5つ目の画面状態(選択肢のレンダリングと指紋照合)を増やすのは Sprint を圧迫する。
 サーバ側は既にあり、`choiceView`/`choiceResult` の配線も Sprint 0.5 で完了済み(§0-4)。v2 着手時の
 追加コストは **Swift 側の1画面のみ**(選択肢一覧+2ボタン+digest照合)。
+
+**訂正(2026-08-08、Sprint 7 出荷時)**: D-A を **B(v1 に含める)へ改訂**した。上の除外理由が
+実物の前で持たなかった:
+
+- 理由(3)「7日で4機能を実機到達させる制約下、5つ目の画面状態は Sprint を圧迫する」は**失効**。
+  4機能は Sprint 5 で実機到達済みで、これは Sprint 7。制約そのものが消えている。
+- 理由(2)「除外しても何もできなくなる訳ではない」は**測ると弱い**。机が選択面に居る間、
+  `inject.mjs` は composer からの送信を `sent:false` で止める(§3-3a)。つまり CHOICE の間だけ
+  **機能3「打ち込む」が構造的に 0 になる**。card は5つ目の機能ではなく、**選択面における
+  機能3の唯一の形**。「机が待っているのに電話からは何も返せない」を、v1 の4機能を守った
+  結果として残す事になる。
+- 決め手は owner 逐語(REQUIREMENTS): 「**返答待ちであれ作業中であれいつでも見て、干渉
+  できればいいんじゃないかな？**」。**返答待ち**が指しているのはまさに CHOICE で、
+  **干渉**はそれに答える事を含む。
+
+**D4 は動いていない**(恒久決定のまま)。`choice.mjs` の `classifyChoice` は**許可一覧**方式で、
+`benign` かつ matcher が在る面にしか鍵を渡さない。信頼/権限プロンプトは `buttons: []` で届くので、
+card を出荷しても**構造的に押せない**。UI 検査 `testAPermissionPromptShowsTheQuestionAndOffersNoKeys`
+が5つの鍵の不在を測り、負の対照 `testABenignMenuDrawsExactlyTheKeysTheServerAllowedNegativeControl`
+が「そもそも鍵を1つも描かない実装」では緑にならない事を担保する。
 
 ### 1-b. 4機能 → 画面への割付
 
@@ -676,9 +696,13 @@ Day 7 終了時点で v1 の4機能が実機で動作。残り(渡米まで2026-
 | 候補 | 出典・根拠 | v1 で含めない理由 | 着手コストの目安 |
 |---|---|---|---|
 | **アカウント表示・切替** | REQUIREMENTS §4-5(Tom逐語)/ §5-8 が合格条件に明記 | team-lead の v1 スコープ指示で明示除外。**REQUIREMENTS 側は必須要件として記録済みであり、静かに落とすと明記要件を無断で削る失敗になる — team-lead の再確認を推奨** | 低。`GET /api/account`/`POST /api/account/next` はサーバ実装済み(`server.mjs` の `/api/account` と `/api/account/next` の2ハンドラ)。UI側はラベル+ボタン1つ |
-| **CHOICE画面への回答** | D-A(本spec)。サーバ・PWAとも実装済み(2026-08-03/04出荷) | §1-a に理由詳記 | 低。サーバ側配線(`choiceView`/`choiceResult`)は Sprint 0.5 で完了済み(§0-4 訂正2、追加コスト無し)。残るのは Swift 側の選択肢一覧+2ボタン+digest照合の1画面のみ |
 | **push通知(入力待ちを電話へ通知)** | REQUIREMENTS §5-4 が合格条件に明記するが、wildcard profile はpush entitlementを運べない | 構造的制約。正規App ID+明示provisioning profile(Tom Apple IDログイン要)= 真のTomゲート | 高。entitlement取得自体がTomゲート。取得後もAPNs連携の実装が別途必要 |
 | **送信待ちキュー表示・取消** | `clearQueueResult` のサーバ配線は Sprint 0.5 で完了済み(§0-4)。`queueView`(C群)は v1 スコープ外のため Swift 未移植。`DELETE …/queue` はサーバ実装済み | v1の4機能に無い | 低。サーバ側追加コストは既にゼロ。残るのは C群1関数(`queueView`)の Swift 移植+キューUIの1画面 |
+
+**「CHOICE画面への回答」はこの表から外れた** —— 2026-08-08 の Sprint 7 で **v1 として出荷済み**
+(D-A を B へ改訂、理由は §1-a の訂正)。出荷したのは card(設問全文 + サーバが渡した鍵だけの
+ボタン + digest 照合 + 古くなった時の理由表示)であり、**D4(電話からの許可承認)は依然として
+対象外**(§1-a、恒久決定)。
 
 push通知が取れない間の緩和策として、フォアグラウンドで開いている間だけの軽い代替(List画面で
 `SENDABLE`+`activity:"unknown"` に切り替わった行へのハイライト)はv1範囲内で安価に足せるが、これは

@@ -28,14 +28,26 @@ struct HistoryFetchingFixture: HistoryFetching {
         case busy = "conversation-busy"
         /// The one classification that legitimately takes the composer away, and the
         /// only place `interruptAllowedOnChoiceScreen` is observable end-to-end.
+        ///
+        /// Sprint 7 re-pointed this at the **hard-stop** shape: `show: true` with the
+        /// menu text intact, `buttons: []`, and `view.mjs`'s own refusal in `reason`.
+        /// It previously sent a card with neither a digest nor buttons, which is a
+        /// state the server emits only for an unparseable menu -- so the fixture that
+        /// existed to prove 「自動化に安全確認を押させない」 was standing on the wrong
+        /// screen for it.
         case choice = "conversation-choice"
+        /// The other half, and it did not exist before Sprint 7: a benign menu the
+        /// server DID hand keys for. Two states rather than a flag on one, because the
+        /// pair is the assertion -- the two screens differ only in `buttons`, and any
+        /// test that cannot tell them apart is not measuring the allowlist.
+        case choiceKeys = "conversation-choice-keys"
     }
 
     let state: State
 
     func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
         switch state {
-        case .threeRoles, .degraded, .stalled, .busy, .choice:
+        case .threeRoles, .degraded, .stalled, .busy, .choice, .choiceKeys:
             return .success(Self.threeRolesResponse)
         }
     }
