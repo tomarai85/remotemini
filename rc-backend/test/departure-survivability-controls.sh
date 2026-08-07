@@ -38,6 +38,8 @@ tmux_job=0
 phone_job=0
 alive=1
 alive_total=22
+auth=yes
+auth_method=api_key
 http=401
 freeg=133
 ts_state=ok
@@ -114,6 +116,35 @@ probe "R phone job が走行中"   phone_job "phone_job=-" 2 "走っている最
 probe "S 相手が 0 件"            alive "alive=0"           1 "phone 窓が戻っていない"
 probe "T 鍵が読めず数えられない" alive "alive=nokey"       2 "判定を付けない"
 probe "U 面に届かず数えられない" alive "alive=unreachable" 2 "数えられなかった"
+
+# --- 鎖⑤ その相手が返事を返せるか -------------------------------------------
+# 鎖④ が緑でも此処が赤になり得る事が、この項目を足した理由そのもの。
+probe "AA 認証が切れている"   auth "auth=no"      1 "返事が返らない"
+probe "AB 対話 shell が固まる" auth "auth=timeout" 2 "25 秒で返らなかった"
+probe "AC zsh が無い"          auth "auth=nozsh"   2 "同じ文脈を再現できない"
+
+# AD: 方式で注記が変わる。api_key は予備が無い / oauth は failover が守る。
+#     どちらも緑だが**運用上の意味が逆**なので、緑の中で言い分けられているかを測る。
+probe "AD 方式が oauth"        auth_method "auth_method=oauth" 0 "2時間毎に予備へ回す"
+run "$GOOD" --days 30
+if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -q "守られていない"; then
+    ok "AE 方式が api_key -> 緑、ただし予備が無い事を名乗る"
+else ng "AE api_key の注記が出ていない(終了 $RC)"; fi
+
+# AF: auth のキーごと欠落 = 測れていない。緑にも赤にも丸めない。
+run "$(printf '%s\n' "$GOOD" | grep -v '^auth=')" --days 30
+if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -q "JSON を返さない"; then
+    ok "AF auth が欠落 -> 未測定"
+else ng "AF auth 欠落: 終了 $RC"; fi
+
+# AG: **鎖④が緑のまま鎖⑤で赤**。件数の緑を「返事が返る」と読ませない。
+#     これが DESIGN §6 の誤読の一段奥。件数の行が緑で出ている事も同時に確かめる。
+run "$(replace auth "auth=no")" --days 30
+if [ "$RC" -eq 1 ] \
+   && printf '%s\n' "$OUT" | grep -q "緑    tmux 経路 1 件" \
+   && printf '%s\n' "$OUT" | grep -q "返事が返らない"; then
+    ok "AG 件数は緑・返事は赤 -> 赤(見えて打てるが返事が来ない形を潰す)"
+else ng "AG 件数の緑と返事の赤が同時に出ていない(終了 $RC)"; fi
 
 # --- V/W: job のキーごと欠落 = launchctl に居ない ----------------------------
 # 「異常終了」と「そもそも登録されていない」は別の壊れ方。後者の方が渡米では致命的
