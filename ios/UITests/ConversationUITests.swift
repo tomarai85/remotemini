@@ -20,6 +20,20 @@ final class ConversationUITests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
 
+    /// 「画面に居るか」。`exists` では足りない -- `LazyVStack` は画面のすぐ外の行も
+    /// 作る事が在り、`ScrollView` の中身は画面外でも要素として存在し得る。だから
+    /// 位置を測る検査は必ず**窓との重なり**で判定する。
+    ///
+    /// `isHittable` を使わないのは、一番下の行が composer の帯に覆われる為 -- あれは
+    /// 「押せるか」であって「見えているか」ではない。
+    private func isOnScreen(_ app: XCUIApplication, _ text: String) -> Bool {
+        let element = app.staticTexts[text]
+        guard element.exists else { return false }
+        let frame = element.frame
+        guard !frame.isEmpty else { return false }
+        return app.windows.firstMatch.frame.intersects(frame)
+    }
+
     // MARK: - conversation-3roles: the ordinary transcript
 
     func testThreeRolesShowsAllThreeRolesAndTheLoadEarlierButton() {
@@ -172,4 +186,67 @@ final class ConversationUITests: XCTestCase {
             XCTAssertTrue(element(app, "conversation.interruptDisabledReason").exists)
         }
     }
+
+    // MARK: - conversation-long: どこへ寄せるか (Sprint 8)
+
+    /// 開いた時、一番下に居る事。
+    ///
+    /// この主張が Sprint 8 まで書けなかったのは、上の6状態が**どれも4行**しか
+    /// 返さないから -- 画面から溢れない会話では「一番下に居る」と「一番上に居る」が
+    /// 同じ画面になり、どんな実装でも緑になる。溢れる長さは主張の前提であって
+    /// 飾りではない。
+    func testOpeningALongConversationLandsAtTheNewestLine() {
+        let app = launch(fixture: "conversation-long")
+
+        // 錨: 履歴が着いた事。`行 090` は最後の行なので、これが出た時点で
+        // 「読み込めた」と「一番下に居る」が両方成り立っている。
+        XCTAssertTrue(
+            app.staticTexts["行 090"].waitForExistence(timeout: 10),
+            "錨: 90行の履歴が着いていない = 以下は何も測っていない"
+        )
+        XCTAssertTrue(isOnScreen(app, "行 090"), "開いた時は一番新しい行が見えていなければならない")
+
+        // 対照。これが偽なら「1画面に全部入っている」= 上の主張は位置を測っていない。
+        XCTAssertFalse(
+            isOnScreen(app, "行 031"),
+            "60行が1画面に収まっている = この fixture は位置の検査に使えない"
+        )
+    }
+
+    /// ★★**素朴な「件数が変わったら一番下へ」を殺す為だけに在る検査。**
+    ///
+    /// `loadEarlier()` は古い行を**先頭に**足す。件数で追従させる実装はここで画面を
+    /// 一番下へ引き戻し、押した行為そのものを画面から消す -- 動くし、落ちないし、
+    /// 単体テストも全部緑のまま、ただ機能だけが無くなる。
+    ///
+    /// 主張は対の後半が本体: `行 031` が見える事**だけ**なら、たまたま長い画面でも
+    /// 通り得る。`行 090` が**見えていない**事が、引き戻しが起きていない証拠。
+    func testLoadEarlierRevealsTheOlderLinesInsteadOfSnappingBackToTheNewest() {
+        let app = launch(fixture: "conversation-long")
+
+        let loadEarlier = element(app, "conversation.loadEarlier")
+        XCTAssertTrue(loadEarlier.waitForExistence(timeout: 10))
+        loadEarlier.tap()
+
+        // 錨: 2回目の応答は `truncated: false` なので、ボタンが消える事が
+        // 「古い行が本当に増えた」の観測になる。行の有無で錨を取ると、増えていない
+        // のに画面外で待ち続ける形になり得る。
+        let buttonGone = NSPredicate(format: "exists == false")
+        expectation(for: buttonGone, evaluatedWith: loadEarlier)
+        waitForExpectations(timeout: 10)
+
+        XCTAssertTrue(isOnScreen(app, "行 031"), "足す前に一番古かった行が見えていなければならない")
+        XCTAssertFalse(
+            isOnScreen(app, "行 090"),
+            "一番下へ引き戻されている = 件数で追従する実装。押した行為が画面から消えた"
+        )
+    }
+
+    // ★未測定(緑にも赤にも数えない): 「上へ遡って読んでいる最中に机が喋った時、
+    // 引き摺り下ろさない事」。`isPinnedToBottom` が守っている性質そのものだが、
+    // 現在の fixture では**読んでいる最中**という状態を決定的に作れない --
+    // `PollFetchingFixture` は `.long` でライブ行を出さず、出す状態(`.busy`)は
+    // 4行しか無いので溢れない。両方を満たす状態を作ると、今度は「行が届いた時刻」
+    // と「指がスクロールを終えた時刻」の競争になる。
+    // 決定的に測るには fixture 側に「合図を受けてから1行足す」口が要る。Sprint 9。
 }
