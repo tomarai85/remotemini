@@ -8,6 +8,10 @@
 #   KeepAlive / autorestart / sleep)は `tools/coldboot-chain.sh` が既に測っている。
 #   写しを作らず、**edith の上のそれを呼んで結果を引き取る**。
 #   (2026-08-07: 一度そこを手で作り直しかけた。同じ物を2つ持つと、片方だけ直る)
+#   ★委ねる以上、**どの版が測ったのか**を名乗る必要が在る。向こうの写しと手元の
+#     sha を突き合わせ、違えば未測定へ倒す(赤ではない —— edith が壊れている訳ではなく、
+#     「上の緑をこの repo のコードの緑として読めない」だけ)。deploy の半端な失敗が
+#     古い道具の緑を新しい保証に見せるのを止める。
 #
 # ここが足すのは、冷起動の鎖の外に在って**渡米すると触れなくなる** 6 つ:
 #   (1) tailnet の鍵の期限 … 切れると tailnet から落ち、復旧用の ssh も同じ経路なので同時に死ぬ
@@ -46,7 +50,7 @@ while [ $# -gt 0 ]; do
                 TRIP_DAYS="$2"; shift 2 ;;
         --host) [ $# -ge 2 ] || { echo "--host に値が無い" >&2; exit 2; }
                 HOST="$2"; shift 2 ;;
-        -h|--help) sed -n '2,33p' "$0"; exit 0 ;;   # 2..33 = 冒頭の説明。行を足したらここも直す
+        -h|--help) sed -n '2,37p' "$0"; exit 0 ;;   # 2..37 = 冒頭の説明。行を足したらここも直す
         *) echo "知らない引数: $1" >&2; exit 2 ;;
     esac
 done
@@ -78,9 +82,13 @@ RAW=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" '
         out=$(bash "$CB" 2>&1); rc=$?
         p cb_rc "$rc"
         printf "cb_out<<\n%s\ncb_out>>\n" "$out"
+        # ★どの版が測ったのかを名乗る。判定を向こうの道具に委ねている以上、
+        #   「緑だった」だけでは**どの道具の緑か**が言えない(写しが2つ問題)。
+        p cb_sha "$(shasum -a 256 "$CB" 2>/dev/null | awk "{print \$1}")"
     else
         p cb_rc missing
     fi
+    p pw_sha "$(shasum -a 256 "$HOME/rc-backend/tools/ensure-phone-window.sh" 2>/dev/null | awk "{print \$1}")"
 
     p job_rc  "$(launchctl list 2>/dev/null | awk "\$3 == \"com.edith.rc-backend\" { print \$2; exit }")"
     p job_pid "$(launchctl list 2>/dev/null | awk "\$3 == \"com.edith.rc-backend\" { print \$1; exit }")"
@@ -173,6 +181,21 @@ case "$cb" in
     missing) say_bad "edith に coldboot-chain.sh が無い —— deploy-to-edith.sh を先に回す" ;;
     *) say_unm "coldboot-chain の終了コードが読めない(${cb:-空})" ;;
 esac
+
+# 上の判定は**向こうの写し**が出した物。手元の版と違えば、緑をこの repo の
+# コードの緑として読めない。赤ではない(edith が壊れている訳ではない)ので未測定へ倒す。
+sha_line() {   # sha_line <表示名> <手元の path> <向こうの sha>
+    local mine
+    mine=$(shasum -a 256 "$2" 2>/dev/null | awk '{print $1}')
+    if [ -z "$mine" ]; then say_unm "$1 が手元に無く、版を突き合わせられない"
+    elif [ -z "$3" ]; then say_unm "$1 の版が edith 側で読めない"
+    elif [ "$mine" = "$3" ]; then say_note "$1 の版は手元と一致(${3:0:12})"
+    else say_unm "$1 が手元と違う版(手元 ${mine:0:12} / edith ${3:0:12})—— 上の緑をこの repo の緑として読めない。deploy-to-edith.sh を回して測り直す"
+    fi
+}
+HERE=$(cd "$(dirname "$0")" && pwd)
+[ "$cb" = "missing" ] || sha_line "coldboot-chain.sh"      "$HERE/coldboot-chain.sh"      "$(g cb_sha)"
+sha_line "ensure-phone-window.sh" "$HERE/ensure-phone-window.sh" "$(g pw_sha)"
 
 # --- 今この瞬間 上がっているか -----------------------------------------------
 echo

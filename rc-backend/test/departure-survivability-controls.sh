@@ -43,7 +43,16 @@ freeg=133
 ts_state=ok
 ts_total=6
 ts_expiring=0
-ts_min_days=-'
+ts_min_days=-
+cb_sha=__CB_SHA__
+pw_sha=__PW_SHA__'
+
+# 版の突き合わせは**手元の実ファイル**の sha と比べる。GOOD に手書きの定数を置くと
+# 道具を1文字直すたびに対照が赤くなる(嘘の赤 = 一番早く無視される種類の赤)。
+# なので GOOD の中の目印を、走る時に手元の実測値へ差し替える。
+sha_of() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
+GOOD=${GOOD//__CB_SHA__/$(sha_of "$HERE/../tools/coldboot-chain.sh")}
+GOOD=${GOOD//__PW_SHA__/$(sha_of "$HERE/../tools/ensure-phone-window.sh")}
 
 cat > "$T/bin/ssh" <<'EOS'
 #!/bin/bash
@@ -155,6 +164,27 @@ run "$GOOD" --days abc
 if [ "$RC" -eq 2 ]; then ok "N --days abc -> 終了 2"; else ng "N --days abc を受け入れた(終了 $RC)"; fi
 run "$GOOD" --days
 if [ "$RC" -eq 2 ]; then ok "N2 --days が空 -> 終了 2"; else ng "N2 空の --days を受け入れた(終了 $RC)"; fi
+
+# --- Z: 向こうの写しが別の版なら、緑を此処の緑として読ませない ---------------
+# 判定を edith 上の coldboot-chain.sh に委ねているので、「緑だった」だけでは
+# **どの道具の緑か**が言えない。deploy が半端に失敗した時、古い道具の緑が
+# 新しい保証に見える。赤ではなく未測定へ倒すのが正しい向き
+# (edith が壊れている訳ではない。此処のコードの緑として読めないだけ)。
+probe "Z1 冷起動の道具が別の版" cb_sha "cb_sha=0000000000000000000000000000000000000000000000000000000000000000" 2 "手元と違う版"
+probe "Z2 窓の道具が別の版"     pw_sha "pw_sha=1111111111111111111111111111111111111111111111111111111111111111" 2 "手元と違う版"
+
+# Z3: 版が読めない時も未測定。「読めない」を「一致」と読むと守りが消える。
+run "$(printf '%s\n' "$GOOD" | grep -v '^pw_sha=')" --days 30
+if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -q "版が edith 側で読めない"; then
+    ok "Z3 版が読めない -> 未測定"
+else ng "Z3 版が読めない: 終了 $RC"; fi
+
+# Z4: 一致している時は判定を動かさない(P が緑である事が既に効いているが、
+#     突き合わせが**赤へ倒れる方にだけ**効く事を名指しで測る)。
+run "$GOOD" --days 30
+if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -q "版は手元と一致"; then
+    ok "Z4 版が一致 -> 緑のまま、一致した事を名乗る"
+else ng "Z4 版が一致しているのに 終了 $RC"; fi
 
 # --- Y: 鎖④ の問い合わせに件数の上限を付け直させない -------------------------
 # 此処だけ本文の走査(偽 ssh は URL を見られない)。弱い形だと承知の上で置く理由:
