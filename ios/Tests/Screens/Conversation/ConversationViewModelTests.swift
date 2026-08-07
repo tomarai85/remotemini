@@ -92,6 +92,44 @@ final class ConversationViewModelTests: XCTestCase {
         }
     }
 
+    /// Sprint 7's choice-path stub. Unlike the interrupt stub, the CALL ARGUMENTS are
+    /// the whole point here: `key` and `digest` are what carry the server's guarantee
+    /// 見た物と押す物が同じ across the wire, and a phone that composed either of them
+    /// itself would still produce a passing call count.
+    private final class RecordingChoiceClient: ChoiceSending {
+        var attemptQueue: [ChoiceAttempt] = []
+        private(set) var calls: [(key: String, digest: String)] = []
+        var deliveryDelay: Duration = .zero
+
+        var callCount: Int { calls.count }
+
+        func choose(
+            baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String
+        ) async -> ChoiceAttempt {
+            calls.append((key: key, digest: digest))
+            if deliveryDelay > .zero {
+                try? await Task.sleep(for: deliveryDelay)
+            }
+            guard !attemptQueue.isEmpty else {
+                return ChoiceAttempt(outcome: .unreachable, serverDigest: nil)
+            }
+            return attemptQueue.removeFirst()
+        }
+    }
+
+    /// The default for every test that is not about choosing. ★This one carries more
+    /// weight than the other two `Unused…` stubs: several tests below assert that a
+    /// press was REFUSED, and the only difference between "refused" and "silently
+    /// succeeded" is whether this failure fires.
+    private struct UnusedChoiceClient: ChoiceSending {
+        func choose(
+            baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String
+        ) async -> ChoiceAttempt {
+            XCTFail("this test's view model was not expected to press anything (key=\(key))")
+            return ChoiceAttempt(outcome: .unreachable, serverDigest: nil)
+        }
+    }
+
     /// A `PollFetching` that issues no request and never returns a step -- it suspends
     /// until the driving `Task` is cancelled, which is precisely what a long-poll that
     /// is still waiting looks like from `PollLoop`'s side.
@@ -126,6 +164,7 @@ final class ConversationViewModelTests: XCTestCase {
         client: HistoryFetching,
         sendClient: MessageSending = UnusedSendClient(),
         interruptClient: Interrupting = UnusedInterruptClient(),
+        choiceClient: ChoiceSending = UnusedChoiceClient(),
         pollClient: PollFetching = SilentPollFetching(),
         initialLimit: Int = ConversationViewModel.initialLimit
     ) -> ConversationViewModel {
@@ -135,6 +174,7 @@ final class ConversationViewModelTests: XCTestCase {
             pollClient: pollClient,
             sendClient: sendClient,
             interruptClient: interruptClient,
+            choiceClient: choiceClient,
             baseURL: URL(string: "https://unit-test.invalid")!,
             apiKey: "unit-test-fixture-key-not-real",
             sessionID: "sess-0001",
@@ -712,18 +752,58 @@ final class ConversationViewModelTests: XCTestCase {
     private func loadedViewModel(
         screen screenValue: String?,
         sendClient: MessageSending = UnusedSendClient(),
-        interruptClient: Interrupting = UnusedInterruptClient()
+        interruptClient: Interrupting = UnusedInterruptClient(),
+        choiceClient: ChoiceSending = UnusedChoiceClient(),
+        choiceJSON: String? = nil
     ) async throws -> ConversationViewModel {
         let client = RecordingClient()
         client.resultQueue = [.success(HistoryResponse(history: [], truncated: false))]
-        let vm = makeViewModel(client: client, sendClient: sendClient, interruptClient: interruptClient)
+        let vm = makeViewModel(
+            client: client,
+            sendClient: sendClient,
+            interruptClient: interruptClient,
+            choiceClient: choiceClient
+        )
         await vm.load()
         if let screenValue {
+            // `choiceJSON` rides in on the same step rather than a second one on
+            // purpose: the server emits `screen` and `display.choice` from one capture,
+            // and a fixture that delivered them separately would let a bug through in
+            // which the two disagree for one poll.
+            let display = choiceJSON.map { ", \"display\": { \"choice\": \($0) }" } ?? ""
             vm.applyPollStep(try readableStep("""
-            { "items": [], "screen": { "route": "tmux", "pane": "p", "screen": "\(screenValue)", "work": "quiet", "windowMs": 0 }, "cursor": "t.a.1.0", "more": false }
+            { "items": [], "screen": { "route": "tmux", "pane": "p", "screen": "\(screenValue)", "work": "quiet", "windowMs": 0 }\(display), "cursor": "t.a.1.0", "more": false }
             """))
         }
         return vm
+    }
+
+    /// A benign 2-option menu with both digit keys offered -- the shape `choice.mjs`
+    /// emits when `classifyChoice` matched its allowlist.
+    private func benignChoiceJSON(digest: String = "d-aaa") -> String {
+        """
+        {
+          "show": true, "reason": "", "digest": "\(digest)",
+          "head": ["Do you want to proceed?"],
+          "options": [{ "n": 1, "label": "Yes" }, { "n": 2, "label": "No" }],
+          "buttons": [{ "key": "1", "label": "1. Yes" }, { "key": "2", "label": "2. No" }]
+        }
+        """
+    }
+
+    /// A permission / trust prompt: `show` is true and the menu text is present, but
+    /// `buttons` is empty and `reason` carries `view.mjs`'s `CHOICE_BLOCKED["hard-stop"]`.
+    /// This is the shape 「自動化に安全確認を押させない」 reduces to on the wire.
+    private func hardStopChoiceJSON(digest: String = "d-stop") -> String {
+        """
+        {
+          "show": true, "digest": "\(digest)",
+          "reason": "これは許可・信頼の確認画面です。電話からは操作を出しません(自動化に安全確認を押させない、という決め事)。机で確認してください。",
+          "head": ["Claude requests permission to run:"],
+          "options": [{ "n": 1, "label": "Yes" }, { "n": 2, "label": "Yes, and don't ask again" }, { "n": 3, "label": "No" }],
+          "buttons": []
+        }
+        """
     }
 
     // MARK: §0-c ⑤ -- the enablement table, one assertion per row
@@ -764,15 +844,59 @@ final class ConversationViewModelTests: XCTestCase {
     /// (the sentence matches the switch) instead of one of the two strings. See
     /// `testTheChoiceSentenceAndTheChoiceButtonMoveTogetherNegativeControl` for the
     /// control that makes this relation load-bearing.
+    /// The no-card fallback: the screen is a menu but no `display.choice` arrived. This
+    /// is Sprint 6's sentence, kept verbatim including its dependence on
+    /// `interruptAllowedOnChoiceScreen`, because with no card to point at the interrupt
+    /// button is the only other thing the user could be told about.
     func testComposerIsDisabledOnCHOICEWithTheSpecsFixedWording() async throws {
         let vm = try await loadedViewModel(screen: "CHOICE")
 
         XCTAssertFalse(vm.composerEnabled)
+        XCTAssertNil(vm.choiceView, "precondition: this row is the *no card* case")
         XCTAssertEqual(
             vm.composerDisabledReason,
             ConversationViewModel.interruptAllowedOnChoiceScreen
-                ? "v1 では電話から選べません。机で確認するか、割り込みで中断してください"
-                : "v1 では電話から選べません。机で確認してください"
+                ? "選択待ちです。文字は送れません。机で確認するか、割り込みで中断してください"
+                : "選択待ちです。文字は送れません。机で確認してください"
+        )
+    }
+
+    /// ★★The control on the sentence that Sprint 6 shipped and Sprint 7 had to change.
+    ///
+    /// 「v1 では電話から選べません」 was true when the phone could not select. The moment
+    /// a pressable card ships, that exact sentence sits directly above a row of buttons
+    /// that select -- the app calling itself a liar in two adjacent views. What is
+    /// asserted is therefore the RELATION rather than a literal: whenever the card can
+    /// be pressed, the sentence must not claim otherwise.
+    func testTheComposerSentenceNeverClaimsSelectionIsImpossibleWhileTheCardIsPressable() async throws {
+        let vm = try await loadedViewModel(screen: "CHOICE", choiceJSON: benignChoiceJSON())
+
+        XCTAssertTrue(vm.choiceEnabled, "precondition: the card is pressable")
+        XCTAssertFalse(vm.composerEnabled, "the composer is still disabled -- only the card acts")
+        let sentence = try XCTUnwrap(vm.composerDisabledReason)
+        XCTAssertFalse(
+            sentence.contains("選べません"),
+            "the sentence must not deny a capability the card right below it provides"
+        )
+        XCTAssertTrue(sentence.contains("下の選択肢"), "it must point at the card instead")
+
+        // Not vacuous: Sprint 6's sentence really does contain the substring this
+        // asserts is absent, so a revert to it fails here.
+        XCTAssertTrue("v1 では電話から選べません。机で確認してください".contains("選べません"))
+    }
+
+    /// The hard-stop row: same screen classification, same `show: true`, but the server
+    /// sent no keys. The sentence must point at the card (which carries the server's own
+    /// refusal) rather than paraphrase it up here where it could drift.
+    func testTheComposerSentencePointsAtTheCardWhenTheServerOfferedNoKeys() async throws {
+        let vm = try await loadedViewModel(screen: "CHOICE", choiceJSON: hardStopChoiceJSON())
+
+        XCTAssertFalse(vm.choiceEnabled)
+        let sentence = try XCTUnwrap(vm.composerDisabledReason)
+        XCTAssertTrue(sentence.contains("理由は下に出しています"))
+        XCTAssertFalse(
+            sentence.contains(" 机で確認してください"),
+            "the desk instruction belongs to the server's `reason`, which the card renders verbatim"
         )
     }
 
@@ -1208,9 +1332,406 @@ final class ConversationViewModelTests: XCTestCase {
         // …and the relation is not vacuous: the two candidate sentences really do
         // differ on that substring, so the assertion above can fail.
         XCTAssertNotEqual(
-            "v1 では電話から選べません。机で確認するか、割り込みで中断してください".contains("割り込み"),
-            "v1 では電話から選べません。机で確認してください".contains("割り込み")
+            "選択待ちです。文字は送れません。机で確認するか、割り込みで中断してください".contains("割り込み"),
+            "選択待ちです。文字は送れません。机で確認してください".contains("割り込み")
         )
+    }
+
+    // MARK: - Sprint 7: answering the menu from the phone
+
+    /// ★★The defect a screenshot caught and 397 passing assertions did not.
+    ///
+    /// With a card offering `escape`, the screen showed 「v1 は電話から中断しません」 and
+    /// a 「中止(Escape)」 button about 40 points apart. Each half was individually
+    /// correct -- the interrupt path really is blocked, and that Escape really is
+    /// allowlisted -- and every test passed, because each rule was checked against its
+    /// own sentence and nothing checked the PAIR. So the pair is what is asserted here:
+    /// while a stop key is on offer, no sentence on screen may say stopping is
+    /// impossible.
+    func testNoSentenceDeniesStoppingWhileTheCardOffersAStopKey() async throws {
+        let withEscape = """
+        {
+          "show": true, "reason": "", "digest": "d-esc",
+          "head": ["この変更を適用しますか？"],
+          "options": [{ "n": 1, "label": "はい" }],
+          "buttons": [{ "key": "1", "label": "1. はい" }, { "key": "escape", "label": "中止(Escape)" }]
+        }
+        """
+        let vm = try await loadedViewModel(screen: "CHOICE", choiceJSON: withEscape)
+
+        XCTAssertFalse(vm.interruptEnabled, "the interrupt PATH stays blocked -- that part is unchanged")
+        let sentence = try XCTUnwrap(vm.interruptDisabledReason)
+        XCTAssertFalse(
+            sentence.contains("中断しません。"),
+            "a flat 「中断しません」 above a 中止 button makes the app contradict itself"
+        )
+        XCTAssertTrue(sentence.contains("下の選択肢"), "it must send the user to the key that does work")
+
+        // Not vacuous: the sentence shown when no stop key is on offer really does make
+        // the flat claim, so this assertion can fail.
+        let noEscape = try await loadedViewModel(screen: "CHOICE", choiceJSON: hardStopChoiceJSON())
+        XCTAssertEqual(
+            noEscape.interruptDisabledReason,
+            "確認待ちの画面では、v1 は電話から中断しません。机で確認してください"
+        )
+    }
+
+    /// ★★★**The safety control of this whole sprint.** A permission or trust prompt
+    /// reaches the phone as a perfectly ordinary `CHOICE` with `show: true` and three
+    /// numbered options -- it looks exactly like the benign menu two tests above. The
+    /// only difference is that `buttons` is empty, because `classifyChoice` did not
+    /// match it against the allowlist.
+    ///
+    /// So this asserts the property 「自動化に安全確認を押させない」 reduces to on this
+    /// side of the wire: no key exists to press, and the attempt is refused even when
+    /// something calls `choose` directly with a key it read off the options list. The
+    /// `UnusedChoiceClient` default is what makes the second half real -- if the refusal
+    /// were removed, the stub fires and this fails.
+    func testAHardStopScreenOffersNoKeysAndCannotBePressedEvenByADirectCall() async throws {
+        let vm = try await loadedViewModel(screen: "CHOICE", choiceJSON: hardStopChoiceJSON())
+
+        let card = try XCTUnwrap(vm.choiceView)
+        XCTAssertTrue(card.show, "the menu is still SHOWN -- hiding it would hide the desk's question")
+        XCTAssertEqual(card.options.count, 3, "…including every option, so the user can read what is being asked")
+        XCTAssertTrue(card.buttons.isEmpty)
+        XCTAssertFalse(card.canPress)
+        XCTAssertFalse(vm.choiceEnabled)
+        XCTAssertTrue(card.reason.contains("許可・信頼"), "the server's own words, rendered verbatim")
+
+        // The direct call: a key the user can plainly see in `options`, pressed anyway.
+        await vm.choose(key: "1")
+        XCTAssertNil(vm.choiceBanner, "nothing was attempted, so there is nothing to report")
+    }
+
+    /// The happy path, and what it checks is not "a request went out" but **which two
+    /// values went out**. Both must be echoes of what the server handed the phone: a
+    /// `key` from `buttons`, and the `digest` that arrived on the same card. A phone
+    /// that derived either would still produce a request, and would still pass a
+    /// call-count assertion.
+    func testChoosingSendsBackExactlyTheKeyAndFingerprintTheServerHandedUs() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [
+            ChoiceAttempt(
+                outcome: .display(ResultDisplay(kind: "ok", text: "送りました", keepText: nil)),
+                serverDigest: nil
+            )
+        ]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON(digest: "d-aaa")
+        )
+
+        await vm.choose(key: "2")
+
+        XCTAssertEqual(choiceClient.callCount, 1)
+        XCTAssertEqual(choiceClient.calls.first?.key, "2")
+        XCTAssertEqual(choiceClient.calls.first?.digest, "d-aaa")
+        XCTAssertEqual(vm.choiceBanner?.text, "送りました")
+        XCTAssertEqual(vm.choiceBanner?.fromServer, true, "the server's sentence, not ours")
+        XCTAssertNil(vm.staleChoiceDigest, "a 200 that named no fingerprint says nothing about staleness")
+        XCTAssertFalse(vm.isChoosing)
+    }
+
+    /// A key that is not in `buttons` is refused before any request. Unreachable through
+    /// the UI today -- every button is drawn from `buttons` -- which is exactly why it
+    /// is asserted: the day a second caller appears, the failure this prevents is an
+    /// unoffered keystroke reaching a prompt the server declined to expose.
+    func testAKeyTheServerDidNotOfferIsNeverSent() async throws {
+        // `UnusedChoiceClient` (the default) IS the assertion here.
+        let vm = try await loadedViewModel(screen: "CHOICE", choiceJSON: benignChoiceJSON())
+
+        await vm.choose(key: "3")
+        await vm.choose(key: "escape")
+
+        XCTAssertNil(vm.choiceBanner)
+    }
+
+    /// ★A 409 whose body names a DIFFERENT fingerprint means the desk moved between the
+    /// draw and the tap. Two things must follow, and the second is the one worth having
+    /// a test for: the card goes dead, **and the phone does not press again**.
+    ///
+    /// The server attaches the live fingerprint to that refusal precisely so a client
+    /// could retry without re-capturing the screen -- so the obvious use of it is the
+    /// one thing forbidden. Re-sending would mean answering a menu Tom has never seen.
+    func testAMovedFingerprintKillsTheCardAndIsNeverAutoRetried() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [
+            ChoiceAttempt(
+                outcome: .display(ResultDisplay(kind: "refused", text: "画面が変わりました", keepText: nil)),
+                serverDigest: "d-bbb"
+            )
+        ]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON(digest: "d-aaa")
+        )
+
+        await vm.choose(key: "1")
+
+        XCTAssertEqual(choiceClient.callCount, 1, "★no auto-retry: exactly one request left the phone")
+        XCTAssertEqual(vm.staleChoiceDigest, "d-aaa")
+        XCTAssertFalse(vm.choiceEnabled, "the card the user is looking at is the stale one")
+        XCTAssertEqual(vm.staleChoiceReason, "机の画面が変わりました。新しい選択肢が届くまで押せません")
+        XCTAssertEqual(vm.choiceBanner?.text, "画面が変わりました")
+
+        // And it stays dead to a second deliberate tap, rather than going out again
+        // against a fingerprint we already know is gone.
+        await vm.choose(key: "1")
+        XCTAssertEqual(choiceClient.callCount, 1)
+    }
+
+    /// The recovery half of the test above: staleness expires when the poll delivers a
+    /// card. Here the fingerprint also differs, so the banner is dropped alongside it --
+    /// two effects on one signal, which the next two tests pull apart, because they
+    /// answer different questions and expire on different evidence.
+    func testANewFingerprintFromThePollRevivesTheCardAndDropsTheOldBanner() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [
+            ChoiceAttempt(
+                outcome: .display(ResultDisplay(kind: "refused", text: "画面が変わりました", keepText: nil)),
+                serverDigest: "d-bbb"
+            )
+        ]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON(digest: "d-aaa")
+        )
+        await vm.choose(key: "1")
+        XCTAssertFalse(vm.choiceEnabled)
+
+        vm.applyPollStep(try readableStep("""
+        { "items": [], "screen": { "route": "tmux", "pane": "p", "screen": "CHOICE", "work": "quiet", "windowMs": 0 },
+          "display": { "choice": \(benignChoiceJSON(digest: "d-bbb")) }, "cursor": "t.a.2.0", "more": false }
+        """))
+
+        XCTAssertTrue(vm.choiceEnabled, "a different fingerprint is a different card")
+        XCTAssertNil(vm.staleChoiceReason)
+        XCTAssertNil(
+            vm.choiceBanner,
+            "★the banner answered a keystroke aimed at d-aaa; leaving it under d-bbb would attribute an old answer to a new question"
+        )
+    }
+
+    /// A card that arrives again UNCHANGED must keep its banner. This is the negative
+    /// control on the clearing rule above -- an implementation that cleared on every
+    /// poll would pass that test and wipe the user's answer within one poll interval,
+    /// which on this app is under a second.
+    func testAnUnchangedFingerprintKeepsTheBannerNegativeControl() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [
+            ChoiceAttempt(
+                outcome: .display(ResultDisplay(kind: "ok", text: "送りました", keepText: nil)),
+                serverDigest: nil
+            )
+        ]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON(digest: "d-aaa")
+        )
+        await vm.choose(key: "1")
+        XCTAssertEqual(vm.choiceBanner?.text, "送りました")
+
+        vm.applyPollStep(try readableStep("""
+        { "items": [], "screen": { "route": "tmux", "pane": "p", "screen": "CHOICE", "work": "quiet", "windowMs": 0 },
+          "display": { "choice": \(benignChoiceJSON(digest: "d-aaa")) }, "cursor": "t.a.2.0", "more": false }
+        """))
+
+        XCTAssertEqual(vm.choiceBanner?.text, "送りました", "same card, same answer -- do not wipe it")
+    }
+
+    /// ★★**The A→B→A deadlock** (Codex, 2026-08-08, question (b)).
+    ///
+    /// The desk leaves menu A and comes back to a byte-identical A between two polls. The
+    /// phone never observes B, so the fingerprint that arrives is the very one it marked
+    /// stale. Under the original rule -- expire only on a CHANGED fingerprint -- the card
+    /// stayed dead permanently, under a sentence (「机の画面が変わりました」) that had become
+    /// false, and the only escape was the desk drawing some other menu entirely.
+    ///
+    /// It is safe to revive because of what the 409 actually said: `digest-mismatch` is
+    /// worded 「何も送っていません」, so menu A is genuinely unanswered when it returns. And
+    /// the case this does NOT cover -- a menu that really was answered -- is not this
+    /// flag's job: `inject.mjs` refuses a second keystroke to a spent fingerprint and the
+    /// phone renders that refusal. The flag was only ever "do not press what is not on
+    /// screen"; the moment a payload says what IS on screen, it has nothing left to say.
+    func testAnIdenticalMenuComingBackRevivesTheCardTheABADeadlock() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [
+            ChoiceAttempt(
+                outcome: .display(ResultDisplay(kind: "refused", text: "画面が変わりました", keepText: nil)),
+                serverDigest: "d-bbb"
+            )
+        ]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON(digest: "d-aaa")
+        )
+        await vm.choose(key: "1")
+
+        // 対照: 生き返る前に本当に死んでいた事。これが無いと以下は「元から押せた」で緑になる。
+        XCTAssertFalse(vm.choiceEnabled, "対照: the card must be dead here, or the revival below proves nothing")
+        XCTAssertEqual(vm.staleChoiceDigest, "d-aaa")
+
+        // The desk went A -> B -> A. `server.mjs` compares its screen revision to the
+        // phone's cursor, not to the phone's fingerprint, so what arrives is A again.
+        vm.applyPollStep(try readableStep("""
+        { "items": [], "screen": { "route": "tmux", "pane": "p", "screen": "CHOICE", "work": "quiet", "windowMs": 0 },
+          "display": { "choice": \(benignChoiceJSON(digest: "d-aaa")) }, "cursor": "t.a.2.0", "more": false }
+        """))
+
+        XCTAssertTrue(vm.choiceEnabled, "★an arriving payload is a fresh observation, identical fingerprint or not")
+        XCTAssertNil(vm.staleChoiceDigest)
+        XCTAssertNil(vm.staleChoiceReason, "and the sentence that had become false is gone with it")
+        XCTAssertEqual(
+            vm.choiceBanner?.text, "画面が変わりました",
+            "the banner is NOT cleared here: same fingerprint = same question, so the answer still belongs to it"
+        )
+
+        // Alive means alive: the button goes out again, carrying the fingerprint it was
+        // drawn beside. (A revival that left the card pressable-looking but inert would
+        // satisfy every assertion above.)
+        await vm.choose(key: "2")
+        XCTAssertEqual(choiceClient.callCount, 2)
+        XCTAssertEqual(choiceClient.calls.last?.key, "2")
+        XCTAssertEqual(choiceClient.calls.last?.digest, "d-aaa")
+    }
+
+    /// ★**The second terminator** (Codex, 2026-08-08, question (a)).
+    ///
+    /// On the healthy protocol `show: false` always arrives, because `server.mjs` emits
+    /// `screen` and `display.choice` under one `screenChanged` condition. This test asserts
+    /// the phone does not DEPEND on that: a screen that has left `CHOICE` kills the card by
+    /// itself, even when no `display` key comes with it. Menu buttons floating over a desk
+    /// that moved on hours ago is the outage failure it removes.
+    func testACardIsNotDrawnOverAScreenThatHasLeftTheMenu() async throws {
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: UnusedChoiceClient(), choiceJSON: benignChoiceJSON(digest: "d-aaa")
+        )
+        XCTAssertNotNil(vm.visibleChoice, "対照: the card is on screen before the poll below")
+
+        // The fragile shape: the classification moved, `display` never came.
+        vm.applyPollStep(try readableStep("""
+        { "items": [], "screen": { "route": "tmux", "pane": "p", "screen": "BUSY", "work": "observed", "windowMs": 0 },
+          "cursor": "t.a.2.0", "more": false }
+        """))
+
+        XCTAssertNil(vm.visibleChoice, "★the desk is not on a menu; a menu card would be a lie")
+        XCTAssertFalse(vm.choiceEnabled)
+        XCTAssertNil(vm.staleChoiceReason, "no card, so no sentence about a card")
+        // And it is not merely hidden: `UnusedChoiceClient`'s failure IS the assertion that
+        // nothing goes out, since `choiceView` still holds a card with a live key.
+        await vm.choose(key: "1")
+    }
+
+    /// The negative control for the gate above. Same held-over shape -- a poll with no
+    /// `display` key at all -- but the screen is STILL `CHOICE`. The card must survive:
+    /// `null`/absent means 据え置き (§2-c), and a gate that fired on "a poll arrived"
+    /// rather than on "the classification contradicts the card" would erase the desk's
+    /// question roughly once a second while Tom is reading it.
+    func testAHeldOverPollDoesNotEraseTheCardWhileTheDeskIsStillOnTheMenuNegativeControl() async throws {
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: UnusedChoiceClient(), choiceJSON: benignChoiceJSON(digest: "d-aaa")
+        )
+
+        vm.applyPollStep(try readableStep("""
+        { "items": [], "screen": { "route": "tmux", "pane": "p", "screen": "CHOICE", "work": "quiet", "windowMs": 0 },
+          "cursor": "t.a.2.0", "more": false }
+        """))
+
+        XCTAssertEqual(vm.visibleChoice?.digest, "d-aaa", "held over, not cleared")
+        XCTAssertTrue(vm.choiceEnabled)
+    }
+
+    /// A lost response must NOT mark the card stale: we learned nothing about the desk,
+    /// and marking it would strand the user with a dead card over a live menu until the
+    /// next poll happens to change the fingerprint. Pressing again is safe by
+    /// construction -- the second request carries the same fingerprint, which
+    /// `inject.mjs` refuses as a repeat -- so the card stays live.
+    func testAnUnreachableAttemptLeavesTheCardLiveAndClaimsNeitherOutcome() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [ChoiceAttempt(outcome: .unreachable, serverDigest: nil)]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON()
+        )
+
+        await vm.choose(key: "1")
+
+        XCTAssertNil(vm.staleChoiceDigest)
+        XCTAssertTrue(vm.choiceEnabled, "still pressable -- a repeat is refused server-side, a dead card is not")
+        let text = try XCTUnwrap(vm.choiceBanner?.text)
+        XCTAssertTrue(text.contains("確認できませんでした"))
+        XCTAssertEqual(vm.choiceBanner?.fromServer, false)
+    }
+
+    /// 401 goes to the recovery callback, not to a banner: the phone's whole session is
+    /// wrong, and reporting that as a failed keystroke would hide it.
+    func testAnUnauthorizedChoiceGoesToRecoveryNotToABanner() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [ChoiceAttempt(outcome: .unauthorized, serverDigest: nil)]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON()
+        )
+
+        await vm.choose(key: "1")
+
+        XCTAssertEqual(unauthorizedCallCount, 1)
+        XCTAssertNil(vm.choiceBanner)
+    }
+
+    /// A malformed response becomes a banner over an intact screen -- same call and same
+    /// reasoning as the send and interrupt paths. The conversation is loaded and the
+    /// keystroke may well have landed, so tearing the screen down would be a stronger
+    /// claim than the evidence supports.
+    func testAContractViolationOnChoiceBecomesABannerAndIsRecorded() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [
+            ChoiceAttempt(
+                outcome: .contractViolation(ResponseContractViolation(status: 500, code: nil)),
+                serverDigest: nil
+            )
+        ]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON()
+        )
+
+        await vm.choose(key: "1")
+
+        XCTAssertEqual(vm.phase, .loaded, "the screen stays up")
+        XCTAssertEqual(vm.choiceBanner?.fromServer, false)
+        XCTAssertNotNil(vm.choiceBanner?.text)
+    }
+
+    /// A cancelled press writes nothing at all -- no banner, no staleness. Cancellation
+    /// is the app's own doing (a screen teardown), and inventing a sentence for it would
+    /// put an error in front of a user who did nothing wrong.
+    func testACancelledChoiceWritesNothing() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [ChoiceAttempt(outcome: .cancelled, serverDigest: nil)]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON()
+        )
+
+        await vm.choose(key: "1")
+
+        XCTAssertNil(vm.choiceBanner)
+        XCTAssertNil(vm.staleChoiceDigest)
+        XCTAssertFalse(vm.isChoosing, "the in-flight flag must clear even on the path that reports nothing")
+    }
+
+    /// The three bands stay three bands. These are the operations most likely to be
+    /// fired seconds apart, and one shared slot would leave the surviving sentence
+    /// unattributable to any of them.
+    func testTheChoiceBannerNeverLandsInTheSendOrInterruptBand() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [
+            ChoiceAttempt(
+                outcome: .display(ResultDisplay(kind: "ok", text: "送りました", keepText: nil)),
+                serverDigest: nil
+            )
+        ]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON()
+        )
+
+        await vm.choose(key: "1")
+
+        XCTAssertEqual(vm.choiceBanner?.text, "送りました")
+        XCTAssertNil(vm.sendBanner)
+        XCTAssertNil(vm.interruptBanner)
     }
 
     /// The two enablement rules must not be one rule. If `interruptEnabled` were

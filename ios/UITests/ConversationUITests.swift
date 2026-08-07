@@ -78,8 +78,9 @@ final class ConversationUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["ライブ(確認待ち)の行が届いた"].waitForExistence(timeout: 10))
         // `display.choice` が適用された事の観測 -- 画面の分類とは別経路(§2-c は
         // 両者を同じ1箇所で扱うと決めているので、片方だけ着く事は在り得ない筈だが、
-        // 「筈」を測る為に置く)。
-        XCTAssertTrue(element(app, "conversation.choiceBadge").exists)
+        // 「筈」を測る為に置く)。Sprint 6 の `choiceBadge` は Sprint 7 で card に
+        // 統合済み(同じ refusal を2箇所に出すと、後で片方だけ動く)。
+        XCTAssertTrue(element(app, "conversation.choiceCard").exists)
 
         let composer = element(app, "conversation.composerField")
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
@@ -87,6 +88,64 @@ final class ConversationUITests: XCTestCase {
         // The field stays on screen (deliberate: a composer that vanishes explains
         // nothing) and the reason is shown next to it.
         XCTAssertTrue(element(app, "conversation.composerDisabledReason").exists)
+    }
+
+    /// ★★**The end-to-end form of 「自動化に安全確認を押させない」.**
+    ///
+    /// `conversation-choice` is a permission prompt: `show: true`, three numbered
+    /// options, and `buttons: []` because `classifyChoice` did not match it. What must
+    /// be true on screen is a pair -- the question is fully visible (hiding it would
+    /// hide the desk's own words from the person being asked to go check them), and
+    /// **not one key exists to press**.
+    func testAPermissionPromptShowsTheQuestionAndOffersNoKeys() {
+        let app = launch(fixture: "conversation-choice")
+
+        XCTAssertTrue(element(app, "conversation.choiceCard").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Claude requests permission to run:"].exists, "設問は隠さない")
+        XCTAssertTrue(
+            element(app, "conversation.choiceReason").exists,
+            "server の refusal をそのまま出す(文言は view.mjs の CHOICE_BLOCKED)"
+        )
+
+        for key in ["1", "2", "3", "escape", "enter"] {
+            XCTAssertFalse(
+                element(app, "conversation.choiceButton.\(key)").exists,
+                "許可画面に押せる鍵が1つでも出たら、それが D4 の逸脱そのもの(key=\(key))"
+            )
+        }
+    }
+
+    /// The other half of the pair. Same classification, same fixture machinery, one
+    /// difference: the server handed over keys. If this screen ALSO had no buttons, the
+    /// test above would pass for the wrong reason -- "the phone never draws buttons" is
+    /// not the same property as "the phone draws exactly the buttons the server allowed".
+    func testABenignMenuDrawsExactlyTheKeysTheServerAllowedNegativeControl() {
+        let app = launch(fixture: "conversation-choice-keys")
+
+        XCTAssertTrue(element(app, "conversation.choiceCard").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["この変更を適用しますか？"].exists)
+
+        for key in ["1", "2", "escape"] {
+            let button = element(app, "conversation.choiceButton.\(key)")
+            XCTAssertTrue(button.exists, "server が渡した鍵は出す(key=\(key))")
+            XCTAssertTrue(button.isEnabled)
+        }
+        // …and only those. `enter` was not in `buttons`, so nothing may draw it.
+        XCTAssertFalse(element(app, "conversation.choiceButton.enter").exists)
+
+        // The refusal band is absent here, which is what makes the previous test's
+        // assertion of its presence meaningful.
+        XCTAssertFalse(element(app, "conversation.choiceReason").exists)
+
+        // The composer is still disabled -- the card is the only way to act on a menu,
+        // and the sentence next to the field must point at it rather than deny it.
+        XCTAssertFalse(element(app, "conversation.composerField").isEnabled)
+        let reason = element(app, "conversation.composerDisabledReason")
+        XCTAssertTrue(reason.exists)
+        XCTAssertFalse(
+            reason.label.contains("選べません"),
+            "押せる card の真上で「選べません」と言ってはならない"
+        )
     }
 
     /// The invariant `ConversationViewModel.interruptAllowedOnChoiceScreen` exists to

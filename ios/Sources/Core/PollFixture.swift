@@ -49,7 +49,7 @@ final class PollFetchingFixture: PollFetching {
         // of a long-poll the server has not answered yet.
         if let classification = Self.readableClassification(for: historyState) {
             if callCount == 1 {
-                return .success(Self.screenResponse(classification: classification))
+                return .success(Self.screenResponse(classification: classification, state: historyState))
             }
             try? await Task.sleep(nanoseconds: 60_000_000_000)
             return .unreadable
@@ -57,9 +57,9 @@ final class PollFetchingFixture: PollFetching {
 
         let unreadableTarget: Int
         switch historyState {
-        case .busy, .choice:
+        case .busy, .choice, .choiceKeys:
             // Unreachable: handled by the readable branch above. Kept explicit rather
-            // than folded into a `default` so adding a 6th state is a compile error
+            // than folded into a `default` so adding a 7th state is a compile error
             // here instead of a silent `unreadableTarget = 0`.
             unreadableTarget = 0
         case .threeRoles:
@@ -92,7 +92,7 @@ final class PollFetchingFixture: PollFetching {
     private static func readableClassification(for state: HistoryFetchingFixture.State) -> ScreenBody.Classification? {
         switch state {
         case .busy: return .busy
-        case .choice: return .choice
+        case .choice, .choiceKeys: return .choice
         case .threeRoles, .degraded, .stalled: return nil
         }
     }
@@ -113,11 +113,20 @@ final class PollFetchingFixture: PollFetching {
     /// the classification landed. That is what makes the composer assertion, which has
     /// no observable of its own for `BUSY`, mean something.
     ///
-    /// `display.choice` is attached only for `.choice`, because that is the shape the
-    /// real server sends -- `view.mjs` fills `choiceView(state)` exactly when the desk
-    /// is sitting on a menu. Omitting it would make the fixture's CHOICE screen a
-    /// state the backend never actually produces.
-    private static func screenResponse(classification: ScreenBody.Classification) -> PollResponse {
+    /// `display.choice` is attached only for the choice states, because that is the
+    /// shape the real server sends -- `view.mjs` fills `choiceView(state)` exactly when
+    /// the desk is sitting on a menu. Omitting it would make the fixture's CHOICE
+    /// screen a state the backend never actually produces.
+    ///
+    /// ★It is keyed off `state`, **not** `classification`: the two choice fixtures share
+    /// the `CHOICE` classification and differ only in whether the server handed over
+    /// keys, which is precisely the distinction the allowlist makes. Keying on
+    /// classification here would collapse them into one screen and quietly delete the
+    /// thing the pair exists to measure.
+    private static func screenResponse(
+        classification: ScreenBody.Classification,
+        state: HistoryFetchingFixture.State
+    ) -> PollResponse {
         PollResponse(
             items: [
                 .message(MessageItem(
@@ -130,13 +139,53 @@ final class PollFetchingFixture: PollFetching {
                 ))
             ],
             screen: ScreenBody(classification: classification),
-            display: classification == .choice
-                ? PollDisplay(choice: ChoiceView(show: true, reason: "編集の確認"))
-                : nil,
+            display: choiceDisplay(for: state),
             queued: nil,
             cursor: PollCursor.empty,
             more: false
         )
+    }
+
+    /// The two menus, copied from the shapes `view.mjs` actually emits.
+    ///
+    /// The refusal text is `CHOICE_BLOCKED["hard-stop"]` verbatim rather than a
+    /// paraphrase: this fixture is the only place the phone's rendering of that sentence
+    /// can be looked at, and a fixture that reworded it would be checking the wrong
+    /// string against the wrong screen.
+    private static func choiceDisplay(for state: HistoryFetchingFixture.State) -> PollDisplay? {
+        switch state {
+        case .choice:
+            return PollDisplay(choice: ChoiceView(
+                show: true,
+                reason: "これは許可・信頼の確認画面です。電話からは操作を出しません(自動化に安全確認を押させない、という決め事)。机で確認してください。",
+                head: ["Claude requests permission to run:", "  rm -rf ./build"],
+                options: [
+                    ChoiceOption(n: 1, label: "Yes"),
+                    ChoiceOption(n: 2, label: "Yes, and don't ask again"),
+                    ChoiceOption(n: 3, label: "No, tell Claude what to do differently"),
+                ],
+                buttons: [],
+                digest: "fixture-hard-stop"
+            ))
+        case .choiceKeys:
+            return PollDisplay(choice: ChoiceView(
+                show: true,
+                reason: "",
+                head: ["この変更を適用しますか？"],
+                options: [
+                    ChoiceOption(n: 1, label: "はい"),
+                    ChoiceOption(n: 2, label: "いいえ"),
+                ],
+                buttons: [
+                    ChoiceButton(key: "1", label: "1. はい"),
+                    ChoiceButton(key: "2", label: "2. いいえ"),
+                    ChoiceButton(key: "escape", label: "中止(Escape)"),
+                ],
+                digest: "fixture-benign"
+            ))
+        case .threeRoles, .degraded, .stalled, .busy:
+            return nil
+        }
     }
 
     /// Distinct per classification on purpose: one shared string would let a test that

@@ -47,16 +47,98 @@ struct PollDisplay: Decodable, Equatable {
     let choice: ChoiceView?
 }
 
-/// `view.mjs`'s `choiceView(state)` output, shipped verbatim (S-group). Only `show`/
-/// `reason` are modeled -- brief §1-b (D-A): the options/buttons/head/digest fields
-/// are real on the wire but this sprint renders none of them, only `reason` as a
-/// badge when `show` is true. Declaring the property is what makes `JSONDecoder`
-/// require the key; simply not declaring `head`/`options`/`buttons`/`digest` is
-/// sufficient for the decoder to ignore them, same precedent as
-/// `SessionsModels.swift`'s `SessionsResponse` omitting `live`.
+/// `view.mjs`'s `choiceView(state)` output, shipped verbatim (S-group).
+///
+/// Sprint 5 modeled only `show`/`reason` and drew a badge -- a deliberate scope call,
+/// recorded in that sprint's brief §1-b (D-A). The consequence was the shape the
+/// owner's ruling names as the thing to avoid: 「見えるが答えられない」 -- the phone
+/// said "this conversation is waiting on a choice" and offered no way to answer it.
+/// This sprint widens the decode to the whole wire object and renders it.
+///
+/// **The phone never decides what is pressable.** `buttons` is computed server-side by
+/// `choiceView` in `view.mjs`, which gates each entry on two independent facts (the
+/// key kind appears in the injector's allow-list AND the numbered option actually
+/// exists on screen). Re-deriving that here would be a second copy of the same rule
+/// with its own chance to drift -- the same reasoning `InterruptClient` gives for
+/// refusing to look at `interrupted`/`reason`.
+///
+/// The four added fields are decoded **leniently** (absent -> empty), unlike
+/// `show`/`reason` which stay required. The asymmetry is the point: `choiceView`
+/// always emits all six keys today, but if a future server drops one, a strict decode
+/// would throw and take `reason` down with it -- turning "we cannot show you the
+/// buttons" into "we cannot read this response at all". Same argument
+/// `ResultDisplay.kind` makes for being a `String` rather than an enum: an unknown
+/// wire shape degrades what is shown, never whether anything is shown.
 struct ChoiceView: Decodable, Equatable {
     let show: Bool
     let reason: String
+    /// The prompt text above the menu, one entry per screen line.
+    let head: [String]
+    /// Every option the screen offers, whether or not it is pressable. Rendered even
+    /// when `buttons` is empty: on a hard-stop screen (trust/permission prompts the
+    /// server refuses to answer remotely) Tom still needs to READ what is being asked
+    /// before deciding whether to reach the desk.
+    let options: [ChoiceOption]
+    /// Only what the server says may be pressed. Empty is a normal, meaningful state.
+    let buttons: [ChoiceButton]
+    /// The screen's fingerprint. `POST …/choice` requires it, so an empty one means
+    /// nothing on this card can be sent -- see `canPress`.
+    let digest: String
+
+    private enum CodingKeys: String, CodingKey { case show, reason, head, options, buttons, digest }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        show = try c.decode(Bool.self, forKey: .show)
+        reason = try c.decode(String.self, forKey: .reason)
+        // `try?` + `decode` (not `decodeIfPresent`): one expression covers both ways a
+        // field can fail to arrive -- key absent, and key present with the wrong type.
+        // `decodeIfPresent` only covers the first, and a `head` that arrived as a
+        // string instead of an array would still throw out the whole card.
+        head = (try? c.decode([String].self, forKey: .head)) ?? []
+        options = (try? c.decode([ChoiceOption].self, forKey: .options)) ?? []
+        buttons = (try? c.decode([ChoiceButton].self, forKey: .buttons)) ?? []
+        digest = (try? c.decode(String.self, forKey: .digest)) ?? ""
+    }
+
+    /// Memberwise init for fixtures and tests (the custom `init(from:)` suppresses the
+    /// synthesized one).
+    init(show: Bool, reason: String, head: [String] = [], options: [ChoiceOption] = [],
+         buttons: [ChoiceButton] = [], digest: String = "") {
+        self.show = show
+        self.reason = reason
+        self.head = head
+        self.options = options
+        self.buttons = buttons
+        self.digest = digest
+    }
+
+    /// Fail-closed, on the phone's own side of the wire: a button with no fingerprint
+    /// behind it is a button whose every tap is guaranteed to 400. `view.mjs` already
+    /// refuses to emit that pair, and this re-check exists for the same reason the
+    /// server's own comment gives -- 押せない物を押せる顔で出さない -- not because the
+    /// server is distrusted, but because the cost of the check is one comparison and
+    /// the cost of being wrong is a button that lies.
+    var canPress: Bool { !digest.isEmpty && !buttons.isEmpty }
+}
+
+/// One line of the menu as it appears on screen. `n` is the digit the TUI itself
+/// prints, not this app's array index -- the server reads it off the rendered line.
+struct ChoiceOption: Decodable, Equatable {
+    let n: Int
+    let label: String
+}
+
+/// One thing the server says may be pressed. `key` is sent back verbatim in the
+/// request body; `label` is shown verbatim. Neither is composed here.
+///
+/// `key` is one of `"1"`..`"9"`, `"enter"`, `"escape"` (`CHOICE_KEYS` in `choice.mjs`)
+/// but is typed as `String` rather than an enum for `ResultDisplay.kind`'s reason: a
+/// value this build has not heard of must degrade to "a button we won't draw", never
+/// to a decode failure that discards the whole card.
+struct ChoiceButton: Decodable, Equatable {
+    let key: String
+    let label: String
 }
 
 // MARK: - screen (nested classification, §0-b①②)

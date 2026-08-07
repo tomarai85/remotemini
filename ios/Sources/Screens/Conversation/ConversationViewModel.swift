@@ -147,6 +147,23 @@ final class ConversationViewModel: ObservableObject {
     /// of the change if Tom re-defines D4 as 「承認は禁止、明示的な拒否は可」 --
     /// `composerDisabledReason` reads the same constant, so the button and the
     /// sentence that points at the button cannot disagree.
+    ///
+    /// ★★**Sprint 7 note, and read it before concluding this constant is now dead.**
+    /// The choice card can put an `escape` button on a `CHOICE` screen, which looks
+    /// like the very thing this constant forbids. It is not the same capability, and
+    /// the difference is *who decided the screen was safe*:
+    ///
+    /// - The interrupt button would send `Escape` through `#interruptExclusive`, which
+    ///   never classifies the menu. Its reach is every `CHOICE` screen, permission
+    ///   prompts included. That is the D4 widening, and it stays forbidden.
+    /// - The card's buttons are not composed here at all. They arrive in `buttons`,
+    ///   which the server emits only after `classifyChoice` returned `benign` **with a
+    ///   matcher** -- an allowlist. A permission or trust prompt yields zero buttons
+    ///   and a `reason` instead, so there is no key for the phone to press.
+    ///
+    /// So the card leaves 「自動化に安全確認を押させない」 intact by construction rather
+    /// than by this flag, and the flag still governs the one path that has no
+    /// classification behind it. Do not fold the two together.
     static let interruptAllowedOnChoiceScreen = false
 
     /// Whether the interrupt button is live at all.
@@ -171,8 +188,27 @@ final class ConversationViewModel: ObservableObject {
         }
     }
 
+    /// ★Sprint 7, found by looking at a screenshot rather than by a test.
+    ///
+    /// This sentence read 「確認待ちの画面では、v1 は電話から中断しません。机で確認して
+    /// ください」 -- and the choice card put a 「中止(Escape)」 button roughly 40 points
+    /// below it. Both statements were *true* (the interrupt path is blocked; the card's
+    /// Escape is a server-allowlisted key), and the screen still read as the app
+    /// contradicting itself, which is worse than either being wrong: a user who cannot
+    /// tell which of two adjacent sentences to believe stops believing both.
+    ///
+    /// Every assertion in the suite passed while that was on screen, because each half
+    /// was tested against its own rule and nothing tested the pair. The fix is to say
+    /// the true thing, which is not 「中断しません」 but 「この button では中断しません」.
     var interruptDisabledReason: String? {
         guard !interruptEnabled else { return nil }
+        // `visibleChoice`, not `choiceView`: a card the screen is not drawing cannot be
+        // the thing this sentence points at. Pointing 「下の選択肢から選んでください」 at a
+        // card that is not below is the same self-contradiction one line up, arrived at
+        // from the other direction.
+        if visibleChoice?.buttons.contains(where: { $0.key == "escape" }) == true {
+            return "この確認は割り込みでは止めません。中止するなら下の選択肢から選んでください"
+        }
         return "確認待ちの画面では、v1 は電話から中断しません。机で確認してください"
     }
 
@@ -245,13 +281,33 @@ final class ConversationViewModel: ObservableObject {
     /// interrupt button -- so the sentence and the button have to move together or one
     /// of them becomes a lie. Two call sites of one constant is the cheapest structure
     /// that makes disagreement impossible.
+    ///
+    /// Sprint 7 applies that same rule to the choice card, because it broke the same
+    /// way. The `CHOICE` sentence read 「v1 では電話から選べません」 -- a claim about a
+    /// capability, which the card is. Leaving it would have put 「選べません」 directly
+    /// above a row of buttons that select. So the sentence now names whichever of the
+    /// three states the card is actually in, and in two of them it points **at the
+    /// card** rather than restating its content: the card carries the server's own
+    /// `reason`, and a paraphrase up here could only drift away from it.
     var composerDisabledReason: String? {
         guard let screen, !composerEnabled else { return nil }
         switch screen.classification {
         case .choice:
-            return Self.interruptAllowedOnChoiceScreen
-                ? "v1 では電話から選べません。机で確認するか、割り込みで中断してください"
-                : "v1 では電話から選べません。机で確認してください"
+            // 「文字は送れません」 stays in all three: that part is about the composer,
+            // which is disabled on `CHOICE` regardless of what the card offers.
+            guard let card = visibleChoice else {
+                // The screen is a menu but no card arrived (a poll without `display`,
+                // or a server too old to send one). Nothing to point at, so this falls
+                // back to Sprint 6's sentence -- including its interrupt clause, which
+                // is why the constant is still read here.
+                return Self.interruptAllowedOnChoiceScreen
+                    ? "選択待ちです。文字は送れません。机で確認するか、割り込みで中断してください"
+                    : "選択待ちです。文字は送れません。机で確認してください"
+            }
+            if card.canPress && card.digest != staleChoiceDigest {
+                return "選択待ちです。文字は送れません。下の選択肢から選んでください"
+            }
+            return "選択待ちです。文字は送れません。理由は下に出しています"
         case .unknown:
             return "画面の状態を読めていません"
         case .sendable, .busy, .unrecognized:
@@ -287,6 +343,7 @@ final class ConversationViewModel: ObservableObject {
     private let pollClient: PollFetching
     private let sendClient: MessageSending
     private let interruptClient: Interrupting
+    private let choiceClient: ChoiceSending
     private let baseURL: URL
     private let apiKey: String
     private let sessionID: String
@@ -317,6 +374,7 @@ final class ConversationViewModel: ObservableObject {
         pollClient: PollFetching = PollClient(),
         sendClient: MessageSending = SendClient(),
         interruptClient: Interrupting = InterruptClient(),
+        choiceClient: ChoiceSending = ChoiceClient(),
         baseURL: URL,
         apiKey: String,
         sessionID: String,
@@ -328,6 +386,7 @@ final class ConversationViewModel: ObservableObject {
         self.pollClient = pollClient
         self.sendClient = sendClient
         self.interruptClient = interruptClient
+        self.choiceClient = choiceClient
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.sessionID = sessionID
@@ -560,6 +619,167 @@ final class ConversationViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Choice (answering the desk's menu from the phone)
+
+    /// One keystroke in flight. Its own flag, not `isSending`: the composer and the
+    /// menu are never both live (the composer is disabled on `CHOICE`), but sharing a
+    /// flag would still mean a future screen that enabled both could disable the wrong
+    /// control.
+    @Published private(set) var isChoosing = false
+
+    /// Its own band, for `interruptBanner`'s reason: three operations, three answers,
+    /// and no way for the reader to tell whose sentence survived if they share a slot.
+    @Published private(set) var choiceBanner: SendBanner?
+
+    /// The fingerprint of a card we KNOW the desk has moved past, because the server
+    /// answered a keystroke aimed at it by naming a different one.
+    ///
+    /// Stored as the digest rather than a `Bool` so that it expires by itself: the card
+    /// is stale exactly while `choiceView?.digest` still equals this, and the next poll
+    /// carrying any other fingerprint makes the comparison false with no bookkeeping.
+    /// A `Bool` would need a second site to clear it, and the site that forgets to
+    /// clear a safety flag is the one that leaves the phone permanently mute.
+    @Published private(set) var staleChoiceDigest: String?
+
+    /// The card the screen is allowed to draw. **The single place that decides whether a
+    /// menu card exists**, so the view, the composer sentence and the interrupt sentence
+    /// cannot each answer that question differently.
+    ///
+    /// Two terminators, not one. `show: false` is the server's, and on the healthy
+    /// protocol it always arrives: `server.mjs` emits `screen` and `display.choice`
+    /// under the *same* `screenChanged` condition, so a revision that leaves `CHOICE`
+    /// carries a `choiceView` of the empty screen with it. The second is this phone's
+    /// own: **a card is a lie the moment the last screen we observed says the desk is
+    /// not on a menu**, whatever the card itself claims.
+    ///
+    /// ★Asked for by Codex (2026-08-08, question (a)) as contract fragility rather than a
+    /// live bug, and worth taking for exactly that reason -- it costs one comparison and
+    /// removes the phone's dependence on a server invariant it cannot verify. A card
+    /// stranded visible after an outage is the failure it prevents: buttons over a desk
+    /// that has long since moved on.
+    ///
+    /// **Absence is not contradiction.** `screen == nil` (nothing observed yet) leaves the
+    /// card alone: the card came FROM the server, so hiding it on no evidence would be
+    /// the phone inventing a state, and hiding the desk's own question from the person
+    /// being asked to go read it is the one thing the hard-stop path must never do.
+    var visibleChoice: ChoiceView? {
+        guard let card = choiceView, card.show else { return nil }
+        if let screen, screen.classification != .choice { return nil }
+        return card
+    }
+
+    /// Whether the menu's buttons do anything.
+    ///
+    /// Four independent gates, and none of them decides WHICH keys are offered -- that
+    /// is `buttons`, computed server-side. These only decide whether the offered set is
+    /// live right now.
+    var choiceEnabled: Bool {
+        guard let card = visibleChoice, card.canPress else { return false }
+        return card.digest != staleChoiceDigest && !isChoosing
+    }
+
+    /// Shown in place of the buttons when the card is stale. Locally worded, which is
+    /// permitted here for `composerDisabledReason`'s reason: this describes the phone's
+    /// own UI state, not a server response, so no `display.text` exists to render.
+    var staleChoiceReason: String? {
+        guard let card = visibleChoice, card.canPress,
+              card.digest == staleChoiceDigest else { return nil }
+        return "机の画面が変わりました。新しい選択肢が届くまで押せません"
+    }
+
+    /// One keystroke.
+    ///
+    /// ★`key` and `digest` are both echoed from what the server itself handed us -- the
+    /// key from a `ChoiceButton` in `buttons`, the digest from the same `ChoiceView`
+    /// that carried it. Nothing on this path composes either. That is what carries the
+    /// server's guarantee 見た物と押す物が同じ across the wire: the fingerprint travels
+    /// with the button it was drawn beside, so a menu that changed between the draw and
+    /// the tap is refused rather than answered.
+    func choose(key: String) async {
+        guard choiceEnabled, let card = visibleChoice else { return }
+        // The key must be one the server offered. A tap can only originate from a
+        // drawn button, so this is unreachable through the UI -- it exists because the
+        // day something else calls this method, the failure it prevents is sending an
+        // unoffered keystroke to a permission prompt.
+        guard card.buttons.contains(where: { $0.key == key }) else { return }
+
+        let sentDigest = card.digest
+        isChoosing = true
+        choiceBanner = nil
+
+        let attempt = await choiceClient.choose(
+            baseURL: baseURL,
+            apiKey: apiKey,
+            sessionID: sessionID,
+            key: key,
+            digest: sentDigest
+        )
+        applyChoiceAttempt(attempt, sentDigest: sentDigest)
+    }
+
+    /// Split out for the same reason as every other `apply…` on this type.
+    ///
+    /// ★★**No auto-retry, ever.** The server attaches the live fingerprint to a refusal
+    /// precisely so a client can recover without re-capturing the screen, and the
+    /// obvious use of it -- resend the same key with the fresh digest -- is the one
+    /// thing this method must not do. It would mean the phone answering a menu Tom has
+    /// not seen, which is 「自動化に安全確認を押させない」 read at its actual meaning:
+    /// the rule is about who did the deciding, not about which process typed. Recovery
+    /// is therefore: mark the card stale, let the poll deliver the new one, and wait for
+    /// a second deliberate tap.
+    func applyChoiceAttempt(_ attempt: ChoiceAttempt, sentDigest: String) {
+        isChoosing = false
+
+        // Behaviour binds to the fingerprint, never to the refusal vocabulary -- see
+        // `ChoiceAttempt`'s ★. A server that says nothing about the current screen
+        // (`serverDigest == nil`) has given no information, and silence is not
+        // confirmation that the card still stands.
+        if let served = attempt.serverDigest, served != sentDigest {
+            staleChoiceDigest = sentDigest
+        }
+
+        switch attempt.outcome {
+        case .cancelled:
+            return
+
+        case .unauthorized:
+            onUnauthorized()
+
+        case .sessionNotFound:
+            phase = .notFound
+
+        case .contractViolation(let violation):
+            // Same call and same reasoning as the send and interrupt paths: the
+            // conversation is loaded and the desk may well have received the keystroke,
+            // so this becomes a banner over an intact screen, not the phase.
+            recordContractViolation(violation)
+            choiceBanner = SendBanner(locallyWorded: violation.displayText, tone: .error)
+
+        case .unreachable:
+            // The third and last locally-worded site, permitted because no `display`
+            // arrived. It refuses to claim either outcome for the reason the other two
+            // give: a request whose response was lost may well have been delivered.
+            //
+            // The card is deliberately NOT marked stale here -- we learned nothing
+            // about the desk. Pressing again is safe by construction: the second
+            // request carries the same fingerprint, and `inject.mjs` refuses a repeat
+            // on a fingerprint it has already answered (`choice-already-sent`), so a
+            // double press cannot become a double keystroke.
+            choiceBanner = SendBanner(
+                locallyWorded: "押せたかどうか確認できませんでした。机の画面を確認してください。",
+                tone: .warn
+            )
+
+        case .display(let display):
+            // Verbatim. `view.mjs`'s `choiceResult` already splits the four values of
+            // `applied` (`verified` / `unverified` / `moved-to-hard-stop` / null) into
+            // four sentences, and got that split wrong once by writing `=== false`
+            // against a string. Re-deriving any of it here would rebuild that bug on
+            // this side of the wire.
+            choiceBanner = SendBanner(display: display)
+        }
+    }
+
     /// Brief §3-b-3: pressing while a fetch is already in flight must not launch a
     /// second one. `isFetchingEarlier` is set synchronously before the first `await`
     /// inside this (`@MainActor`) method, so a second call arriving before the first
@@ -787,6 +1007,44 @@ final class ConversationViewModel: ObservableObject {
             screen = newScreen
         }
         if let newChoice = response.display?.choice {
+            // The banner is the answer to a keystroke aimed at ONE fingerprint; once the
+            // desk has moved to a different one, leaving 「押しました」 under a freshly-drawn
+            // menu invites the reader to attribute an old answer to a new question. So it
+            // expires on a CHANGED fingerprint, and only then -- an identical menu coming
+            // back is still the question that press was about.
+            if newChoice.digest != choiceView?.digest {
+                choiceBanner = nil
+            }
+
+            // ★The stale mark expires on a DIFFERENT signal: the mere arrival of a payload,
+            // whatever fingerprint it carries. The two questions are not the same one --
+            // banner = 「私の直前の打鍵に何が起きたか」, stale = 「今この瞬間、机に出ているのは
+            // この面か」-- and the second is answered in full by any fresh observation.
+            //
+            // It used to expire on a changed fingerprint too, which **deadlocks on A→B→A**
+            // (Codex, 2026-08-08): the desk leaves menu A and returns to a byte-identical A
+            // between two polls, the phone never observes B, so the digest that arrives
+            // equals the one it marked stale and the card stays dead permanently -- under a
+            // sentence (「机の画面が変わりました」) that is false by then. The monotonic screen
+            // revision that would tell A-then-A apart from A-still lives inside the cursor,
+            // which this client is contractually forbidden to parse (see `PollCursor`), and
+            // it does not need it: **arrival is itself the new observation**, because
+            // `server.mjs` gates `screen` and `display.choice` on the same `screenChanged`.
+            //
+            // Nothing safety-bearing is given up. All a 409 ever taught the phone is that
+            // the live screen was not the one on display -- that refusal's own wording is
+            // 「何も送っていません」, so the menu, when it comes back, is genuinely unanswered.
+            // And what stops a revived button from re-answering a menu that WAS answered is
+            // not this flag and never was: `inject.mjs` refuses a second keystroke to a
+            // spent fingerprint (`choice-already-sent`) and the phone renders that refusal
+            // verbatim. A client-side copy of a server-side rule only buys a second place
+            // to drift.
+            //
+            // Still a digest rather than a `Bool`: it names WHICH card it condemns, so the
+            // stale sentence cannot appear under a card it does not refer to even if some
+            // future path assigns `choiceView` without passing through here.
+            staleChoiceDigest = nil
+
             choiceView = newChoice
         }
 
