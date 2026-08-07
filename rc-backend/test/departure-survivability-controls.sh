@@ -156,6 +156,20 @@ if [ "$RC" -eq 2 ]; then ok "N --days abc -> 終了 2"; else ng "N --days abc �
 run "$GOOD" --days
 if [ "$RC" -eq 2 ]; then ok "N2 --days が空 -> 終了 2"; else ng "N2 空の --days を受け入れた(終了 $RC)"; fi
 
+# --- Y: 鎖④ の問い合わせに件数の上限を付け直させない -------------------------
+# 此処だけ本文の走査(偽 ssh は URL を見られない)。弱い形だと承知の上で置く理由:
+# 一度 limit=50 を付け、根拠を「生きた会話は心拍で先頭に留まる」と書いた。実際の
+# 並び基準は jsonl の mtime(最終発言)で、打ち切りは sort の後に掛かる。
+# = 生きているが暫く黙っている会話は沈んで切られ、0 件 = 偽の赤になる。
+# 登録簿は伸びる一方なので、この誤りは**渡米中にこそ**発火する。
+# 偽 ssh では原理的に出ない型なので、本文に錨を打つ以外に留める手が無い。
+if printf '%s\n' "$(grep -n 'api/sessions?' "$SUT")" | grep -q 'limit='; then
+    OUT=$(grep -n 'api/sessions?' "$SUT")
+    ng "Y 鎖④ の問い合わせに limit が戻っている(沈んだ生存を切り落とす)"
+else
+    ok "Y 鎖④ の問い合わせに件数の上限が無い"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then echo "departure-survivability-controls: 全部 OK"; exit 0; fi
 echo "departure-survivability-controls: NG ${fail} 件"; exit 1
