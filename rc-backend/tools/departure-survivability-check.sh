@@ -91,7 +91,16 @@ RAW=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" '
 
     # 鎖④。生死判定は**本番の /api/sessions にやらせる**(此処で aliveKind を作り直さない)。
     # 鍵は argv にも env にも置かない(ps から見える)。python が鍵ファイルを直接読む。
-    # limit=50 で足りる理由: 並びが updatedAt の降順で、生きた会話は心拍で先頭に留まる。
+    #
+    # ★`limit` を付けない。一度 `limit=50` と書いて、根拠を「生きた会話は心拍で先頭に
+    #   留まる」と説明したが**間違い**だった(2026-08-07、実コードを読んで自分で撤回)。
+    #   `scanSessions` の並び基準は登録簿の心拍ではなく **jsonl の mtime**(最終発言 =
+    #   `sortMs`)で、打ち切りはその `found.sort` の**後**に「出した件数」で掛かる。
+    #   = **生きているが暫く発言していない会話は下に沈んで切り落とされる**。
+    #   登録簿は伸びる一方(prune が無い)ので、上限を持つと**渡米中にこそ**
+    #   「生きているのに 0 件」= 偽の赤が出る。
+    #   外して良い理由: `scope=registered` で走査は登録簿の件数に縛られ、`scanSessions`
+    #   冒頭のコメントが持つ実測値が「edith 642本の全 meta 読みで 30ms」。上限を発明しない。
     /usr/bin/python3 -c "
 import json, os, urllib.request
 kp = os.path.expanduser(\"~/.rc-backend/api.key\")
@@ -100,7 +109,7 @@ try:
 except Exception:
     print(\"alive=nokey\"); raise SystemExit
 req = urllib.request.Request(
-    \"http://127.0.0.1:8787/api/sessions?scope=registered&limit=50\",
+    \"http://127.0.0.1:8787/api/sessions?scope=registered\",
     headers={\"authorization\": \"Bearer \" + key})
 try:
     with urllib.request.urlopen(req, timeout=8) as r:
