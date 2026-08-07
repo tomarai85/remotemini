@@ -173,6 +173,16 @@ LOCAL_CTLS=(
                                      # かった」= heredoc には対照が書けないから
                                      # 誰も気付けなかった。旧版に差し替えると
                                      # **17 本全部が倒れる**(旧版は常に 0 で終わる)
+    test/departure-survivability-controls.sh # ★2026-08-07。渡米前に3週間の無人耐久を
+                                     # Jervis から1回で測る道具(`tools/departure-
+                                     # survivability-check.sh`)。偽 ssh なので edith にも
+                                     # tailnet にも触らない。実測1秒未満。
+                                     # ★上の coldboot と**役割を分ける**: 冷起動の 7 項目は
+                                     # あちらが持ち、此処は「その終了コードの引き取り方」
+                                     # (0/1/2/欠落)と、鎖の外に在る 4 項目(tailnet の鍵 /
+                                     # 常駐の現況 / 面の 401 / 空き)だけを見る。
+                                     # ★据えた初回に1件捕まえた: `--days` を値無しで渡すと
+                                     # `shift 2` が失敗して $# が減らず**無限ループ**した
     test/commit-suite-gate-controls.sh # commit の直前に単体の一式を回す門
                                      # (`tools/commit-suite-gate.sh`)。偽の一式を差すので
                                      # 本物の `npm test` は回さない。実測1秒未満。
