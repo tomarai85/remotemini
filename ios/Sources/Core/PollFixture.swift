@@ -62,10 +62,14 @@ final class PollFetchingFixture: PollFetching {
             // than folded into a `default` so adding a 7th state is a compile error
             // here instead of a silent `unreadableTarget = 0`.
             unreadableTarget = 0
-        case .threeRoles:
+        case .threeRoles, .long:
             // No degradation intended for this state -- 0 means the very first call
             // already falls through to the "hold forever" branch below, so
             // `unreadableStage` never leaves `.normal`.
+            //
+            // `.long` は位置(開いた時どこに居るか / 「以前を読む」の後どこへ寄るか)
+            // だけを測る為の状態なので、ライブ行もバナーも出さない -- 画面に他の
+            // 動きが在ると、位置が動いた理由がどちらか言えなくなる。
             unreadableTarget = 0
         case .degraded:
             unreadableTarget = 1 // streak 1, below the stage-2 floor of 3.
@@ -93,7 +97,7 @@ final class PollFetchingFixture: PollFetching {
         switch state {
         case .busy: return .busy
         case .choice, .choiceKeys: return .choice
-        case .threeRoles, .degraded, .stalled: return nil
+        case .threeRoles, .degraded, .stalled, .long: return nil
         }
     }
 
@@ -183,7 +187,7 @@ final class PollFetchingFixture: PollFetching {
                 ],
                 digest: "fixture-benign"
             ))
-        case .threeRoles, .degraded, .stalled, .busy:
+        case .threeRoles, .degraded, .stalled, .busy, .long:
             return nil
         }
     }

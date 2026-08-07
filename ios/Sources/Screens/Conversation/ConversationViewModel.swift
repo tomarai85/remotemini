@@ -72,6 +72,35 @@ final class ConversationViewModel: ObservableObject {
     @Published private(set) var truncated = false
     @Published private(set) var loadEarlierState: LoadEarlierState = .hidden
 
+    // MARK: - どこへ自動で寄せるか (Sprint 8)
+
+    /// ★**末尾が伸びた時だけ**進む札。「件数が変わったら一番下へ」で書けない理由が
+    /// この型の存在理由そのもの。
+    ///
+    /// `applyLoadEarlier(_:…)` は `history` を丸ごと長い配列へ差し替える -- 増えた分は
+    /// **先頭**に付く。だから件数で追従させると、「以前を読む」を押した直後に画面が
+    /// 一番下へ引き戻され、**押した行為そのものが画面から消える**。伸びた場所を
+    /// 区別しない札は、追従ではなく妨害になる。
+    ///
+    /// 進むのは3箇所だけ: 初回読み込み / poll の live 追記 / 復帰時の取り直し。
+    /// `applyLoadEarlier` は**進めない**(あちらは下の `earlierRevealToken` の担当)。
+    @Published private(set) var tailToken = 0
+
+    /// 「以前を読む」が**実際に古い行を足せた時だけ**進む札。`advanced == false`
+    /// (押したが一番古い行が動かなかった = `.stalledRetry`)では進まない。
+    ///
+    /// View はこの札が進んだ時、`earlierRevealIndex` の行を画面の**下端**へ置く。
+    /// 上端ではなく下端なのは、下端に置くと**新しく出た古い行だけで画面が埋まる**から
+    /// -- 上端に置くと、既に読んだ行を見せて「押しても何も出ない」ように見える。
+    @Published private(set) var earlierRevealToken = 0
+
+    /// `earlierRevealToken` と対で書かれる。足す前に一番古かった行の、足した後の位置。
+    ///
+    /// `entries` は `MergeHistory.merge` の性質上つねに `history` を前置きにする
+    /// (`history + live.suffix(from: k)`)ので、`history` 内の位置がそのまま
+    /// `entries` 内の位置になる。ここで二重に数え直さないのはその為。
+    private(set) var earlierRevealIndex: Int?
+
     /// §2-c: `nil` means "server held this over, unchanged" -- these two are always
     /// written together, at the one shared apply site (`applyReadablePoll(_:)`),
     /// never independently, per the brief's own "両者を同じ1箇所で扱う事."
@@ -407,6 +436,9 @@ final class ConversationViewModel: ObservableObject {
             history = response.history
             truncated = response.truncated
             phase = .loaded
+            // 初回は無条件に一番下。50件の履歴を一番古い行から見せられても、
+            // 「机で今どうなっているか」を知る為に開いた画面としては役に立たない。
+            tailToken += 1
             // No "before" to compare against on the very first load -- `advanced`
             // is vacuously true, so the only question is `hidden`/`available`/`atCeiling`.
             loadEarlierState = Self.resolveLoadEarlierState(
@@ -813,6 +845,22 @@ final class ConversationViewModel: ObservableObject {
             history = response.history
             truncated = response.truncated
             let advanced = !Self.sameOldest(oldestBefore, history.first)
+            // ★ここで `tailToken` は進めない。進めると「以前を読む」を押した直後に
+            // 一番下へ引き戻される。代わりに、足す前に一番古かった行の新しい位置を
+            // 出して、そこを画面の下端に置いてもらう。
+            //
+            // 位置は `MergeHistory.sameRoleAndText` で引く -- `advanced` の判定
+            // (`sameOldest`)と同じ比較器を使う為。ここだけ別の「同じ行」の定義を
+            // 作ると、片方が進んだと言い、片方が見つからないと言う状態が作れる。
+            if advanced, let oldestBefore {
+                earlierRevealIndex = history.firstIndex {
+                    MergeHistory.sameRoleAndText($0, oldestBefore)
+                }
+                // 見つからない事は在り得る(同じ本文が複数在れば最初に当たるし、
+                // 併走する会話で古い端が削れていれば消えている)。その時は札を
+                // 進めない = 画面は動かない。誤った場所へ飛ばすより動かない方が良い。
+                if earlierRevealIndex != nil { earlierRevealToken += 1 }
+            }
             loadEarlierState = Self.resolveLoadEarlierState(
                 truncated: truncated,
                 currentLimit: currentLimit,
@@ -1052,8 +1100,11 @@ final class ConversationViewModel: ObservableObject {
         for item in response.items {
             switch item {
             case .message(let message):
-                if let entries = message.entries {
+                if let entries = message.entries, !entries.isEmpty {
                     live.append(contentsOf: entries)
+                    // 末尾が伸びた。空配列で進めないのは、進んだ札が
+                    // 「見る物が増えた」以外の意味を持たない為。
+                    tailToken += 1
                 }
                 // Worker-route `event` payloads decode but are not rendered this
                 // sprint (brief §1-b) -- nothing to apply.
@@ -1108,6 +1159,9 @@ final class ConversationViewModel: ObservableObject {
         history = response.history
         truncated = response.truncated
         live = []
+        // 復帰は初回と同じ扱い。背面に居た間に机が進んでいるのが普通なので、
+        // 戻って来た人が最初に見るべきは一番下。
+        tailToken += 1
         await pollLoop?.resetForResync()
     }
 

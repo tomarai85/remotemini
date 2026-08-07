@@ -21,6 +21,18 @@ struct ConversationView: View {
     /// snapshot, not a real return.
     @Environment(\.scenePhase) private var scenePhase
 
+    /// 一番下の錨の id。行の identity は `Array.enumerated()` の `Int` offset なので、
+    /// ぶつからない型(`String`)を選んでいる -- `Int` にすると、たまたま同じ番号の行が
+    /// 在る時に `scrollTo` がどちらへ行くか決まらない。
+    private static let bottomAnchorID = "conversation.bottomAnchor"
+
+    /// ★「今この人は一番下を見ているか」。追従の条件であって、追従の結果ではない。
+    ///
+    /// 錨(高さ1の透明な目印)が `LazyVStack` に作られている間だけ真。iOS 17 には
+    /// スクロール位置を直接読む口が無い(`onScrollGeometryChange` は iOS 18)ので、
+    /// 「見えているかどうか」を `onAppear`/`onDisappear` で測っている。
+    @State private var isPinnedToBottom = true
+
     init(viewModel: @autoclosure @escaping () -> ConversationViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel())
     }
@@ -133,16 +145,50 @@ struct ConversationView: View {
                     }
                     .accessibilityIdentifier("conversation.empty")
                 } else {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 10) {
-                            // No wire-provided id (brief §1-a: history entries carry
-                            // none) -- position is stable for a screen that never
-                            // reorders or removes rendered entries in place.
-                            ForEach(Array(viewModel.entries.enumerated()), id: \.offset) { _, entry in
-                                EntryBubble(entry: entry)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 10) {
+                                // No wire-provided id (brief §1-a: history entries carry
+                                // none) -- position is stable for a screen that never
+                                // reorders or removes rendered entries in place.
+                                ForEach(Array(viewModel.entries.enumerated()), id: \.offset) { _, entry in
+                                    EntryBubble(entry: entry)
+                                }
+                                // 一番下の錨。行の identity は `Int`(enumerated の
+                                // offset)なので、ぶつからない `String` を id にする。
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id(Self.bottomAnchorID)
+                                    .onAppear { isPinnedToBottom = true }
+                                    .onDisappear { isPinnedToBottom = false }
                             }
+                            .padding()
                         }
-                        .padding()
+                        .onAppear {
+                            // 開いた瞬間は無条件で一番下。
+                            //
+                            // `.defaultScrollAnchor(.bottom)`(iOS 17)を**使わない**の
+                            // は、あれが「内容の大きさが変わる度に下端を保つ」修飾子
+                            // だから -- 「以前を読む」で前に足した時も下端に留まり、
+                            // 上へ遡って読んでいる最中の追記でも引き摺り下ろす。
+                            // 寄せる条件を自分で持てなくなる。
+                            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                        }
+                        .onChange(of: viewModel.tailToken) { _, _ in
+                            // ★下端に居る時だけ追う。上へ遡って読んでいる最中に机が
+                            // 喋ったからといって引き摺り下ろすと、この画面で一番長い
+                            // 操作(読む事)ができなくなる。
+                            guard isPinnedToBottom else { return }
+                            withAnimation { proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom) }
+                        }
+                        .onChange(of: viewModel.earlierRevealToken) { _, _ in
+                            // 「以前を読む」の後。足す前に一番古かった行を**下端**へ
+                            // 置く = 新しく出た古い行で画面が埋まる。ここで下端へ
+                            // 寄せてしまう(= `tailToken` と同じ扱いにする)と、押した
+                            // 行為そのものが画面から消える。
+                            guard let index = viewModel.earlierRevealIndex else { return }
+                            proxy.scrollTo(index, anchor: .bottom)
+                        }
                     }
                 }
                 loadEarlierFooter

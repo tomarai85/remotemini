@@ -41,6 +41,15 @@ struct HistoryFetchingFixture: HistoryFetching {
         /// pair is the assertion -- the two screens differ only in `buttons`, and any
         /// test that cannot tell them apart is not measuring the allowlist.
         case choiceKeys = "conversation-choice-keys"
+        /// ★Sprint 8。上の6つは**どれも4行**しか返さない -- つまり画面から溢れず、
+        /// 「開いた時どこに居るか」も「新しい行を追うか」も、UI からは**構造的に
+        /// 測れなかった**。溢れる長さを持つ最初の状態。
+        ///
+        /// もう一つ、上の6つに無い性質を持つ: **2回目の取得で本当に古い行が増える**。
+        /// 他の状態は limit を無視して同じ4行を返すので、「以前を読む」を押しても
+        /// `advanced == false`(一番古い行が動かない)になり、押した後どこへ寄るかを
+        /// 決める道筋そのものが走らない。
+        case long = "conversation-long"
     }
 
     let state: State
@@ -49,8 +58,45 @@ struct HistoryFetchingFixture: HistoryFetching {
         switch state {
         case .threeRoles, .degraded, .stalled, .busy, .choice, .choiceKeys:
             return .success(Self.threeRolesResponse)
+        case .long:
+            // `ConversationViewModel.initialLimit` は 50、「以前を読む」は
+            // `MergeHistory.nextHistoryLimit(50) == 150` を要求する。境界を 50 に
+            // 置くのは、実物の2つの呼び出しがちょうどその両側に落ちる為。
+            return .success(limit > Self.initialLimitBoundary ? Self.longWithOlder : Self.longTail)
         }
     }
+
+    // MARK: - conversation-long
+
+    private static let initialLimitBoundary = 50
+
+    /// 行番号を本文に持たせているのは、UI 検査が「どの行が画面に居るか」を
+    /// 掴める唯一の手掛かりだから -- `EntryBubble` は行ごとの識別子を振らない
+    /// (振ると `.accessibilityIdentifier` が子へ伝播して本文が読めなくなる)。
+    private static func line(_ n: Int) -> HistoryEntry {
+        // 役割を交互にするのは見た目の為ではなく、`MergeHistory.sameRoleAndText`
+        // が role も見る比較器だから -- 全部同じ役割だと、比較器の片側だけが
+        // 効いていても気付けない。
+        let role: EntryRole = n.isMultiple(of: 2) ? .assistant : .user
+        return HistoryEntry(
+            role: role,
+            text: String(format: "行 %03d", n),
+            display: .init(who: role == .user ? "Tom" : "Claude")
+        )
+    }
+
+    /// 最初の取得。60行 -- どの iPhone でも1画面には入らない。
+    private static let longTail = HistoryResponse(
+        history: (31...90).map(line),
+        truncated: true
+    )
+
+    /// 「以前を読む」の後。古い30行が**先頭に**足された同じ会話。
+    /// 足す前に一番古かった行(`行 031`)はこの配列の index 30 に居る。
+    private static let longWithOlder = HistoryResponse(
+        history: (1...90).map(line),
+        truncated: false
+    )
 
     private static let threeRolesResponse = HistoryResponse(
         history: [
