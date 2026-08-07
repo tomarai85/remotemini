@@ -9,11 +9,18 @@
 #   写しを作らず、**edith の上のそれを呼んで結果を引き取る**。
 #   (2026-08-07: 一度そこを手で作り直しかけた。同じ物を2つ持つと、片方だけ直る)
 #
-# ここが足すのは、冷起動の鎖の外に在って**渡米すると触れなくなる** 4 つ:
+# ここが足すのは、冷起動の鎖の外に在って**渡米すると触れなくなる** 6 つ:
 #   (1) tailnet の鍵の期限 … 切れると tailnet から落ち、復旧用の ssh も同じ経路なので同時に死ぬ
 #   (2) job が今この瞬間 動いている事 … plist が正しくても、落ちて再起動を繰り返す形は別問題
 #   (3) 面が 401 を返す事      … 200 は鍵が外れている印。tailnet 内の誰でも読める状態
 #   (4) 空き容量               … 3週間分のログと OS 更新の置き場
+#   (5) 鎖②③を戻す物が在る事 … com.tom.work-tmux と com.edith.rc-phone-window が
+#         launchctl に居るか。①(rc-backend)だけ見て「電話が使える」と読むのが
+#         DESIGN §6 が名指しで警告している誤読。サーバが上がっても、tmux と
+#         その中の会話が戻らなければ「読めるが送れない」で止まる
+#   (6) 今この瞬間、tmux 経路で話せる相手が居る事 … /api/sessions?scope=registered を
+#         **本番の判定コードそのもの**に数えさせる(生死判定を此処で作り直さない)。
+#         0 件 = 「読めるが送れない」(DESIGN §6 の表)
 #
 # 使い方:
 #   bash rc-backend/tools/departure-survivability-check.sh [--days N] [--host user@host]
@@ -39,7 +46,7 @@ while [ $# -gt 0 ]; do
                 TRIP_DAYS="$2"; shift 2 ;;
         --host) [ $# -ge 2 ] || { echo "--host に値が無い" >&2; exit 2; }
                 HOST="$2"; shift 2 ;;
-        -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,33p' "$0"; exit 0 ;;   # 2..33 = 冒頭の説明。行を足したらここも直す
         *) echo "知らない引数: $1" >&2; exit 2 ;;
     esac
 done
@@ -77,6 +84,33 @@ RAW=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" '
 
     p job_rc  "$(launchctl list 2>/dev/null | awk "\$3 == \"com.edith.rc-backend\" { print \$2; exit }")"
     p job_pid "$(launchctl list 2>/dev/null | awk "\$3 == \"com.edith.rc-backend\" { print \$1; exit }")"
+
+    # 鎖②③を戻す物。値の意味: 空=居ない / - =まだ終了コードが無い(走行中) / 数字=最後の終了コード
+    p tmux_job  "$(launchctl list 2>/dev/null | awk "\$3 == \"com.tom.work-tmux\" { print \$2; exit }")"
+    p phone_job "$(launchctl list 2>/dev/null | awk "\$3 == \"com.edith.rc-phone-window\" { print \$2; exit }")"
+
+    # 鎖④。生死判定は**本番の /api/sessions にやらせる**(此処で aliveKind を作り直さない)。
+    # 鍵は argv にも env にも置かない(ps から見える)。python が鍵ファイルを直接読む。
+    # limit=50 で足りる理由: 並びが updatedAt の降順で、生きた会話は心拍で先頭に留まる。
+    /usr/bin/python3 -c "
+import json, os, urllib.request
+kp = os.path.expanduser(\"~/.rc-backend/api.key\")
+try:
+    key = open(kp).read().strip()
+except Exception:
+    print(\"alive=nokey\"); raise SystemExit
+req = urllib.request.Request(
+    \"http://127.0.0.1:8787/api/sessions?scope=registered&limit=50\",
+    headers={\"authorization\": \"Bearer \" + key})
+try:
+    with urllib.request.urlopen(req, timeout=8) as r:
+        d = json.load(r)
+except Exception as e:
+    print(\"alive=unreachable\"); print(\"why=%s\" % type(e).__name__); raise SystemExit
+ss = d.get(\"sessions\") or []
+print(\"alive=%d\" % sum(1 for s in ss if ((s.get(\"live\") or {}).get(\"route\") == \"tmux\")))
+print(\"alive_total=%d\" % len(ss))
+"
 
     # 401 が正。200 = 鍵が外れている、それ以外 = 面が応答していない。
     p http "$(curl -sS -m 5 -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/api/sessions 2>/dev/null || echo 000)"
@@ -147,6 +181,34 @@ case "$(g http)" in
     200) say_bad "/api/sessions が 200 —— **鍵が外れている**。tailnet 内の誰でも読める" ;;
     000) say_unm "/api/sessions に届かなかった(curl が答えを返さない)" ;;
     *)   say_bad "/api/sessions が $(g http)(面が応答していない)" ;;
+esac
+
+# --- 鎖②③ を戻す物 -----------------------------------------------------------
+# 面が上がっただけでは電話は使えない。tmux と その中の会話が戻って初めて
+# 「打ち込む / 割り込む」が成立する(DESIGN §6 の鎖4本)。
+echo
+echo "再起動の後、鎖②③ を戻す物(此処が空だと「読めるが送れない」で止まる)"
+job_line() {   # job_line <表示名> <値> <終了コードの読み方の在処>
+    case "$2" in
+        '')  say_bad "$1 が launchctl に居ない —— 再起動の後、鎖を戻す物が誰も居ない" ;;
+        -)   say_unm "$1 の終了コードがまだ無い(走っている最中に見た)。測り直す" ;;
+        0)   say_ok  "$1(最後の終了コード 0)" ;;
+        *)   say_bad "$1 の最後の終了コードが $2 —— 読み方は $3" ;;
+    esac
+}
+job_line "com.tom.work-tmux"          "$(g tmux_job)"  "tmux の session work を作る側"
+job_line "com.edith.rc-phone-window"  "$(g phone_job)" "tools/ensure-phone-window.sh の冒頭の終了コード表"
+
+# --- 鎖④(今この瞬間、話せる相手が居るか)------------------------------------
+echo
+echo "電話から打ち込める相手(本番の /api/sessions に数えさせている)"
+a=$(g alive)
+case "$a" in
+    nokey)       say_unm "鍵ファイルが読めず数えられなかった(判定を付けない)" ;;
+    unreachable) say_unm "面に届かず数えられなかった($(g why))。上の 401 と併せて読む" ;;
+    ''|*[!0-9]*) say_unm "件数が読めない(${a:-空})" ;;
+    0)           say_bad "tmux 経路の相手が 0 件 —— phone 窓が戻っていない。一覧と履歴は読めるが打ち込めない" ;;
+    *)           say_ok  "tmux 経路 ${a} 件 / 登録簿 $(g alive_total) 件" ;;
 esac
 
 # --- 余白 --------------------------------------------------------------------

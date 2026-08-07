@@ -34,6 +34,10 @@ fail=0
 GOOD='cb_rc=0
 job_rc=0
 job_pid=574
+tmux_job=0
+phone_job=0
+alive=1
+alive_total=22
 http=401
 freeg=133
 ts_state=ok
@@ -83,13 +87,44 @@ probe "A 鎖が切れている"     cb_rc "cb_rc=1"       1 "鎖が切れてい�
 probe "B 鎖が測れなかった"   cb_rc "cb_rc=2"       2 "緑と読まない"
 probe "C 道具が向こうに無い" cb_rc "cb_rc=missing" 1 "deploy-to-edith"
 
-# --- ここが足している 4 項目 -------------------------------------------------
+# --- ここが足している 6 項目 -------------------------------------------------
 probe "D 落ちて再起動を繰り返す" job_rc      "job_rc=78"      1 "繰り返している疑い"
 probe "E 鍵が外れて 200"         http        "http=200"       1 "鍵が外れている"
 probe "F 面に届かない"           http        "http=000"       2 "届かなかった"
 probe "G 空きが少ない"           freeg       "freeg=3"        1 "空き 3GB"
 probe "H 鍵に期限が在る"         ts_expiring "ts_expiring=2"  1 "期限付き 2 台"
 probe "I tailscale が無い"       ts_state    "ts_state=absent" 1 "経路そのものを測れていない"
+
+# --- 鎖②③ を戻す job(此処が空なら「読めるが送れない」)---------------------
+# ①(rc-backend)が緑でも②③が死んでいれば電話からは打ち込めない。その差が出るか。
+probe "O phone job が異常終了" phone_job "phone_job=1" 1 "com.edith.rc-phone-window の最後の終了コードが 1"
+probe "Q tmux job が異常終了"  tmux_job  "tmux_job=9"  1 "com.tom.work-tmux の最後の終了コードが 9"
+probe "R phone job が走行中"   phone_job "phone_job=-" 2 "走っている最中に見た"
+
+# --- 鎖④ 今この瞬間 話せる相手が居るか ---------------------------------------
+probe "S 相手が 0 件"            alive "alive=0"           1 "phone 窓が戻っていない"
+probe "T 鍵が読めず数えられない" alive "alive=nokey"       2 "判定を付けない"
+probe "U 面に届かず数えられない" alive "alive=unreachable" 2 "数えられなかった"
+
+# --- V/W: job のキーごと欠落 = launchctl に居ない ----------------------------
+# 「異常終了」と「そもそも登録されていない」は別の壊れ方。後者の方が渡米では致命的
+# (再起動の後、鎖を戻す物が誰も居ない)。
+run "$(printf '%s\n' "$GOOD" | grep -v '^phone_job=')" --days 30
+if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q "com.edith.rc-phone-window が launchctl に居ない"; then
+    ok "V phone job 不在 -> 赤"
+else ng "V phone job 不在: 終了 $RC"; fi
+
+run "$(printf '%s\n' "$GOOD" | grep -v '^tmux_job=')" --days 30
+if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q "com.tom.work-tmux が launchctl に居ない"; then
+    ok "W tmux job 不在 -> 赤"
+else ng "W tmux job 不在: 終了 $RC"; fi
+
+# --- X: ①が緑でも②③④が死んでいれば赤 -------------------------------------
+# この検査を足した理由そのもの。「サーバが上がった = 電話が使える」と読ませない。
+run "$(printf '%s\n' "$GOOD" | sed 's/^phone_job=0/phone_job=1/; s/^alive=1/alive=0/')" --days 30
+if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q "打ち込めない"; then
+    ok "X ①緑・②③④死 -> 赤(サーバが上がった事を電話が使える事と読まない)"
+else ng "X ①だけ緑なのに 終了 $RC"; fi
 
 # --- J: job が居ない ---------------------------------------------------------
 run "$(printf '%s\n' "$GOOD" | grep -v '^job_pid=')" --days 30
