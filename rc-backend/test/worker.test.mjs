@@ -133,6 +133,95 @@ test("interrupt はワーカーを kill し、状態 idle に戻る", () => {
   assert.equal(mgr.status("s1").worker, "none");
 });
 
+// ============ 割り込みは「撃った事」ではなく「止まった事」を名乗る(§2.64) ============
+//
+// 2026-08-08 の監査(R2-3)。ワーカー経路の `interrupt` は SIGTERM を撃った直後に
+// `true` を返し、電話には `view.mjs` が「止めました(Escape)。」と出していた。
+// **二重に偽**: ①止まった事は誰も観測していない ②この経路は Escape を押していない。
+// tmux 経路は 2026-08-03 に同じ誤りを直しているのに、**片方の経路にだけ残っていた**。
+//
+// ★直す時に前提が1つ引っくり返った。「ワーカーは画面を撮れないので `stopped` を
+//   名乗れない」と検査に書いてあったが逆で、ワーカーは**子の handle を握っている**ので
+//   画素より強い観測ができる。撮れないのは画面であって、死は撮るまでもなく分かる。
+test("★割り込み: 死を観測できたら verified、できなければ unverified、対象が居なければ null", async () => {
+  const { mgr, spawned, timers } = makeMgr();
+
+  // (1) 対象が居ない。「止めた」でも「止まっていない」でもない**三つ目の答え**。
+  const nobody = await mgr.interrupt("s1");
+  assert.equal(nobody.stopped, null);
+  assert.equal(nobody.reason, "not-running");
+
+  // (2) 実際に死んだ = verified。
+  mgr.send("s1", "a");
+  const p = mgr.interrupt("s1");
+  // 撃つまでの副作用は同期で済んでいる。旧版が `true` を返していたのは**ここ**。
+  assert.equal(spawned[0].killed, "SIGTERM");
+  assert.equal(mgr.status("s1").worker, "none");
+  spawned[0].exit(0, "SIGTERM");
+  const got = await p;
+  assert.equal(got.stopped, "verified");
+  assert.equal(got.reason, null);
+
+  // (3) 死なない子。期限が切れても `verified` に倒さない。
+  //     ★ここが緑のまま `verified` を返す実装は、直したはずの嘘をそのまま作り直している。
+  mgr.send("s2", "a");
+  const mark = timers.length;
+  const p2 = mgr.interrupt("s2");
+  timers.slice(mark).filter((t) => !t.cleared).forEach((t) => t.fn());
+  const got2 = await p2;
+  assert.equal(got2.stopped, "unverified");
+  assert.equal(got2.reason, "still-alive");
+});
+
+// ★この検査は**負の対照が先に見つけた穴**である(2026-08-08)。
+//   上の3通しだけでは「撃った所で死んだ事にする」変異が**緑のまま通った**。理由は
+//   競走の順番: 偽の期限が同期で発火した後、既に解決済みの `exited` へ後から `.then` を
+//   繋ぐと、race の handler は**期限の側が先に**呼ばれる。つまり嘘を植えても答えは
+//   `unverified` のままで、上の3本はどれも赤くならない。
+//
+//   だから「返り値」ではなく**死の約束そのもの**を見る。撃った事では解決しない、
+//   `exit` が来て初めて解決する —— これが §2.64 の要で、値域の話より前に在る。
+test("★割り込み: 死の約束は `exit` が来るまで解決しない(撃った事では解決しない)", async () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "a");
+  const e = mgr.workers.get("s1");
+  let died = false;
+  e.exited.then(() => { died = true; });
+
+  mgr.interrupt("s1");                       // SIGTERM を撃つ。まだ死んでいない
+  await new Promise((r) => setImmediate(r)); // microtask を全部流す
+  assert.equal(spawned[0].killed, "SIGTERM", "撃ってすらいないなら以下は読めない");
+  assert.equal(died, false, "撃った時点で『死んだ』を解決している = 直した嘘の作り直し");
+
+  spawned[0].exit(0, "SIGTERM");             // 実際に死んだ
+  await new Promise((r) => setImmediate(r));
+  assert.equal(died, true, "死んでも解決していない = 割り込みが永久に待つ");
+});
+
+// 死を待つ手段そのものが無い entry(`_start` を通らずに作られた物)は「観測できない」が
+// 正しい答え。ここを `verified` に倒すと、直したい嘘が**待つ物が無い時だけ復活する**。
+test("★割り込み: 死を待てない entry は unverified(no-exit-signal)に落ちる", async () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "a");
+  mgr.workers.get("s1").exited = null; // 待つ手段を奪う
+  const got = await mgr.interrupt("s1");
+  assert.equal(got.stopped, "unverified");
+  assert.equal(got.reason, "no-exit-signal");
+  assert.equal(spawned[0].killed, "SIGTERM", "観測できなくても撃つ事自体はやる");
+});
+
+// `already-done`(tmux 側の4つ目)は**この経路には無い**。子が自力で終わっていれば
+// `exit` が届いて Map から外れているので、区別は `null` に畳まれる。値域に名前だけ
+// 置くと「出るはずなのに出ない値」になり、読む側が到達しない枝を守ってしまう。
+test("★割り込み: 自力で終わった後の割り込みは already-done ではなく null", async () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "a");
+  spawned[0].exit(0);                    // 自力で終わった
+  const got = await mgr.interrupt("s1");
+  assert.equal(got.stopped, null, "この経路に already-done は存在しない");
+  assert.equal(got.reason, "not-running");
+});
+
 test("result 受信で busy→ready。busy 中の send は queue され、result 後に流れる", () => {
   const { mgr, spawned } = makeMgr();
   mgr.send("s1", "a");
@@ -324,15 +413,19 @@ test("H2-9: 猶予を過ぎても exit が来なければ SIGKILL を撃つ(送�
   assert.deepEqual(spawned[0].signals, ["SIGTERM", "SIGKILL"]);
 });
 
-test("H2-9b: exit が来たら猶予タイマーは取り消す(死体に SIGKILL を撃たない)", () => {
+test("H2-9b: exit が来たら猶予タイマーは取り消す(死体に SIGKILL を撃たない)", async () => {
   const heads = makeHeads();
   const { mgr, spawned, timers, fireTimers } = makeMgr({ heads, killGraceMs: 5000 });
   mgr.send(SID, "a");
-  mgr.interrupt(SID);
+  const p = mgr.interrupt(SID);
   // ★猶予タイマーが**張られた**事を先に言う。`every` は空配列で true なので、
   //   タイマーを1本も作らない実装でも下の1行は緑になる(2026-08-04、§2.35)。変異 M119 の的。
   assert.ok(timers.length >= 1, "猶予タイマーが張られていない = 取り消しを測れていない");
   spawned[0].exit(0, "SIGTERM");
+  // ★2026-08-08、割り込みが**期限のタイマーをもう1本**張る様になった(§2.64)。それも
+  //   死んだ時点で取り消される事をここで一緒に測る —— 待つのは実装の都合ではなく、
+  //   「片付いたか」を見る位置がそこだから。await を外すと2本目が残って赤くなる。
+  assert.equal((await p).stopped, "verified");
   assert.ok(timers.every((t) => t.cleared), "取り消していないタイマーが残っている");
   fireTimers();
   assert.deepEqual(spawned[0].signals, ["SIGTERM"]);
@@ -525,14 +618,17 @@ test("正常終了(code=0)には死因を付けない", () => {
 const drops = (mgr, sid) =>
   mgr.eventsSince(sid, 0).map((e) => e.data).filter((d) => d.type === "user_dropped");
 
-test("★割り込みは、積んだ送信を黙って消さない(1件ずつ名指しで failed になる)", () => {
-  const { mgr, spawned } = makeMgr();
+test("★割り込みは、積んだ送信を黙って消さない(1件ずつ名指しで failed になる)", async () => {
+  const { mgr, spawned, timers } = makeMgr();
   mgr.send("s1", "a");            // これが走る
   const q1 = mgr.send("s1", "b"); // 積まれる
   const q2 = mgr.send("s1", "c"); // 積まれる
   assert.equal(mgr.status("s1").queued, 2);
 
-  assert.equal(mgr.interrupt("s1"), true);
+  // ★2026-08-08、戻り値は Promise になった(§2.64)。積んだ分の始末は**撃つ前**に
+  //   同期で済んでいるので、待たずにここから先の観測ができる。旧版はここが `true` で、
+  //   その `true` を電話が「止めました」と読んでいた。
+  const pending = mgr.interrupt("s1");
 
   const d = drops(mgr, "s1");
   assert.deepEqual(d.map((x) => x.text), ["b", "c"], "積んだ本文が名指しで出ていない");
@@ -541,6 +637,11 @@ test("★割り込みは、積んだ送信を黙って消さない(1件ずつ名
   assert.deepEqual(d.map((x) => x.queuedSeq), [q1, q2], "どの turn が落ちたのか特定できない");
   assert.equal(mgr.status("s1").queued, 0);
   assert.equal(spawned[0].killed, "SIGTERM");
+
+  // 偽の子は死なないので、期限切れで降りる。ここで `verified` が出たら、それは
+  // **撃った事を死んだ事として名乗っている**という事。
+  timers.filter((t) => !t.cleared).forEach((t) => t.fn());
+  assert.equal((await pending).stopped, "unverified");
 });
 
 test("★届かなかった事は**揮発しない**(割り込みの瞬間に電話が切れていても後から拾える)", () => {

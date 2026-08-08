@@ -124,24 +124,37 @@ export function interruptResult(status, body) {
     // ★2026-08-03、tmux 経路は3通りに分かれるようになった(`server.mjs` の interrupt 参照)。
     //   それまでは Escape を送れた事が必ず「止めました(Escape)。」になっていて、
     //   **止まっていない時も同じ文が出ていた**。押した事と止まった事は別なので、別の文にする。
-    //   worker 経路は `stopped` を載せない(止める対象の有無は真偽値で確定している)ので、
-    //   その場合だけ従来の2択に落ちる。
+    //   ★2026-08-08、**worker 経路も `stopped` を載せる様になった**(§2.64)。旧版の
+    //   ここには「worker 経路は tmux を持たないので画面を撮れない = `stopped` を名乗れない」
+    //   と書いてあったが、逆だった —— worker は**子プロセスの handle を握っている**ので、
+    //   画素から推し量る tmux より強い観測ができる。撮れないのは画面であって、死は分かる。
+    //   下の二択が残っているのは worker の為ではなく、**`stopped` を載せない古いサーバ**の為。
     if (Object.prototype.hasOwnProperty.call(b, "stopped")) {
       if (b.stopped === "verified") return { kind: "ok", text: "止めました(生成が止まったのを確認)。" };
       // ★2026-08-03 追加。Escape を押した時には番が自力で終わっていた場合。
       //   画面の見え方は「止まった」と同じ(スピナーが消える)ので、これを verified に
       //   混ぜると**止めていないのに止めたと言う**。完了行が増えた事で区別が付く。
+      //   ★この値は tmux 経路にしか出ない(worker の interrupt docstring 参照)。
       if (b.stopped === "already-done") {
         return { kind: "ok", text: "押した時には終わっていました(止めるものは残っていません)。" };
       }
+      // ★何を撃ったかは経路で違う。tmux は Escape、worker は子への停止信号。
+      //   両方を「Escape」と書くと、**やっていない操作を報告する**事になる。
+      //   経路が読めない時は動作を名指しせず「止める操作」に畳む(創作しない)。
+      const pressed = b.route === "tmux" ? "Escape は押しました"
+        : b.route === "worker" ? "停止の信号は送りました"
+          : "止める操作は届きました";
       if (b.stopped === "unverified") {
-        return { kind: "warn", text: "Escape は押しましたが、まだ止まっていません。画面を見て確かめてください。" };
+        return { kind: "warn", text: `${pressed}が、まだ止まっていません。画面を見て確かめてください。` };
       }
       // stopped == null = 押す前から生成の印が無かった。押した事だけが確かなので、そう書く。
-      return { kind: "warn", text: "止める対象が見当たりませんでした(Escape は押しました)。" };
+      return { kind: "warn", text: `止める対象が見当たりませんでした(${pressed})。` };
     }
+    // ★`stopped` が無い = **`stopped` を載せない古いサーバ**。2026-08-08 より前の版で、
+    //   `interrupted` は「止める対象が居たか」しか意味していない。だから居た場合でも
+    //   「止めました」とは書けない —— それがこの節を書き直す原因になった嘘そのもの。
     return b.interrupted
-      ? { kind: "ok", text: "止めました(Escape)。" }
+      ? { kind: "warn", text: "止める操作は届きましたが、止まったかどうかは分かりません。画面を見て確かめてください。" }
       : { kind: "warn", text: "止める対象がありませんでした。" };
   }
   if (status === 409) return { kind: "refused", text: b.error || "止められませんでした。" };

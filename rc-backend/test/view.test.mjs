@@ -129,15 +129,12 @@ test("401 は鍵の問題として出し、本文を残す", () => {
   });
 });
 
-test("★割り込み: 200 + interrupted で「止めました」、interrupted:false は警告(失敗ではない)", () => {
-  assert.deepEqual(interruptResult(200, { interrupted: true }), {
-    kind: "ok",
-    text: "止めました(Escape)。",
-  });
-  const none = interruptResult(200, { interrupted: false });
-  assert.equal(none.kind, "warn", "止める対象が無いのは正常な結果。error に丸めない");
-  assert.match(none.text, /対象がありません/);
-});
+// ★2026-08-08、ここに在った検査(「200 + interrupted で『止めました(Escape)。』」)は
+//   **消したのではなく、下の「stopped を載せない古いサーバ」へ移して的を裏返した**。
+//   旧版は `interrupted:true` を「止めました(Escape)。」に固定していたが、`interrupted`
+//   は「止める対象が**居た**か」でしかなく、止まった事は誰も観測していない。つまり
+//   この検査は**嘘を守っていた**。`interrupted:false` 側(警告であって失敗ではない)は
+//   そのまま向こうで生きている。
 
 // 2026-08-02: 同じ `|| {}` の病気。「止める対象が無かった」は**観測した結果**なので、
 // 本文が読めていない時に既定値として出してはいけない。workPhrase の注記
@@ -182,14 +179,60 @@ test("★割り込み: stopped の四値がそれぞれ別の文になる(verifi
   assert.equal(texts.size, 4, `四値が別の文になっていない: ${[...texts].join(" / ")}`);
 });
 
-// ワーカー経路は tmux を持たないので画面を撮れない = `stopped` を名乗れない。
-// そこは今まで通りの二択に落ちる。★ここを消すと、tmux 用の新しい分岐が
-// ワーカー経路の応答を **stopped 無し = 対象なし** と読んで嘘をつく。
-test("★割り込み: stopped を名乗らない応答(ワーカー経路)は旧来の二択に落ちる", () => {
-  const w = interruptResult(200, { interrupted: true, route: "worker" });
-  assert.equal(w.kind, "ok");
-  assert.match(w.text, /止めました/);
-  assert.doesNotMatch(w.text, /見当たりません/);
+// ★2026-08-08、この検査の前提が引っくり返ったので**的ごと**書き直した(§2.64)。
+//   旧: 「ワーカー経路は tmux を持たないので画面を撮れない = `stopped` を名乗れない」
+//   → 逆だった。ワーカーは**子プロセスの handle を握っている**ので、画素から推し量る
+//   tmux より強い観測ができる。撮れないのは画面であって、死は撮るまでもなく分かる。
+//   旧版はその誤った前提の上で「ワーカー経路 = `interrupted:true` は『止めました』でよい」
+//   を**固定していた** —— 検査そのものが嘘を守っていた。
+test("★割り込み: ワーカー経路も stopped を名乗る(撃った事を止まった事として書かない)", () => {
+  const ok = interruptResult(200, { interrupted: true, stopped: "verified", route: "worker", waitedMs: 12 });
+  assert.equal(ok.kind, "ok");
+  assert.match(ok.text, /止めました/);
+  assert.match(ok.text, /確認/, "何をもって止まったと言っているかを書く");
+
+  const un = interruptResult(200, { interrupted: false, stopped: "unverified", reason: "still-alive", route: "worker" });
+  assert.equal(un.kind, "warn");
+  assert.match(un.text, /まだ止まって/);
+  // ★ワーカー経路は Escape を**一度も押していない**(子への SIGTERM)。押していない
+  //   操作を報告するのは、直そうとしている嘘の別の形。
+  assert.doesNotMatch(un.text, /Escape/, "ワーカー経路で Escape を名乗ってはいけない");
+
+  const none = interruptResult(200, { interrupted: false, stopped: null, reason: "not-running", route: "worker" });
+  assert.equal(none.kind, "warn");
+  assert.match(none.text, /見当たりません/);
+  assert.doesNotMatch(none.text, /Escape/, "ワーカー経路で Escape を名乗ってはいけない");
+});
+
+// tmux 経路は実際に Escape を押している。ここで動作名を落とすと、今度は**やった事を
+// 報告できなくなる**。経路ごとに動作名が違う事を、両側から留める。
+test("★割り込み: 動作の名前は経路で分かれる(tmux = Escape / worker = 停止の信号)", () => {
+  const t = interruptResult(200, { interrupted: false, stopped: "unverified", route: "tmux" });
+  assert.match(t.text, /Escape/);
+  const w = interruptResult(200, { interrupted: false, stopped: "unverified", route: "worker" });
+  assert.match(w.text, /信号/);
+  assert.notEqual(t.text, w.text, "経路が違うのに同じ文なら、どちらかが事実と違う");
+
+  // 経路が読めない応答は、動作を**創作しない**で畳む。
+  const u = interruptResult(200, { interrupted: false, stopped: "unverified" });
+  assert.doesNotMatch(u.text, /Escape/);
+  assert.doesNotMatch(u.text, /信号/);
+});
+
+// `stopped` を載せないのは**2026-08-08 より前のサーバ**だけ。そこでの `interrupted` は
+// 「止める対象が居たか」でしかないので、居ても「止めました」とは書けない —— それが
+// この節を書き直す原因になった嘘そのもの。★ここを緩めると、古い版が繋がった時にだけ
+// 嘘が復活する(= 一番見つけにくい形で戻る)。
+test("★割り込み: stopped を載せない古いサーバは「止まったか分からない」と書く", () => {
+  const old = interruptResult(200, { interrupted: true });
+  assert.equal(old.kind, "warn", "止まった確証が無いので ok にしない");
+  assert.doesNotMatch(old.text, /止めました/, "対象が居た事を止まった事として書いている");
+  assert.match(old.text, /分かりません/);
+  assert.match(old.text, /画面を見て/, "Tom に次の一手を示す");
+
+  const oldNone = interruptResult(200, { interrupted: false });
+  assert.equal(oldNone.kind, "warn");
+  assert.match(oldNone.text, /対象がありません/);
 });
 
 test("割り込み: 409 はサーバの文、401 は鍵、5xx はサーバ側の失敗", () => {

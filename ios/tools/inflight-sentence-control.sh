@@ -52,6 +52,18 @@
 #   片方の取り残しをもう片方が「走る前の中身」として複製し、復元の基準点ごと汚れる。
 #   ズレは `rc-backend/test/mutation-recovery-copy.test.mjs` が毎 commit 測る。
 #
+# ★「検査が一度も走っていない」を別の事として扱う(2026-08-08 実測)。M1 の走行だけが
+#   simulator の preflight に Busy で蹴られ(前の走行の app が終了しきる前に次の launch が
+#   来た)、xcodebuild は非0で終わったが検査は**1本も走っていない**。判定自体は
+#   UNMEASURED で正しかったが、理由が「赤くはなったが的ではない(赤: なし)」と出て、
+#   読む側には**変異を捕まえられなかった**様に見える —— 探し文を疑って直しに行く事に
+#   なる。実際には探し文は当たっていて、測定が起きなかっただけ。
+#   走った本数が 0 の時だけ、app を落としてから1度取り直し、それでも 0 なら
+#   「一度も走っていない」と名指しで UNMEASURED にする。
+#   ★取り直す条件が「走った本数 0」**だけ**である事が肝心。赤い assertion を
+#     取り直しに流用できる形にすると、この対照は嘘を隠す道具に変わる。だから
+#     `run_unit` は赤緑の集合を一切見ない(見えるのは本数だけ)。
+#
 # 終了コード: 0=全変異が期待通り赤 / 1=赤くならない検査が在る / 2=測れなかった
 set -uo pipefail
 
@@ -59,6 +71,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # = ios/
 ROOT="$(cd "$HERE/.." && pwd)"
 IOS="$HERE"
 SIM_NAME="${SIM_NAME:-iPhone-dogfood}"
+BUNDLE_ID="com.tomarai.remotemini"
+# UDID が読めなくても走る(落ち着かせる手順を飛ばすだけ)。此処で止めると、元は
+# 動いていた対照を「測れない」に変えてしまう —— 直そうとした欠陥をこちら側で作る事になる。
+SIM_UDID="$(xcrun simctl list devices 2>/dev/null | grep -F "$SIM_NAME (" | head -1 \
+    | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' | head -1)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/inflight-sentence.XXXXXX")"
 LOGDIR="${TMPDIR:-/tmp}"
 INFLIGHT="${TMPDIR:-/tmp}/rc-ios-mutation-inflight.tsv"
@@ -169,7 +186,24 @@ ok() { PASS=$((PASS+1)); echo "  OK   $1"; }
 ng() { FAIL=$((FAIL+1)); echo "  NG   $1"; }
 un() { UNMEASURED=$((UNMEASURED+1)); echo "  UNM  $1"; }
 
-run_unit() { # $1 = log path -> rc を印字
+# 走った検査の本数。0 = **一度も走っていない**(ビルドが通らない / simulator が
+# 起動を拒んだ、のどちらも此処に落ちる)。赤緑の別を見ない事に意味が在る ——
+# 取り直しの判断がこの値**しか**見ないので、落ちた assertion を取り直しに
+# 流用できる形が構造上作れない。
+ran_count() { # $1 = log path
+    local n
+    n="$(grep -cE "Test Case '-\[RemoteMiniTests\." "$1" 2>/dev/null)" || n=0
+    printf '%s' "${n:-0}"
+}
+
+# 前の走行の app が終了しきる前に次の launch が来ると、SpringBoard が preflight を
+# Busy で蹴る。UDID が読めなければ何もしない(上記)。
+settle_sim() {
+    [ -n "${SIM_UDID:-}" ] || return 0
+    xcrun simctl terminate "$SIM_UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+}
+
+run_unit_once() { # $1 = log path -> rc を印字
     local log="$1" rc=0
     ( cd "$IOS" && xcodegen generate >/dev/null 2>&1 && \
       xcodebuild -project RemoteMini.xcodeproj -scheme RemoteMini -configuration Debug \
@@ -177,6 +211,20 @@ run_unit() { # $1 = log path -> rc を印字
         -derivedDataPath "$IOS/build" \
         -only-testing:RemoteMiniTests/ConversationViewModelTests \
         -only-testing:RemoteMiniTests/ConversationViewTests test ) >"$log" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+
+# ★診断を stdout に書かない事。呼び出し側は `rc=$(run_unit …)` で**標準出力を
+#   そのまま rc として読む**ので、1行混ぜるだけで rc が壊れて全部の probe が狂う。
+run_unit() { # $1 = log path -> rc を印字
+    local log="$1" rc
+    settle_sim
+    rc="$(run_unit_once "$log")"
+    if [ "$(ran_count "$log")" -eq 0 ]; then
+        echo "     (検査が1本も走っていない = 測定が起きていない。app を落として1度だけ取り直す)" >&2
+        settle_sim
+        rc="$(run_unit_once "$log")"
+    fi
     printf '%s' "$rc"
 }
 
@@ -196,6 +244,11 @@ has() { # $1 = 空白区切りの一覧, $2 = 名前
 echo "=== 基準(変異なし)"
 BASE_LOG="$LOGDIR/inflight-sentence-base.log"
 rc=$(run_unit "$BASE_LOG")
+if [ "$(ran_count "$BASE_LOG")" -eq 0 ]; then
+    un "基準で検査が一度も走っていない(2度試して 0 本)= 機械の側が動いていない。実装については何も測っていない。全文: $BASE_LOG"
+    echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
+    exit 2
+fi
 if [ "$rc" -ne 0 ]; then
     un "基準が緑でない(rc=$rc)。以降は測れない。全文: $BASE_LOG"
     echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
@@ -254,6 +307,13 @@ probe() { # $1=名前 $2=変異する関数 $3=変異が当たる file $4=赤く
     fi
     local log="$LOGDIR/inflight-sentence-$name.log" rc
     rc=$(run_unit "$log")
+    # ★「走っていない」を「捕まえられなかった」と混ぜない。混ぜると、探し文が
+    #   当たっているのに探し文を疑いに行く事になる(2026-08-08 の M1 が正にそれ)。
+    if [ "$(ran_count "$log")" -eq 0 ]; then
+        un "$name: 検査が一度も走っていない(2度試して 0 本)= 変異の当たり外れは測っていない。全文: $log"
+        restore_all
+        return
+    fi
     local reds greens
     reds="$(failed_tests "$log")"
     greens="$(passed_tests "$log")"
