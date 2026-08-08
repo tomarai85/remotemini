@@ -12,14 +12,26 @@ final class KeyEntryViewModel: ObservableObject {
     private let store: CredentialStore
     private let onSaved: (Credentials) -> Void
 
+    /// - Parameter initialBaseURL: 401 で落とされた時に使っていた URL(DESIGN §2.65)。
+    ///   **届いた上で 401 が返った**ので URL が正しい事は観測済み。打ち直させない為に
+    ///   欄へ入れて開く。`nil`(初回)なら従来どおり空。
+    ///
+    ///   ★鍵の側は絶対に入れない。拒まれた鍵を欄に残すと、Tom は「入っているから合って
+    ///   いる」と読んで押し、また拒まれる —— 直そうとした迷子を一段深くする。
+    ///
+    ///   ★引数の位置が `store` と `onSaved` の**間**なのは呼び出し側の都合。既存の
+    ///   呼び出しは全部 `KeyEntryViewModel(healthz:sessionsProbe:store:) { ... }` の形で
+    ///   末尾 closure を使っているので、末尾に足すと全部壊れる。
     init(healthz: HealthzChecking = HealthzClient(),
          sessionsProbe: SessionsAuthChecking = SessionsAuthProbe(),
          store: CredentialStore = KeychainCredentialStore(),
+         initialBaseURL: URL? = nil,
          onSaved: @escaping (Credentials) -> Void) {
         self.healthz = healthz
         self.sessionsProbe = sessionsProbe
         self.store = store
         self.onSaved = onSaved
+        self.baseURLText = initialBaseURL?.absoluteString ?? ""
     }
 
     /// Spec §2-1: healthz first (proves the URL), then `/api/sessions` (proves the
