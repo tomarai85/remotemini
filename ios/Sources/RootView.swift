@@ -4,7 +4,7 @@ import SwiftUI
 /// Conversation, reached only by tapping a List row (`ListView`'s `NavigationLink`)
 /// -- there is no direct Key-entry -> Conversation path.
 struct RootView: View {
-    @StateObject private var appState = AppState()
+    @StateObject private var appState = AppState.forLaunch()
 
     var body: some View {
         NavigationStack {
@@ -98,7 +98,7 @@ struct RootView: View {
                 onUnauthorized: { appState.clearCredentials() }
             )
         } else {
-            KeyEntryView(onSaved: appState.setCredentials)
+            KeyEntryView(notice: appState.signOutNotice, onSaved: appState.setCredentials)
         }
     }
 
