@@ -62,9 +62,13 @@ struct KeyEntryView: View {
                 .disabled(viewModel.isChecking || viewModel.baseURLText.isEmpty || viewModel.apiKeyText.isEmpty)
                 .accessibilityIdentifier("keyEntry.submit")
             } footer: {
+                // 識別子は 2026-08-08(監査 X2-7)に付けた。それまで此処が版の**唯一**の
+                // 出所だったのに、名前が無いのでどの検査からも見えていなかった ——
+                // 「出ている」を主張していたのは人の記憶だけ。
                 Text(BuildInfo.line)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("keyEntry.buildInfo")
             }
         }
         .navigationTitle("Remote Mini")
