@@ -49,6 +49,22 @@ const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
 const CLAUDE_WORK = process.env.RC_CLAUDE_WORK || join(HOME, "fleet-tools", "claude-work");
 const FLEET_ACCOUNT = process.env.RC_FLEET_ACCOUNT || join(HOME, "fleet-tools", "fleet-account");
+/**
+ * 外部台本を諦める時刻。**電話から見える道に居ないので緩い**(2026-08-08)。
+ *
+ * 実測 med 8.0ms / max 11.2ms(edith)。10000ms は max の 893 倍。
+ * `/api/account` と `/api/account/next` は **native app から1回も呼ばれていない** ——
+ * `ios/Sources` / `ios/Tests` / `ios/UITests` で `account` に当たるのは
+ * `KeychainCredentialStore` の属性名2箇所だけで、道の呼び出しは0。呼ぶのは
+ * `server.mjs` 自身が埋め込んでいる HTML と `test/e2e-local.mjs` と書類。
+ * 口座の切り替えは spec で v1 の対象外。
+ * だから電話の 8 秒に縛られず、版管理の外に在る台本の中身が伸びる余地を取った。
+ *
+ * ★怖いのは「上限に当たった時に電話へ何と出すか」ではない(電話は此処を見ない)。
+ * 逆で、**電話が呼ばない道の hang が、電話が頼っている道を巻き添えにする** ——
+ * event loop は1本しか無い。上限が要るのはその為であって、文面の為ではない。
+ */
+const FLEET_ACCOUNT_TIMEOUT_MS = 10000;
 const BIND = process.env.RC_BIND || "127.0.0.1";
 const PORT = Number(process.env.RC_PORT || 8787);
 const KEY_DIR = process.env.RC_KEY_DIR || join(HOME, ".rc-backend");
@@ -344,9 +360,25 @@ function tmuxServerId() {
   return /^.+,\d+$/.test(out) ? out : "";
 }
 
+/**
+ * `ps` を諦める時刻。**tmux と同じ数字にしていない**(2026-08-08、edith 実測)。
+ *
+ * 634 プロセス / 89,265 バイトで med 18.4ms / max 21.8ms。5000ms は max の 272 倍。
+ * tmux と分けた理由 = `ps` の所要は**プロセス数と command line の長さで伸びる** =
+ * 機械の混み具合に連動する。tmux の照会(server に1問投げるだけ)とは伸び方が違うので、
+ * 同じ数字を共有すると片方が窮屈になる。一覧経路が `ps` を叩くのは1回だけなので、
+ * `ps` だけが固まっても 5 秒 < 電話の読み取り上限 8 秒。
+ *
+ * ★tmux と `ps` が**同時に**固まると 4+5=9 秒で 8 秒を超える。承知の上で通す ——
+ * 独立した2つが同時に固まるのは機械全体の障害で、呼び出しごとの上限で直せる層ではない。
+ */
+const PS_TIMEOUT_MS = 5000;
+
 /** ps を1回だけ叩く。中身の意味づけは src/procs.mjs(純関数)側。 */
 function psRunner(args) {
-  return execFileSync("ps", args, { encoding: "utf8" });
+  // 時間切れも maxBuffer 超過も `psSnapshot` が捕まえて `available: false` = **判らない**に
+  // 落とす(既にそう書いてある)。だから此処に枝は要らない。要るのは諦める時刻だけ。
+  return execFileSync("ps", args, { encoding: "utf8", timeout: PS_TIMEOUT_MS, killSignal: "SIGKILL" });
 }
 
 /**
@@ -1119,7 +1151,9 @@ const server = createServer(async (req, res) => {
 
     if (path === "/api/account" && req.method === "GET") {
       try {
-        const out = execFileSync(FLEET_ACCOUNT, [], { encoding: "utf8" }).trim();
+        const out = execFileSync(FLEET_ACCOUNT, [], {
+          encoding: "utf8", timeout: FLEET_ACCOUNT_TIMEOUT_MS, killSignal: "SIGKILL",
+        }).trim();
         return json(res, 200, { account: out });
       } catch (e) {
         return json(res, 500, { error: `fleet-account failed: ${e.message}` });
@@ -1127,7 +1161,12 @@ const server = createServer(async (req, res) => {
     }
     if (path === "/api/account/next" && req.method === "POST") {
       try {
-        const out = execFileSync(FLEET_ACCOUNT, ["--next"], { encoding: "utf8" }).trim();
+        // ★此処だけ副作用が在る(口座を進める)。時間切れは**取り消しではない** ——
+        //   台本が進めた後で固まった場合、上限で殺しても口座は進んでいる。
+        //   だから 500 を見て自動で撃ち直す物を作らない(今は誰も撃ち直していない)。
+        const out = execFileSync(FLEET_ACCOUNT, ["--next"], {
+          encoding: "utf8", timeout: FLEET_ACCOUNT_TIMEOUT_MS, killSignal: "SIGKILL",
+        }).trim();
         return json(res, 200, { account: out });
       } catch (e) {
         return json(res, 500, { error: `fleet-account --next failed: ${e.message}` });

@@ -21,9 +21,10 @@
 > ネイティブの SwiftUI アプリ**(product `RemoteMini`、木は `~/Infra/mobile-work/ios/`)。
 > 2026-08-05 の spec で器を確定し、Sprint 5 で **v1 の4機能(一覧 / 履歴+ライブ / 打ち込む /
 > 割り込む)が実機到達済み**、Sprint 7(08-08)で選択メニューへ答える card まで乗った。
-> **Sprint 8(08-08)で7本(8-1〜8-7)出荷済み** —— 8-7 は体験ではなく**検査の面**の欠陥
+> **Sprint 8(08-08)で9本(8-1〜8-9)出荷済み** —— 8-7 は体験ではなく**検査の面**の欠陥
 > (UI 検査用の会話画面が送信 / 割り込み / 打鍵の3口だけ本物の client を握っていた。
-> `DESIGN.md` §2.57)。待ち行列と裁定待ちの正本は
+> `DESIGN.md` §2.57)、**8-9 は Sprint 8 で唯一サーバ側**(同期の子プロセス4箇所に
+> 諦める時刻が一つも無く、1つ固まると `/healthz` ごと黙る。§2.59)。待ち行列と裁定待ちの正本は
 > `.harness/sprint-8-brief.md`、その元になった監査の一覧は `.harness/audit-2026-08-08.md`。
 > **本文より先にこの2本を読む事**(本文は Sprint 7 までしか知らない)。
 > サーバ側の `app.html` は生きているが、**設計判断の宛先はネイティブ側**。
@@ -31,6 +32,7 @@
 > | 掘る前に知っておく事 | 一行で |
 > |---|---|
 > | ビルドと検査の唯一の口 | `bash ios/tools/build.sh --sim`。単体 **472件**(2026-08-08 Sprint 8-8 後の実測、失敗0、`EXIT=0`。`ios/Tests`=455 + `ios/UITests`=17) |
+> | サーバ側の検査の口 | `cd rc-backend && npm test`(= `node --test 'test/**/*.test.mjs'`)。**739件**(2026-08-08 Sprint 8-9 後の実測、失敗0、`EXIT=0`)。★`node --test test/` は Node v22.14 で落ちる —— `npm test` を使う事 |
 > | ★検査の**数え方** | `grep -rhcE "^\s*(final )?func test[A-Za-z0-9_]*\(" <dir> \| paste -sd+ - \| bc`(file 毎の件数を足す)。**`sort \| uniq` を挟むと 389 に化ける** —— 別の file に同名の検査が在ると潰れる。log 側の突き合わせは `Test Case '-[…]' passed` を `sort -u \| wc -l` |
 > | **GUI を開かない** | Simulator.app も Xcode も**起動しない**。`xcrun simctl` の headless だけ。画面の確認は `xcrun simctl io … screenshot` |
 > | SourceKit の赤 | 「Cannot find type X in scope」「No such module 'XCTest'」は**単一ファイル索引の副作用で偽**。本物の判定は上のビルド1本 |
