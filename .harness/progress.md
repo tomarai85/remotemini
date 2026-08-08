@@ -3827,3 +3827,39 @@ replan を回した(`check` は予算切れ STOP だが、停止の門が「REPL
 ★この追記自体が3つ目の実例になった: 最初に書いた版は上の表に行番号を3つ書いていて、
 `doc-linerefs` に commit を止められた。門の言い分が正しい(実測 33件中13件が既に別の
 場所を指していた)ので、行番号を**中身の目印**に置き換えて書き直した。
+
+## 2026-08-08 — Sprint 4 の N8c / N8d が測っていたのは、**満たされない前提**だった(上の記録は直していない)
+
+上の Sprint 4 の変異表に N8c / N8d が在る。どちらも
+`ConversationView.shouldResumeOnForeground(oldPhase:newPhase:)` を壊して、
+`ConversationViewTests` の2本が赤くなる事を確かめた行。当時の記録として正しく、
+**書き換えていない**(日付の付いた記録なので)。此処は追う人の為の前向きの註。
+
+S8-5 で一覧側に同じ規則が要ると分かり、借りる前に**本物の背面往復**を通す UI 検査を
+書いた(`XCUIDevice.shared.press(.home)` -> `app.activate()`)。赤になった。
+`.onChange` の `(old, new)` を UI 検査の中で全部書き出して観測した結果:
+
+```
+[inactive>active]      <- 起動
+[active>inactive]      <- home 押下 1/2
+[inactive>background]  <- home 押下 2/2
+[background>inactive]  <- 復帰 1/2
+[inactive>active]      <- 復帰 2/2
+```
+
+**`background -> active` という辺を iOS は一度も配らない。** つまり Sprint 4 が置いた
+`oldPhase == .background && newPhase == .active` は「厳しすぎた」のではなく**決して真に
+ならない**。会話画面の N4「背面から戻ったら読み直す」は Sprint 4 から 2026-08-08 まで
+**一度も発火していなかった** —— 単体2本と N8c / N8d の緑に守られたまま。
+
+★持ち帰り: **N8c / N8d は嘘をついていない。規則は本当に正しかった。**
+測っていなかったのは「iOS がその引数で f を呼ぶか」という前提の方で、それは変異対照の
+射程の外に在った(変異は実装を壊す道具であって、呼び手の実在を確かめる道具ではない)。
+純関数を切り出して単体で固めた時、**その関数を呼ぶのは誰で、その呼び手を測っている検査は
+どれか**を1回訊く。答えられなければ、そこが今回の穴と同じ形。
+
+移動先 = `ios/Sources/Screens/Shared/ForegroundResume.swift`(1辺の純関数では書けないので、
+背面を通ったかを憶える器にした。2画面で共有)。検査は対ではなく**並び**を食わせる形に
+なっていて、上の実測列がそのまま入っている。配線側は
+`ios/tools/list-return-refresh-control.sh` の M4 / M5 が本物の背面往復を通して測る。
+経緯の全文は DESIGN §2.55。
