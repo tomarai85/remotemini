@@ -181,6 +181,41 @@ struct ScreenBody: Decodable, Equatable {
     }
 }
 
+/// ★2026-08-09, 実測 -- `screen` is **not** always present, and requiring it cost the
+/// phone the whole response.
+///
+/// `PollResponse.screen` is filled from `f.screen.body`, and `feedTick` writes that cell
+/// as `r.pane ? screenBody(f, r.pane) : blockedBody(r)`. The second producer emits
+/// `{route, reason, candidates, source, message}` and **no `screen` key** -- measured by
+/// calling `blockedBody()` for all 8 of `WIRE_REASONS`, not read off a comment. The cell
+/// is sticky across ticks while the poll handler re-resolves the pane per request, so a
+/// pane that was gone at the last screen tick and is resolvable at poll time takes the
+/// `tmux` branch and ships that stale blocked body here.
+///
+/// A `keyNotFound` here did not degrade one field: `PollClient` maps any failed decode to
+/// `.unreadable` and `PollLoop` answers that with a 20-second wait plus the degradation
+/// band, so one pane flicker bought a 20-second dead phone. Every other unknown wire value
+/// in this file already degrades instead of throwing (`PollItem`'s unrecognized `kind`,
+/// `GapWhy`, `Classification` itself); this was the one place the rule was not applied.
+///
+/// What this must **not** do is render the blocked body's `message`. By the time the poll
+/// handler chose the `tmux` branch it had already re-resolved the pane, so that sentence
+/// is stale news -- drawing 「開いていた画面が見つかりません」 over a live connection is a
+/// lie in the other direction. `.unrecognized` is the honest reading: this phone has no
+/// classification for this screen. `composerEnabled` and `interruptEnabled` both already
+/// treat that as "leave the capability alone", which is also where the server puts the
+/// real guard -- it refuses a doomed send with a 409 carrying the reason in its own words.
+///
+/// Declared in an extension, not the struct body: an initializer inside the body would
+/// suppress the memberwise `ScreenBody(classification:)` that `PollFixture` builds with.
+extension ScreenBody {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        classification = try container.decodeIfPresent(Classification.self, forKey: .classification)
+            ?? .unrecognized
+    }
+}
+
 extension ScreenBody.Classification: Decodable {
     init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)

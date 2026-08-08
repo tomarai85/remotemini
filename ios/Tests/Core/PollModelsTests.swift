@@ -263,4 +263,69 @@ final class PollModelsTests: XCTestCase {
         XCTAssertTrue(choice.show)
         XCTAssertEqual(choice.reason, "選択が必要です")
     }
+
+    // MARK: - The `screen` field has TWO server producers, not one
+
+    /// `screen` is filled from `f.screen.body`, and `feedTick` writes that cell as
+    /// `r.pane ? screenBody(f, r.pane) : blockedBody(r)`. The second producer,
+    /// `blockedBody()` in `rc-backend/src/blocked.mjs`, emits
+    /// `{route, reason, candidates, source, message}` and **no `screen` key at all**
+    /// -- measured by calling it, not read off a comment.
+    ///
+    /// The two disagree because `f.screen` is a sticky cell that survives across
+    /// ticks while the poll handler re-resolves the pane per request: a pane that was
+    /// gone at the last screen tick but resolvable at poll time takes the `tmux`
+    /// branch and ships the stale blocked body in `screen`. A throw here does not
+    /// degrade one field -- `PollClient` maps a failed decode to `.unreadable` and
+    /// `PollLoop` answers that with a 20-second wait plus the degradation band, so a
+    /// pane flicker costs Tom a 20-second dead phone.
+    func testBlockedScreenBodyDoesNotMakeTheWholePollResponseUnreadable() throws {
+        // Verbatim `JSON.stringify(blockedBody({reason:"pane-gone", source:"registry"}))`.
+        let response = try decode(PollResponse.self, """
+        { "items": [], "screen": {
+            "route": "blocked", "reason": "pane-gone", "source": "registry",
+            "message": "開いていた画面が見つかりません(閉じられたか、別の会話が使っています)。宛先を確定できないため送信しません。"
+          }, "cursor": "t.a.0.0", "more": false }
+        """)
+        XCTAssertEqual(
+            response.screen?.classification, .unrecognized,
+            "a blocked body carries no classification word -- that is `.unrecognized`, not a reason to throw away the whole response"
+        )
+    }
+
+    func testEveryBlockedReasonTheServerCanSendDecodes() throws {
+        // All 8 of `WIRE_REASONS`; only the shape matters here, so the `message`
+        // bodies are elided -- `reason` and the absent `screen` key are what differ.
+        for reason in [
+            "not-claude", "ambiguous", "unregistered", "stale",
+            "cwd-mismatch", "pane-gone", "panes-unreadable", "tmux-unavailable",
+        ] {
+            XCTAssertNoThrow(
+                try decode(ScreenBody.self, #"{ "route": "blocked", "reason": "\#(reason)", "message": "m" }"#),
+                "blocked reason \(reason)"
+            )
+        }
+    }
+
+    func testANonOptionalClassificationTwinRejectsTheBlockedBodyNegativeControl() throws {
+        // Proves the two cases above can fail: the shape `ScreenBody` used to have
+        // (a required `screen` key) must reject the exact real payload it now accepts.
+        struct RequiredClassificationScreen: Decodable {
+            let classification: ScreenBody.Classification
+            private enum CodingKeys: String, CodingKey { case classification = "screen" }
+        }
+        let blocked = Data(#"{ "route": "blocked", "reason": "pane-gone", "message": "m" }"#.utf8)
+
+        XCTAssertThrowsError(try JSONDecoder().decode(RequiredClassificationScreen.self, from: blocked))
+        XCTAssertNoThrow(try decode(ScreenBody.self, #"{ "route": "blocked", "reason": "pane-gone", "message": "m" }"#))
+    }
+
+    func testLenientClassificationStillReadsARealTmuxScreenNegativeControl() throws {
+        // The other direction: leniency must not turn into "always .unrecognized".
+        // A real `screenBody()` payload must still land on its actual word.
+        let body = try decode(ScreenBody.self, """
+        { "route": "tmux", "pane": "%3", "screen": "CHOICE", "work": "observed", "windowMs": 5600 }
+        """)
+        XCTAssertEqual(body.classification, .choice)
+    }
 }
