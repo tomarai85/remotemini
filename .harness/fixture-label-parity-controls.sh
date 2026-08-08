@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/test/fixture-labels-producible.test.mjs rc-backend/src/view.mjs ios/Sources/Core/SessionsListingFixture.swift
+# controls-for: rc-backend/test/fixture-labels-producible.test.mjs rc-backend/src/view.mjs ios/Sources/Core/SessionsListingFixture.swift ios/Sources/Core/PollFixture.swift
 #
 # 何を守る対照か —— **電話の見た目を確かめる時に使う fixture が、本番より綺麗な文字列を
 # 出していない事**。
@@ -14,6 +14,13 @@
 #   `送れない` は `BLOCKED_TAG` に個別の札を持たない reason の**既定形**で、本番が実際に
 #   出す。数え違いの原因は検査の側(種類ごとに代表を1つ決めてバイト一致を要求した)で、
 #   その形は下の「検査自身の陰性対照」が今は常に見張っている。
+#
+# ★同じ形が同日中にもう1件出た(S8-20)。会話画面の選択カードは `PollFixture.swift` に
+#   手で書いてあり、その escape ボタンは `中止(Escape)` と名乗っていた —— rc-backend の
+#   何処にも無い文字列で、本番は `CHOICE_KEY_LABEL` の生の `Escape` 一語だった。
+#   更に悪い事に、Sprint 7 に「画面を見て」直した割り込みの注意文が、その実在しない
+#   ボタンを指していた = **偽の画面を根拠に本物の設計判断をしていた**。
+#   だから此の対照は一覧(`routeLabel`)と選択カード(`choiceView`)の両方を張る。
 #
 # 検査(`fixture-labels-producible.test.mjs`)は書いた。だが検査が在る事は、その検査が
 # ズレを止める事を意味しない。この対照はズレを1つずつ植え直して、そのたびに赤が出る事を
@@ -39,9 +46,10 @@ WORK="$(mktemp -d -t rc-fixture-label-parity)"
 trap 'find "$WORK" -type f -print0 2>/dev/null | xargs -0 /bin/rm -f 2>/dev/null; /bin/rm -rf "$WORK" 2>/dev/null' EXIT
 
 FIXTURE="ios/Sources/Core/SessionsListingFixture.swift"
+POLLF="ios/Sources/Core/PollFixture.swift"
 TESTF="rc-backend/test/fixture-labels-producible.test.mjs"
 
-for f in "$FIXTURE" "$TESTF" rc-backend/test/subtree.mjs rc-backend/src/view.mjs DESIGN.md; do
+for f in "$FIXTURE" "$POLLF" "$TESTF" rc-backend/test/subtree.mjs rc-backend/src/view.mjs DESIGN.md; do
     if [ ! -f "$ROOT/$f" ]; then
         echo "UNMEASURED  読む file が無い: $f"
         exit 2
@@ -51,7 +59,7 @@ done
 /bin/mkdir -p "$WORK/rc-backend/src" "$WORK/rc-backend/test" "$WORK/ios/Sources/Core"
 /bin/cp "$ROOT"/rc-backend/src/*.mjs "$WORK/rc-backend/src/"
 /bin/cp "$ROOT/$TESTF" "$ROOT/rc-backend/test/subtree.mjs" "$WORK/rc-backend/test/"
-/bin/cp "$ROOT/$FIXTURE" "$WORK/ios/Sources/Core/"
+/bin/cp "$ROOT/$FIXTURE" "$ROOT/$POLLF" "$WORK/ios/Sources/Core/"
 # 根の目印。`subtree.mjs` は此の1本の実在だけで「親が本物か」を決める。
 /bin/cp "$ROOT/DESIGN.md" "$WORK/DESIGN.md"
 
@@ -161,6 +169,36 @@ probe "行を1つも拾えなくする(錨が働くか)" "$TESTF" \
     'const re = /kind:\s*\.(\w+)@@@never@@@/g;'
 
 echo
+echo "== 選択カードの札(S8-20。同じ形が別の fixture で出た) =="
+
+# ⑥ 起票時の実物そのもの。本番に無い「綺麗な」escape の札を植え直す。
+probe "escape の札が本番に無い形になる(起票時の実物)" "$POLLF" \
+    'ChoiceButton(key: "escape", label: "Escape(中止)")' \
+    'ChoiceButton(key: "escape", label: "中止(Escape)")'
+
+# ⑦ 向きが逆のズレ。fixture は触らずサーバ側の語だけ動かす。
+probe "サーバ側の escape の語だけが動く(向きが逆)" "rc-backend/src/view.mjs" \
+    'const CHOICE_KEY_ACTION = { escape: "中止" };' \
+    'const CHOICE_KEY_ACTION = { escape: "取消" };'
+
+# ⑧ 数字の札。escape だけ見て数字を素通しする検査を弾く。
+probe "数字の札だけがズレる(escape しか見ない検査を弾く)" "$POLLF" \
+    'ChoiceButton(key: "1", label: "1. はい")' \
+    'ChoiceButton(key: "1", label: "1. はい(推奨)")'
+
+# ⑨ 断り文の言い換え。`PollFixture.swift` は「逐語で写す」と自分で書いているが、
+#    それを機械が見張っていた事は一度も無かった。
+probe "断り文を1語だけ言い換える(逐語の約束を機械が見張るか)" "$POLLF" \
+    '電話からは操作を出しません' \
+    '電話からは操作を出せません'
+
+# ⑩ カードを1枚も拾えなくする。⑤ と同じ穴が選択カード側にも在る ——
+#    拾えなければ「比べる物ゼロ = 全部一致」。錨(`blocks.length >= 2`)が止めるか。
+probe "選択カードを1枚も拾えなくする(錨が働くか)" "$TESTF" \
+    'const parts = src.split("ChoiceView(");' \
+    'const parts = src.split("ChoiceView@@@never@@@(");'
+
+echo
 echo "== 正しい別の札は赤にしない(検査自身の陰性対照) =="
 # ★此処が要る理由は、私が実際に踏んだから(2026-08-08)。初版は種類ごとに代表を1つ決めて
 #   バイト一致を要求し、blocked 行の `送れない` を「本番に無い」と赤にした —— 実際には
@@ -186,6 +224,27 @@ else
     [ -f "$WORK/$FIXTURE.orig" ] && restore "$FIXTURE"
 fi
 
+# 選択カード側の陰性対照。escape の**行ごと**落とすのは正しい fixture である ——
+# 鍵の許しはカード毎に違い、数字しか許されない画面は本番に実在する。此処が赤くなる
+# 検査は「常に escape が在る」を要求している事になり、正しい形を落とす側へ倒れている。
+if mutate "$POLLF" \
+    '                    ChoiceButton(key: "escape", label: "Escape(中止)"),
+' \
+    ''; then
+    if run_suite; then
+        echo "  PASS  escape を持たないカードは緑のまま"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL  escape の無いカードを赤にした = 常に escape が在ると決めつけている"
+        FAIL=$((FAIL + 1))
+    fi
+    restore "$POLLF"
+else
+    echo "  UNMEASURED  選択カード側の陰性対照の錨が1箇所に定まらない"
+    UNMEASURED=$((UNMEASURED + 1))
+    [ -f "$WORK/$POLLF.orig" ] && restore "$POLLF"
+fi
+
 echo
 echo "== 飛ばしは緑ではない(部分木の写しを模す) =="
 # `test/mutation-controls.py` は rc-backend だけを写す。その世界では此の検査は
@@ -208,15 +267,17 @@ fi
 #   (`subtree.mjs` の3値の契約 —— 「無い」を「測らなくてよい」に丸めない)。
 echo
 echo "== 親が健在なのに対象が消えたら赤(飛ばしに逃げない) =="
-/bin/mv "$WORK/$FIXTURE" "$WORK/fixture.off"
-if run_suite; then
-    echo "  FAIL  対象が消えたのに緑 = 欠けを『問題なし』に丸めている"
-    FAIL=$((FAIL + 1))
-else
-    echo "  PASS  対象が消えたら赤"
-    PASS=$((PASS + 1))
-fi
-/bin/mv "$WORK/fixture.off" "$WORK/$FIXTURE"
+for gone in "$FIXTURE" "$POLLF"; do
+    /bin/mv "$WORK/$gone" "$WORK/gone.off"
+    if run_suite; then
+        echo "  FAIL  $(basename "$gone") が消えたのに緑 = 欠けを『問題なし』に丸めている"
+        FAIL=$((FAIL + 1))
+    else
+        echo "  PASS  $(basename "$gone") が消えたら赤"
+        PASS=$((PASS + 1))
+    fi
+    /bin/mv "$WORK/gone.off" "$WORK/$gone"
+done
 
 echo
 echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"

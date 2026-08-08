@@ -156,6 +156,18 @@ final class PollFetchingFixture: PollFetching {
     /// paraphrase: this fixture is the only place the phone's rendering of that sentence
     /// can be looked at, and a fixture that reworded it would be checking the wrong
     /// string against the wrong screen.
+    ///
+    /// ★2026-08-08 (監査 S8-20). The same rule binds every `label` below, and it was
+    /// broken here: the escape button read 「中止(Escape)」, a string that exists nowhere
+    /// in rc-backend. `ConversationView` draws `Text(button.label)` verbatim, so the
+    /// screenshots taken off this fixture showed a button production had never emitted --
+    /// and the Sprint 7 wording fix in `ConversationViewModel` was reasoned from that
+    /// screenshot. A fixture written *prettier* than production cannot be caught by
+    /// looking: the review passes, and only the defect stays invisible.
+    ///
+    /// `rc-backend/test/fixture-labels-producible.test.mjs` now feeds these options and
+    /// key kinds back through `choiceView` and requires the buttons here to be in what it
+    /// can emit, so rewording a label without changing the server turns the suite red.
     private static func choiceDisplay(for state: HistoryFetchingFixture.State) -> PollDisplay? {
         switch state {
         case .choice:
@@ -183,7 +195,7 @@ final class PollFetchingFixture: PollFetching {
                 buttons: [
                     ChoiceButton(key: "1", label: "1. はい"),
                     ChoiceButton(key: "2", label: "2. いいえ"),
-                    ChoiceButton(key: "escape", label: "中止(Escape)"),
+                    ChoiceButton(key: "escape", label: "Escape(中止)"),
                 ],
                 digest: "fixture-benign"
             ))

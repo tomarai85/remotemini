@@ -231,15 +231,24 @@ final class ConversationViewModel: ObservableObject {
     /// ★Sprint 7, found by looking at a screenshot rather than by a test.
     ///
     /// This sentence read 「確認待ちの画面では、v1 は電話から中断しません。机で確認して
-    /// ください」 -- and the choice card put a 「中止(Escape)」 button roughly 40 points
-    /// below it. Both statements were *true* (the interrupt path is blocked; the card's
-    /// Escape is a server-allowlisted key), and the screen still read as the app
-    /// contradicting itself, which is worse than either being wrong: a user who cannot
-    /// tell which of two adjacent sentences to believe stops believing both.
+    /// ください」 -- and the choice card put an escape button roughly 40 points below it.
+    /// Both statements were *true* (the interrupt path is blocked; the card's Escape is a
+    /// server-allowlisted key), and the screen still read as the app contradicting
+    /// itself, which is worse than either being wrong: a user who cannot tell which of
+    /// two adjacent sentences to believe stops believing both.
     ///
     /// Every assertion in the suite passed while that was on screen, because each half
     /// was tested against its own rule and nothing tested the pair. The fix is to say
     /// the true thing, which is not 「中断しません」 but 「この button では中断しません」.
+    ///
+    /// ★2026-08-08 (監査 S8-20) -- a correction to this comment, not to the code. The
+    /// screenshot showed that button labelled 「中止(Escape)」, and this comment said so
+    /// for a sprint. Production never emitted that string: it came from
+    /// `PollFixture.swift`, hand-written prettier than the server, whose escape label was
+    /// the bare `Escape`. So the sentence below sent the user to 「下の選択肢」 on a card
+    /// where nothing said 中止. The branch was right; the screen it was drawn from was
+    /// not real. `view.mjs` now emits `Escape(中止)` and a backend test pins these
+    /// fixtures to what the server can actually produce.
     var interruptDisabledReason: String? {
         guard !interruptEnabled else { return nil }
         // `visibleChoice`, not `choiceView`: a card the screen is not drawing cannot be

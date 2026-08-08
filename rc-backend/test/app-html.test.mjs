@@ -437,7 +437,7 @@ test("★実行: 良性メニューで、実在する選択肢の数だけボタ
   render(clone(MENU));
   const bs = buttonsIn(box);
   assert.deepEqual(bs.map((b) => b.textContent), [
-    "1. Opus 5", "2. Sonnet 5", "3. Haiku 4.5", "Enter(2. Sonnet 5 で決定)", "Escape",
+    "1. Opus 5", "2. Sonnet 5", "3. Haiku 4.5", "Enter(2. Sonnet 5 で決定)", "Escape(中止)",
   ]);
   assert.ok(box.children.some((n) => n.className === "choice-head"),
     "何を選ぶ画面なのかの見出しが出ていない");

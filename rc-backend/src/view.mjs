@@ -513,8 +513,24 @@ const CHOICE_BLOCKED = {
     "選択待ちですが、メニューの形を読み取れませんでした。操作は出しません。画面を確認してください。",
 };
 
-/** 打鍵 -> ボタンに出す語。数字は選択肢の本文が付くのでここには無い。 */
+/** 打鍵 -> ボタンに出す鍵の名。数字は選択肢の本文が付くのでここには無い。 */
 const CHOICE_KEY_LABEL = { enter: "Enter", escape: "Escape" };
+
+/**
+ * 鍵の名だけでは何が起きるか分からない鍵に、括弧で足す日本語。
+ *
+ * Enter は「カーソルの選択肢で決定」と、押した先を**その場の値**で名乗れる(下の `at`)。
+ * Escape は押した先が画面に依らないので、名乗る語がここにしか無い —— 無ければ
+ * `Escape` の一語で出る事になり、`1. はい` / `Enter(1. はい で決定)` と並ぶカードの中で
+ * **そこだけ英語の鍵名**になる。
+ *
+ * ★2026-08-08(監査 S8-20)。これが無かった間、`PollFixture.swift` は `中止(Escape)` と
+ *   書いていた —— rc-backend の何処にも無い文字列で、電話は札をそのまま描くので、
+ *   撮った画面に出ていたその札は**一度も本番に存在した事が無い**。Sprint 7 に
+ *   「画面を見て」直した割り込みの注意文(「中止するなら下の選択肢から選んでください」)は
+ *   その実在しないボタンを指していた。今この表が在るので、その文の指す先が実在する。
+ */
+const CHOICE_KEY_ACTION = { escape: "中止" };
 
 /**
  * poll が運んでくる画面状態 -> 選択の操作面。**純関数**。
@@ -570,9 +586,13 @@ export function choiceView(state) {
     //   (「見た物と押す物が同じ」を、指紋だけでなく**人の目にも**通す)。
     //   カーソルが読めない時は名乗らない — 分からない物を断定しない。
     const at = k === "enter" ? options.find((o) => o.n === c.cursor) : null;
+    // 括弧の中身は、その場で読めた物(Enter)が先、読めなくても言える物(Escape の
+    // `中止`)が後。**両方無い時だけ鍵名だけで出す** —— カーソルの読めない Enter が
+    // 其れで、「Escape だから中止」の様な当て推量を Enter 側へ持ち込まない。
+    const action = at ? `${at.n}. ${at.label} で決定` : CHOICE_KEY_ACTION[k];
     buttons.push({
       key: k,
-      label: at ? `${CHOICE_KEY_LABEL[k]}(${at.n}. ${at.label} で決定)` : CHOICE_KEY_LABEL[k],
+      label: action ? `${CHOICE_KEY_LABEL[k]}(${action})` : CHOICE_KEY_LABEL[k],
     });
   }
   return { ...base, buttons };

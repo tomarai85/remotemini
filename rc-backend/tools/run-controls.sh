@@ -635,12 +635,15 @@ LOCAL_CTLS=(
                                      # 指紋の式は build.sh から切り出して回す = 写しを持たない。
                                      # xcodebuild は回さないので実測 1 秒未満。
     ../.harness/fixture-label-parity-controls.sh
-                                     # ★2026-08-08。電話の一覧 fixture
-                                     # (`ios/Sources/Core/SessionsListingFixture.swift`)の札が、
-                                     # `rc-backend/src/view.mjs` の `routeLabel` が実際に出す文字列と
-                                     # 一致しているか。実測で 5 行中 2 行(tmux / worker)がズレており、
-                                     # worker 行は fixture の方が**綺麗**だった(`ワーカー・実行中` /
-                                     # 本番は `ワーカー・busy`)= 画面を何度見ても欠陥が出て来ない形。
+                                     # ★2026-08-08。電話の fixture に手で書いた札が、
+                                     # `rc-backend/src/view.mjs` が実際に出す文字列と一致しているか。
+                                     # 一覧(`SessionsListingFixture.swift` / `routeLabel`)は 5 行中
+                                     # 2 行(tmux / worker)がズレており、worker 行は fixture の方が
+                                     # **綺麗**だった(`ワーカー・実行中` / 本番は `ワーカー・busy`)。
+                                     # 選択カード(`PollFixture.swift` / `choiceView`)も同日に同じ形で、
+                                     # escape が `中止(Escape)` —— rc-backend に存在しない文字列で、
+                                     # Sprint 7 の割り込み注意文はその実在しないボタンを指していた。
+                                     # = 画面を何度見ても欠陥が出て来ない形(見た目で騙す)。
                                      # 木を跨ぐので `.harness` に置いた(`rc-backend/test/` の宣言は
                                      # rc-backend からの相対に解決されて `ios/…` を名指せない)。
                                      # xcodebuild は回さず node だけ = 実測 2 秒。
