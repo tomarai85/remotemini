@@ -3,9 +3,12 @@
 <!--
   rc-backend 生存監視の launchd 見本(DESIGN §7-P)。
 
-  ★★これは**見本であって、まだどこにも据え付けていない**。
-     観測者を置くノードは艦隊の移動計画が確定してから決める(持って行かない機械に
-     監視を据えるのが、この件で一番間抜けな失敗)。据える時は:
+  ★★2026-08-08、athenas(Friday の Mac mini)へ**実際に据えた**。
+     選んだ根拠は3つとも実測: 眠らない(pmset sleep 0 / autorestart 1)、日本に残る、
+     そして**通知の出し先が Tom が毎朝読んでいる経路そのもの**(morning-brief と同じ
+     bot と channel)。3つ目が yoda の46時間の真因(通知先)に直接効く。
+     edith 自身には絶対に置かない: 対象ごと落ちた時に監視も一緒に死ぬ。
+     別のノードへ据え直す時は:
 
        cp tools/com.fleet.rc-health-observer.plist.example \
           ~/Library/LaunchAgents/com.fleet.rc-health-observer.plist
@@ -44,11 +47,20 @@
     <key>RunAtLoad</key>
     <true/>
 
-    <!-- ★launchd の PATH は素。台本側も絶対パスを使うが、node の場所は設定でも渡す。 -->
+    <!-- ★launchd の PATH は素。台本側も絶対パスを使うが、node の場所は設定でも渡す。
+         `/usr/local/bin` は 2026-08-08 に足した。**足した時に書いた理由は間違っていた**ので
+         測った結果を残す:「athenas の tailscale は /usr/local/bin に在るから、外すと鍵の枝が
+         黙る」と書いたが、対照(新旧2つの PATH で同じ run を撃つ)は**両方とも鳴った**。
+         真相 = この観測者は tailscale を PATH から引いていない。
+         tailnet-key-expiry.sh が /Applications/Tailscale.app の絶対パスで持っており
+         (`RC_TAILSCALE_BIN` で移せる)、health-observer.sh 自身は tailscale を一度も呼ばない。
+         PATH に本当に要るのは curl(/usr/bin)だけで、node は $RC_HEALTH_NODE 側。
+         それでも残すのは、`RC_TAILSCALE_BIN=tailscale` の様に**名前で**渡された時の保険。
+         教訓の方が本体: 見本に理由を書く時も、書いた理由を1回撃って確かめる事。 -->
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 
     <!-- 台本自身が壊れた時の受け皿。台本の通常ログ(RC_HEALTH_LOG)とは別物 —

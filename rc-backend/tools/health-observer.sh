@@ -25,6 +25,15 @@ CONF="${RC_HEALTH_CONF:-$HOME/.rc-backend/observer.conf}"
 
 HOST="${RC_HEALTH_HOST:desk.tailnet.example}"
 URL="${RC_HEALTH_URL:-https://$HOST/healthz}"
+# ★名前解決を迂回する口(既定は空 = 使わない = 従来どおり)。
+#   2026-08-08、athenas に据えようとして見つけた: そのノードは MagicDNS が切れており
+#   (`tailscale debug prefs` の `CorpDNS: false`)、`desk.tailnet.example` を引けない。
+#   その時 curl が返すのは exit 6(名前が引けない)で、**「対象が落ちている」と区別が付かない**。
+#   据えたその日から永久に嘘の赤を出し、閾値で1回鳴ってから黙る —— yoda の 46 時間と同じ形。
+#   ここに tailnet の住所を入れると curl は住所へ繋ぎ、証明書と SNI は $HOST で検証する
+#   (`--resolve`)。**機械の DNS 設定には触らない** = 他の常駐サービスを巻き込まない。
+#   前提: 443(既定の https)。`RC_HEALTH_URL` に別 port を書く時はこの口を使わない事。
+RESOLVE="${RC_HEALTH_RESOLVE:-}"
 THRESHOLD="${RC_HEALTH_THRESHOLD:-3}"
 STATE="${RC_HEALTH_STATE:-$HOME/.rc-backend/health-state.json}"
 NOTIFY="${RC_HEALTH_NOTIFY:-$HOME/bin/discord-notify.sh}"
@@ -318,8 +327,15 @@ check_key_expiry
 # 本体は捨てずに見る: 200 を返すだけの別物(tailscale の受け口や proxy)を「生きている」と
 # 読まない為。★ただし本体を**ログにも通知にも載せない**(会話の情報が混ざる余地を作らない)。
 probe() {
-    local body code
-    body="$(curl -sS -m 8 -w $'\n%{http_code}' "$URL" 2>/dev/null)"; local rc=$?
+    local body code rc
+    # ★`RESOLVE` が空かどうかで**枝を分ける**(配列に入れて展開しない)。
+    #   macOS の /bin/bash は 3.2 で、`set -u` の下では**空配列の `"${a[@]}"` 自体が落ちる**。
+    #   ここは観測の心臓なので、書き方の巧拙より落ちない事を採る。
+    if [ -n "$RESOLVE" ]; then
+        body="$(curl -sS -m 8 --resolve "$HOST:443:$RESOLVE" -w $'\n%{http_code}' "$URL" 2>/dev/null)"; rc=$?
+    else
+        body="$(curl -sS -m 8 -w $'\n%{http_code}' "$URL" 2>/dev/null)"; rc=$?
+    fi
     if [ $rc -ne 0 ]; then echo "ng|curl exit $rc"; return; fi
     code="$(printf '%s' "$body" | tail -1)"
     body="$(printf '%s' "$body" | sed '$d')"
