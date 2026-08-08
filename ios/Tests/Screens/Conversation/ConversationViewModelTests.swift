@@ -202,7 +202,10 @@ final class ConversationViewModelTests: XCTestCase {
     /// until the driving `Task` is cancelled, which is precisely what a long-poll that
     /// is still waiting looks like from `PollLoop`'s side.
     ///
-    /// It exists because the default `pollClient:` is a REAL `PollClient()`, so every
+    /// It exists because the `pollClient:` default used to be a REAL `PollClient()`
+    /// (that default is gone as of 2026-08-08 -- see
+    /// `ios/Sources/Core/ConversationClients.swift` -- but this type is what made the
+    /// suite quiet before it was), so every
     /// test that reached `startPolling()` was firing real requests at the `.invalid`
     /// fixture host. Those never affected an assertion -- but each failure wrote an
     /// `NSURLErrorDomain` line to the process's stdout, and on 2026-08-05 one of them
@@ -239,11 +242,15 @@ final class ConversationViewModelTests: XCTestCase {
     ) -> ConversationViewModel {
         unauthorizedCallCount = 0
         return ConversationViewModel(
-            client: client,
-            pollClient: pollClient,
-            sendClient: sendClient,
-            interruptClient: interruptClient,
-            choiceClient: choiceClient,
+            // 2026-08-08: 口は束で受ける形になった。この helper の引数はそのままで、
+            // 束ねるのは此処1箇所 —— 呼ぶ側(検査 400 本超)は一切変わらない。
+            clients: ConversationClients(
+                history: client,
+                poll: pollClient,
+                send: sendClient,
+                interrupt: interruptClient,
+                choice: choiceClient
+            ),
             // 既定は覚えない実装。本番の `UserDefaults` を検査が触ると、検査どうしが
             // 互いの打ちかけを見る上に開発機に残留物が残る(DESIGN §2.53)。
             draftStore: draftStore,
@@ -1088,6 +1095,52 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertEqual(vm.draft, "", "keepText:false -> cleared, but only after classification")
     }
 
+    /// ★S8-8。`composerEnabled` は `isSending` を見ていないので、飛んでいる 30 秒の間
+    /// composer は生きていて打ち足せる。そこで全部消すと、**送っていない物**が消える。
+    ///
+    /// 見付けたのは検査ではなく S8-7 で撮った1枚 —— 送信中の画面に本文が残って写って
+    /// いて、そこから「では此の間に打ったらどうなるか」が出た。`InFlightUITests` は
+    /// 撮るだけで此処は測れない(作り物の送信は 60 秒返らないので分類まで行かない)。
+    func testTypingDuringAnInFlightSendIsNotClearedBySuccess() async throws {
+        let sender = RecordingSendClient()
+        sender.deliveryDelay = .milliseconds(200)
+        sender.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "送った", keepText: false))]
+        let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sender)
+        vm.draft = "送る分"
+
+        let sending = Task { await vm.send() }
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(vm.isSending, "前提: 本当に飛んでいる最中で打っている")
+        vm.draft = "送る分まだ送っていない分"
+
+        await sending.value
+
+        XCTAssertEqual(sender.sentTexts, ["送る分"], "送ったのは押した時点の本文だけ")
+        XCTAssertEqual(
+            vm.draft, "まだ送っていない分",
+            "keepText:false が消してよいのは送った分だけ。打ち足した分は一度も飛んでいない"
+        )
+    }
+
+    /// 対照。前置きが一致しない = 飛んでいる間に**途中**を書き換えた場合で、
+    /// 送った分がどれか言えない。此処で消しに行くと消し過ぎる側へ倒れるので何もしない。
+    /// (消し損ねは画面に見えて手で消せる。同じ非対称を `clearSentText` が持っている)
+    func testEditingTheMiddleDuringAnInFlightSendClearsNothing() async throws {
+        let sender = RecordingSendClient()
+        sender.deliveryDelay = .milliseconds(200)
+        sender.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "送った", keepText: false))]
+        let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sender)
+        vm.draft = "送る分"
+
+        let sending = Task { await vm.send() }
+        try? await Task.sleep(for: .milliseconds(50))
+        vm.draft = "書き直した分"
+
+        await sending.value
+
+        XCTAssertEqual(vm.draft, "書き直した分", "前置きが一致しないなら消さない")
+    }
+
     func testTextIsTransmittedUnmodifiedIncludingSurroundingWhitespace() async throws {
         let sender = RecordingSendClient()
         sender.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "送った", keepText: false))]
@@ -1107,7 +1160,7 @@ final class ConversationViewModelTests: XCTestCase {
         sender.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "送った", keepText: false))]
         sender.deliveryDelay = .milliseconds(200)
         let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sender)
-        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "前回の結果", keepText: true)))
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "前回の結果", keepText: true)), sentText: "")
         XCTAssertNotNil(vm.sendBanner)
 
         vm.draft = "次"
@@ -1128,7 +1181,7 @@ final class ConversationViewModelTests: XCTestCase {
             keepText: true
         )
 
-        vm.applySendOutcome(.display(display))
+        vm.applySendOutcome(.display(display), sentText: "")
 
         XCTAssertEqual(vm.sendBanner?.text, display.text, "no suffix, no rewording, nothing appended")
         XCTAssertEqual(vm.sendBanner?.tone, .warn)
@@ -1141,9 +1194,9 @@ final class ConversationViewModelTests: XCTestCase {
     func testPhoneWordedBannersAreMarkedAsNotComingFromTheServerNegativeControl() async throws {
         let vm = try await loadedViewModel(screen: "SENDABLE")
 
-        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)))
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)), sentText: "")
         let fromServer = vm.sendBanner
-        vm.applySendOutcome(.unreachable)
+        vm.applySendOutcome(.unreachable, sentText: "")
         let fromPhone = vm.sendBanner
 
         XCTAssertEqual(fromServer?.fromServer, true)
@@ -1158,7 +1211,7 @@ final class ConversationViewModelTests: XCTestCase {
         ]
 
         for (kind, expected) in rows {
-            vm.applySendOutcome(.display(ResultDisplay(kind: kind, text: "t", keepText: true)))
+            vm.applySendOutcome(.display(ResultDisplay(kind: kind, text: "t", keepText: true)), sentText: "")
             XCTAssertEqual(vm.sendBanner?.tone, expected, kind)
         }
     }
@@ -1169,7 +1222,7 @@ final class ConversationViewModelTests: XCTestCase {
         let vm = try await loadedViewModel(screen: "SENDABLE")
         vm.draft = "書いた"
 
-        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)))
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)), sentText: "書いた")
 
         XCTAssertEqual(vm.draft, "")
     }
@@ -1178,7 +1231,7 @@ final class ConversationViewModelTests: XCTestCase {
         let vm = try await loadedViewModel(screen: "SENDABLE")
         vm.draft = "書いた"
 
-        vm.applySendOutcome(.display(ResultDisplay(kind: "refused", text: "今は入れられません", keepText: true)))
+        vm.applySendOutcome(.display(ResultDisplay(kind: "refused", text: "今は入れられません", keepText: true)), sentText: "")
 
         XCTAssertEqual(vm.draft, "書いた")
     }
@@ -1193,7 +1246,7 @@ final class ConversationViewModelTests: XCTestCase {
         let vm = try await loadedViewModel(screen: "SENDABLE")
         vm.draft = "書いた"
 
-        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: nil)))
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: nil)), sentText: "")
 
         XCTAssertEqual(vm.draft, "書いた", "absent keepText is not read as false")
     }
@@ -1205,11 +1258,11 @@ final class ConversationViewModelTests: XCTestCase {
     func testClearingFollowsKeepTextNotKindNegativeControl() async throws {
         let okKeeping = try await loadedViewModel(screen: "SENDABLE")
         okKeeping.draft = "書いた"
-        okKeeping.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "t", keepText: true)))
+        okKeeping.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "t", keepText: true)), sentText: "")
 
         let errorClearing = try await loadedViewModel(screen: "SENDABLE")
         errorClearing.draft = "書いた"
-        errorClearing.applySendOutcome(.display(ResultDisplay(kind: "error", text: "t", keepText: false)))
+        errorClearing.applySendOutcome(.display(ResultDisplay(kind: "error", text: "t", keepText: false)), sentText: "書いた")
 
         XCTAssertEqual(okKeeping.draft, "書いた", #"kind:"ok" with keepText:true must KEEP"#)
         XCTAssertEqual(errorClearing.draft, "", #"kind:"error" with keepText:false must CLEAR"#)
@@ -1221,7 +1274,7 @@ final class ConversationViewModelTests: XCTestCase {
         let vm = try await loadedViewModel(screen: "SENDABLE")
         vm.draft = "書いた"
 
-        vm.applySendOutcome(.unreachable)
+        vm.applySendOutcome(.unreachable, sentText: "")
 
         XCTAssertEqual(vm.draft, "書いた")
         XCTAssertEqual(vm.sendBanner?.tone, .warn)
@@ -1432,10 +1485,10 @@ final class ConversationViewModelTests: XCTestCase {
     func testCancelledChangesNothingAtAll() async throws {
         let vm = try await loadedViewModel(screen: "SENDABLE")
         vm.draft = "書いた"
-        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "前回", keepText: true)))
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "前回", keepText: true)), sentText: "")
         let bannerBefore = vm.sendBanner
 
-        vm.applySendOutcome(.cancelled)
+        vm.applySendOutcome(.cancelled, sentText: "")
 
         XCTAssertFalse(vm.isSending, "the in-flight flag still has to come down")
         XCTAssertEqual(vm.draft, "書いた")
@@ -1446,7 +1499,7 @@ final class ConversationViewModelTests: XCTestCase {
         let vm = try await loadedViewModel(screen: "SENDABLE")
         vm.draft = "書いた"
 
-        vm.applySendOutcome(.unauthorized)
+        vm.applySendOutcome(.unauthorized, sentText: "")
 
         XCTAssertEqual(unauthorizedCallCount, 1)
         XCTAssertEqual(vm.draft, "書いた", "the user is about to make a round trip to Key-entry and back")
@@ -1456,7 +1509,7 @@ final class ConversationViewModelTests: XCTestCase {
     func testSessionNotFoundOnSendTearsTheScreenDown() async throws {
         let vm = try await loadedViewModel(screen: "SENDABLE")
 
-        vm.applySendOutcome(.sessionNotFound)
+        vm.applySendOutcome(.sessionNotFound, sentText: "")
 
         XCTAssertEqual(vm.phase, .notFound)
     }
@@ -1468,7 +1521,7 @@ final class ConversationViewModelTests: XCTestCase {
         vm.draft = "書いた"
         let violation = ResponseContractViolation(status: 202, code: nil)
 
-        vm.applySendOutcome(.contractViolation(violation))
+        vm.applySendOutcome(.contractViolation(violation), sentText: "")
 
         guard case .loaded = vm.phase else {
             return XCTFail("the conversation and its poll loop must survive: this is the one view that can tell the user what happened")
@@ -1492,7 +1545,7 @@ final class ConversationViewModelTests: XCTestCase {
         onLoad.applyInitial(.failure(.contractViolation(violation)))
 
         let onSend = try await loadedViewModel(screen: "SENDABLE")
-        onSend.applySendOutcome(.contractViolation(violation))
+        onSend.applySendOutcome(.contractViolation(violation), sentText: "")
 
         XCTAssertEqual(onLoad.phase, .contractViolation(violation))
         XCTAssertNotEqual(onSend.phase, onLoad.phase)
@@ -2110,7 +2163,7 @@ final class ConversationViewModelTests: XCTestCase {
     /// replaced by 「止める対象がありませんでした。」 reads as the send having failed.
     func testAnInterruptOutcomeNeverTouchesTheSendBanner() async throws {
         let vm = try await loadedViewModel(screen: "BUSY")
-        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)))
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)), sentText: "")
 
         vm.applyInterruptOutcome(.display(ResultDisplay(kind: "warn", text: "止める対象がありませんでした。", keepText: nil)))
 
@@ -2122,7 +2175,7 @@ final class ConversationViewModelTests: XCTestCase {
         let vm = try await loadedViewModel(screen: "BUSY")
         vm.applyInterruptOutcome(.display(ResultDisplay(kind: "ok", text: "止めました(生成が止まったのを確認)。", keepText: nil)))
 
-        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)))
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)), sentText: "")
 
         XCTAssertEqual(vm.interruptBanner?.text, "止めました(生成が止まったのを確認)。")
         XCTAssertEqual(vm.sendBanner?.text, "送った")
@@ -2133,12 +2186,12 @@ final class ConversationViewModelTests: XCTestCase {
     /// both orders, is what a shared slot cannot satisfy.
     func testBothBandsSurviveInEitherOrderNegativeControl() async throws {
         let sendFirst = try await loadedViewModel(screen: "BUSY")
-        sendFirst.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)))
+        sendFirst.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)), sentText: "")
         sendFirst.applyInterruptOutcome(.display(ResultDisplay(kind: "ok", text: "止めました", keepText: nil)))
 
         let interruptFirst = try await loadedViewModel(screen: "BUSY")
         interruptFirst.applyInterruptOutcome(.display(ResultDisplay(kind: "ok", text: "止めました", keepText: nil)))
-        interruptFirst.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)))
+        interruptFirst.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送った", keepText: false)), sentText: "")
 
         XCTAssertEqual(sendFirst.sendBanner?.text, "送った")
         XCTAssertEqual(sendFirst.interruptBanner?.text, "止めました")
@@ -2619,7 +2672,7 @@ final class ConversationViewModelTests: XCTestCase {
         let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sendClient)
 
         // 前の送信の答えを画面に置いてから、次の送信を始める。
-        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送りました。", keepText: false)))
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送りました。", keepText: false)), sentText: "")
         XCTAssertNotNil(vm.sendBanner, "前の答えが出ている所から始める")
 
         vm.draft = "止めて"

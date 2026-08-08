@@ -471,12 +471,13 @@ final class ConversationViewModel: ObservableObject {
     /// the status and the server's own `code` vocabulary word.
     private static let log = Logger(subsystem: "com.tomtim.mobilework", category: "contract")
 
+    /// ★`clients` に既定値が無いのは意図(2026-08-08)。以前は5つの口を別々に受け、
+    /// うち4つの既定が**本物の client** だった —— つまり渡し忘れた口が黙って
+    /// production の挙動になる形で、実際に2度そうなっている。全文は
+    /// `ios/Sources/Core/ConversationClients.swift`。`draftStore` が既定を持たない
+    /// 理由(下の註)と同じ判断を、残りの口へ広げただけ。
     init(
-        client: HistoryFetching,
-        pollClient: PollFetching = PollClient(),
-        sendClient: MessageSending = SendClient(),
-        interruptClient: Interrupting = InterruptClient(),
-        choiceClient: ChoiceSending = ChoiceClient(),
+        clients: ConversationClients,
         draftStore: DraftStoring,
         baseURL: URL,
         apiKey: String,
@@ -485,11 +486,11 @@ final class ConversationViewModel: ObservableObject {
         onUnauthorized: @escaping () -> Void,
         initialLimit: Int = ConversationViewModel.initialLimit
     ) {
-        self.client = client
-        self.pollClient = pollClient
-        self.sendClient = sendClient
-        self.interruptClient = interruptClient
-        self.choiceClient = choiceClient
+        self.client = clients.history
+        self.pollClient = clients.poll
+        self.sendClient = clients.send
+        self.interruptClient = clients.interrupt
+        self.choiceClient = clients.choice
         self.draftStore = draftStore
         self.baseURL = baseURL
         self.apiKey = apiKey
@@ -603,7 +604,7 @@ final class ConversationViewModel: ObservableObject {
             sessionID: sessionID,
             text: text
         )
-        if applySendOutcome(outcome) {
+        if applySendOutcome(outcome, sentText: text) {
             await verifySendByRereading(text: text, entriesBefore: entriesBeforeSend)
         }
     }
@@ -615,8 +616,12 @@ final class ConversationViewModel: ObservableObject {
     /// method が置く帯は途中経過であって答えではない —— 呼んだ側は
     /// `verifySendByRereading` を回して、観測で置き換える義務が在る。文言と戻り値が
     /// 同じ義務を指しているのはわざと: 片方だけ直しても噛み合わなくなる。
+    ///
+    /// `sentText` に既定値を置かないのは S8-8 の要点(下の `clearSentText(_:)`)。
+    /// 「何を送ったか」を知らずに消す口が在ると、消す側は必ず全部消す方へ倒れる ——
+    /// 既定を持たせない事で、呼ぶ側は毎回それを言う事になる。
     @discardableResult
-    func applySendOutcome(_ outcome: SendOutcome) -> Bool {
+    func applySendOutcome(_ outcome: SendOutcome, sentText: String) -> Bool {
         isSending = false
 
         switch outcome {
@@ -688,10 +693,30 @@ final class ConversationViewModel: ObservableObject {
             // unknown `kind` (degrade appearance, never capability) and the same
             // `view.mjs` states as "読めない事は値ではない".
             if display.keepText == false {
-                draft = ""
+                clearSentText(sentText)
             }
             return false
         }
+    }
+
+    /// 消すのは**送った分だけ**(2026-08-08、S8-8)。
+    ///
+    /// 見付かり方が此の method の存在理由なので残す:S8-7 で初めて「送信が飛んでいる
+    /// 最中」の画面を撮り、その1枚に本文 `ping` が composer に残ったまま写っていた。
+    /// 残るのは設計通り(`send()` の doc が言う「分類が終わるまで本文に触らない」)。
+    /// 問題はその**次**で、`composerEnabled` は `isSending` を見ていないから、
+    /// 飛んでいる 30 秒の間ずっと**打ち足せる**。そこで `draft = ""` を実行すると、
+    /// 送った物ではなく**まだ送っていない物**まで消える。
+    ///
+    /// 大きさが違う2つの誤りのうち、`applySendOutcome` 自身が
+    /// 「消してはいけない物を消すのは取り返しがつかない」と書いている方に当たる ——
+    /// つまり此処は、あの節が既に決めていた規則が1箇所だけ実装されていなかった。
+    ///
+    /// 前置きが一致しない時(飛んでいる間に**途中**を書き換えた)は何も消さない。
+    /// 消し損ねは画面に見えて手で消せるが、消し過ぎは戻せない。同じ非対称。
+    private func clearSentText(_ text: String) {
+        guard draft.hasPrefix(text) else { return }
+        draft.removeFirst(text.count)
     }
 
     // MARK: - 結果が分からなかった時、電話が自分で取り直す(DESIGN §2.52)
