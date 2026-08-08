@@ -33,6 +33,15 @@ final class AppState: ObservableObject {
             return AppState(store: NoStoredCredentials(),
                             notices: InMemorySignOutNoticeStore(notice: fixture.notice))
         }
+        // 断りは付かない面(初回の顔)だが、鍵を持たない金庫を渡すのは同じ。
+        // 本物の `KeychainCredentialStore` のままだと、開発機に資格情報が残っている日は
+        // `loadStoredCredentials()` がそれを拾って**一覧画面**が出る —— 鍵入力画面を
+        // 撮りに来た検査が、機械の状態次第で別の画面を撮る事になる。
+        // `ios/Sources/Core/KeyEntryProbeFixture.swift`。
+        if KeyEntryProbeFixture.fromEnvironment() != nil {
+            return AppState(store: NoStoredCredentials(),
+                            notices: InMemorySignOutNoticeStore())
+        }
         #endif
         return AppState()
     }

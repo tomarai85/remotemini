@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: ios/Sources/Core/SessionsListingFixture.swift ios/Sources/Core/HistoryFixture.swift ios/Sources/Core/SignOutNoticeFixture.swift ios/project.yml
+# controls-for: ios/Sources/Core/SessionsListingFixture.swift ios/Sources/Core/HistoryFixture.swift ios/Sources/Core/KeyEntryProbeFixture.swift ios/Sources/Core/SignOutNoticeFixture.swift ios/project.yml
 #
 # ★宣言に HistoryFixture.swift が居るのは 2026-08-06 に測って足したから。この対照が
 #   測るのは**バイナリ全体**に RC_UI_FIXTURE の文字列が無い事なのに、呼ばれる条件は

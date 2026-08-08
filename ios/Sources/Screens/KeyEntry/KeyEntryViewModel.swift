@@ -2,16 +2,71 @@ import Foundation
 
 @MainActor
 final class KeyEntryViewModel: ObservableObject {
+    /// 接続を押した後に走る**段**。順番に2つ在り、片方ずつしか走らない(DESIGN §2.68)。
+    ///
+    /// `CaseIterable` なのは飾りではない: 単体検査が `Probe.allCases.count` と
+    /// 「実際に呼ばれた口の数」を突き合わせる。段を1つ足して呼び忘れる / 呼んだのに
+    /// 段を足し忘れる、のどちらでも赤くなる。
+    enum Probe: CaseIterable {
+        /// 1段目。`healthz` —— この URL にサーバが居るか。
+        case url
+        /// 2段目。`/api/sessions` —— その鍵が通るか。
+        case key
+    }
+
     @Published var baseURLText: String = ""
     @Published var apiKeyText: String = ""
-    @Published var isChecking: Bool = false
+    /// 今どの段に居るか。走っていなければ `nil`。
+    ///
+    /// ★`isChecking: Bool` と別に持たない。2つ持つと「`isChecking == true` なのに
+    /// `probe == nil`」という**在ってはならない状態が書ける**ので、真偽の方を
+    /// 段から導く(下の計算プロパティ)。
+    @Published private(set) var probe: Probe?
     @Published var errorMessage: String?
 
-    private let healthz: HealthzChecking
-    private let sessionsProbe: SessionsAuthChecking
-    private let store: CredentialStore
+    /// 画面側の条件式を1つも書き換えずに済ませる為の計算プロパティ。
+    var isChecking: Bool { probe != nil }
+
+    /// 今出す「確かめています」の一文。走っていなければ `nil`。
+    ///
+    /// ★秒数を字で書かない(DESIGN §2.54 / §2.56 と同じ約束)。本当に待つ長さは
+    /// `HealthzClient` と `SessionsAuthProbe` が `request.timeoutInterval` に入れて
+    /// いる値なので、そこから引く。定数が動いた時に文だけ古いままになる経路を作らない。
+    var inFlightText: String? {
+        guard let probe else { return nil }
+        switch probe {
+        case .url:
+            return Self.urlProbeInFlightText(timeout: BackendSession.interactiveTimeout)
+        case .key:
+            return Self.keyProbeInFlightText(timeout: BackendSession.interactiveTimeout)
+        }
+    }
+
+    /// 1段目の文。
+    ///
+    /// ★2段を1つの文(「最大16秒」)に畳まない。畳むと**どちらが詰まったか**が消える ——
+    /// 旅先ではそこが分かれ道で、1段目で止まるなら tailnet か edith 自体、2段目で
+    /// 止まるなら edith は起きていて rc-backend が詰まっている。直し方が別物。
+    ///
+    /// 続く失敗の文(「サーバに届きません。URL を確認してください」)と語を揃えてある。
+    static func urlProbeInFlightText(timeout: TimeInterval) -> String {
+        "サーバに届くか確かめています…(返事を最大\(Int(timeout))秒待ちます)"
+    }
+
+    /// 2段目の文。
+    ///
+    /// ここへ来た時点で 1段目は**通っている**ので、これは推測ではなく観測の報告。
+    /// 「電話は自分が見た物だけを言う」(DESIGN §2.56)がそのまま守れる。
+    static func keyProbeInFlightText(timeout: TimeInterval) -> String {
+        "鍵が通るか確かめています…(返事を最大\(Int(timeout))秒待ちます)"
+    }
+
+    private let clients: KeyEntryClients
     private let onSaved: (Credentials) -> Void
 
+    /// - Parameter clients: 背後の3つの口。**既定値は無い**(`ios/Sources/Core/KeyEntryClients.swift`)。
+    ///   呼ぶ側が `.live` か `.fixture(stallingAt:)` かを必ず名指しする。
+    ///
     /// - Parameter initialBaseURL: 401 で落とされた時に使っていた URL(DESIGN §2.65)。
     ///   **届いた上で 401 が返った**ので URL が正しい事は観測済み。打ち直させない為に
     ///   欄へ入れて開く。`nil`(初回)なら従来どおり空。
@@ -19,17 +74,12 @@ final class KeyEntryViewModel: ObservableObject {
     ///   ★鍵の側は絶対に入れない。拒まれた鍵を欄に残すと、Tom は「入っているから合って
     ///   いる」と読んで押し、また拒まれる —— 直そうとした迷子を一段深くする。
     ///
-    ///   ★引数の位置が `store` と `onSaved` の**間**なのは呼び出し側の都合。既存の
-    ///   呼び出しは全部 `KeyEntryViewModel(healthz:sessionsProbe:store:) { ... }` の形で
-    ///   末尾 closure を使っているので、末尾に足すと全部壊れる。
-    init(healthz: HealthzChecking = HealthzClient(),
-         sessionsProbe: SessionsAuthChecking = SessionsAuthProbe(),
-         store: CredentialStore = KeychainCredentialStore(),
+    ///   ★引数の位置が `clients` と `onSaved` の**間**なのは呼び出し側の都合。既存の
+    ///   呼び出しは全部末尾 closure を使っているので、末尾に足すと全部壊れる。
+    init(clients: KeyEntryClients,
          initialBaseURL: URL? = nil,
          onSaved: @escaping (Credentials) -> Void) {
-        self.healthz = healthz
-        self.sessionsProbe = sessionsProbe
-        self.store = store
+        self.clients = clients
         self.onSaved = onSaved
         self.baseURLText = initialBaseURL?.absoluteString ?? ""
     }
@@ -48,10 +98,10 @@ final class KeyEntryViewModel: ObservableObject {
             return
         }
 
-        isChecking = true
-        defer { isChecking = false }
+        probe = .url
+        defer { probe = nil }
 
-        switch await healthz.check(baseURL: url) {
+        switch await clients.healthz.check(baseURL: url) {
         case .failure:
             errorMessage = "サーバに届きません。URL を確認してください"
             return
@@ -61,7 +111,9 @@ final class KeyEntryViewModel: ObservableObject {
             print("healthz ok:\(result.ok) pid:\(result.pid)")
         }
 
-        switch await sessionsProbe.check(baseURL: url, apiKey: apiKey) {
+        probe = .key
+
+        switch await clients.sessionsProbe.check(baseURL: url, apiKey: apiKey) {
         case .unreachable:
             errorMessage = "サーバに届きません。URL を確認してください"
         case .unauthorized:
@@ -69,7 +121,7 @@ final class KeyEntryViewModel: ObservableObject {
         case .authorized:
             let credentials = Credentials(baseURL: url, apiKey: apiKey)
             do {
-                try store.save(credentials)
+                try clients.store.save(credentials)
                 onSaved(credentials)
             } catch {
                 errorMessage = "端末に保存できませんでした"

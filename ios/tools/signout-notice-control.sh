@@ -1,9 +1,15 @@
 #!/bin/bash
-# controls-for: ios/Sources/AppState.swift ios/Sources/Core/SignOutNotice.swift ios/Sources/Core/SignOutNoticeFixture.swift ios/Sources/RootView.swift ios/Sources/Screens/KeyEntry/KeyEntryView.swift ios/Sources/Screens/KeyEntry/KeyEntryViewModel.swift ios/Tests/AppStateTests.swift ios/Tests/Core/SignOutNoticeStoreTests.swift ios/Tests/Screens/KeyEntryViewTests.swift ios/Tests/Screens/KeyEntryViewModelTests.swift ios/UITests/KeyEntryUITests.swift
+# controls-for: ios/Sources/AppState.swift ios/Sources/Core/KeyEntryClients.swift ios/Sources/Core/KeyEntryProbeFixture.swift ios/Sources/Core/SignOutNotice.swift ios/Sources/Core/SignOutNoticeFixture.swift ios/Sources/RootView.swift ios/Sources/Screens/KeyEntry/KeyEntryView.swift ios/Sources/Screens/KeyEntry/KeyEntryViewModel.swift ios/Tests/AppStateTests.swift ios/Tests/Core/SignOutNoticeStoreTests.swift ios/Tests/Screens/KeyEntryViewTests.swift ios/Tests/Screens/KeyEntryViewModelTests.swift ios/UITests/KeyEntryUITests.swift
 #
-# 401 で戻された鍵入力画面の負の対照(DESIGN §2.65 / 監査 X2-6)。
+# 鍵入力画面の負の対照。守っている物は2つ在り、**同じ file 群**の上に載っている:
+#   (a) 401 で戻された時の断り(DESIGN §2.65 / 監査 X2-6) …… M1-M9
+#   (b) 接続を押した後の「確かめています」(DESIGN §2.68 / 監査 X2-8) …… M10-M12
 #
-# 何を守るか: 「通っていた鍵が拒まれた」という事実が、disk に書かれてから**画面の
+# ★1本に束ねてあるのは、`staged-controls-gate.sh` が path で対照を選ぶから。別 file に
+#   割ると `KeyEntryViewModel.swift` を1行触るだけで xcodebuild が**2組**走る ——
+#   同じ木・同じ simulator を測るのに費用だけ倍になる。概念の綺麗さより測定の費用を取る。
+#
+# 何を守るか(a): 「通っていた鍵が拒まれた」という事実が、disk に書かれてから**画面の
 # 画素になる**まで4本の継ぎ目を渡る。
 #
 #     SignOutNoticeStoring(UserDefaults)
@@ -35,7 +41,22 @@
 #      ★配線の1行。単体は1本も落ちない。RootView は今後も触られる file なので、
 #        黙って外れた日に気付けるかを測る。
 #
-# 費用(隠さない): xcodebuild を10回(基準1 + 変異9)。うち3回は UI 検査を含むので重い。
+# 何を測るか(b)。此方の継ぎ目は3本:
+#
+#     KeyEntryViewModel.probe(今どの段か)
+#       -> inFlightText が段ごとに別の文を返す
+#         -> body の footer が描く / 欄が .disabled になる
+#
+#   M10 2段目の文を1段目の文に差し替える -> 「段ごとに別の文」が赤
+#       ★同時に文を作る純関数の検査は**緑のまま**。M4 と同じ形の実演で、
+#         「文は正しいが、正しい段に結ばれていない」を純関数側は永久に見ない。
+#   M11 footer が一文を描かない            -> **UI 検査だけ**が赤
+#       ★同時に viewModel 側の段の検査は緑のまま。M8 の相方。
+#   M12 欄の .disabled を外す              -> **UI 検査だけ**が赤
+#       ★同時に単体の「両段で isChecking が立つ」は緑のまま = 単体が届くのは
+#         `isChecking` の値までで、その値が現に欄を止めている事は測れない。
+#
+# 費用(隠さない): xcodebuild を13回(基準1 + 変異12)。うち5回は UI 検査を含むので重い。
 #   実測値は rc-backend/tools/run-controls.sh の登録行に書く。
 #
 # ★目印(INFLIGHT)は ios の変異対照で**共有**する。分けると片方の取り残しを
@@ -76,6 +97,12 @@ WANT_TWO=testWithoutAURLTheSentenceDoesNotClaimTheFieldWasFilled
 WANT_DISK=testANoticeSurvivesTheObjectThatWroteIt
 WANT_NOKEY=testTheRejectedKeyIsNotBroughtBackWithTheURL
 WANT_SCREEN=testTheRejectedKeyNoticeIsActuallyOnTheScreen
+# (b) 「確かめています」の側。
+WANT_STAGES=testEachStageSaysWhichStageItIsWhileItIsRunning
+WANT_TIMEOUT=testTheSentencesAreBuiltFromTheTimeoutTheyAreGiven
+WANT_INFLIGHT=testTheURLStageSaysWhatItIsWaitingFor
+WANT_LOCKED=testTheFieldsCannotBeEditedWhileAStageIsRunning
+WANT_LOCKED_UNIT=testTheFieldsStayLockedAcrossBothStages
 
 ORIG="$WORK/orig"
 mkdir -p "$ORIG"
@@ -260,7 +287,8 @@ if [ "$rc" -ne 0 ]; then
 fi
 BASE_PASSED="$(passed_tests "$BASE_LOG")"
 for w in "$WANT_LEFT" "$WANT_ORDER" "$WANT_SWEEP" "$WANT_CARRIED" "$WANT_SENTENCE" \
-         "$WANT_TWO" "$WANT_DISK" "$WANT_NOKEY" "$WANT_SCREEN"; do
+         "$WANT_TWO" "$WANT_DISK" "$WANT_NOKEY" "$WANT_SCREEN" \
+         "$WANT_STAGES" "$WANT_TIMEOUT" "$WANT_INFLIGHT" "$WANT_LOCKED" "$WANT_LOCKED_UNIT"; do
     if ! has "$BASE_PASSED" "$w"; then
         un "基準で的の検査が緑になっていない: $w"
         echo "    (基準の緑は $(printf '%s' "$BASE_PASSED" | wc -w | tr -d ' ') 本。全文: $BASE_LOG)"
@@ -268,7 +296,7 @@ for w in "$WANT_LEFT" "$WANT_ORDER" "$WANT_SWEEP" "$WANT_CARRIED" "$WANT_SENTENC
         exit 2
     fi
 done
-ok "基準: 的の検査が9本とも緑(この走行の緑は全部で $(printf '%s' "$BASE_PASSED" | wc -w | tr -d ' ') 本)"
+ok "基準: 的の検査が14本とも緑(この走行の緑は全部で $(printf '%s' "$BASE_PASSED" | wc -w | tr -d ' ') 本)"
 
 # ---- 変異 M1: 401 が何も残さない(直す前の姿) ---------------------------------
 # 断りを disk にも memory にも置かない。鍵だけ捨てて白紙の画面に戻る、元の欠陥そのもの。
@@ -310,8 +338,29 @@ mutate_m8() {
     /usr/bin/sed -i '' 's|^            if let noticeText {$|            if let noticeText, noticeText.isEmpty {|' "$KV"
 }
 # ---- 変異 M9: RootView が notice を渡さない -----------------------------------
+# ★探し文は 2026-08-08(監査 X2-8)に付け直した。同じ行に `clients:` が入った日、
+#   古い探し文は静かに当たらなくなる —— それは probe の shasum 検査が UNMEASURED で
+#   捕まえる形なので、赤を緑と読む事にはならない。
 mutate_m9() {
-    /usr/bin/sed -i '' 's|^            KeyEntryView(notice: appState.signOutNotice, onSaved: appState.setCredentials)$|            KeyEntryView(onSaved: appState.setCredentials)|' "$RV"
+    /usr/bin/sed -i '' 's|^            KeyEntryView(clients: keyEntryClients, notice: appState.signOutNotice, onSaved: appState.setCredentials)$|            KeyEntryView(clients: keyEntryClients, onSaved: appState.setCredentials)|' "$RV"
+}
+# ---- 変異 M10: 2段目の文を1段目の文に差し替える -------------------------------
+# 文そのものは2つとも正しいまま。**段との結び**だけを壊す。畳んだ実装
+# (どちらの段でも同じ事を言う)と観測上まったく同じ姿になる。
+mutate_m10() {
+    /usr/bin/sed -i '' 's|^            return Self.keyProbeInFlightText(timeout: BackendSession.interactiveTimeout)$|            return Self.urlProbeInFlightText(timeout: BackendSession.interactiveTimeout)|' "$KM"
+}
+# ---- 変異 M11: footer が一文を描かない ----------------------------------------
+# `inFlightText` は正しく段ごとの文を返し続ける。画面に出ないだけ ——
+# 直す前の「押してから最大16秒空白」がそっくり戻る。
+mutate_m11() {
+    /usr/bin/sed -i '' 's|^                if let inFlight = viewModel.inFlightText {$|                if let inFlight = viewModel.inFlightText, inFlight.isEmpty {|' "$KV"
+}
+# ---- 変異 M12: 確かめている間も欄が打てる -------------------------------------
+# 2行(URL 欄と鍵欄)を同時に外す。片方だけ外す版は「もう片方が守っている」と
+# 読めてしまい、欠陥として弱い。
+mutate_m12() {
+    /usr/bin/sed -i '' 's|^                    .disabled(viewModel.isChecking)$|                    .disabled(false)|' "$KV"
 }
 
 probe() { # $1=名前 $2=変異関数 $3=対象file $4=赤くなるべき検査 $5=(任意)緑のままであるべき検査 $6=(任意)走らせ方
@@ -366,6 +415,9 @@ probe M6-store-forgets-on-disk mutate_m6 "$SN" "$WANT_DISK"   "$WANT_LEFT"
 probe M7-rejected-key-restored mutate_m7 "$KM" "$WANT_NOKEY"
 probe M8-body-draws-nothing    mutate_m8 "$KV" "$WANT_SCREEN" "$WANT_CARRIED" run_screen
 probe M9-rootview-passes-none  mutate_m9 "$RV" "$WANT_SCREEN" "$WANT_CARRIED" run_screen
+probe M10-both-stages-one-line mutate_m10 "$KM" "$WANT_STAGES" "$WANT_TIMEOUT"
+probe M11-footer-draws-nothing mutate_m11 "$KV" "$WANT_INFLIGHT" "$WANT_STAGES" run_screen
+probe M12-fields-stay-editable mutate_m12 "$KV" "$WANT_LOCKED" "$WANT_LOCKED_UNIT" run_screen
 
 # ---- 復元の確認(想定ではなく観測する) ---------------------------------------
 # 此処は trap が走る**前**なので、戻っていなければ此処で言える。
