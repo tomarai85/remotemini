@@ -519,6 +519,31 @@ export function tmuxChildEnv(base = process.env) {
 const NO_SERVER_RE = /no server running|error connecting to/i;
 
 /**
+ * 固まった tmux を諦める時刻。**実測から決めた値**(2026-08-08、サーバが実際に走る edith 上)。
+ *
+ * `list-panes` med 3.4ms / max 4.2ms、`display-message` med 2.7 / max 3.4(ペイン2枚)。
+ * この 2000ms は max の 476 倍で、**異常時にしか発火しない**。
+ *
+ * 丸い数字ではなく、3つの上限のうち一番低い所を取っている:
+ *   ① 電話の読み取り上限 **8 秒**(`BackendSession.swift` の `interactiveTimeout`)。
+ *      tmux が固まった時に一覧経路が叩くのは `listPanes` 1回 + `display-message` 1回 = 2回
+ *      (会話ごとの `capture-pane` は `listPanes` が落ちた時点で丸ごと飛ぶ)。2×2000 = 4 秒。
+ *      8 秒を超えると電話が自分で打ち切って**自分の文**を出す = S8-2 で観測に置き換えた筈の
+ *      場所へ、観測でない文が戻る。
+ *   ② 打鍵の echo 予算 **1500ms**(下の `ECHO_BUDGET_MS`)。`pollScreen` は「1枚撮ってから
+ *      経過を見る」ので、固まった `capture` が1回で 2000ms 使うとその場で予算切れ =
+ *      `composer-mismatch` を返して **Enter を押さない**。5000ms にすると同じ場面で
+ *      pane の鍵を 5 秒握ったまま待つ。
+ *   ③ Codex(2026-08-08)の裁定 = hot path なら 1000〜2000ms が妥当。
+ *
+ * `killSignal` が TERM でないのは、相手が **TERM を無視して固まっている子**だから。
+ * ただし時間切れは**取り消しではない**: `send-keys` は server 側で既に処理された後で
+ * client だけが固まる事が在りうる。この層がキー入力の到達を戻り値で判断していないのは
+ * その為で(必ず画面を撮り直して確かめる)、上限を足してもその非対称は変わらない。
+ */
+const TMUX_TIMEOUT_MS = 2000;
+
+/**
  * 本番で使う tmux ランナー。**locale を被せるのはここ1箇所**。
  *
  * `run` と `runStrict` は失敗の扱いが違う:
@@ -539,7 +564,14 @@ const NO_SERVER_RE = /no server running|error connecting to/i;
  *   省略時 = 分けられない → 接続失敗は投げる(fail-closed)。
  */
 export function makeTmuxRunner({ tmuxBin, exec, quiet = true, env = process.env, socketsPresent = null }) {
-  const call = (args) => exec(tmuxBin, args, { encoding: "utf8", env: tmuxChildEnv(env) });
+  const call = (args) => exec(tmuxBin, args, {
+    encoding: "utf8",
+    env: tmuxChildEnv(env),
+    // ★上限は `run` / `runStrict` の**両方**に効かせる。片方だけに付けると、
+    //   固まる場所によって event loop が止まったり止まらなかったりする。
+    timeout: TMUX_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  });
   return {
     run(args) {
       try {
@@ -554,6 +586,22 @@ export function makeTmuxRunner({ tmuxBin, exec, quiet = true, env = process.env,
         return call(args);
       } catch (e) {
         const stderr = String(e?.stderr || e?.message || "");
+        // ★時間切れを**一番上**で分ける。実測(Node v22.14.0)では code=ETIMEDOUT /
+        //   status=null / **stderr は空**で来るので、下の `NO_SERVER_RE` には当たらない ——
+        //   が、それは「空文字が偶然この正規表現に当たらない」だけの偶然で、正規表現を
+        //   1語足した日に静かに「tmux は動いていない」へ化ける。偶然に寄りかからない。
+        //   `code` は `TMUX_UNAVAILABLE` のまま置く(`blocked.mjs` の `paneFaultReason` が
+        //   code だけを見て `tmux-unavailable` に写し、それが `UNDECIDABLE` に入っている =
+        //   ワーカー経路へ落ちない。落ちると同じ会話に2本目の claude が付いて上書きになる)。
+        //   ★此の枝が無くても routing は既に正しかった(最後の総括枝も TMUX_UNAVAILABLE を
+        //   投げる)。足したのは**文面**で、直す先が「tmux 自体」なのか「固まっている」なのかは
+        //   8000km 先から log しか読めない時に決定的に効く。
+        if (e?.code === "ETIMEDOUT") {
+          throw new TmuxUnavailableError(
+            `tmux が ${TMUX_TIMEOUT_MS}ms で返さないので諦めた(固まっている疑い。signal=${e?.signal ?? "-"})`,
+            stderr,
+          );
+        }
         if (e?.code === "ENOENT") {
           // PATH や設定の誤りでも同じ形で来る。tmux が実在しないと決めつけない。
           throw new TmuxUnavailableError(`tmux を起動できない(実行ファイルが見つからない: ${tmuxBin})`, stderr);

@@ -1241,6 +1241,59 @@ test("★「接続できない」は2つの意味を持つ。ソケットの有�
   assert.throws(() => runner(() => null).runStrict(["list-panes"]), /確かめられない/);
 });
 
+// --- 固まった子を諦める時刻(2026-08-08、監査 R-1) --------------------------------
+//
+// ★この検査は**振る舞いではなく面**を見る。偽の `exec` は、本物の `timeout` option が
+//   書かれていようが居まいが同じ振る舞いをする ——「時間切れの例外を投げる偽 exec」を
+//   置いて緑になっても、それは偽物が投げた事の証明でしかなく、本番の子に上限が付いた
+//   証明には一切ならない。だから `exec` に渡る opts そのものを掴んで数値を見る。
+test("★tmux の子には諦める時刻が要る(`execFileSync` は event loop ごと止める)", () => {
+  const seen = [];
+  const runner = makeTmuxRunner({
+    tmuxBin: "/opt/homebrew/bin/tmux",
+    exec: (_bin, _args, opts) => { seen.push(opts); return "out"; },
+    socketsPresent: () => false,
+  });
+  runner.run(["capture-pane"]);
+  runner.runStrict(["list-panes"]);
+
+  assert.equal(seen.length, 2);
+  for (const opts of seen) {
+    assert.equal(typeof opts.timeout, "number", "上限が無いと、固まった tmux で /healthz まで黙る");
+    assert.ok(opts.timeout > 0 && opts.timeout <= 2000,
+      `実測 max 4.2ms に対する上限。電話の読み取り 8 秒と echo 予算 1500ms の両方より内側に居る事(今: ${opts.timeout})`);
+    assert.equal(opts.killSignal, "SIGKILL", "TERM を無視して固まっている子が相手なので TERM では降りない");
+  }
+  assert.equal(seen[0].env.LC_ALL, "en_US.UTF-8", "上限を足した拍子に locale を落とさない");
+});
+
+test("★時間切れは `TMUX_UNAVAILABLE` のまま。ワーカー経路へ落とさない", () => {
+  // 実測(Node v22.14.0): timeout は code=ETIMEDOUT / status=null / **stderr は空**で来る。
+  // 空の stderr が `NO_SERVER_RE` に当たらないのは偶然なので、そこに寄りかからず先に分岐する。
+  const etimedout = Object.assign(new Error("spawnSync /opt/homebrew/bin/tmux ETIMEDOUT"), {
+    code: "ETIMEDOUT", signal: "SIGKILL", status: null, stderr: "",
+  });
+  const runner = makeTmuxRunner({
+    tmuxBin: "/opt/homebrew/bin/tmux",
+    exec: () => { throw etimedout; },
+    socketsPresent: () => false, // ← 「ソケットが無い = ペイン0 は真」の枝。此処へ落ちたら誤り
+  });
+
+  assert.throws(() => runner.runStrict(["list-panes"]), (e) => {
+    assert.equal(e.code, "TMUX_UNAVAILABLE",
+      "code が変わると blocked.mjs の paneFaultReason が UNDECIDABLE から外れ、同じ会話に2本目の claude が付く");
+    // 「直す先が判る文か」を機械で見るのは無理なので、判る文が満たす**2条件**で当てる。
+    assert.match(e.message, /2000ms/,
+      "諦めた時刻を文に書かないと、log だけを見て「遅い」のか「上限が短すぎる」のか決められない");
+    assert.doesNotMatch(e.message, /異常終了/,
+      "総括枝の「異常終了した(status=? signal=-)」に落ちている = 固まりと crash が同じ文になる");
+    return true;
+  });
+
+  // 画面を撮る系は従来どおり空文字。空 = UNKNOWN = 送信は止まる(安全側)。
+  assert.equal(runner.run(["capture-pane"]), "");
+});
+
 test("★一覧は失敗を飲む run ではなく runStrict を通る", () => {
   let used = null;
   const inj = new TmuxInjector({
