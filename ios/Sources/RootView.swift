@@ -30,12 +30,15 @@ struct RootView: View {
                     // namespace -- bypasses List too, straight to Conversation, so a
                     // screenshot can be taken without a List fixture row to tap.
                     ConversationView(viewModel: ConversationViewModel(
-                        client: HistoryFetchingFixture(state: conversationFixtureState),
-                        // Sprint 4: without this, the poll loop would default to a
-                        // real `PollClient()` and make real network attempts against
-                        // the inert fixture host in the background -- see
-                        // `PollFetchingFixture`'s own doc for the full reasoning.
-                        pollClient: PollFetchingFixture(historyState: conversationFixtureState),
+                        // Sprint 8(2026-08-08): 口を1つずつ渡す形をやめた。以前は
+                        // 履歴と poll だけを差し替えていて、**送信 / 割り込み / 打鍵の
+                        // 3つは既定の本物のまま**残り、押せば `ui-fixture.invalid` へ
+                        // 本当に飛ぶ状態だった。Sprint 4 が poll について此処へ1行
+                        // 足して直した欠陥が、Sprint 5 / 6 / 7 と**3回続けて再発**して
+                        // いた事になる。束は既定値を持たないので、口が増えても
+                        // 検査側を書き忘れるとコンパイルが通らない ——
+                        // `ios/Sources/Core/ConversationClients.swift`。
+                        clients: .fixture(state: conversationFixtureState),
                         // DESIGN §2.53: ここは UI 検査(スクリーンショット)の面。本物の
                         // store を渡すと**開発機の `UserDefaults` に検査の打ちかけが残り**、
                         // 検査どうしが互いの打ちかけを見る。覚えない実装を明示的に渡す。

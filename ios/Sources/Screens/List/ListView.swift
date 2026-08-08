@@ -190,7 +190,7 @@ struct ListView: View {
     /// 正しさを預けない為の形で、`DraftStoreTests` の⑥がそれを固定している。
     private func makeConversationViewModel(for row: SessionRow) -> ConversationViewModel {
         ConversationViewModel(
-            client: HistoryClient(),
+            clients: .live,
             draftStore: UserDefaultsDraftStore(),
             baseURL: baseURL,
             apiKey: apiKey,
