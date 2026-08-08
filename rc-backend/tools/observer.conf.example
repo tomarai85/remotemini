@@ -5,27 +5,44 @@
 #
 # ★この台本は「edith 以外のノード」から叩く物。edith 自身に置くと、edith ごと
 #   落ちた時に監視も一緒に死ぬ = 一番知りたい時に何も鳴らない。
-#   どのノードに置くかは艦隊の移動計画が確定してから決める(まだ据え付けていない)。
+#   実際の据え付け先 = athenas(2026-08-08)。理由は据えた実物の conf に書いてある。
+#
+# ★★全部 `${VAR:-既定}` の形で書く事。素の代入(`VAR="値"`)にしてはいけない。
+#   台本は環境変数を読む**前に**この file を `.` で読むので、素の代入は
+#   **環境変数を上書きする**。つまり「偽の通知先を環境変数で渡して経路を試す」が
+#   成立しなくなり、試したつもりで**本物の通知が飛ぶ**。
+#   2026-08-08 に実際にそれをやった: `RC_HEALTH_NOTIFY` に偽物を export して
+#   `--inject-fail` を3回撃ったが、この file の素の代入に負けて Tom の本物の
+#   Discord へ3通届いた。偽物側の受け皿は空のままで、
+#   「閾値で鳴っていない」という**逆の結論**を出しかけた。
+#   見本が素の代入だと、据える人は全員この穴を踏む。
 
 # 見に行く先。既定のままで edith を見る。
-RC_HEALTH_HOST="desk.tailnet.example"
-# RC_HEALTH_URL="https://$RC_HEALTH_HOST/healthz"   # 既定はこの式。別口に向ける時だけ書く
+RC_HEALTH_HOST="${RC_HEALTH_HOST:desk.tailnet.example}"
+# RC_HEALTH_URL="${RC_HEALTH_URL:-https://$RC_HEALTH_HOST/healthz}"  # 既定はこの式。別口に向ける時だけ書く
+
+# ★名前解決を迂回する住所(既定は空 = 使わない)。
+#   観測者のノードで MagicDNS が切れている時だけ書く。切れていると curl は exit 6 を返し、
+#   それは「対象が落ちている」と区別が付かない = 据えた日から永久に嘘の赤になる。
+#   住所を書くと curl は住所へ繋ぎ、証明書と SNI は $RC_HEALTH_HOST で検証する。
+#   確かめ方: そのノードで `tailscale debug prefs` の `CorpDNS` を見る(false = 切れている)。
+# RC_HEALTH_RESOLVE="${RC_HEALTH_RESOLVE:-100.x.x.x}"
 
 # 何回続けて失敗したら「落ちた」と言うか。10 分毎に叩くので 3 = **約 30 分**。
 # 小さくすると寝ている間の一瞬の網切れで起こされる。大きくすると気付くのが遅れる。
-RC_HEALTH_THRESHOLD=3
+RC_HEALTH_THRESHOLD="${RC_HEALTH_THRESHOLD:-3}"
 
 # 状態(連続失敗の数と、いつから落ちているか)。**消すと数え直しになる**。
-RC_HEALTH_STATE="$HOME/.rc-backend/health-state.json"
+RC_HEALTH_STATE="${RC_HEALTH_STATE:-$HOME/.rc-backend/health-state.json}"
 
 # 通知の出し先。標準入力から本文を受け取る実行可能ファイルなら何でもよい。
-RC_HEALTH_NOTIFY="$HOME/bin/discord-notify.sh"
+RC_HEALTH_NOTIFY="${RC_HEALTH_NOTIFY:-$HOME/bin/discord-notify.sh}"
 
-RC_HEALTH_LOG="$HOME/.rc-backend/health-observer.log"
+RC_HEALTH_LOG="${RC_HEALTH_LOG:-$HOME/.rc-backend/health-observer.log}"
 
 # ★「監視自体が壊れている」時の通知を何秒に1回までにするか(既定 6 時間)。
 #   壊れ方が続くと 10 分毎に鳴り続け、Tom が経路ごと黙らせる = yoda と同じ結末になる。
-RC_HEALTH_BROKEN_EVERY=21600
+RC_HEALTH_BROKEN_EVERY="${RC_HEALTH_BROKEN_EVERY:-21600}"
 
 # node の場所。launchd から起こすと PATH が素なので、**絶対パスで書く**。
-RC_HEALTH_NODE="/opt/homebrew/bin/node"
+RC_HEALTH_NODE="${RC_HEALTH_NODE:-/opt/homebrew/bin/node}"
