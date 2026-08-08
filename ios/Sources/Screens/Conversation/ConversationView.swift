@@ -537,10 +537,24 @@ struct ConversationView: View {
                     // so they are sentences, and a phone-width row would truncate the
                     // very part that says what the key does.
                     ForEach(choice.buttons, id: \.key) { button in
-                        Button {
-                            Task { await viewModel.choose(key: button.key) }
-                        } label: {
-                            HStack(spacing: 6) {
+                        HStack(spacing: 6) {
+                            // 溝。★§2.62: スピナは**ボタンの外**に置く。
+                            //
+                            // 最初はボタンの label の `HStack` の中に在った。回すべき鍵の
+                            // 判定は正しく、押した鍵にだけ出ていたのに、`.disabled` が
+                            // ボタンの subtree ごと淡くするので**スピナも一緒に淡くなった**。
+                            // 撮って測ったら、スピナが居る行と居ない行で一番濃い画素が
+                            // どちらも 212 —— 押した鍵の唯一の手掛かりが、押していない鍵と
+                            // 見分けが付かない状態で出ていた(2026-08-08 実測)。
+                            //
+                            // 文の側に鍵の名を足す案は採らない。この画面は既に
+                            // 「理由」「選べません」「飛んでいます」と3つ文が並んでおり、
+                            // 4つ目を足すと**読む物が増えて手掛かりは埋もれる**。
+                            // 直すのは色ではなく**位置** —— 伏せられる木から出す。
+                            //
+                            // 幅を固定して常に置くのは、回り始めた瞬間に行が横へ
+                            // ずれない為。空でも溝は在る。
+                            ZStack {
                                 // ★§2.56: 押した鍵**だけ**が回る。全部回すと「どれを
                                 // 押したか」が消える —— 打鍵は3操作の中で唯一、同時に
                                 // 複数の的が画面に並ぶ操作なので、ここだけは
@@ -548,15 +562,21 @@ struct ConversationView: View {
                                 if Self.spins(key: button.key, inFlight: viewModel.inFlightChoiceKey) {
                                     ProgressView()
                                 }
+                            }
+                            .frame(width: 20)
+
+                            Button {
+                                Task { await viewModel.choose(key: button.key) }
+                            } label: {
                                 Text(button.label)
                                     .font(.callout)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
+                            .buttonStyle(.bordered)
+                            .disabled(!viewModel.choiceEnabled)
+                            .accessibilityIdentifier("conversation.choiceButton.\(button.key)")
                         }
-                        .buttonStyle(.bordered)
-                        .disabled(!viewModel.choiceEnabled)
-                        .accessibilityIdentifier("conversation.choiceButton.\(button.key)")
                     }
 
                     if let stale = viewModel.staleChoiceReason {
