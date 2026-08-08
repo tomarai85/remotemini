@@ -51,6 +51,55 @@ final class ConversationViewModelTests: XCTestCase {
         }
     }
 
+    /// ★DESIGN §2.54 の対照が要る窓 —— 「要求がまだ飛んでいる**最中**」を開ける stub。
+    ///
+    /// `deliveryDelay` では測れない。あれは 50ms 眠らせて、その間に別の `Task` が走る事を
+    /// **期待**する形なので、読み取りが少しでも遅れれば送信は既に終わっていて、検査は
+    /// 緑のまま何も測らなくなる(壁時計に結果を預けた検査は、緑になった理由を言えない)。
+    ///
+    /// 代わりに、`send` に入った所で MainActor へ跳んで `whileInFlight` を走らせる。
+    /// `ConversationViewModel.send()` は `isSending = true` と `sendBanner = nil` を
+    /// **置いてから**この client を await するので、この closure が走る瞬間が
+    /// 「飛んでいる間」そのもの。眠りも継続も要らず、順序は言語が保証する。
+    ///
+    /// `probeCount` が要るのは、closure が一度も走らない実装(送る前に弾く等)でも
+    /// closure の中の assert は1つも失敗しないから —— **走らなかった検査は緑になる**。
+    private final class ProbingSendClient: MessageSending {
+        var outcome: SendOutcome = .unreachable
+        /// 送信が飛んでいる間に走る。`@MainActor` なのは覗く先が MainActor の ViewModel だから。
+        var whileInFlight: (@MainActor () -> Void)?
+        private(set) var probeCount = 0
+
+        func send(baseURL: URL, apiKey: String, sessionID: String, text: String) async -> SendOutcome {
+            if let whileInFlight {
+                await MainActor.run { whileInFlight() }
+                probeCount += 1
+            }
+            return outcome
+        }
+    }
+
+    /// 同じ仕掛けの `/history` 側。§2.54 が要るのは**取り直しの段**(`isVerifyingSend`)を
+    /// 中から覗く為で、そこは `verifySendByRereading` が `performResync()` を await して
+    /// いる間にしか存在しない。
+    ///
+    /// `whileFetching` は最初の `load()` でも当たってしまうので、**`load()` の後に**
+    /// 差し込む(armed でない間はただの `RecordingClient` として振る舞う)。
+    private final class ProbingHistoryClient: HistoryFetching {
+        var resultQueue: [Result<HistoryResponse, SessionsFetchError>] = []
+        var whileFetching: (@MainActor () -> Void)?
+        private(set) var probeCount = 0
+
+        func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
+            if let whileFetching {
+                await MainActor.run { whileFetching() }
+                probeCount += 1
+            }
+            guard !resultQueue.isEmpty else { return .failure(.unreachable) }
+            return resultQueue.removeFirst()
+        }
+    }
+
     /// The default for every test that is not about sending. Fails loudly rather than
     /// quietly returning something: a history/poll test that reaches the send path has
     /// a wiring bug, and the useful report for that is a named failure, not a plausible
@@ -2408,6 +2457,162 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertEqual(
             reopened.draft, "止めて",
             "★§2.52 は「本文は残してあります」と言う。一覧へ戻って開き直しても本当である事"
+        )
+    }
+
+    // MARK: - DESIGN §2.54: 要求が飛んでいる間、電話は黙らない
+    //
+    // 体験側監査 #4 は「不通が既に分かっているなら、送信を先に断れ」と言う。断らない ——
+    // 到達性の計器を降ろす口は poll しか無く、外れ方が**片側にしか出ない**(通るのに
+    // 断る側にだけ外れる)。構造的に断ると、実際には通る送信が押せなくなる。
+    //
+    // ただし指摘が指していた痛みは本物で、それは断りの不在ではなく、`isSending` の
+    // 最大30秒が **文の1つも無いスピナ**だった事。ここで固定するのはその一文の
+    // **有無・出所・寿命・置き場**であって、文言ではない。
+    //
+    // | 誤実装 | 落とす対照 |
+    // |---|---|
+    // | 飛んでいる間に文が出ない(直す前の姿) | ① |
+    // | 2つの待ちの段が同じ文を出す(段が見分けられない) | ★② |
+    // | 秒数を copy に直書きし、timeout が変わっても文が古いまま | ★③ |
+    // | 結果が出ても文が残る | ④ |
+    // | 飛んでいる間の文を `sendBanner` に入れる | ★⑤ |
+    //
+    // ★① と ★③ は**片方だけでは鎖にならない**。`writeTimeout` は今ちょうど 30 なので、
+    // 文の中に "30" を直書きした実装は①を緑で通る。逆に③だけなら、その関数を画面が
+    // 一度も呼ばない実装が緑で通る。2本で初めて「電話が言った上限 = 実際の上限」を縛る。
+
+    /// ① 飛んでいる間、画面に出る文が在る。しかもそれは `sendInFlightText` が作った物。
+    func testTheInFlightStageSaysSomethingRatherThanSpinningSilently() async throws {
+        let sendClient = ProbingSendClient()
+        sendClient.outcome = .display(ResultDisplay(kind: "ok", text: "送りました。", keepText: false))
+        let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sendClient)
+        vm.draft = "止めて"
+
+        var observed: String?
+        sendClient.whileInFlight = { observed = vm.sendInFlightNotice }
+
+        await vm.send()
+
+        XCTAssertEqual(
+            sendClient.probeCount, 1,
+            "★覗く窓が開かなければ、この検査は緑になるだけで何も測っていない"
+        )
+        XCTAssertEqual(
+            observed,
+            ConversationViewModel.sendInFlightText(timeout: BackendSession.writeTimeout),
+            "★飛んでいる間は黙らない。文は実際の timeout から作った物と同一である事"
+        )
+    }
+
+    /// ★② 続けて起きる2つの待ちの段が、違う事を言う。
+    ///
+    /// 素直な誤実装は `(isSending || isVerifyingSend) ? …` で、これは**両方の段で同じ
+    /// 一文**を出す。画面上は自然に見えるのに、Tom から見ると「まだ送っている」と
+    /// 「送り終わったが届いたか分からない」の区別が消える —— §2.52 が作った区別を
+    /// §2.54 が塗り潰す形になる。
+    func testTheTwoWaitingStagesDoNotSayTheSameThing() async throws {
+        let history = ProbingHistoryClient()
+        history.resultQueue = [
+            .success(HistoryResponse(history: [], truncated: false)), // 最初の load
+            .success(HistoryResponse(history: [], truncated: false)), // §2.52 の取り直し
+        ]
+        let sendClient = ProbingSendClient()
+        // 結果が分からない = `applySendOutcome` が true を返し、取り直しの段へ入る。
+        sendClient.outcome = .unreachable
+
+        let vm = makeViewModel(client: history, sendClient: sendClient)
+        await vm.load()
+        vm.draft = "止めて"
+
+        var inFlight: String?
+        sendClient.whileInFlight = { inFlight = vm.sendInFlightNotice }
+
+        // 取り直しの最中を覗く。`load()` の**後に**差し込むのは、最初から armed だと
+        // 初回の `load()` に当たって、取り直しでない所を測ってしまうから。
+        var whileVerifying: (notice: String?, banner: String?)?
+        history.whileFetching = { whileVerifying = (vm.sendInFlightNotice, vm.sendBanner?.text) }
+
+        await vm.send()
+
+        XCTAssertEqual(sendClient.probeCount, 1)
+        XCTAssertEqual(history.probeCount, 1, "★取り直しが走らなければ、2つ目の段を測っていない")
+        XCTAssertNotNil(inFlight)
+        XCTAssertNotEqual(
+            inFlight, ConversationViewModel.sendUnknownInterim,
+            "飛んでいる間と、飛び終わって取り直している間は、違う事を言う"
+        )
+        XCTAssertNil(
+            whileVerifying?.notice,
+            "★取り直しの段では飛んでいる間の文は消えている(`isSending` にだけ張り付く)"
+        )
+        XCTAssertEqual(
+            whileVerifying?.banner, ConversationViewModel.sendUnknownInterim,
+            "その段で出ているのは §2.52 の途中経過の文"
+        )
+    }
+
+    /// ★③ 文の中の秒数は、渡された timeout から作られている。
+    ///
+    /// 直書きでも①は緑で通る(`writeTimeout` が今ちょうど 30 だから)。ここが
+    /// 「言った上限が実際の上限である」を本当にする1本。
+    func testTheInFlightSentenceIsBuiltFromTheRealTimeout() {
+        let thirty = ConversationViewModel.sendInFlightText(timeout: 30)
+        let fortyFive = ConversationViewModel.sendInFlightText(timeout: 45)
+
+        XCTAssertTrue(thirty.contains("30"), "受け取った秒数が文に出る")
+        XCTAssertTrue(fortyFive.contains("45"), "★別の値を渡せば文の数字も変わる")
+        XCTAssertFalse(fortyFive.contains("30"), "★直書きの 30 が居残っていない事")
+    }
+
+    /// ④ 答えが出た瞬間に、待ちの文は消える。
+    func testTheInFlightLineIsGoneOnceTheOutcomeIsKnown() async throws {
+        let sendClient = ProbingSendClient()
+        sendClient.outcome = .display(ResultDisplay(kind: "ok", text: "送りました。", keepText: false))
+        let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sendClient)
+        vm.draft = "止めて"
+
+        var sawItWhileInFlight = false
+        sendClient.whileInFlight = { sawItWhileInFlight = vm.sendInFlightNotice != nil }
+
+        await vm.send()
+
+        XCTAssertTrue(
+            sawItWhileInFlight,
+            "出ていなかった物が消えても、この検査は何も言っていない"
+        )
+        XCTAssertNil(vm.sendInFlightNotice, "答えが出たら待ちの文は残さない")
+    }
+
+    /// ★⑤ 飛んでいる間の文は `sendBanner` を占領しない。
+    ///
+    /// `send()` 入口の `sendBanner = nil` は**意図**で、理由も其処に書いてある ——
+    /// 前回の「送りました」が飛んでいる送信の下に残ると、古い成功が今回の結果として
+    /// 読まれる。この検査はその意図を機械に写す1本。これが無いと次に読む人が
+    /// 「行を1本増やすより既存の帯に入れる方が簡単」で穴を開け直せる。
+    ///
+    /// 色の理由も同じ所を指す: `ResultDisplay.Tone` は ok / refused / error / warn の
+    /// 4つで**中立が無い**。まだ何も起きていない状態を warn で塗ると、warn という色が
+    /// 「気にしなくていい事」を指し始める —— 一番使われる色を鈍らせる取引になる。
+    func testTheInFlightLineDoesNotOccupyTheSendBanner() async throws {
+        let sendClient = ProbingSendClient()
+        sendClient.outcome = .display(ResultDisplay(kind: "ok", text: "送りました。", keepText: false))
+        let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sendClient)
+
+        // 前の送信の答えを画面に置いてから、次の送信を始める。
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "送りました。", keepText: false)))
+        XCTAssertNotNil(vm.sendBanner, "前の答えが出ている所から始める")
+
+        vm.draft = "止めて"
+        var bannerWhileInFlight: SendBanner?
+        sendClient.whileInFlight = { bannerWhileInFlight = vm.sendBanner }
+
+        await vm.send()
+
+        XCTAssertEqual(sendClient.probeCount, 1, "★覗く窓が開かなければ何も測っていない")
+        XCTAssertNil(
+            bannerWhileInFlight,
+            "★飛んでいる間の帯は空。前回の「送りました」も、今回の途中経過も、其処には置かない"
         )
     }
 }

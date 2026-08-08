@@ -249,6 +249,31 @@ struct ConversationView: View {
                     .accessibilityIdentifier("conversation.interruptDisabledReason")
             }
 
+            // ★DESIGN §2.54: 要求が飛んでいる間の一文。
+            //
+            // **`sendBanner` に入れない。** 理由は2つあり、どちらも構造的:
+            //
+            // 1. `send()` は入口で `sendBanner = nil` を明示的にやっていて、そこには
+            //    理由が書いてある —— 前回の「送りました」が飛んでいる送信の下に残ると、
+            //    古い成功が今回の結果として読まれる。あの空白は事故ではなく設計で、
+            //    ここに文を入れるのはその設計を壊しに行く方向。
+            // 2. `ResultDisplay.Tone` は ok / refused / error / warn の4つで、**中立が
+            //    無い**。まだ何も起きていない状態を warn で塗ると、warn という色が
+            //    「気にしなくていい事」を指し始める —— 一番使われる色を鈍らせる取引。
+            //
+            // なので下の `composerDisabledReason` と同じ、電話が今の状態を説明する
+            // `.secondary` の行に置く。この画面は既に「操作の答え(SendBanner)」と
+            // 「状態の説明(secondary caption)」を型で分けていて、§2.52 の
+            // 「途中経過は答えではない」を**文言でなく置き場所で**守れる。
+            if let notice = viewModel.sendInFlightNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.sendInFlightNotice")
+            }
+
             if let reason = viewModel.composerDisabledReason {
                 // Shown IN ADDITION to the disabled field, not instead of it: a
                 // composer that vanishes tells the user nothing about why, and the two
