@@ -121,9 +121,19 @@ final class ConversationViewModelTests: XCTestCase {
         /// Same reasoning as `RecordingSendClient.deliveryDelay`: without a real
         /// suspension point there is no window in which to observe `isInterrupting`.
         var deliveryDelay: Duration = .zero
+        /// ★2026-08-08(§2.56): `ProbingSendClient.whileInFlight` の複製。新しい仕掛けでは
+        /// なく、送信で既に働いている物を割り込みにも通しただけ —— `interrupt()` は
+        /// `isInterrupting = true` を**置いてから**この client を await するので、
+        /// この closure が走る瞬間が「飛んでいる間」そのもの。壁時計に預けない。
+        var whileInFlight: (@MainActor () -> Void)?
+        private(set) var probeCount = 0
 
         func interrupt(baseURL: URL, apiKey: String, sessionID: String) async -> SendOutcome {
             callCount += 1
+            if let whileInFlight {
+                await MainActor.run { whileInFlight() }
+                probeCount += 1
+            }
             if deliveryDelay > .zero {
                 try? await Task.sleep(for: deliveryDelay)
             }
@@ -149,6 +159,11 @@ final class ConversationViewModelTests: XCTestCase {
         var attemptQueue: [ChoiceAttempt] = []
         private(set) var calls: [(key: String, digest: String)] = []
         var deliveryDelay: Duration = .zero
+        /// ★2026-08-08(§2.56): 割り込み側と同じ複製。`choose()` は
+        /// `inFlightChoiceKey = key` を置いてから await するので、ここが
+        /// 「どの鍵が飛んでいるか」を外から読める唯一の瞬間。
+        var whileInFlight: (@MainActor () -> Void)?
+        private(set) var probeCount = 0
 
         var callCount: Int { calls.count }
 
@@ -156,6 +171,10 @@ final class ConversationViewModelTests: XCTestCase {
             baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String
         ) async -> ChoiceAttempt {
             calls.append((key: key, digest: digest))
+            if let whileInFlight {
+                await MainActor.run { whileInFlight() }
+                probeCount += 1
+            }
             if deliveryDelay > .zero {
                 try? await Task.sleep(for: deliveryDelay)
             }
@@ -2614,5 +2633,191 @@ final class ConversationViewModelTests: XCTestCase {
             bannerWhileInFlight,
             "★飛んでいる間の帯は空。前回の「送りました」も、今回の途中経過も、其処には置かない"
         )
+    }
+
+    // MARK: - DESIGN §2.56: 残る2操作の「飛んでいる間」(S8-6)
+    //
+    // §2.54 は送信だけを直した。残る2つを測った結果が非対称の3段階:
+    //
+    // | 操作 | 飛んでいる間 | 結果不明の取り直しの間 |
+    // |---|---|---|
+    // | 送信 | スピナ + 文 | 文 + ボタン伏せ |
+    // | 割り込み | スピナ、**文なし** | 文 |
+    // | 打鍵 | **スピナも文も無し** | 文 |
+    //
+    // ★**右の列は直さない。**この節は一度「割り込みと打鍵は取り直しの間も無言」と
+    // 書き、`applyInterruptOutcome` の先頭と `.display` 枝しか読まずに結論を出していた。
+    // 実際は `.unreachable` / `.contractViolation` の両方が文を置いている。
+    // 足す物が無い所に足しに行くのは S8-5 で踏んだばかりの穴なので、記録として残す。
+    //
+    // ★秒数の前提も間違っていた: 割り込みと打鍵は `interactiveTimeout`(8秒)ではなく
+    // 送信と同じ `writeTimeout`(30秒)。8秒だと「親切か鬱陶しいか」を測る必要が在ったが、
+    // 30秒なら §2.54 の裁定がそのまま効く = 判断ではなく適用。
+
+    /// ① 割り込みが飛んでいる間、文が出る。しかも `interruptInFlightText` が作った物。
+    func testTheInterruptInFlightStageSaysSomethingRatherThanSpinningSilently() async throws {
+        let interrupter = RecordingInterruptClient()
+        interrupter.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "止めました。", keepText: nil))]
+        let vm = try await loadedViewModel(screen: "BUSY", interruptClient: interrupter)
+
+        var observed: String?
+        interrupter.whileInFlight = { observed = vm.interruptInFlightNotice }
+
+        await vm.interrupt()
+
+        XCTAssertEqual(
+            interrupter.probeCount, 1,
+            "★覗く窓が開かなければ、この検査は緑になるだけで何も測っていない"
+        )
+        XCTAssertEqual(
+            observed,
+            ConversationViewModel.interruptInFlightText(timeout: BackendSession.writeTimeout),
+            "★割り込みも飛んでいる間は黙らない。文は実際の timeout から作った物と同一である事"
+        )
+    }
+
+    /// ① 打鍵側の同じ1本。
+    func testTheChoiceInFlightStageSaysSomethingRatherThanGoingGrey() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [
+            ChoiceAttempt(
+                outcome: .display(ResultDisplay(kind: "ok", text: "押しました。", keepText: nil)),
+                serverDigest: "d-aaa"
+            )
+        ]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON(digest: "d-aaa")
+        )
+
+        var observed: String?
+        choiceClient.whileInFlight = { observed = vm.choiceInFlightNotice }
+
+        await vm.choose(key: "2")
+
+        XCTAssertEqual(choiceClient.probeCount, 1, "★覗く窓が開かなければ何も測っていない")
+        XCTAssertEqual(
+            observed,
+            ConversationViewModel.choiceInFlightText(timeout: BackendSession.writeTimeout),
+            "★打鍵は直す前、スピナすら無く灰色になるだけだった"
+        )
+    }
+
+    /// ★② 3操作が違う事を言う。
+    ///
+    /// 素直な誤実装は `sendInFlightText` を3箇所から呼ぶ事で、それは①を3本とも緑で通す。
+    /// この画面には帯が3本並ぶので、生き残った一文がどの操作の物か読み手が判別できなく
+    /// なる —— `interruptBanner` / `choiceBanner` を別々の帯にした理由と同じ穴。
+    func testTheThreeOperationsDoNotShareOneInFlightSentence() {
+        let t = BackendSession.writeTimeout
+        let sentences = [
+            ConversationViewModel.sendInFlightText(timeout: t),
+            ConversationViewModel.interruptInFlightText(timeout: t),
+            ConversationViewModel.choiceInFlightText(timeout: t),
+        ]
+
+        XCTAssertEqual(Set(sentences).count, 3, "★3操作 3文。どれか2つが同じなら操作が見分けられない")
+
+        // そして「飛んでいる間」と「飛び終わったが分からない間」も、操作ごとに別。
+        XCTAssertNotEqual(sentences[1], ConversationViewModel.interruptUnknownInterim)
+        XCTAssertNotEqual(sentences[2], ConversationViewModel.choiceUnknownInterim)
+    }
+
+    /// ★③ 秒数は渡された timeout から作られている(直書きではない)。
+    ///
+    /// これが無いと、`writeTimeout` が今ちょうど 30 なので "30" を直書きした実装が
+    /// ①を緑で通る。電話が言った上限と実際の上限が食い違う形を塞ぐ1本。
+    func testTheTwoNewInFlightSentencesAreBuiltFromTheRealTimeout() {
+        for make in [ConversationViewModel.interruptInFlightText,
+                     ConversationViewModel.choiceInFlightText] {
+            XCTAssertTrue(make(30).contains("30"), "受け取った秒数が文に出る")
+            XCTAssertTrue(make(45).contains("45"), "★別の値を渡せば文の数字も変わる")
+            XCTAssertFalse(make(45).contains("30"), "★直書きの 30 が居残っていない事")
+        }
+    }
+
+    /// ④ 答えが出たら、待ちの文は消える。残れば「答えの顔をした待ち」になる。
+    func testTheInterruptInFlightLineIsGoneOnceTheOutcomeIsKnown() async throws {
+        let interrupter = RecordingInterruptClient()
+        interrupter.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "止めました。", keepText: nil))]
+        let vm = try await loadedViewModel(screen: "BUSY", interruptClient: interrupter)
+
+        var sawItWhileInFlight = false
+        interrupter.whileInFlight = { sawItWhileInFlight = vm.interruptInFlightNotice != nil }
+
+        await vm.interrupt()
+
+        XCTAssertTrue(sawItWhileInFlight, "出ていなかった物が消えても、この検査は何も言っていない")
+        XCTAssertNil(vm.interruptInFlightNotice)
+    }
+
+    /// ④ 打鍵側。★取り直しへ入る枝(結果不明)でも消える事を測る —— こちらの方が
+    /// 危ない。`applyChoiceAttempt` が `inFlightChoiceKey` を倒し忘れると、
+    /// §2.52 の「取り直しています」の上に「送っています」が重なって残る。
+    func testTheChoiceInFlightLineIsGoneEvenOnThePathThatReportsNothing() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [ChoiceAttempt(outcome: .unreachable, serverDigest: nil)]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON()
+        )
+
+        var sawItWhileInFlight = false
+        choiceClient.whileInFlight = { sawItWhileInFlight = vm.choiceInFlightNotice != nil }
+
+        await vm.choose(key: "1")
+
+        XCTAssertTrue(sawItWhileInFlight, "覗いた時に出ていなければ、消えた事に意味は無い")
+        XCTAssertNil(vm.choiceInFlightNotice, "★結果が分からない枝でも、飛んでいる文は残さない")
+        XCTAssertNotNil(vm.choiceBanner, "代わりに出るのは §2.52 の途中経過(既に在った物)")
+    }
+
+    /// ★⑤ 待ちの文は答えの帯を占領しない。§2.54 の⑤を残り2操作へ。
+    func testTheNewInFlightLinesDoNotOccupyTheAnswerBanners() async throws {
+        let interrupter = RecordingInterruptClient()
+        interrupter.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "止めました。", keepText: nil))]
+        let vm = try await loadedViewModel(screen: "BUSY", interruptClient: interrupter)
+
+        // 前の割り込みの答えを画面に置いてから、次を始める。
+        vm.applyInterruptOutcome(.display(ResultDisplay(kind: "ok", text: "止めました。", keepText: nil)))
+        XCTAssertNotNil(vm.interruptBanner, "前の答えが出ている所から始める")
+
+        var bannerWhileInFlight: SendBanner?
+        interrupter.whileInFlight = { bannerWhileInFlight = vm.interruptBanner }
+
+        await vm.interrupt()
+
+        XCTAssertEqual(interrupter.probeCount, 1, "★覗く窓が開かなければ何も測っていない")
+        XCTAssertNil(bannerWhileInFlight, "★飛んでいる間の帯は空")
+    }
+
+    /// ★⑥ 飛んでいるのが**どの鍵か**を持っている。
+    ///
+    /// 文だけでは足りない理由: 打鍵は3操作の中で唯一、同時に複数の的が画面に並ぶ。
+    /// 「押しています」だけだと、2つ並んだボタンのどちらを押したのかが消える。
+    func testThePressedKeyIsWhatIsRememberedWhileItIsInFlight() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [
+            ChoiceAttempt(
+                outcome: .display(ResultDisplay(kind: "ok", text: "押しました。", keepText: nil)),
+                serverDigest: "d-aaa"
+            )
+        ]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON(digest: "d-aaa")
+        )
+
+        var keyWhileInFlight: String?
+        var derivedWhileInFlight: Bool?
+        choiceClient.whileInFlight = {
+            keyWhileInFlight = vm.inFlightChoiceKey
+            derivedWhileInFlight = vm.isChoosing
+        }
+
+        await vm.choose(key: "2")
+
+        XCTAssertEqual(choiceClient.probeCount, 1)
+        XCTAssertEqual(keyWhileInFlight, "2", "★押した鍵そのもの。`true` ではなく `\"2\"`")
+        XCTAssertEqual(derivedWhileInFlight, true, "`isChoosing` は同じ一つの真実の読み方")
+        XCTAssertNil(vm.inFlightChoiceKey, "答えが出たら忘れる")
+        XCTAssertFalse(vm.isChoosing, "★導出なので、二重に倒す必要が無い = 食い違えない")
     }
 }
