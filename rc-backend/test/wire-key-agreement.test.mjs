@@ -32,6 +32,13 @@ import { stripSwiftComments } from "./swiftsrc.mjs";
 import { stripComments, blockAfter } from "./jssrc.mjs";
 import * as view from "../src/view.mjs";
 import * as blocked from "../src/blocked.mjs";
+import * as wire from "../src/wire.mjs";
+import * as sessions from "../src/sessions.mjs";
+import * as registry from "../src/registry.mjs";
+import { buildListing, unreadableRow } from "../src/sessions.mjs";
+import { registryOnlySessions } from "../src/registry.mjs";
+import { sessionRow } from "../src/wire.mjs";
+import { looksLikeClaudePane } from "../src/inject.mjs";
 
 const SWIFT_ROOT = join(REPO, "ios", "Sources");
 const NEED = [
@@ -43,6 +50,43 @@ const gate = requireOutside(NEED);
 const skip = gate.skip;
 
 // --- 側A: サーバの builder を実際に呼ぶ ---------------------------------------
+
+// 一覧の行に食わせる観測値。`registryOnlySessions` は**採否の判定を通った時だけ**行を出すので、
+// 通る入力を作らないと ② が赤くなる(= 痩せた入力に気付く側の圧力が、そのまま効く)。
+// 生きた登録の形は `test/registry.test.mjs` の通っている fixture をそのまま写した。
+const S_CWD = "/Users/Shared/dev/roundtrip";
+const LISTING_ENTRIES = [{
+  sessionId: "1b5c9362-aaaa-bbbb-cccc-000000000001",
+  projectSlug: "-Users-Shared-dev-roundtrip",
+  mtimeMs: 1000,
+  meta: { entrypoint: "cli", cwd: S_CWD, lastPrompt: "直近の一言", turns: 3, aiTitle: "題", metadataIncomplete: false },
+}];
+const REGISTRY_ARGS = {
+  listing: [],
+  entries: [{ sessionId: "1b5c9362-aaaa-bbbb-cccc-000000000002", pane: "%12", mtimeMs: 1000 }],
+  panes: [{ pane: "%12", command: "2.1.220", tty: "/dev/ttys012", path: S_CWD }],
+  isClaude: looksLikeClaudePane,
+  now: 1000,
+  ttlMs: 5000,
+};
+const UNREADABLE_ARGS = {
+  id: "1b5c9362-aaaa-bbbb-cccc-000000000003",
+  project: "-Users-Shared-dev-roundtrip",
+  updatedAt: "2026-08-08T00:00:00.000Z",
+  errorCode: "TRANSCRIPT_UNREADABLE",
+};
+/** 行の生産者は3本。**和を取らないと `fromRegistryOnly` / `errorCode` が測れない**。 */
+const ROWS = [
+  ...buildListing(LISTING_ENTRIES),
+  ...registryOnlySessions(REGISTRY_ARGS),
+  unreadableRow(UNREADABLE_ARGS),
+];
+const LIVES = [
+  { route: "tmux", pane: "%12", screen: "SENDABLE" },
+  { route: "worker", state: "busy", queued: 1 },
+  { route: "blocked", reason: "no-pane" },
+];
+const SCAN = { scope: "all", limit: 20, files: 42, read: 7, cached: 35, examined: 42 };
 
 /** 枝を割る為の入力。**返り値ではなく枝の数で選ぶ** —— 1本しか通さない表は側Aを痩せさせる。 */
 const CASES = {
@@ -72,9 +116,24 @@ const CASES = {
   choiceResult: [[200, { accepted: true, applied: true }], [400, {}], [409, {}], [404, {}]],
   clearQueueResult: [[200, { dropped: 2 }], [400, {}]],
   paneFaultView: [["panes-unreadable"], ["tmux-unavailable"], ["名乗れない理由"]],
+  buildListing: [[LISTING_ENTRIES], [[]]],
+  registryOnlySessions: [[REGISTRY_ARGS], [{ ...REGISTRY_ARGS, panes: [] }]],
+  unreadableRow: [[UNREADABLE_ARGS]],
+  sessionRow: ROWS.flatMap((r) => LIVES.map((l) => [r, l])),
+  sessionsBody: [
+    [{ sessions: ROWS.map((r) => sessionRow(r, LIVES[0])), scan: SCAN, paneFault: null }],
+    [{ sessions: [], scan: SCAN, paneFault: { reason: "tmux-unavailable", detail: "spawn tmux ENOENT" } }],
+  ],
 };
 
-/** どの module に居るか。原文を読む側(②)も同じ表を使う。 */
+/**
+ * どの module に居るか。原文を読む側(②)も同じ表を使う。
+ *
+ * 3つ目は**吐く literal の直前の目印**(省略時は `export function <名前>(` の直後)。
+ * 引数を分解する書き方(`function f({ a, b })`)だと、既定の目印の直後に来る `{` は
+ * **引数の分解**であって吐く物ではない。そこを読むと鍵が0件になり、②は静かに緑になる。
+ * だから目印を明示し、加えて②で「0件は赤」を測る(目印がズレたら null で赤になる)。
+ */
 const MODULE_OF = {
   routeLabel: ["view", "src/view.mjs"],
   choiceView: ["view", "src/view.mjs"],
@@ -83,8 +142,13 @@ const MODULE_OF = {
   choiceResult: ["view", "src/view.mjs"],
   clearQueueResult: ["view", "src/view.mjs"],
   paneFaultView: ["blocked", "src/blocked.mjs"],
+  buildListing: ["sessions", "src/sessions.mjs", ".map((e) => ("],
+  unreadableRow: ["sessions", "src/sessions.mjs", "export function unreadableRow({ id, project, updatedAt, errorCode }) {"],
+  registryOnlySessions: ["registry", "src/registry.mjs", "out.push("],
+  sessionRow: ["wire", "src/wire.mjs"],
+  sessionsBody: ["wire", "src/wire.mjs", "export function sessionsBody({ sessions, scan, paneFault }) {"],
 };
-const MODULES = { view, blocked };
+const MODULES = { view, blocked, wire, sessions, registry };
 
 /** 入れ子を含めた鍵の道を集める(`options[].n` の形)。 */
 function keyPaths(value, prefix, out) {
@@ -101,13 +165,26 @@ function keyPaths(value, prefix, out) {
   return out;
 }
 
-/** `at` が指す入れ子(`""` = 返り値そのもの / `options[]` = 配列の要素)を取り出す。 */
+/** 物か、物の配列かを、鍵を持つ物の並びに均す。返り値が「行の並び」の builder が居るので要る。 */
+function objects(value) {
+  if (Array.isArray(value)) return value.filter((v) => v && typeof v === "object" && !Array.isArray(v));
+  return value && typeof value === "object" ? [value] : [];
+}
+
+/**
+ * `at` が指す入れ子を取り出す。
+ *   `""`          返り値そのもの(配列なら要素を均す)
+ *   `options[]`   その鍵の配列の要素
+ *   `paneFault`   その鍵の入れ子1つ(null なら0件 = 枝を通っていないだけ)
+ */
 function pluck(value, at) {
-  if (at === "") return value === null || typeof value !== "object" ? [] : [value];
-  const m = /^([A-Za-z_]\w*)\[\]$/.exec(at);
-  assert.ok(m, `at の書き方を知らない: ${at}`);
-  const arr = value?.[m[1]];
-  return Array.isArray(arr) ? arr.filter((v) => v && typeof v === "object") : [];
+  if (at === "") return objects(value);
+  const arr = /^([A-Za-z_]\w*)\[\]$/.exec(at);
+  if (arr) return Array.isArray(value?.[arr[1]]) ? objects(value[arr[1]]) : [];
+  const one = /^([A-Za-z_]\w*)$/.exec(at);
+  assert.ok(one, `at の書き方を知らない: ${at}`);
+  const v = value?.[one[1]];
+  return Array.isArray(v) ? [] : objects(v);
 }
 
 function callAll(name) {
@@ -271,7 +348,13 @@ function phoneTypes() {
 // --- 突き合わせる組 -----------------------------------------------------------
 
 /**
- * `swift` の鍵名 = `builders` を `at` の位置で呼んで出た鍵名。**完全一致**を要求する。
+ * `swift` の鍵名 = `builders` を `at` の位置で呼んで出た鍵名。
+ *
+ * `mode` は既定が `equal`(**完全一致**)。一覧の行と封筒だけは電話が**わざと部分集合**しか
+ * 読まない(行は12鍵吐いて電話は5鍵しか要らない)ので `phone-subset` を許すが、
+ * その差は `serverOnly` に**1つ残らず名前で**書く —— 「電話が読まない鍵が在ってもよい」に
+ * すると、電話が読むべき鍵を1本落とした日も同じ緑になる。増えても減っても赤にする。
+ *
  * 片側にしか無い鍵を許す為の `IGNORED` は**空**のまま置く —— 例外を1つ作った瞬間、
  * 次の1つが「前例が在る」で入る。要るようになったら理由と一緒に此処へ書く。
  */
@@ -282,6 +365,26 @@ const PAIRS = [
   { swift: "ChoiceButton", builders: ["choiceView"], at: "buttons[]" },
   { swift: "SessionsResponse.PaneFault.Display", builders: ["paneFaultView"], at: "" },
   { swift: "ResultDisplay", builders: ["sendResult", "interruptResult", "choiceResult", "clearQueueResult"], at: "" },
+  // ---- 一覧(2026-08-08 / 監査 S8-25 で封筒を `src/wire.mjs` へ切り出して測れるようにした)
+  {
+    swift: "SessionsResponse", builders: ["sessionsBody"], at: "",
+    mode: "phone-subset",
+    // `scan` は診断の観測値。電話は `display.scan` の1行しか描かない(web は生を使う)。
+    serverOnly: ["scan"],
+  },
+  { swift: "SessionsResponse.OuterDisplay", builders: ["sessionsBody"], at: "display" },
+  { swift: "SessionsResponse.PaneFault", builders: ["sessionsBody"], at: "paneFault" },
+  {
+    // 行の生産者は3本(jsonl から / 登録簿だけ / 読めなかった)+ 居場所を足す `sessionRow`。
+    // **和を取る**。1本でも欠かすと、その経路にしか無い鍵(`fromRegistryOnly` / `errorCode`)が
+    // 「電話に無い鍵」ではなく「誰も吐かない鍵」として静かに消える。
+    swift: "SessionRow",
+    builders: ["buildListing", "registryOnlySessions", "unreadableRow", "sessionRow"], at: "",
+    mode: "phone-subset",
+    // 電話が読まないと決めた観測値。描くのは `display` 側(§2.75)。
+    serverOnly: ["project", "cwd", "lastPrompt", "turns", "metadataIncomplete", "readable", "errorCode", "live"],
+  },
+  { swift: "SessionRow.RowDisplay", builders: ["sessionRow"], at: "display" },
 ];
 
 const IGNORED = {};
@@ -296,6 +399,10 @@ const IGNORED = {};
  *   import した瞬間に listen する為 —— ハンドラの中の literal は単体から呼べない。
  *   静的に読めば触れるが、それは「実行して出た鍵」ではなく別種の測定なので、
  *   混ぜずに空けてある。塞ぐなら封筒を builder として切り出す方が先。
+ *
+ * ★一覧の5本(SessionsResponse / OuterDisplay / PaneFault / SessionRow / RowDisplay)は
+ *   2026-08-08(S8-25)に**その順で塞いだ** —— `src/wire.mjs` へ切り出して上の組に移した。
+ *   残りも同じ手が効く。此処に残っているのは「難しいから」ではなく「まだやっていない」。
  */
 const UNPAIRED = {
   PollResponse: "poll の封筒。ハンドラの中の閉包で組まれるので、実行して鍵を出せない",
@@ -307,11 +414,6 @@ const UNPAIRED = {
   HistoryResponse: "履歴の封筒。ハンドラの中で組まれる",
   HistoryEntry: "履歴の1件。封筒と同じくハンドラの中で組まれる",
   "HistoryEntry.EntryDisplay": "履歴の1件の `display`。中身の `who` は `whoOf` が作るが、鍵名を決めるのはハンドラの中",
-  SessionsResponse: "一覧の封筒。ハンドラの中で組まれる",
-  "SessionsResponse.OuterDisplay": "一覧の外側の `display`(`scan`)。中身は `scanLine` が作るが鍵名はハンドラの中",
-  "SessionsResponse.PaneFault": "一覧の障害の封筒(`reason`/`detail`/`display`)。中の `display` だけが下の組で見ている",
-  SessionRow: "一覧の1行の封筒。ハンドラの中で組まれる",
-  "SessionRow.RowDisplay": "行の `display`(`route`/`subtitle`)。中身は builder が作るが鍵名はハンドラの中",
   "SendClient.Envelope": "送信の誤り応答の封筒(`code` + `display`)。`json()` が組む",
   "InterruptClient.Envelope": "割り込みの誤り応答の封筒。`json()` が組む",
   "ChoiceClient.Envelope": "打鍵の誤り応答の封筒。上の2つに `digest` を足した形で、やはり `json()` が組む",
@@ -352,14 +454,17 @@ test("側A: builder は全部呼べて、どれも鍵を1つ以上出す(空の�
 
 test("側A: builder の原文に在る鍵位置の名前は、実行で全部出ている(狭い入力で緑にしない)", () => {
   const short = {};
-  for (const [name, [mod, path]] of Object.entries(MODULE_OF)) {
+  for (const [name, [mod, path, anchor]] of Object.entries(MODULE_OF)) {
     const src = readFileSync(join(REPO, "rc-backend", path), "utf8");
-    const body = blockAfter(src, `export function ${name}(`);
-    assert.ok(body, `${path} に export function ${name}( が無い`);
+    const marker = anchor ?? `export function ${name}(`;
+    const body = blockAfter(src, marker);
+    assert.ok(body, `${path} に ${marker} が無い(書き方が変わったら目印も直す)`);
     const code = stripComments(body);
     const written = new Set();
     for (const m of code.matchAll(/[{,]\s*([A-Za-z_$][\w$]*)\s*:/g)) written.add(m[1]);
     for (const m of code.matchAll(/[{,]\s*"([^"]+)"\s*:/g)) written.add(m[1]);
+    // ★0件を「原文に鍵が無い」と読まない。引数の分解を本文と取り違えた時に此処が静かに緑になる。
+    assert.ok(written.size > 0, `${name} の原文から鍵を1つも読めていない(目印 ${marker} が本文を指していない)`);
     const leaves = emittedLeafNames(name);
     const missing = [...written].filter((k) => !leaves.has(k)).sort();
     if (missing.length) short[name] = missing;
@@ -385,16 +490,26 @@ test("側B: Swift の走査が Decodable 型を取りこぼしていない", { s
 
 // --- ④ 本体: 鍵名が一致する ---------------------------------------------------
 
-test("6組の鍵名が、サーバの実出力と一字一句一致する", { skip }, () => {
+test("11組の鍵名が、サーバの実出力と一字一句一致する", { skip }, () => {
   const t = phoneTypes();
   const drift = {};
   for (const p of PAIRS) {
     const phone = t.keyed.get(p.swift);
     assert.ok(phone, `電話側に ${p.swift} が居ない(改名か削除)`);
     const server = emittedKeys(p.builders, p.at);
+    // 電話が名乗る鍵をサーバが吐いていない = **どの mode でもズレ**。画面が黙って痩せる側。
     const onlyPhone = [...phone.keys].filter((k) => !server.has(k)).sort();
-    const onlyServer = [...server].filter((k) => !phone.keys.has(k)).sort();
-    if (onlyPhone.length || onlyServer.length) drift[p.swift] = { onlyPhone, onlyServer };
+    // サーバにしか無い鍵は、`equal` なら全部ズレ。`phone-subset` なら**宣言と完全一致**を要求する
+    // (増えた = 電話が読み落とした候補。減った = 宣言が古い。どちらも人が見るべき差)。
+    const extra = [...server].filter((k) => !phone.keys.has(k)).sort();
+    const allowed = p.mode === "phone-subset" ? [...p.serverOnly].sort() : [];
+    const onlyServer = p.mode === "phone-subset"
+      ? { got: extra, declared: allowed }
+      : extra;
+    const serverDrift = p.mode === "phone-subset"
+      ? extra.join(" ") !== allowed.join(" ")
+      : extra.length > 0;
+    if (onlyPhone.length || serverDrift) drift[p.swift] = { onlyPhone, onlyServer };
   }
   assert.deepEqual(drift, {}, "電話の Decodable とサーバの出力で鍵名がズレた(復号は通るので、画面が痩せるだけで気付けない)");
 });
@@ -414,7 +529,7 @@ test("走査が見付けた鍵付き型は、突き合わせたか理由を書�
   assert.deepEqual(undeclared, [], "新しい Decodable 型がどちらの箱にも入っていない");
   assert.deepEqual(phantom, [], "宣言に在る型が Swift から消えた(改名なら宣言も直す)");
   assert.equal(found.length, declared.size);
-  assert.ok(paired.length >= 6 && unpaired.length > 0);
+  assert.ok(paired.length >= 11 && unpaired.length > 0);
   for (const [k, v] of Object.entries(UNPAIRED)) assert.ok(v.length >= 10, `${k} の理由が短すぎる`);
 });
 
@@ -423,4 +538,36 @@ test("例外表は空のまま(片側にしか無い鍵を1つも許していな
   const used = new Set(PAIRS.flatMap((p) => p.builders));
   const idle = Object.keys(CASES).filter((n) => !used.has(n)).sort();
   assert.deepEqual(idle, [], "CASES に在るのにどの組でも使われていない builder(測ったつもりの死に枝)");
+});
+
+// --- ⑦ 切り出した builder を、本番のハンドラが本当に通っている --------------------
+
+/**
+ * 封筒を純関数へ出しても、`src/server.mjs` がハンドラの中で literal を組み直せば
+ * 上の照合は**全部飾りになる**(検査は builder を測り、線に出るのは別物)。
+ * 実行では捕まえられない —— server.mjs は import した瞬間 listen するので。だから原文に錨を打つ。
+ */
+test("ハンドラは切り出した builder を通って封筒を組んでいる(直書きへ戻っていない)", () => {
+  const src = stripComments(readFileSync(join(REPO, "rc-backend", "src", "server.mjs"), "utf8"));
+  for (const call of ["sessionsBody({", "sessionRow(", "unreadableRow({"]) {
+    assert.ok(src.includes(call), `src/server.mjs が ${call} を通っていない = 封筒が直書きへ戻り、上の照合が飾りになった`);
+  }
+  assert.match(src, /json\(res,\s*200,\s*sessionsBody\(/, "`/api/sessions` の 200 が `sessionsBody` を通っていない");
+});
+
+test("`phone-subset` の宣言が、緩める言い訳になっていない", () => {
+  for (const p of PAIRS) {
+    if (p.mode === undefined) {
+      assert.equal(p.serverOnly, undefined, `${p.swift}: mode を書かずに serverOnly だけ在る(既定は完全一致)`);
+      continue;
+    }
+    assert.equal(p.mode, "phone-subset", `${p.swift}: 知らない mode`);
+    // 空の `serverOnly` は「完全一致」を回りくどく書いただけ。読む人に mode を疑わせる。
+    assert.ok(Array.isArray(p.serverOnly) && p.serverOnly.length > 0,
+      `${p.swift}: phone-subset なのに serverOnly が空(なら mode を消す)`);
+    assert.equal(new Set(p.serverOnly).size, p.serverOnly.length, `${p.swift}: serverOnly に重複`);
+  }
+  // 部分集合を許した組は**一覧の2本だけ**。増える時は此処が赤くなり、理由を書く手が要る。
+  assert.deepEqual(PAIRS.filter((p) => p.mode === "phone-subset").map((p) => p.swift),
+    ["SessionsResponse", "SessionRow"]);
 });

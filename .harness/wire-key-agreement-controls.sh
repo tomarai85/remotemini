@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/test/wire-key-agreement.test.mjs rc-backend/src/view.mjs rc-backend/src/blocked.mjs ios/Sources/Core/PollModels.swift ios/Sources/Core/SessionsModels.swift ios/Sources/Core/ResultDisplay.swift
+# controls-for: rc-backend/test/wire-key-agreement.test.mjs rc-backend/src/view.mjs rc-backend/src/blocked.mjs rc-backend/src/wire.mjs rc-backend/src/sessions.mjs rc-backend/src/registry.mjs rc-backend/src/server.mjs ios/Sources/Core/PollModels.swift ios/Sources/Core/SessionsModels.swift ios/Sources/Core/ResultDisplay.swift
 #
 # 何を守る対照か —— **電話の `Decodable` が名乗る鍵名と、サーバが実際に吐く鍵名が、
 # 同じ綴りである事**。
@@ -20,7 +20,17 @@
 #   走査が死んでいる可能性は消えない —— だから④は側Aから、①②は側Bから植える。
 #
 # ★「拾えなければ0件 = 全部一致」の穴を、此の repo は何度も踏んでいる。走査の錨を
-#   外す変異(⑧⑨⑩)と、側Aの入力を痩せさせる変異(⑦)を別に持つのはその為。
+#   外す変異(⑧⑨⑩⑲)と、側Aの入力を痩せさせる変異(⑦)を別に持つのはその為。
+#
+# ★2026-08-08(S8-25)、一覧の5本を足した。ここは形が3つ違うので対照も3つ要る:
+#   (a) 行の鍵は**生産者3本の和**(jsonl から / 登録簿だけ / 読めなかった)。1本落とすと
+#       その経路にしか無い鍵が「電話に無い鍵」ではなく「誰も吐かない鍵」として静かに
+#       消える —— ⑰ が其の1本を抜く。
+#   (b) 電話は行の13鍵のうち5鍵しか読まない。差は `serverOnly` に名前で書いてあるので、
+#       **増えても減っても赤**でなければ白紙委任になる —— ⑯⑱ が両方向を植える。
+#       但し縛るのは集合であって並び順ではない(陰性Ⓔ)。
+#   (c) 封筒を純関数へ出しても、`src/server.mjs` が直書きへ戻せば上の照合は全部飾りになる。
+#       server.mjs は import した瞬間 listen するので実行では捕まらない —— ⑳ が原文の錨を外す。
 #
 # ★写しは**根の形を保つ**。`wire-key-agreement.test.mjs` は木の外(`ios/Sources/**`)を
 #   丸ごと走査するので、`rc-backend/` だけを写すと `subtree.mjs` の契約に従って
@@ -41,11 +51,16 @@ trap 'find "$WORK" -type f -print0 2>/dev/null | xargs -0 /bin/rm -f 2>/dev/null
 TESTF="rc-backend/test/wire-key-agreement.test.mjs"
 VIEW="rc-backend/src/view.mjs"
 BLOCKED="rc-backend/src/blocked.mjs"
+WIRE="rc-backend/src/wire.mjs"
+SESSJS="rc-backend/src/sessions.mjs"
+REGJS="rc-backend/src/registry.mjs"
+SERVER="rc-backend/src/server.mjs"
 POLLM="ios/Sources/Core/PollModels.swift"
 SESSM="ios/Sources/Core/SessionsModels.swift"
 RESULTD="ios/Sources/Core/ResultDisplay.swift"
 
-for f in "$TESTF" "$VIEW" "$BLOCKED" "$POLLM" "$SESSM" "$RESULTD" \
+for f in "$TESTF" "$VIEW" "$BLOCKED" "$WIRE" "$SESSJS" "$REGJS" "$SERVER" \
+         "$POLLM" "$SESSM" "$RESULTD" \
          rc-backend/test/subtree.mjs rc-backend/test/swiftsrc.mjs rc-backend/test/jssrc.mjs \
          DESIGN.md; do
     if [ ! -f "$ROOT/$f" ]; then
@@ -158,6 +173,31 @@ probe "電話 ChoiceView の CodingKeys digest が改名される" "$POLLM" \
     "case show, reason, head, options, buttons, digest" \
     "case show, reason, head, options, buttons, sig"
 
+# ⑪ 一覧の行の `Bool?`。**任意の鍵**が改名されても Swift は何も言わない —— `nil` は
+#    「サーバが送ってこなかった」と見分けが付かないので、一覧から札が1種類消えるだけ。
+probe "電話 SessionRow.fromRegistryOnly が改名される" "$SESSM" \
+    "    let fromRegistryOnly: Bool?" \
+    "    let fromRegistryOnlyX: Bool?"
+
+# ⑫ 封筒の一段内側。走査の件数(何本の会話を見たか)が黙って空になる形で、
+#    「一覧が短い理由」を電話が言えなくなる —— 押しても何も起きないボタンに戻る。
+probe "電話 SessionsResponse.OuterDisplay.scan が改名される" "$SESSM" \
+    "        let scan: String" \
+    "        let scanLine: String"
+
+# ⑬ 行の副題。同じ `display` という名前の入れ物が封筒側にも在るので、**入れ子の位置**まで
+#    合っていないと測った事にならない(組は `at: "display"` を2つ持っている)。
+probe "電話 SessionRow.RowDisplay.subtitle が改名される" "$SESSM" \
+    "        let subtitle: String" \
+    "        let subtitleText: String"
+
+# ⑭ ★下の陰性Ⓓ(生産者3本と電話を**そろえて** `title` → `heading`)の相方。片側だけ動かした
+#    木が赤い事を先に押さえていないと、Ⓓ の緑は「両側そろっている」ではなく
+#    「`title` を誰も測っていない」でも同じ顔をする。緑の意味は赤の在処でしか決まらない。
+probe "電話 SessionRow.title だけ改名される(Ⓓ の相方)" "$SESSM" \
+    "    let title: String" \
+    "    let heading: String"
+
 echo
 echo "== サーバの側だけ鍵名が動く =="
 
@@ -174,6 +214,41 @@ probe "サーバ sendResult の成功枝だけ keepText を改名する" "$VIEW"
       keepText: false,' \
     '      text: b.route === "worker" ? "送った(ワーカー)" : "送った",
       keepTextX: false,'
+
+# ⑮ 行に**重ねる**側の鍵。生の行(3生産者)は無傷なので、和を取るだけの検査は
+#    「鍵は全部在る」と読む。落ちるのは札1枚 = 一覧でその会話が今どこに居るかだけ。
+probe "サーバ sessionRow の display.route が改名される" "$WIRE" \
+    "display: { route: routeLabel(live), subtitle: subtitleOf(row) }" \
+    "display: { routeName: routeLabel(live), subtitle: subtitleOf(row) }"
+
+# ⑯ ★`serverOnly` に名前で書いた鍵が**サーバ側で**動く。電話は元から読まないので
+#    画面は1ピクセルも変わらない —— 宣言が「電話が読まない鍵の名簿」として生きているか、
+#    それとも書いた日から誰も見ていない作文かは、此処でしか分からない。
+probe "サーバ unreadableRow の errorCode が改名される(宣言した serverOnly と食い違う)" "$SESSJS" \
+    '    readable: false,
+    errorCode,
+  };' \
+    '    readable: false,
+    errorCodeX: errorCode,
+  };'
+
+# ⑰ ★生産者を**1本だけ**痩せさせる。`fromRegistryOnly` は登録簿だけの経路にしか無いので、
+#    3本の和を取るのを止めた日(或いは此の1本を落とした日)、電話が読む鍵が
+#    「誰も吐かない鍵」に変わる —— 例外は出ず、札が出ないだけ。
+probe "サーバ registryOnlySessions が fromRegistryOnly を落とす" "$REGJS" \
+    '      updatedAt: new Date(e.mtimeMs).toISOString(),
+      fromRegistryOnly: true,
+    });' \
+    '      updatedAt: new Date(e.mtimeMs).toISOString(),
+    });'
+
+# ⑱ ★`phone-subset` が白紙委任でない事。電話が読まない鍵を**新しく**足したら、それは
+#    「電話が読み落とした候補」なので人が見る。此処が緑になる検査は「電話は鍵を無視してよい」
+#    と言っているのと同じで、電話が読むべき鍵を1本落とした日も同じ緑を出す。
+probe "サーバ sessionsBody が宣言していない鍵を1つ増やす" "$WIRE" \
+    "display: { scan: scanLine(scan) }," \
+    "display: { scan: scanLine(scan) },
+    debugTrace: \"x\","
 
 echo
 echo "== 走査から隠れる書き方が増える =="
@@ -236,6 +311,20 @@ probe "測っていない型の名前が本物とズレる" "$TESTF" \
   RecoveryCode: ' \
     '
   RecoveryCodeRenamed: '
+
+# ⑲ ★引数を分解する builder(`function f({ a, b })`)から明示の目印を外す。既定の目印の
+#    直後に来る `{` は**引数の分解**なので、原文からは鍵が0件しか読めない —— ②は
+#    「原文に鍵が無い」と読んで静かに緑になる。0件を赤と言えているかを此処で測る。
+probe "引数を分解する builder の明示の目印が外れる" "$TESTF" \
+    'sessionsBody: ["wire", "src/wire.mjs", "export function sessionsBody({ sessions, scan, paneFault }) {"],' \
+    'sessionsBody: ["wire", "src/wire.mjs"],'
+
+# ⑳ ★封筒を純関数へ出した意味そのもの。ハンドラが直書きへ戻れば、11組の照合は
+#    **全部飾りになる**(検査は builder を測り、線に出るのは別物)。server.mjs は
+#    import した瞬間 listen するので実行では捕まらない —— 原文の錨だけが此処を守る。
+probe "ハンドラが封筒を直書きへ戻す(builder を通らなくなる)" "$SERVER" \
+    "json(res, 200, sessionsBody({ sessions: listing, scan: scanBody, paneFault }));" \
+    "json(res, 200, { sessions: listing, scan: scanBody, paneFault });"
 
 echo
 echo "== 正しい変更は赤にしない(陰性対照) =="
@@ -318,6 +407,51 @@ else
 fi
 /bin/rm -f "$WORK/$NEWENUM"
 
+# Ⓓ 行の鍵を**生産者3本と電話の宣言を全部そろえて**改名する。行は生産者が分かれているので、
+#   Ⓐ(2 file)より1段きつい陰性対照になる —— 1本でも直し忘れれば赤が正しい。
+#   全部そろえた木は本番が実際に取り得るので、緑でなければ「鍵名を今日の姿に固定」した検査。
+/usr/bin/python3 - "$WORK" <<'PYEOF'
+import sys, io, os
+work = sys.argv[1]
+edits = {
+    "rc-backend/src/sessions.mjs": [
+        ("      title: resolveTitle(e.meta, e.sessionId),", "      heading: resolveTitle(e.meta, e.sessionId),"),
+        ('    title: "(読めない)",', '    heading: "(読めない)",'),
+    ],
+    "rc-backend/src/registry.mjs": [('title: "(未発言)",', 'heading: "(未発言)",')],
+    "ios/Sources/Core/SessionsModels.swift": [("    let title: String", "    let heading: String")],
+}
+for rel, pairs in edits.items():
+    p = os.path.join(work, rel)
+    s = io.open(p, encoding="utf-8").read()
+    for frm, to in pairs:
+        if s.count(frm) != 1:
+            sys.stderr.write("anchor not unique: %s / %s\n" % (rel, frm))
+            sys.exit(3)
+        s = s.replace(frm, to)
+    io.open(p, "w", encoding="utf-8").write(s)
+PYEOF
+if [ $? -ne 0 ]; then
+    echo "  UNMEASURED  行の鍵を両側そろえて改名  —— 錨が1箇所に定まらない"
+    UNMEASURED=$((UNMEASURED + 1))
+elif run_suite; then
+    echo "  PASS  行の鍵を生産者3本と電話でそろえて改名するのは緑のまま"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL  そろえた改名を赤にした = 行の鍵名を今日の姿に固定している"
+    FAIL=$((FAIL + 1))
+    /usr/bin/tail -12 "$WORK/out.txt"
+fi
+restore_from_root "$SESSJS"
+restore_from_root "$REGJS"
+restore_from_root "$SESSM"
+
+# Ⓔ 縛っているのは `serverOnly` の**集合**であって並び順ではない。順を要求すると、
+#   鍵を1本足す人が「吐く順に並べ直す」まで赤を見る事になり、宣言が保守されなくなる。
+probe_green "serverOnly の並び順だけを入れ替える" "$TESTF" \
+    '    serverOnly: ["project", "cwd", "lastPrompt", "turns", "metadataIncomplete", "readable", "errorCode", "live"],' \
+    '    serverOnly: ["live", "errorCode", "readable", "metadataIncomplete", "turns", "lastPrompt", "cwd", "project"],'
+
 echo
 echo "== 飛ばしは緑ではない(部分木で無音になる道) =="
 # 木の外が見えない写しでは `requireOutside` が `{ skip: 理由 }` を返し、node は
@@ -348,7 +482,8 @@ fi
 
 echo
 echo "== 対象が消えたら赤(改名・削除を素通りさせない) =="
-for gone in "$POLLM" "$SESSM" "$RESULTD" "$VIEW" "$BLOCKED"; do
+for gone in "$POLLM" "$SESSM" "$RESULTD" "$VIEW" "$BLOCKED" \
+            "$WIRE" "$SESSJS" "$REGJS" "$SERVER"; do
     /bin/mv "$WORK/$gone" "$WORK/$gone.hidden"
     if run_suite; then
         echo "  FAIL  $gone が消えても緑"

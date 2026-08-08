@@ -118,6 +118,28 @@ export function buildListing(entries) {
 }
 
 /**
+ * 読めなかった会話の1行。★読めない会話を黙って消さない。消えると
+ * 「一番長い会話だけが居なくなる」型に戻る。
+ *
+ * `buildListing` の隣に置く理由: 一覧の行を作る生産者は**この file と registry.mjs の
+ * 2箇所だけ**にする。走査の途中(server.mjs のハンドラ)に literal で書くと、鍵名を
+ * 実行して測れない = 電話の Decodable と突き合わせられない(監査 S8-25)。
+ */
+export function unreadableRow({ id, project, updatedAt, errorCode }) {
+  return {
+    id,
+    project,
+    cwd: null,
+    title: "(読めない)",
+    lastPrompt: "",
+    turns: null,
+    updatedAt,
+    readable: false,
+    errorCode,
+  };
+}
+
+/**
  * 会話履歴の抽出(GET /history 用)。user / assistant のテキストと、
  * tool-use は「何を使ったか」の要約1行に潰す(RC の会話ビュー相当の最小形)。
  * tail 側から limit 件。
