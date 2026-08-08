@@ -32,10 +32,19 @@ final class BackendSession {
     /// (20s, `POLL_MAX_WAIT_MS` in `server.mjs`). The client timeout must exceed that
     /// or a normal "nothing happened" 200 reads as a network error.
     ///
-    /// Mirrors the server constant rather than restating 30 by hand, so the two
-    /// numbers cannot drift apart -- that non-drift property is the reason the
+    /// `pollTimeout` derives from this constant rather than restating 30 by hand, so
+    /// those two cannot drift apart -- that non-drift property is the reason the
     /// original shape used ONE timeout for every request, and splitting the timeouts
     /// below keeps it rather than trading it away.
+    ///
+    /// The 20 itself is a different matter, and this comment used to overclaim it
+    /// (corrected 2026-08-08, S8-23): it is a **hand-written copy** of a value that
+    /// lives in another language in another tree, and until that date nothing
+    /// compared the copy to the original. It is now compared, by
+    /// `rc-backend/test/timeout-agreement.test.mjs` -- so raising the server's
+    /// ceiling without raising this one fails the suite instead of shipping a phone
+    /// that abandons every long poll early and reports a normal 200 as a network
+    /// failure.
     static let serverPollMaxWait: TimeInterval = 20
     static let pollTimeout: TimeInterval = serverPollMaxWait + 10
 
