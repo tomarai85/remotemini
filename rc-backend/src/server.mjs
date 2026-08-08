@@ -1355,8 +1355,18 @@ const server = createServer(async (req, res) => {
           route: "tmux", pane: r.pane,
         });
       }
-      const had = manager.interrupt(sessionId);
-      return json(res, 200, { interrupted: had, route: "worker" });
+      // ★2026-08-08、ここも tmux と同じ形に揃えた(§2.64)。旧版は
+      //   `{ interrupted: had }` —— `had` は「止める対象が**居た**か」であって
+      //   「止まったか」ではない。表示層はこれを受けて「止めました(Escape)。」と
+      //   出していたので、SIGTERM を撃っただけの状態が**止まったと読める文**になっていた。
+      //   しかも Escape はこの経路では一度も押されない。tmux 側は 2026-08-03 に
+      //   同じ誤りを直しており、**片方の経路にだけ残っていた**形。
+      const out = await manager.interrupt(sessionId);
+      return json(res, 200, {
+        interrupted: out.stopped === "verified",
+        stopped: out.stopped, reason: out.reason, waitedMs: out.waited,
+        route: "worker",
+      });
     }
 
     if (action === "queue" && req.method === "DELETE") {

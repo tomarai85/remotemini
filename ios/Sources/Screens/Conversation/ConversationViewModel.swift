@@ -856,12 +856,15 @@ final class ConversationViewModel: ObservableObject {
     /// Split out for the same reason as every other `apply…` on this type.
     ///
     /// ★The `.display` arm is one line, and that is the design. Whether the generation
-    /// actually stopped is a distinction with six outcomes on the wire (`verified` /
-    /// `already-done` / `unverified` / `null` / worker-route / refused), and the server
-    /// already renders each into its own sentence -- covered branch by branch in
+    /// actually stopped is a distinction the server makes along two axes -- the outcome
+    /// (`verified` / `already-done` / `unverified` / `null`, plus `refused`) and, since
+    /// 2026-08-08, the *route*, because the two routes press different things: tmux
+    /// presses Escape, the worker sends a stop signal to a child process. The server
+    /// renders every combination into its own sentence -- covered branch by branch in
     /// `test/view.test.mjs`. The phone re-deriving any of it would rebuild the bug the
-    /// server fixed on 2026-08-03, when "Escape was pressed" was being reported as
-    /// 「止めました」.
+    /// server fixed on 2026-08-03 (tmux route) and again on 2026-08-08 (worker route),
+    /// when "Escape was pressed" was being reported as 「止めました」 -- on the worker
+    /// route, where Escape is never pressed at all.
     /// 戻り値は `applySendOutcome` と同じ意味 —— `true` = 結果が分からなかったので、
     /// 呼んだ側が取り直しを回して帯を置き換える(DESIGN §2.52)。
     @discardableResult

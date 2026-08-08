@@ -298,6 +298,10 @@ export class WorkerManager {
       stderrTail: [],
       errBuf: "",
     };
+    // ★「本当に終わった」を**待てる形**で持つ(§2.64)。`entry.dead` は真偽値なので
+    //   「もう死んだか」しか答えられず、「死ぬまで待つ」に使えない。割り込みが
+    //   止まった事を名乗るには後者が要る。解決するのは `onDeath` の1箇所だけ。
+    entry.exited = new Promise((resolve) => { entry._markExited = resolve; });
     this.workers.set(sessionId, entry);
 
     proc.stdout.on("data", (chunk) => {
@@ -340,6 +344,10 @@ export class WorkerManager {
     const onDeath = (code, signal) => {
       if (entry.dead) return;
       entry.dead = true;
+      // ★待っている割り込みを起こすのは**ここだけ**。`_retire` 側(SIGTERM を撃つ所)で
+      //   解決すると「撃った事」を「死んだ事」として名乗る事になり、直そうとしている
+      //   嘘をそのまま作り直す事になる。解決は死の観測点でしか行わない。
+      entry._markExited?.();
       // ★改行の付かなかった最後の一行を、**死の合図より先に**流す(DESIGN §2.45)。
       //   `worker.mjs` は改行でしか行を切らないので、改行の手前で死ぬと最後の行は
       //   `entry.buf` に残ったまま捨てられていた。stderr には `flushStderr` が在るのに
@@ -504,13 +512,55 @@ export class WorkerManager {
    *   両経路で揃えるのは**中の振る舞いではなく turn の終端状態**:
    *   `accepted → delivered | failed(理由)`。どちらも言える形になっていればよく、
    *   駄目なのは「`user_queued` と出した後、**どちらにも落ちない**」= 今日までの姿。
+   *
+   * ★2026-08-08、戻り値を真偽値から4通しへ変えた(§2.64)。旧版は SIGTERM を撃った
+   *   直後に `true` を返し、電話には `view.mjs` が「止めました(Escape)。」と出していた。
+   *   **二重に偽**だった: ①止まった事は誰も観測していない(撃っただけ) ②この経路は
+   *   Escape を押していない(子への SIGTERM)。tmux 経路は 2026-08-03 に同じ誤りを
+   *   直しているのに、**片方の経路にだけ残っていた**。
+   *
+   * ★直す時に前提が1つ引っくり返った。`view.test.mjs` は「ワーカー経路は tmux を
+   *   持たないので画面を撮れない = `stopped` を名乗れない」と書いていたが、これは逆。
+   *   ワーカーは**子プロセスの handle を握っている**ので、画素から推し量る tmux より
+   *   **強い**観測ができる。撮れないのは画面であって、死は撮るまでもなく分かる。
+   *
+   * @returns {Promise<{stopped:("verified"|"unverified"|null), reason:string|null, waited:number}>}
+   *   `verified`   … 子が実際に終了したのを観測した
+   *   `unverified` … SIGTERM は撃ったが、期限内に終了を観測できていない = **まだ止まっていない**
+   *   `null`       … 止める対象がそもそも居ない
+   *
+   * ★`already-done`(tmux 側の4つ目)は**この経路には無い**。子が自力で終わっていれば
+   *   `exit` が届いて Map から外れているので、区別は `null` に畳まれる。値域に名前だけ
+   *   置くと「出るはずなのに出ない値」になり、読む側が到達しない枝を守ってしまう。
    */
-  interrupt(sessionId) {
+  async interrupt(sessionId, { budgetMs } = {}) {
     const e = this.workers.get(sessionId);
-    if (!e) return false;
+    const t0 = this.now();
+    if (!e) return { stopped: null, reason: "not-running", waited: 0 };
+    const exited = e.exited;
     this._retire(sessionId, e, "worker_interrupted");
     this._emit(sessionId, { type: "worker_interrupted" });
-    return true;
+    // ★死を待つ手段そのものが無い entry(`_start` を通らずに作られた物)は、
+    //   **観測できない**が正しい答え。ここで `verified` に倒すと、直したい嘘が
+    //   「待つ物が無い時だけ復活する」形で戻ってくる。
+    if (!exited) return { stopped: "unverified", reason: "no-exit-signal", waited: 0 };
+    // ★期限は既定で「SIGKILL の猶予 + 1 秒」。SIGKILL は握り潰せないので、猶予を過ぎれば
+    //   子は必ず死ぬ —— つまりこの期限を過ぎても死を観測できない場合、疑うべきは子ではなく
+    //   **観測側**(`exit` が来ない = 孫がパイプを持っている等)。だから待ち足すのではなく
+    //   `unverified` で正直に降りる。電話の書き込み側の上限は 30 秒なので余裕がある。
+    const budget = budgetMs ?? this.killGraceMs + 1000;
+    // ★`exited` が**既に**解決している場合でも `await` は 1 tick 遅れるだけで、
+    //   タイマーは張ったまま残らない(下で必ず clear する)。
+    let timer = null;
+    const timeout = new Promise((resolve) => {
+      timer = this.setTimer(() => resolve("timeout"), budget);
+      if (timer && typeof timer.unref === "function") timer.unref();
+    });
+    const who = await Promise.race([exited.then(() => "exited"), timeout]);
+    this.clearTimer(timer);
+    const waited = this.now() - t0;
+    if (who === "exited") return { stopped: "verified", reason: null, waited };
+    return { stopped: "unverified", reason: "still-alive", waited };
   }
 
   /** idle 回収。サーバ層が setInterval で回す(テストでは手動呼び)。 */
