@@ -355,8 +355,22 @@ final class ConversationViewModel: ObservableObject {
     var canSend: Bool {
         composerEnabled
             && !isSending
+            && !isVerifyingSend
             && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    /// 結果の分からなかった送信について、電話が机の履歴を取り直している間(DESIGN §2.52)。
+    ///
+    /// `isSending` と分ける理由は意味が違うから —— あちらは要求が飛んでいる間、
+    /// こちらは**飛び終わったが届いたか分からない間**。だが `canSend` には同じ様に
+    /// 効かせる: この窓の中で2通目を許すと、1通目が実は届いていた時に**二重配達**を
+    /// 作る。`POST /messages` に冪等鍵は無い(`server.mjs` 実測)ので、二重は本当に
+    /// 二重になる。
+    ///
+    /// 割り込みと打鍵には同じ錠を掛けていない。打鍵は同じ指紋の再送を
+    /// `inject.mjs` が `choice-already-sent` で断るので二重打鍵にならず、割り込みは
+    /// 二重に効いても Escape が2回行くだけだから。**錠は害の在る所にだけ掛ける。**
+    @Published private(set) var isVerifyingSend = false
 
     /// The render array every screen actually shows. Recomputed on every access
     /// rather than cached -- brief §2-d, this is the one call site `mergeHistory`
@@ -506,6 +520,11 @@ final class ConversationViewModel: ObservableObject {
         guard canSend else { return }
         let text = draft
 
+        // ★取るのは**送る前**。送信が飛んでいる間に poll が机からの追記を運んで来る
+        // 事が在り、後で取ると「送る前から在った行」と「送った結果として出た行」が
+        // 混ざる。差分で観測する意味がそこで消える(DESIGN §2.52)。
+        let entriesBeforeSend = entries
+
         isSending = true
         // The previous attempt's banner goes away as this one starts; leaving "送った"
         // visible under an in-flight send would let the user read a stale success as
@@ -518,12 +537,20 @@ final class ConversationViewModel: ObservableObject {
             sessionID: sessionID,
             text: text
         )
-        applySendOutcome(outcome)
+        if applySendOutcome(outcome) {
+            await verifySendByRereading(text: text, entriesBefore: entriesBeforeSend)
+        }
     }
 
     /// Split out for the same reason as `applyInitial(_:)`: tests drive the classified
     /// outcomes directly rather than racing a real `Task`.
-    func applySendOutcome(_ outcome: SendOutcome) {
+    ///
+    /// ★戻り値 = **結果が分からなかったか**(DESIGN §2.52)。`true` を返した時、この
+    /// method が置く帯は途中経過であって答えではない —— 呼んだ側は
+    /// `verifySendByRereading` を回して、観測で置き換える義務が在る。文言と戻り値が
+    /// 同じ義務を指しているのはわざと: 片方だけ直しても噛み合わなくなる。
+    @discardableResult
+    func applySendOutcome(_ outcome: SendOutcome) -> Bool {
         isSending = false
 
         switch outcome {
@@ -531,20 +558,28 @@ final class ConversationViewModel: ObservableObject {
             // Whoever cancelled owns the outcome: no banner, and above all no clearing
             // of the draft. Same rule as `SessionsFetchError.cancelled` everywhere else
             // in this app.
-            return
+            //
+            // 取り直しも回さない。取り消したのは呼んだ側で、その側が結果を持っている。
+            return false
 
         case .unauthorized:
             // A ROUTE decision, decided from the status alone (brief §0-c ①). The draft
             // is deliberately left in place: the user is about to be sent to Key-entry
             // and back, and losing what they typed to a credentials round trip would be
             // the worst possible moment for it.
+            //
+            // 鍵が無い状態で `/history` を取り直しても同じ 401 が返るだけなので回さない。
             onUnauthorized()
+            return false
 
         case .sessionNotFound:
             // The one 404 that means what it says. The whole screen is now invalid, not
             // just this send -- so it becomes the phase, exactly as a 404 on `/history`
             // does.
+            //
+            // 取り直す先の会話がもう無い。
             phase = .notFound
+            return false
 
         case .contractViolation(let violation):
             // Deliberately NOT `applyContractViolation` -- this one does not become the
@@ -554,17 +589,19 @@ final class ConversationViewModel: ObservableObject {
             // the screen down would destroy the one view the user needs in order to find
             // out. So it is recorded, logged, and shown as a banner over an intact screen.
             recordContractViolation(violation)
-            sendBanner = SendBanner(locallyWorded: violation.displayText, tone: .error)
+            sendBanner = SendBanner(
+                locallyWorded: violation.displayText + Self.sendUnknownInterim,
+                tone: .error
+            )
+            return true
 
         case .unreachable:
-            // One of the only three places the phone words a banner itself, and it is
-            // allowed to precisely because no `display` ever arrived. The wording refuses
-            // to claim either outcome: a request whose response was lost may well have
-            // been delivered, and "送れませんでした" would be a guess stated as a fact.
-            sendBanner = SendBanner(
-                locallyWorded: "送れたかどうか確認できませんでした。本文は残してあります。机の画面を確認してください。",
-                tone: .warn
-            )
+            // One of the places the phone words a banner itself, and it is allowed to
+            // precisely because no `display` ever arrived. The wording refuses to claim
+            // either outcome: a request whose response was lost may well have been
+            // delivered, and "送れませんでした" would be a guess stated as a fact.
+            sendBanner = SendBanner(locallyWorded: Self.sendUnknownInterim, tone: .warn)
+            return true
 
         case .display(let display):
             // The verbatim path. `display.text` is shown as the server wrote it -- no
@@ -587,7 +624,83 @@ final class ConversationViewModel: ObservableObject {
             if display.keepText == false {
                 draft = ""
             }
+            return false
         }
+    }
+
+    // MARK: - 結果が分からなかった時、電話が自分で取り直す(DESIGN §2.52)
+
+    /// 途中経過の文。**答えではない** —— この後 `verifySendByRereading` が観測で
+    /// 置き換える。「机の画面を確認してください」を落としたのがこの節の要点で、
+    /// あの一文は「電話しか無い」場面でしか出ないのに机を唯一の回復手段にしていた。
+    static let sendUnknownInterim = "送れたかどうか分かりません。本文は残してあります。今、机の履歴を取り直しています…"
+    static let interruptUnknownInterim = "止められたかどうか分かりません。今、机の履歴を取り直しています…"
+    static let choiceUnknownInterim = "押せたかどうか分かりません。今、机の履歴を取り直しています…"
+
+    static let sendLandedText = "届いていました(取り直した机の履歴に、この本文が在ります)。本文は消していません —— 要らなければ消してください。"
+    /// ★「届いていません」とは書かない。取り直しに成功して行が無くても、机の側で
+    /// まだ処理中の可能性は消えていない。**電話は自分が見た物だけを言う。**
+    static let sendNotOnDeskText = "今の机には出ていません。本文は残してあります。もう一度送れます。"
+    static let sendStillUnreachableText = "まだ繋がりません。送れたかどうかは分かりません。本文は残してあります。"
+    /// ★3つ目の答え。取り直しには成功したが、送る前の記録と1行も重ならなかった時
+    /// (机側の圧縮や `/clear` で記録が丸ごと入れ替わると起きる)。
+    ///
+    /// ここを `sendNotOnDeskText` に潰してはいけない。あの文は「机に無い」と断言した上に
+    /// 「もう一度送れます」で再送 = 二重配達を勧める。電話は境目を見失っていて、机に
+    /// 在るとも無いとも言えない —— **見ていない事は言わない**が §2.52 の全部。
+    ///
+    /// ★次の一手の宛先が**電話の画面**である事も要点。この節が落とした一文
+    /// (「机の画面を確認してください」)は、電話しか無い場面で机を指していた。
+    /// 置き換えた先が同じ性質だったら直した事にならない。
+    static let sendCannotTellText =
+        "取り直した記録が送る前と1行も重なっておらず、届いたかを見分けられませんでした。"
+        + "上が取り直した後の記録です。本文は残してあります —— 同じ物が上に無ければ送り直してください。"
+
+    /// 送信の結果が分からなかった直後の観測(DESIGN §2.52)。
+    ///
+    /// ★本文は**どちらに転んでも消さない**。外した時の費用が対称でない: 消して外すと
+    /// 本文を失った上に届いたと思い込む(二重の失敗)。残して外すと要らない一文が
+    /// composer に残るだけ。`keepText` の非対称と同じ向き。
+    private func verifySendByRereading(text: String, entriesBefore: [HistoryEntry]) async {
+        isVerifyingSend = true
+        defer { isVerifyingSend = false }
+
+        guard await performResync() else {
+            sendBanner = SendBanner(locallyWorded: Self.sendStillUnreachableText, tone: .warn)
+            return
+        }
+
+        // ★3分岐。`nil`(見分けられない)を `false` 側へ寄せない為に `switch` で書く
+        // —— `if let` や `?? false` は「分からない」を静かに「無い」に潰す形で、
+        //    その潰れ方が二重配達を勧める向きに出る(`sendCannotTellText` 参照)。
+        switch MergeHistory.landed(text: text, before: entriesBefore, after: entries) {
+        case .some(true):
+            sendBanner = SendBanner(locallyWorded: Self.sendLandedText, tone: .ok)
+        case .some(false):
+            sendBanner = SendBanner(locallyWorded: Self.sendNotOnDeskText, tone: .warn)
+        case .none:
+            sendBanner = SendBanner(locallyWorded: Self.sendCannotTellText, tone: .warn)
+        }
+    }
+
+    /// 割り込み・打鍵の側。**送信と違って「効いたか」は主張しない。**
+    ///
+    /// 観測できる物が、別の理由で同じ値を取るから —— 机の面が `BUSY` を離れるのは
+    /// 机の人が止めた時も同じで、設問の指紋が変わるのは机が次の設問へ進んだ時も同じ。
+    /// だから此処で言えるのは「取り直した」という事実と、取り直した後の記録だけ。
+    /// **弱いが嘘でない答え**であって、強い嘘ではない。
+    private func verifyByRereading(
+        interrupted: Bool
+    ) async -> String {
+        let resynced = await performResync()
+        if !resynced {
+            return interrupted
+                ? "まだ繋がりません。止められたかどうかは分かりません。"
+                : "まだ繋がりません。押せたかどうかは分かりません。"
+        }
+        return interrupted
+            ? "止められたかどうかは分かりません。今の机の履歴を取り直しました —— 上に出ているのが取り直した後の記録です。"
+            : "押せたかどうかは分かりません。今の机の履歴を取り直しました —— 上に出ているのが取り直した後の記録です。"
     }
 
     // MARK: - Interrupt (Sprint 6, brief §2-b)
@@ -605,7 +718,12 @@ final class ConversationViewModel: ObservableObject {
         interruptBanner = nil
 
         let outcome = await interruptClient.interrupt(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID)
-        applyInterruptOutcome(outcome)
+        if applyInterruptOutcome(outcome) {
+            interruptBanner = SendBanner(
+                locallyWorded: await verifyByRereading(interrupted: true),
+                tone: .warn
+            )
+        }
     }
 
     /// Split out for the same reason as every other `apply…` on this type.
@@ -617,37 +735,45 @@ final class ConversationViewModel: ObservableObject {
     /// `test/view.test.mjs`. The phone re-deriving any of it would rebuild the bug the
     /// server fixed on 2026-08-03, when "Escape was pressed" was being reported as
     /// 「止めました」.
-    func applyInterruptOutcome(_ outcome: SendOutcome) {
+    /// 戻り値は `applySendOutcome` と同じ意味 —— `true` = 結果が分からなかったので、
+    /// 呼んだ側が取り直しを回して帯を置き換える(DESIGN §2.52)。
+    @discardableResult
+    func applyInterruptOutcome(_ outcome: SendOutcome) -> Bool {
         isInterrupting = false
 
         switch outcome {
         case .cancelled:
-            return
+            return false
 
         case .unauthorized:
             onUnauthorized()
+            return false
 
         case .sessionNotFound:
             phase = .notFound
+            return false
 
         case .contractViolation(let violation):
             // Same call as the send path's, and for the same reason: the conversation
             // is loaded and the desk may well have received the Escape, so tearing the
             // screen down would destroy the one view that could show it.
             recordContractViolation(violation)
-            interruptBanner = SendBanner(locallyWorded: violation.displayText, tone: .error)
+            interruptBanner = SendBanner(
+                locallyWorded: violation.displayText + Self.interruptUnknownInterim,
+                tone: .error
+            )
+            return true
 
         case .unreachable:
             // Worded locally, permissibly, because no `display` arrived. It refuses to
             // claim either outcome for the same reason the send path's does: a request
             // whose response was lost may well have been delivered.
-            interruptBanner = SendBanner(
-                locallyWorded: "止められたかどうか確認できませんでした。机の画面を確認してください。",
-                tone: .warn
-            )
+            interruptBanner = SendBanner(locallyWorded: Self.interruptUnknownInterim, tone: .warn)
+            return true
 
         case .display(let display):
             interruptBanner = SendBanner(display: display)
+            return false
         }
     }
 
@@ -746,7 +872,12 @@ final class ConversationViewModel: ObservableObject {
             key: key,
             digest: sentDigest
         )
-        applyChoiceAttempt(attempt, sentDigest: sentDigest)
+        if applyChoiceAttempt(attempt, sentDigest: sentDigest) {
+            choiceBanner = SendBanner(
+                locallyWorded: await verifyByRereading(interrupted: false),
+                tone: .warn
+            )
+        }
     }
 
     /// Split out for the same reason as every other `apply…` on this type.
@@ -759,7 +890,13 @@ final class ConversationViewModel: ObservableObject {
     /// the rule is about who did the deciding, not about which process typed. Recovery
     /// is therefore: mark the card stale, let the poll deliver the new one, and wait for
     /// a second deliberate tap.
-    func applyChoiceAttempt(_ attempt: ChoiceAttempt, sentDigest: String) {
+    ///
+    /// 戻り値は `applySendOutcome` と同じ意味 —— `true` = 結果が分からなかったので、
+    /// 呼んだ側が取り直しを回す(DESIGN §2.52)。★取り直しは**読むだけ**なので、
+    /// 上の「再送しない」規則とは衝突しない。同じ鍵をもう一度打つのは自動化が
+    /// 安全確認に答える事だが、履歴を読み直すのは机に何も起こさない。
+    @discardableResult
+    func applyChoiceAttempt(_ attempt: ChoiceAttempt, sentDigest: String) -> Bool {
         isChoosing = false
 
         // Behaviour binds to the fingerprint, never to the refusal vocabulary -- see
@@ -772,20 +909,26 @@ final class ConversationViewModel: ObservableObject {
 
         switch attempt.outcome {
         case .cancelled:
-            return
+            return false
 
         case .unauthorized:
             onUnauthorized()
+            return false
 
         case .sessionNotFound:
             phase = .notFound
+            return false
 
         case .contractViolation(let violation):
             // Same call and same reasoning as the send and interrupt paths: the
             // conversation is loaded and the desk may well have received the keystroke,
             // so this becomes a banner over an intact screen, not the phase.
             recordContractViolation(violation)
-            choiceBanner = SendBanner(locallyWorded: violation.displayText, tone: .error)
+            choiceBanner = SendBanner(
+                locallyWorded: violation.displayText + Self.choiceUnknownInterim,
+                tone: .error
+            )
+            return true
 
         case .unreachable:
             // The third and last locally-worded site, permitted because no `display`
@@ -797,10 +940,8 @@ final class ConversationViewModel: ObservableObject {
             // request carries the same fingerprint, and `inject.mjs` refuses a repeat
             // on a fingerprint it has already answered (`choice-already-sent`), so a
             // double press cannot become a double keystroke.
-            choiceBanner = SendBanner(
-                locallyWorded: "押せたかどうか確認できませんでした。机の画面を確認してください。",
-                tone: .warn
-            )
+            choiceBanner = SendBanner(locallyWorded: Self.choiceUnknownInterim, tone: .warn)
+            return true
 
         case .display(let display):
             // Verbatim. `view.mjs`'s `choiceResult` already splits the four values of
@@ -809,6 +950,7 @@ final class ConversationViewModel: ObservableObject {
             // against a string. Re-deriving any of it here would rebuild that bug on
             // this side of the wire.
             choiceBanner = SendBanner(display: display)
+            return false
         }
     }
 
@@ -1146,7 +1288,13 @@ final class ConversationViewModel: ObservableObject {
     /// procedure" (brief §1-a item 5 / §3-c). Refetches `/history` at the current
     /// limit, clears `live` (the fresh history now supersedes whatever the poll loop
     /// had accumulated), and resets the poll loop's cursor to empty.
-    private func performResync() async {
+    ///
+    /// ★4つ目の呼び出し元が 2026-08-08 に足された(DESIGN §2.52): 送信 / 割り込み /
+    /// 打鍵の**結果が分からなかった直後**。その経路だけが戻り値を読む —— 取り直し
+    /// 自体が失敗した時に「今の机には出ていません」と言うと、見ていない物を言う事に
+    /// なるから。既存の3経路は `@discardableResult` で今まで通り。
+    @discardableResult
+    private func performResync() async -> Bool {
         let result = await client.fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: currentLimit)
         guard case .success(let response) = result else {
             // No distinct UI state is specified for "the resync's own /history call
@@ -1154,7 +1302,7 @@ final class ConversationViewModel: ObservableObject {
             // `history` currently holds, and the still-running poll loop's next
             // successful response keeps merging against it. Noted as a judgment call
             // in progress.md.
-            return
+            return false
         }
         history = response.history
         truncated = response.truncated
@@ -1163,6 +1311,7 @@ final class ConversationViewModel: ObservableObject {
         // 戻って来た人が最初に見るべきは一番下。
         tailToken += 1
         await pollLoop?.resetForResync()
+        return true
     }
 
     /// N4: background -> foreground. Same procedure as any other resync (see

@@ -89,8 +89,15 @@ struct SendBanner: Equatable {
         self.fromServer = true
     }
 
-    /// The phone-worded path. Only three call sites are allowed to use it (contract
-    /// violation, transport failure, cancelled-supersede) and each names its reason.
+    /// The phone-worded path. **The rule is a condition, not a list**: a call site may
+    /// use this only when no `display` ever arrived, so there is no server sentence to
+    /// render verbatim. Contract violation and transport failure qualify by definition.
+    ///
+    /// It used to say "only three call sites". That was a hand-kept count, and
+    /// 2026-08-08 (DESIGN §2.52) added the ones that report what the phone SAW after
+    /// re-reading the desk itself -- also a no-`display` situation, and the reason the
+    /// count was the wrong thing to write down. A number in a comment cannot tell you
+    /// whether a fourth site is legitimate; the condition can.
     init(locallyWorded text: String, tone: ResultDisplay.Tone) {
         self.tone = tone
         self.text = text
@@ -132,8 +139,21 @@ struct ResponseContractViolation: Equatable {
     /// phone invents for a response it could not read is a guess wearing a fact's
     /// clothes). The status/code are appended as diagnostics, not as prose: they say
     /// what arrived, they do not claim to say why.
+    ///
+    /// ★2026-08-08(DESIGN §2.52)、2つの文を落とした。この property は**打った時**
+    /// だけでなく**読み込みが失敗した時の面**からも読まれる(数を書かないのは上の
+    /// `init(locallyWorded:)` と同じ理由 —— 数は増減の正当性を答えられない)。
+    ///
+    /// - 「送れたかどうかは確認できていません」は、読み込み失敗の面では**偽**だった。
+    ///   読みに行っただけで何も送っていない。送信の話は、送った経路だけが継ぎ足す。
+    /// - 「机の画面を確認してください」は、この文が出る条件(電話しか無い)と
+    ///   排他。渡米中は常に成立する。命令は落とし、**電話が自分で取り直して
+    ///   観測を言う**方へ寄せた(`ConversationViewModel` の verify 経路)。
+    ///
+    /// 読み込み失敗の面には代わりの命令を書いていない。書く物が無いからで、
+    /// 出口は `NavigationStack` の戻るが元から在る(`RootView`)。
     var displayText: String {
         let diagnostic = code.map { "HTTP \(status) / \($0)" } ?? "HTTP \(status)"
-        return "サーバの応答に、画面へ出すべき内容が入っていませんでした(\(diagnostic))。送れたかどうかは確認できていません。机の画面を確認してください。"
+        return "サーバの応答に、画面へ出すべき内容が入っていませんでした(\(diagnostic))。"
     }
 }
