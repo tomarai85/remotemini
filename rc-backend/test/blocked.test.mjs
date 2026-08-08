@@ -110,3 +110,42 @@ test("知らない reason に原因を作らない(名乗れないと言い、�
   // reason 自体が無い時も、原因の無い文ではなく「不明」と名乗る。
   assert.ok(paneFaultView(undefined).body.includes("不明"));
 });
+
+// ★2026-08-09。poll の `screen` 欄には**産む所が2つ**ある —— `screenBody()` と、この
+// `blockedBody()`。`feedTick` は `r.pane ? screenBody(f, r.pane) : blockedBody(r)` を
+// 同じ1つのセルに書き、poll はそのセルをそのまま `screen` に載せる。セルは tick を
+// 跨いで残る一方、poll のハンドラは要求ごとにペインを引き直すので、**前の tick では
+// 消えていて poll の時には解決するペイン**が tmux 経路を通り、古い「送れない」本文を
+// `screen` に載せる。
+//
+// 電話の `ScreenBody` はこの欄の `screen` 鍵を読む。そこを必須にしていた為、この本文が
+// 届くと `PollResponse` の複合が丸ごと落ち、`PollClient` は `.unreadable`、`PollLoop` は
+// 20 秒待ちと劣化帯 —— ペインが1回瞬いただけで電話が 20 秒死んだ(2026-08-09 に実測、
+// `DecodingError.keyNotFound: Key 'screen' not found`)。電話側は塞いだ。
+//
+// ここで押さえるのは**サーバ側の半分**: この本文が分類語を持たない事実を固定する。
+// 誰かが後で `screen` 鍵を足すなら、電話の `.unrecognized` への落ち方も一緒に見直す事。
+test("★送れない本文は分類語(screen 鍵)を持たない —— poll の screen 欄の2人目の産み手", () => {
+  const ctx = { pane: null, candidates: ["%1", "%2"], source: "registry" };
+  const seen = new Set();
+  for (const reason of WIRE_REASONS) {
+    const body = blockedBody({ ...ctx, reason });
+    seen.add(reason);
+    assert.ok(body.route === "blocked", `${reason}: route が blocked でない(${body.route})`);
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(body, "screen"),
+      `${reason}: screen 鍵が生えた。電話の ScreenBody の落ち方を見直すまで足さない`,
+    );
+    // 分類語の代わりに**理由と文**を持つ。ここが空なら電話は何も言えない。
+    assert.ok(body.reason.length > 0 && body.message.length > 0, `${reason}: 理由か文が空`);
+  }
+  assert.equal(seen.size, WIRE_REASONS.length, "全域を回っていない");
+});
+
+// 上が常に緑にならない事の対照。tmux 側の産み手が持つ形(`screen` 鍵あり)は、この検査を
+// 通らない —— 通ってしまうなら「鍵が無い事」を測れていない。
+test("分類語を持つ本文(tmux 側の形)は上の検査に通らない(対照)", () => {
+  const tmuxShaped = { route: "tmux", pane: "%3", screen: "SENDABLE", work: "quiet", windowMs: 5600 };
+  assert.ok(Object.prototype.hasOwnProperty.call(tmuxShaped, "screen"));
+  assert.ok(!Object.prototype.hasOwnProperty.call(blockedBody({ reason: "pane-gone" }), "screen"));
+});
