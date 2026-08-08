@@ -12,24 +12,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { blockAfter } from "./jssrc.mjs";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "server.mjs");
 const real = readFileSync(SRC, "utf8");
-
-/** `開始文字列` の直後の `{` から対応する `}` までを取る(行数窓は隣の節へ漏れる)。 */
-function blockAfter(src, marker) {
-  const i = src.indexOf(marker);
-  if (i === -1) return null;
-  const rest = src.slice(i + marker.length);
-  const open = rest.indexOf("{");
-  if (open === -1) return null;
-  let depth = 0;
-  for (let k = open; k < rest.length; k++) {
-    if (rest[k] === "{") depth++;
-    else if (rest[k] === "}" && --depth === 0) return rest.slice(open, k + 1);
-  }
-  return null;
-}
 
 const spawnBlock = (s) => blockAfter(s, "spawn: (sessionId, plan) =>");
 

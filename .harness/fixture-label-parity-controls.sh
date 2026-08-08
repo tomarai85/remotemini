@@ -68,7 +68,8 @@ HISTF="ios/Sources/Core/HistoryFixture.swift"
 TESTF="rc-backend/test/fixture-labels-producible.test.mjs"
 
 for f in "$FIXTURE" "$POLLF" "$UITESTF" "$HISTF" "$TESTF" \
-         rc-backend/test/subtree.mjs rc-backend/src/view.mjs rc-backend/src/blocked.mjs DESIGN.md; do
+         rc-backend/test/subtree.mjs rc-backend/test/swiftsrc.mjs \
+         rc-backend/src/view.mjs rc-backend/src/blocked.mjs DESIGN.md; do
     if [ ! -f "$ROOT/$f" ]; then
         echo "UNMEASURED  読む file が無い: $f"
         exit 2
@@ -77,7 +78,7 @@ done
 
 /bin/mkdir -p "$WORK/rc-backend/src" "$WORK/rc-backend/test" "$WORK/ios/Sources/Core" "$WORK/ios/UITests"
 /bin/cp "$ROOT"/rc-backend/src/*.mjs "$WORK/rc-backend/src/"
-/bin/cp "$ROOT/$TESTF" "$ROOT/rc-backend/test/subtree.mjs" "$WORK/rc-backend/test/"
+/bin/cp "$ROOT/$TESTF" "$ROOT/rc-backend/test/subtree.mjs" "$ROOT/rc-backend/test/swiftsrc.mjs" "$WORK/rc-backend/test/"
 /bin/cp "$ROOT/$FIXTURE" "$ROOT/$POLLF" "$ROOT/$HISTF" "$WORK/ios/Sources/Core/"
 /bin/cp "$ROOT/$UITESTF" "$WORK/ios/UITests/"
 # 根の目印。`subtree.mjs` は此の1本の実在だけで「親が本物か」を決める。

@@ -39,6 +39,7 @@ import { join } from "node:path";
 import { routeLabel, choiceView, whoOf } from "../src/view.mjs";
 import { paneFaultReason, paneFaultView } from "../src/blocked.mjs";
 import { REPO, requireOutside } from "./subtree.mjs";
+import { stripSwiftComments } from "./swiftsrc.mjs";
 
 const FIXTURE = "ios/Sources/Core/SessionsListingFixture.swift";
 const POLL_FIXTURE = "ios/Sources/Core/PollFixture.swift";
@@ -242,49 +243,6 @@ function initBlocks(src, marker) {
     }
     out.push({ text: src.slice(i + marker.length, j - 1), closed: depth === 0 });
     i = j;
-  }
-  return out;
-}
-
-/**
- * Swift の注釈(行注釈と塊注釈の両方)を落とす。文字列の中の `//` は落とさない。
- *
- * ★これが要る理由(2026-08-08、実測)。此の検査は UI 検査の本体から
- * `staticTexts["…"]` を数える。UI 検査の側に「此処は `staticTexts["…"]` を
- * 突き合わせている」と**説明を書いた瞬間に3本になって赤が出た** —— 注釈は
- * 画面に何も出さないのに、検査からは主張と見分けが付かない。
- * 直し方を「注釈の書き方を変える」にすると、次に書く人が同じ罠を踏む。
- *
- * `"""` の複数行文字列は扱わない(此の3つの Swift file には無い)。増えたら
- * 此処が壊れるので、その時に足す。
- */
-function stripSwiftComments(src) {
-  let out = "";
-  let i = 0;
-  let inStr = false;
-  while (i < src.length) {
-    const ch = src[i];
-    const nx = src[i + 1];
-    if (inStr) {
-      out += ch;
-      if (ch === "\\") { out += nx ?? ""; i += 2; continue; }
-      if (ch === '"') inStr = false;
-      i++;
-      continue;
-    }
-    if (ch === '"') { inStr = true; out += ch; i++; continue; }
-    if (ch === "/" && nx === "/") {
-      while (i < src.length && src[i] !== "\n") i++;
-      continue;
-    }
-    if (ch === "/" && nx === "*") {
-      i += 2;
-      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i++;
-      i += 2;
-      continue;
-    }
-    out += ch;
-    i++;
   }
   return out;
 }
