@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/test/fixture-labels-producible.test.mjs rc-backend/src/view.mjs ios/Sources/Core/SessionsListingFixture.swift ios/Sources/Core/PollFixture.swift
+# controls-for: rc-backend/test/fixture-labels-producible.test.mjs rc-backend/src/view.mjs rc-backend/src/blocked.mjs ios/Sources/Core/SessionsListingFixture.swift ios/Sources/Core/PollFixture.swift ios/UITests/RemoteMiniUITests.swift
 #
 # 何を守る対照か —— **電話の見た目を確かめる時に使う fixture が、本番より綺麗な文字列を
 # 出していない事**。
@@ -21,6 +21,13 @@
 #   更に悪い事に、Sprint 7 に「画面を見て」直した割り込みの注意文が、その実在しない
 #   ボタンを指していた = **偽の画面を根拠に本物の設計判断をしていた**。
 #   だから此の対照は一覧(`routeLabel`)と選択カード(`choiceView`)の両方を張る。
+#
+# ★3件目(S8-22、同日)。一覧の**障害バナー**は3つとも腐っていた —— 本番は `paneFault` の
+#   `reason`(内部トークン)と `detail`(生の JS エラー文)をそのまま描き、fixture は
+#   `pane-scan-timeout` という `paneFaultReason` が作れない語と綺麗な日本語1文を持ち、
+#   **UI 検査はその架空の2文を主張していた**。検査は在り、走り、緑で、測っていた物が
+#   実在しなかった。だから此の対照は fixture だけでなく `RemoteMiniUITests.swift` が
+#   主張する文言そのものも見張る。
 #
 # 検査(`fixture-labels-producible.test.mjs`)は書いた。だが検査が在る事は、その検査が
 # ズレを止める事を意味しない。この対照はズレを1つずつ植え直して、そのたびに赤が出る事を
@@ -47,19 +54,22 @@ trap 'find "$WORK" -type f -print0 2>/dev/null | xargs -0 /bin/rm -f 2>/dev/null
 
 FIXTURE="ios/Sources/Core/SessionsListingFixture.swift"
 POLLF="ios/Sources/Core/PollFixture.swift"
+UITESTF="ios/UITests/RemoteMiniUITests.swift"
 TESTF="rc-backend/test/fixture-labels-producible.test.mjs"
 
-for f in "$FIXTURE" "$POLLF" "$TESTF" rc-backend/test/subtree.mjs rc-backend/src/view.mjs DESIGN.md; do
+for f in "$FIXTURE" "$POLLF" "$UITESTF" "$TESTF" \
+         rc-backend/test/subtree.mjs rc-backend/src/view.mjs rc-backend/src/blocked.mjs DESIGN.md; do
     if [ ! -f "$ROOT/$f" ]; then
         echo "UNMEASURED  読む file が無い: $f"
         exit 2
     fi
 done
 
-/bin/mkdir -p "$WORK/rc-backend/src" "$WORK/rc-backend/test" "$WORK/ios/Sources/Core"
+/bin/mkdir -p "$WORK/rc-backend/src" "$WORK/rc-backend/test" "$WORK/ios/Sources/Core" "$WORK/ios/UITests"
 /bin/cp "$ROOT"/rc-backend/src/*.mjs "$WORK/rc-backend/src/"
 /bin/cp "$ROOT/$TESTF" "$ROOT/rc-backend/test/subtree.mjs" "$WORK/rc-backend/test/"
 /bin/cp "$ROOT/$FIXTURE" "$ROOT/$POLLF" "$WORK/ios/Sources/Core/"
+/bin/cp "$ROOT/$UITESTF" "$WORK/ios/UITests/"
 # 根の目印。`subtree.mjs` は此の1本の実在だけで「親が本物か」を決める。
 /bin/cp "$ROOT/DESIGN.md" "$WORK/DESIGN.md"
 
@@ -199,6 +209,55 @@ probe "選択カードを1枚も拾えなくする(錨が働くか)" "$TESTF" \
     'const parts = src.split("ChoiceView@@@never@@@(");'
 
 echo
+echo "== 一覧の障害バナー(S8-22。fixture と UI 検査が揃って架空だった) =="
+
+# ⑪ 起票時の実物。`paneFaultReason` が**作れない語**を fixture に戻す。
+probe "帯の reason を本番が作れない語に戻す(起票時の実物)" "$FIXTURE" \
+    'reason: "panes-unreadable",' \
+    'reason: "pane-scan-timeout",'
+
+# ⑫ 見出しだけを1語ズラす。reason は正しいままなので、reason しか見ない検査を弾く。
+probe "帯の見出しだけがズレる(reason しか見ない検査を弾く)" "$FIXTURE" \
+    'headline: "tmux の画面一覧を読めていません"' \
+    'headline: "tmux の画面一覧が読めていません"'
+
+# ⑬ 本文だけを1語ズラす。見出しだけ見る検査を弾く。
+probe "帯の本文だけがズレる(見出ししか見ない検査を弾く)" "$FIXTURE" \
+    '中身が壊れていて読めません' \
+    '中身が壊れていて読み取れません'
+
+# ⑭ ★向きが逆。fixture は触らず**サーバ側の帯の文言**を動かす。
+#    此処が赤にならないと、検査は「fixture を直し忘れた日」しか守らない。
+probe "サーバ側の帯の見出しだけが動く(向きが逆のズレ)" "rc-backend/src/blocked.mjs" \
+    'headline: "tmux の画面一覧を読めていません",' \
+    'headline: "tmux の一覧を読めていません",'
+
+# ⑮ UI 検査の主張を**起票時の実物**(本番が作れない文)に戻す。
+#    これが此の節を書いた直接の理由 —— 検査は在り、走り、緑で、測っていた物が架空だった。
+probe "UI 検査が本番に無い文を主張する(起票時の実物)" "$UITESTF" \
+    'tmux からの返事は来ていますが、中身が壊れていて読めません。復旧するまで、どの会話にも送れません。この故障は電話からは直せないので、机で確認してください。' \
+    'tmux ペインの走査がタイムアウトしました。'
+
+# ⑯ ★ producible **だが別の面**の文言に替える。`list-panefault` は panes-unreadable の面
+#    なので、tmux-unavailable の見出しを主張する検査は実機で必ず落ちる —— しかも落ちる
+#    理由が「本番の文言が悪い」ではなく「検査が別の面を見ている」。所属だけ見る検査は
+#    此処を通してしまう(だから一致の主張を足した)。
+probe "UI 検査が producible だが別の面の文言を主張する" "$UITESTF" \
+    'app.staticTexts["tmux の画面一覧を読めていません"]' \
+    'app.staticTexts["サーバが tmux に届いていません"]'
+
+# ⑰ 主張を1本だけ黙って落とす。本数の錨が無いと、残った1本が producible なので緑になる。
+probe "UI 検査の主張を1本だけ落とす(本数の錨が働くか)" "$UITESTF" \
+    '        XCTAssertTrue(app.staticTexts["tmux の画面一覧を読めていません"].exists)
+' \
+    ''
+
+# ⑱ 帯を1枚も拾えなくする。⑤⑩ と同じ穴 —— 拾えなければ「比べる物ゼロ = 全部一致」。
+probe "帯を1枚も拾えなくする(錨が働くか)" "$TESTF" \
+    '"paneFault: .init("' \
+    '"paneFault: .init@@@never@@@("'
+
+echo
 echo "== 正しい別の札は赤にしない(検査自身の陰性対照) =="
 # ★此処が要る理由は、私が実際に踏んだから(2026-08-08)。初版は種類ごとに代表を1つ決めて
 #   バイト一致を要求し、blocked 行の `送れない` を「本番に無い」と赤にした —— 実際には
@@ -245,6 +304,49 @@ else
     [ -f "$WORK/$POLLF.orig" ] && restore "$POLLF"
 fi
 
+# ★注釈は主張ではない。此処が要る理由も、私が今日実際に踏んだから —— 上の UI 検査に
+#   「此処は staticTexts を突き合わせている」と**説明を書いた瞬間**に本数が3本になって
+#   赤が出た。注釈は画面に何も出さないのに、素朴な正規表現からは主張と見分けが付かない。
+#   直し方を「注釈の書き方を変える」にすると次に書く人が同じ罠を踏むので、検査の側で
+#   注釈を落とす様にした(`stripSwiftComments`)。それが効いている事を機械で見張る。
+if mutate "$UITESTF" \
+    '(本数もちょうど2本と主張する ので、黙って1本にして緑にする事も出来ない)。' \
+    '(本数もちょうど2本と主張する ので、黙って1本にして緑にする事も出来ない)。
+        //   陰性対照: 注釈の中の app.staticTexts["架空の文字列"] は主張ではない。'; then
+    if run_suite; then
+        echo "  PASS  注釈の中の staticTexts は数に入らない"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL  注釈を主張と数えた = 説明を書くと赤くなる検査(今日の実物)"
+        FAIL=$((FAIL + 1))
+    fi
+    restore "$UITESTF"
+else
+    echo "  UNMEASURED  注釈側の陰性対照の錨が1箇所に定まらない"
+    UNMEASURED=$((UNMEASURED + 1))
+    [ -f "$WORK/$UITESTF.orig" ] && restore "$UITESTF"
+fi
+
+# ★`detail` を縛っていない事の陰性対照。本番の `detail` は `e.message` = 自由記述で、
+#   閉じた語彙が無い = 「作れる集合」が存在しない。だから何に替えても緑でなければならない。
+#   此処が赤くなる検査は、作れる集合の無い鍵に正解を1つ発明している事になる。
+if mutate "$FIXTURE" \
+    'detail: "fixture-detail: production puts a raw JS error message here; the banner never draws it",' \
+    'detail: "TypeError: Cannot read properties of undefined",'; then
+    if run_suite; then
+        echo "  PASS  detail は何に替えても緑のまま(縛っていない)"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL  detail を赤にした = 閉じた語彙の無い鍵に正解を発明している"
+        FAIL=$((FAIL + 1))
+    fi
+    restore "$FIXTURE"
+else
+    echo "  UNMEASURED  detail 側の陰性対照の錨が1箇所に定まらない"
+    UNMEASURED=$((UNMEASURED + 1))
+    [ -f "$WORK/$FIXTURE.orig" ] && restore "$FIXTURE"
+fi
+
 echo
 echo "== 飛ばしは緑ではない(部分木の写しを模す) =="
 # `test/mutation-controls.py` は rc-backend だけを写す。その世界では此の検査は
@@ -267,7 +369,7 @@ fi
 #   (`subtree.mjs` の3値の契約 —— 「無い」を「測らなくてよい」に丸めない)。
 echo
 echo "== 親が健在なのに対象が消えたら赤(飛ばしに逃げない) =="
-for gone in "$FIXTURE" "$POLLF"; do
+for gone in "$FIXTURE" "$POLLF" "$UITESTF"; do
     /bin/mv "$WORK/$gone" "$WORK/gone.off"
     if run_suite; then
         echo "  FAIL  $(basename "$gone") が消えたのに緑 = 欠けを『問題なし』に丸めている"

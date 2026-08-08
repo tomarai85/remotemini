@@ -117,7 +117,7 @@ cat >"$SCRATCH/payload.json" <<'JSON'
   ],
   "scan": { "scope": "all", "limit": 0, "files": 2, "read": 2, "cached": 0, "examined": 2 },
   "display": { "scan": "SENTINEL-SCANLINE" },
-  "paneFault": { "reason": "tmux-missing", "detail": "SENTINEL-DETAIL" }
+  "paneFault": { "reason": "REASON-KEPT", "detail": "SENTINEL-DETAIL" }
 }
 JSON
 
@@ -157,8 +157,14 @@ fi
 #   なった)。同じ夜に、電話の fixture が本番より綺麗な札を出していた事で1件見逃していた
 #   ので、此処も**一目で合成と分かる値**に替える。文言の正本は
 #   `.harness/fixture-label-parity-controls.sh` が1本だけ見張る。
+#
+# ★`REASON-KEPT` も同じ理由で替えた(同日、監査 S8-22)。以前は `tmux-missing` で、これは
+#   `paneFaultReason` が作れない語なのに**本物の理由コードに見える**。此の台本の関心は
+#   「`reason` は残り `detail` は伏せられる」だけなので値は何でもよく、本物らしさは
+#   害しかない —— 同じ夜、電話の fixture が `pane-scan-timeout` という同種の作れない語を
+#   持っていて、それを主張する UI 検査ごと緑で通っていた。
 missing=""
-for s in '\"tmux\"' '\"worker\"' '\"SHORT-KEPT\"' '\"SENDABLE\"' '\"tmux-missing\"'; do
+for s in '\"tmux\"' '\"worker\"' '\"SHORT-KEPT\"' '\"SENDABLE\"' '\"REASON-KEPT\"'; do
     grep -qF "$s" "$SCRATCH/out.txt" || missing="$missing $s"
 done
 if [ -z "$missing" ]; then

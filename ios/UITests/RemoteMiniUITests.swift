@@ -42,11 +42,17 @@ final class RemoteMiniUITests: XCTestCase {
 
         XCTAssertTrue(element(app, "list.paneFault").waitForExistence(timeout: 10))
         // The identifier marks which phase rendered; the banner's actual copy is
-        // checked directly against `SessionsListingFixture`'s `.paneFault` case so a
-        // regression that renders the *wrong* fault text (right phase, wrong words)
-        // is still caught, not just "some banner appeared."
-        XCTAssertTrue(app.staticTexts["pane-scan-timeout"].exists)
-        XCTAssertTrue(app.staticTexts["tmux ペインの走査がタイムアウトしました。"].exists)
+        // asserted too, so a regression that renders the *wrong* fault text (right
+        // phase, wrong words) is still caught, not just "some banner appeared."
+        //
+        // ★この2行が、以前は本番に存在しない文字列だった(2026-08-08 / 監査 S8-22)。
+        //   `pane-scan-timeout` は `paneFaultReason` が作れない語で、日本語の方も本番が
+        //   出さない文 —— 検査は在り、走り、緑で、**測っていた物が架空**だった。
+        //   今は `rc-backend/test/fixture-labels-producible.test.mjs` が、此の関数の中の
+        //   `staticTexts["..."]` を `paneFaultView` の出しうる集合と突き合わせる
+        //   (本数もちょうど2本と主張する ので、黙って1本にして緑にする事も出来ない)。
+        XCTAssertTrue(app.staticTexts["tmux の画面一覧を読めていません"].exists)
+        XCTAssertTrue(app.staticTexts["tmux からの返事は来ていますが、中身が壊れていて読めません。復旧するまで、どの会話にも送れません。この故障は電話からは直せないので、机で確認してください。"].exists)
         XCTAssertFalse(element(app, "list.empty").exists)
     }
 

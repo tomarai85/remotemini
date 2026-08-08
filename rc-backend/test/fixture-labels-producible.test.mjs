@@ -37,11 +37,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { routeLabel, choiceView } from "../src/view.mjs";
+import { paneFaultReason, paneFaultView } from "../src/blocked.mjs";
 import { REPO, requireOutside } from "./subtree.mjs";
 
 const FIXTURE = "ios/Sources/Core/SessionsListingFixture.swift";
 const POLL_FIXTURE = "ios/Sources/Core/PollFixture.swift";
-const outside = requireOutside([FIXTURE, POLL_FIXTURE]);
+const FAULT_UITEST = "ios/UITests/RemoteMiniUITests.swift";
+const outside = requireOutside([FIXTURE, POLL_FIXTURE, FAULT_UITEST]);
 
 /**
  * 種類ごとに `routeLabel` へ渡す入力。**期待値は書かない** —— 書いた瞬間に本番の文言の
@@ -199,6 +201,161 @@ test("★会話 fixture の選択ボタンは、サーバが実際に出せる�
     assert.ok(reasons.includes(b.reason),
       `断り文をサーバは出せない\n  fixture : ${b.reason}\n  出しうる:\n    ${reasons.join("\n    ")}`);
   }
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// 一覧の**帯**(paneFault)。同じ問いの3面目だが、出る場所が一番悪い。
+//
+// 実測(2026-08-08、S8-22):
+//   本番の帯は `paneFaultReason` の作る内部トークン(`panes-unreadable` /
+//   `tmux-unavailable`)を**太字の見出し**に、`e.message` = 生の JS エラー文を本文に、
+//   そのまま描いていた。旅程で一番踏みそうな画面(一覧が出ない)が日本語ですらない。
+//   ところが fixture は `pane-scan-timeout` +「tmux ペインの走査がタイムアウトしました。」
+//   —— 前者は `paneFaultReason` が**作れない語**、後者は本番が絶対に出さない綺麗な日本語。
+//   撮った帯だけが読める日本語だったので、本番が英語である事は画面から分かりようがなかった。
+//
+//   もう一段悪いのは UI 検査の方で、`RemoteMiniUITests` は帯の文言を
+//   「right phase, wrong words を捕まえる為」と明記して主張していた —— その主張の対象が
+//   本番に存在しない2文だった。**検査が在り、走り、緑で、測っていた物が架空**。
+//
+// なので此処は UI 検査の主張する文字列も一緒に見る。fixture と検査を両方直せば黙って
+// 揃ってしまう(#43 と同じ穴)ので、両方を**サーバの作る集合**へ突き合わせる。
+
+/** `marker` から括弧の対応で閉じるまでを1つずつ。Swift の `\(…)` は文字列の中なので数えない。 */
+function initBlocks(src, marker) {
+  const out = [];
+  let i = 0;
+  while ((i = src.indexOf(marker, i)) !== -1) {
+    let j = i + marker.length;
+    let depth = 1;
+    let inStr = false;
+    while (j < src.length && depth > 0) {
+      const ch = src[j];
+      if (inStr) {
+        if (ch === "\\") j++;
+        else if (ch === '"') inStr = false;
+      } else if (ch === '"') inStr = true;
+      else if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+      j++;
+    }
+    out.push({ text: src.slice(i + marker.length, j - 1), closed: depth === 0 });
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * Swift の注釈(行注釈と塊注釈の両方)を落とす。文字列の中の `//` は落とさない。
+ *
+ * ★これが要る理由(2026-08-08、実測)。此の検査は UI 検査の本体から
+ * `staticTexts["…"]` を数える。UI 検査の側に「此処は `staticTexts["…"]` を
+ * 突き合わせている」と**説明を書いた瞬間に3本になって赤が出た** —— 注釈は
+ * 画面に何も出さないのに、検査からは主張と見分けが付かない。
+ * 直し方を「注釈の書き方を変える」にすると、次に書く人が同じ罠を踏む。
+ *
+ * `"""` の複数行文字列は扱わない(此の3つの Swift file には無い)。増えたら
+ * 此処が壊れるので、その時に足す。
+ */
+function stripSwiftComments(src) {
+  let out = "";
+  let i = 0;
+  let inStr = false;
+  while (i < src.length) {
+    const ch = src[i];
+    const nx = src[i + 1];
+    if (inStr) {
+      out += ch;
+      if (ch === "\\") { out += nx ?? ""; i += 2; continue; }
+      if (ch === '"') inStr = false;
+      i++;
+      continue;
+    }
+    if (ch === '"') { inStr = true; out += ch; i++; continue; }
+    if (ch === "/" && nx === "/") {
+      while (i < src.length && src[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && nx === "*") {
+      i += 2;
+      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/** 名前で関数の本体を切り出す(UI 検査の1本だけを見る為)。 */
+function swiftFuncBody(src, name) {
+  const at = src.indexOf(`func ${name}(`);
+  if (at === -1) return null;
+  const open = src.indexOf("{", at);
+  if (open === -1) return null;
+  let j = open + 1;
+  let depth = 1;
+  while (j < src.length && depth > 0) {
+    if (src[j] === "{") depth++;
+    else if (src[j] === "}") depth--;
+    j++;
+  }
+  return depth === 0 ? src.slice(open + 1, j - 1) : null;
+}
+
+test("★一覧の障害バナーは、サーバが実際に出せる文である", { skip: outside.skip }, () => {
+  // 出しうる `reason` は**枝を呼んで作る**。2語を此処に書き写すと、本番の語彙の写しが
+  // 1枚増えて S8-19 と同じ形になる。`paneFaultReason` は分岐が2つしか無い(test/blocked)。
+  const reasons = [paneFaultReason({ code: "TMUX_UNAVAILABLE" }), paneFaultReason(new Error("x"))];
+  assert.equal(new Set(reasons).size, 2, "paneFaultReason の枝が2つで無くなっている(此処の列挙を見直す)");
+  const heads = reasons.map((r) => paneFaultView(r).headline);
+  const bodies = reasons.map((r) => paneFaultView(r).body);
+
+  const cards = initBlocks(readFileSync(join(REPO, FIXTURE), "utf8"), "paneFault: .init(");
+  assert.equal(cards.length, 1, `fixture の paneFault を拾えていない(${cards.length} 枚)`);
+  assert.ok(cards[0].closed, "paneFault の括弧が閉じない(Swift 側の形が変わった)");
+
+  const card = cards[0].text;
+  const reason = /reason:\s*"([^"]*)"/.exec(card);
+  assert.ok(reason, "fixture の paneFault に reason が無い");
+  assert.ok(reasons.includes(reason[1]),
+    `paneFault の reason をサーバは作れない\n  fixture : ${reason[1]}\n  作れる  : ${reasons.join(" / ")}`);
+
+  // `display` は帯に**描かれる**唯一の組。バイト一致を要求する —— `reason` が決まれば
+  // 出る文は1組に決まるので、此処は所属ではなく一致でよい(上2つと違う所)。
+  const headline = /headline:\s*"([^"]*)"/.exec(card);
+  const body = /body:\s*"([^"]*)"/.exec(card);
+  assert.ok(headline && body, "fixture の paneFault に display(headline / body)が無い");
+  assert.equal(headline[1], paneFaultView(reason[1]).headline, "帯の見出しをサーバは出せない");
+  assert.equal(body[1], paneFaultView(reason[1]).body, "帯の本文をサーバは出せない");
+
+  // ★`detail` は**わざと縛らない**。本番の `detail` は `e.message` = 自由記述で、
+  //   閉じた語彙が無いので「作れる集合」が存在しない。同じ理由で画面にも描かない
+  //   (`test/wire-shape-controls.sh` は診断出力からも伏せている)。
+  //   縛らない事を明示しておかないと、次に読む人が「拾い漏れ」と読んで足しに来る。
+  assert.ok(/detail:\s*"/.test(card), "fixture の paneFault に detail が無い(鍵ごと消えている)");
+
+  // UI 検査が主張している文字列も同じ集合で見る。
+  const uiSrc = stripSwiftComments(readFileSync(join(REPO, FAULT_UITEST), "utf8"));
+  const fn = swiftFuncBody(uiSrc, "testListPaneFaultShowsTheFaultBannerText");
+  assert.ok(fn, "帯の UI 検査が見つからない(名前が変わったか消えた)");
+  const asserted = [...fn.matchAll(/staticTexts\["([^"]*)"\]/g)].map((m) => m[1]);
+  assert.equal(asserted.length, 2, `UI 検査が主張している文言が ${asserted.length} 本(見出しと本文の2本を期待)`);
+  for (const s of asserted) {
+    assert.ok(heads.includes(s) || bodies.includes(s),
+      `UI 検査が本番に無い文言を主張している\n  検査: ${s}\n` +
+      `  出しうる見出し: ${heads.join(" / ")}\n  出しうる本文: ${bodies.join(" / ")}`);
+  }
+
+  // ★更に、**この fixture が出す組**と一致していなければならない。
+  //   producible なだけでは足りない —— `list-panefault` は `panes-unreadable` を出す面
+  //   なのに、UI 検査が `tmux-unavailable` の文を主張していても上の輪は通ってしまう。
+  //   それは実機で必ず落ちる検査で、落ちる理由が「本番の文言が悪い」ではなく
+  //   「検査が別の面を見ている」——1本の UI 検査が撮る面は1つに決まっている。
+  assert.deepEqual([...asserted].sort(), [headline[1], body[1]].sort(),
+    `UI 検査の主張が fixture の出す組と違う\n  検査  : ${asserted.join(" | ")}\n` +
+    `  fixture: ${headline[1]} | ${body[1]}`);
 });
 
 test("★入力の列挙は5種類すべてを覆っている(種類が増えたら気付く)", () => {

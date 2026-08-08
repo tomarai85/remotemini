@@ -32,7 +32,7 @@ import { PaneRegistry, resolveSessionPane, registryOnlySessions } from "./regist
 //   手が滑って裸で呼んでも**静かに通る**位置に居る(HTTP 応答のつもりが枝の頭を書く)。
 import { readHead as readBranchHead, writeHead as writeBranchHead, readAllHeads } from "./heads.mjs";
 import { psSnapshot } from "./procs.mjs";
-import { paneFaultReason, UNDECIDABLE, blockedMessage, blockedBody, WORKER_REFUSAL } from "./blocked.mjs";
+import { paneFaultReason, paneFaultView, UNDECIDABLE, blockedMessage, blockedBody, WORKER_REFUSAL } from "./blocked.mjs";
 import { cwdVerdict } from "./trust.mjs";
 // ★向きは server -> view の一方向だけ(view.mjs は node の API を一切 import しない)。
 //   ここで view.mjs を呼ぶのは、ネイティブの器が `import "/view.mjs"` を**できない**為
@@ -1145,7 +1145,13 @@ const server = createServer(async (req, res) => {
         // ★故障を一覧の本文に載せる。行が全部 blocked になった時、原因が「机で開いていない」
         //   なのか「サーバが tmux を読めない」なのかは電話から区別できない。
         //   reason まで載せるのは、直す先が違うから(書式/locale か、tmux 自体かソケットか)。
-        paneFault: paneFault ? { reason: paneFault.reason, detail: paneFault.detail } : null,
+        // ★`display` を足した(2026-08-08 / 監査 S8-22)。`reason` は内部の英語トークン、
+        //   `detail` は生の `e.message` で、電話はこの2つを**そのまま帯に描いていた** ——
+        //   一覧が出ない時に出る、旅程で一番踏みそうな画面が、日本語ですらなかった。
+        //   `reason` / `detail` は観測値として残す(診断と app.html の互換)。描くのは `display`。
+        paneFault: paneFault
+          ? { reason: paneFault.reason, detail: paneFault.detail, display: paneFaultView(paneFault.reason) }
+          : null,
       });
     }
 

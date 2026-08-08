@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import {
   RESOLVE_REASONS, WIRE_REASONS, UNDECIDABLE,
   blockedMessage, blockedBody, unknownBlockedMessage, paneFaultReason,
+  PANE_FAULT_VIEW, paneFaultView,
 } from "../src/blocked.mjs";
 
 const ctx = { candidates: 2, panePath: "/Users/edith/Projects", source: "registry" };
@@ -75,4 +76,37 @@ test("tmux の故障は2種を区別する(直し方が違う)", () => {
   assert.equal(paneFaultReason({ code: "TMUX_UNAVAILABLE" }), "tmux-unavailable");
   assert.equal(paneFaultReason(new Error("bad format")), "panes-unreadable");
   assert.equal(paneFaultReason(undefined), "panes-unreadable");
+});
+
+test("★帯の文は paneFaultReason の全域を覆う(覆い漏れ = 電話に既定が出る)", () => {
+  // `paneFaultReason` が作りうる値を**呼んで**作る。2語を書き写すと語彙の写しが増える。
+  const produced = [paneFaultReason({ code: "TMUX_UNAVAILABLE" }), paneFaultReason(new Error("x"))];
+  assert.equal(new Set(produced).size, 2, "paneFaultReason の枝が2つで無くなっている");
+
+  for (const reason of produced) {
+    const v = paneFaultView(reason);
+    assert.equal(v, PANE_FAULT_VIEW[reason], `${reason} が既定に落ちている(表に無い)`);
+    assert.ok(v.headline.length > 0 && v.body.length > 0, `${reason} の文が空`);
+    // ★帯は**一覧全体**の話をする。行ごとの拒否文(blockedMessage)は「この会話には」と
+    //   1つの会話を主語にするので、そのまま貼ると帯として嘘になる。
+    assert.ok(!v.body.includes("この会話"), `${reason} の帯が1つの会話を主語にしている: ${v.body}`);
+    assert.ok(v.body.includes("どの会話にも"), `${reason} の帯が全体を主語にしていない: ${v.body}`);
+    // ★下に会話が1件も無い事が在る(走査が0件で帯だけが出る)ので「下の会話は」と数えない。
+    assert.ok(!v.body.includes("下の"), `${reason} の帯が下に並ぶ物を数えている: ${v.body}`);
+  }
+
+  // 2つの故障は**直し方が違う**ので、文まで別でなければ区別を出した意味が無い。
+  assert.notEqual(paneFaultView(produced[0]).headline, paneFaultView(produced[1]).headline);
+});
+
+test("知らない reason に原因を作らない(名乗れないと言い、理由コードは出す)", () => {
+  const v = paneFaultView("some-future-reason");
+  assert.ok(v.body.includes("some-future-reason"), `理由コードを落としている: ${v.body}`);
+  assert.ok(v.headline.length > 0, "見出しが空");
+  // 覆っている2つのどちらの文にも化けない = もっともらしい嘘を出さない。
+  for (const known of Object.values(PANE_FAULT_VIEW)) {
+    assert.notEqual(v.body, known.body);
+  }
+  // reason 自体が無い時も、原因の無い文ではなく「不明」と名乗る。
+  assert.ok(paneFaultView(undefined).body.includes("不明"));
 });

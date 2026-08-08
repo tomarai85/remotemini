@@ -78,7 +78,20 @@ struct SessionsListingFixture: SessionsListing {
         case .paneFault:
             return .success(Self.response(
                 sessions: [Self.sampleRows[0]],
-                paneFault: .init(reason: "pane-scan-timeout", detail: "tmux ペインの走査がタイムアウトしました。"),
+                // ★此処の3つは**私が読みやすく書き直してよい所ではない**(上の sampleRows と同じ)。
+                //   起票時は `pane-scan-timeout` +「tmux ペインの走査がタイムアウトしました。」で、
+                //   前者は `paneFaultReason` が作れない語、後者は本番が絶対に出さない綺麗な日本語だった。
+                //   `reason` / `display` は `test/fixture-labels-producible.test.mjs` が縛る。
+                //   `detail` だけは縛れない —— 本番は `e.message` = 自由記述で、作れる集合が無い。
+                //   画面には出ないので、一目で合成と分かる形にしてある。
+                paneFault: .init(
+                    reason: "panes-unreadable",
+                    detail: "fixture-detail: production puts a raw JS error message here; the banner never draws it",
+                    display: .init(
+                        headline: "tmux の画面一覧を読めていません",
+                        body: "tmux からの返事は来ていますが、中身が壊れていて読めません。復旧するまで、どの会話にも送れません。この故障は電話からは直せないので、机で確認してください。"
+                    )
+                ),
                 fetchCount: n
             ))
         case .empty:
