@@ -193,6 +193,33 @@ function workPhrase(v) {
   return "状態不明";
 }
 
+/**
+ * ワーカーの `state` を Tom の言葉にする。`workPhrase` の worker 版(2026-08-08)。
+ *
+ * 起票: 一覧の札が `ワーカー・busy` と、**内部のトークンを生で**出していた。tmux 枝は
+ * 全部日本語(「動いている」「動く印なし」「状態不明」)なので、これも片方の経路にだけ
+ * 残っていた古い形 —— R2-2 / R2-3 と同じ型が、同じ関数の中で3件目。
+ *
+ * ★これを隠していた物が在る: `ios/Sources/Core/SessionsListingFixture.swift` の worker 行は
+ *   `ワーカー・実行中` と**日本語**だった。電話の見た目を確かめる時に使う fixture が本番より
+ *   綺麗な文字列を出していたので、画面を何度見ても `ワーカー・busy` は一度も出て来ない。
+ *   「答えを書き込んだ fixture は何も証明しない」の新しい形。fixture 側も本番に揃えた。
+ *
+ * ★言葉は**観測**に留める。`busy` は「送ってから result がまだ返っていない」という事実で、
+ *   「Claude が考えている」は推測。tmux 側が `observed` を「動いている」と書き、
+ *   窓が無い時に「静か」と書かない(= 打って良いと読める)のと同じ線引き。
+ *
+ * ★知らない state は**生のトークンのまま返す**。新しい state を勝手に既存の言葉へ丸めると、
+ *   増えた事が誰にも見えないまま既存の状態に化ける。読めない物を読めた事にしない、は
+ *   `errored` 枝(理由を創作しない)と同じ方針。
+ */
+function workerStatePhrase(state) {
+  if (state === "busy") return "答え待ち";
+  if (state === "ready") return "待機";
+  if (state === "idle") return "未起動";
+  return String(state);
+}
+
 export function routeLabel(live) {
   const v = live || {};
   if (v.route === "tmux") {
@@ -232,7 +259,7 @@ export function routeLabel(live) {
     return { kind: "tmux", short: `机・${work}`, text: `机で開いている・${work}`, screen: v.screen || "" };
   }
   if (v.route === "worker") {
-    const w = v.state ? `ワーカー・${v.state}` : "ワーカー";
+    const w = v.state ? `ワーカー・${workerStatePhrase(v.state)}` : "ワーカー";
     // ★上の tmux 枝と**同じ骨格**。監査 R2-2 まで、ここには状態しか無く、上限に当たった
     //   会話と正常に答え終わった会話が同じ札で並んでいた(2026-08-08 実測、どちらも
     //   `ワーカー・busy` でバイト単位に一致)。tmux 側は 2026-08-02 に直っていたので、

@@ -295,7 +295,7 @@ test("★routeLabel: worker 経路の上限が一覧の札に出る(§2.69、監
   assert.match(busy.text, /返っていません/, "何が起きたかを会話画面で言う");
   // ★過去形と現在形を混ぜない。`limited` は**直前の turn**、`state` は**今**。
   //   上限の直後に次の一件が走り始めるのは普通に起きる(行列を止めない裁定)。
-  assert.match(busy.text, /busy/, "今走っている事が消えている(過去形が現在形を上書きしている)");
+  assert.match(busy.text, /答え待ち/, "今走っている事が消えている(過去形が現在形を上書きしている)");
 
   const idle = routeLabel({ route: "worker", state: "idle", limited: true });
   assert.match(idle.short, /利用上限/, "走っていない時は上限が見出しに立つ");
@@ -307,12 +307,38 @@ test("★routeLabel: worker 経路の上限が一覧の札に出る(§2.69、監
   assert.doesNotMatch(errored.text, /上限/, "上限でない失敗を上限と名乗っている(偽の診断)");
   assert.match(errored.text, /名指せません/, "分からない事を分かった風に書いている");
 
-  // 陰性対照1 — 常に上限と書く実装との差。何も無い時は従来どおりの札に戻る。
-  assert.equal(routeLabel({ route: "worker", state: "busy" }).short, "ワーカー・busy");
-  assert.equal(routeLabel({ route: "worker", state: "busy" }).text, "ワーカー・busy");
+  // 陰性対照1 — 常に上限と書く実装との差。何も無い時は素の札に戻る。
+  assert.equal(routeLabel({ route: "worker", state: "busy" }).short, "ワーカー・答え待ち");
+  assert.equal(routeLabel({ route: "worker", state: "busy" }).text, "ワーカー・答え待ち");
   // 陰性対照2 — 一覧の札が説明文まで抱え込んでいない事(丸い札に入る長さ)。
   assert.ok(busy.short.length <= 12, `一覧の札は短い(実際 ${busy.short.length} 文字)`);
   assert.ok(idle.short.length <= 12, `一覧の札は短い(実際 ${idle.short.length} 文字)`);
+});
+
+test("★routeLabel: worker の状態が Tom の言葉になっている(内部トークンを生で出さない)", () => {
+  // 見つけ方(2026-08-08): R2-2 を測っている最中、一覧の札が `ワーカー・busy` だった。
+  // tmux 枝は全部日本語なので、これも片方の経路にだけ残っていた古い形。
+  // ★隠していた物 = 電話の fixture が `ワーカー・実行中` と**日本語**で、本番より
+  //   綺麗な文字列を出していた。画面を何度見ても `busy` は一度も出て来ない。
+  assert.equal(routeLabel({ route: "worker", state: "busy" }).short, "ワーカー・答え待ち");
+  assert.equal(routeLabel({ route: "worker", state: "ready" }).short, "ワーカー・待機");
+  assert.equal(routeLabel({ route: "worker", state: "idle" }).short, "ワーカー・未起動");
+
+  // ★言葉は観測に留める。`busy` は「送ってから result がまだ」という事実であって、
+  //   Claude の中で何が起きているかではない。tmux 側が窓の無い時に「静か」と書かない
+  //   (= 打って良いと読める)のと同じ線引き。
+  for (const s of ["busy", "ready", "idle"]) {
+    assert.doesNotMatch(routeLabel({ route: "worker", state: s }).short, /考え|生成中/,
+      `${s}: 観測していない事(Claude の内心)を書いている`);
+  }
+
+  // ★知らない state は**生のまま**返す。勝手に既存の言葉へ丸めると、state が増えた事が
+  //   誰にも見えないまま別の状態に化ける。
+  assert.equal(routeLabel({ route: "worker", state: "draining" }).short, "ワーカー・draining",
+    "知らない state を既存の言葉へ丸めている(増えた事が見えなくなる)");
+
+  // 陰性対照 — state 自体が無い時は従来どおり素の「ワーカー」。中黒だけ残さない。
+  assert.equal(routeLabel({ route: "worker" }).short, "ワーカー");
 });
 
 test("★routeLabel: 一覧の札は短く、説明は会話画面(92文字の札を一覧に出さない)", () => {

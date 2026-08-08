@@ -11015,3 +11015,58 @@ rc-backend が詰まっている —— 旅先での直し方が別物。
 
 実機の `claude` が持続する stream-json 入力の形でも上限を `is_error:true` で返すか。
 2026-08-02 の実測は一発の `-p --output-format json` だった。緑に丸めない。
+
+## 2026-08-08 #42 内部トークンが一覧に生で出ていた —— 隠していたのは**本番より綺麗な fixture**(監査 S8-19)
+
+起票: 「一覧の worker 行が `ワーカー・busy` と英語のトークンを生で出す」。
+`routeLabel` の中で日本語に直す層が worker 分岐にだけ無い = 同じ関数で**3度目**の片側残り
+(R2-3 / R2-2 に続く)。
+
+### 直しより大きかった発見
+
+`ios/Sources/Core/SessionsListingFixture.swift` の worker 行は
+`short: "ワーカー・実行中"` / `text: "ワーカーが実行中"` と**綺麗な日本語**だった。
+一覧の見た目を確かめる唯一の手段がこの fixture なので、**`busy` は一度も画面に出ていない**。
+撮影は成功し、見直しは通り、直すべき物だけが写らない。
+
+「答えを書き込んだ fixture は何も証明しない」の、緑ではなく**見た目で騙す**方の形。
+偽の緑は検査を疑えば見付かる。偽の見た目は、検査を何度疑っても見付からない。
+
+### 直した物
+
+- `src/view.mjs` — `workerStatePhrase` を `workPhrase` の兄弟として追加。
+  `busy`→`答え待ち` / `ready`→`待機` / `idle`→`未起動`、それ以外は `String(state)` のまま。
+  **未知の state を既存の日本語へ丸めない**(新しい状態が既存の状態に化けて電話に出る)。
+- `ios/Sources/Core/SessionsListingFixture.swift` — ズレていた2行(tmux / worker)を本番へ揃えた。
+- `rc-backend/test/wire-shape-controls.sh` — 番兵の payload が持っていた `机・静か` /
+  `ワーカー・idle` を、**production に作れない形**(`SHORT-KEPT`)へ替えた。
+  どちらも本番が出せない文字列に腐っており、本番の文言の写しが3枚目として増えていた。
+
+### ★検査を1度捨てた(同日中の実測)
+
+初版は種類ごとに代表を1つ決めてバイト一致を要求した。走らせたら blocked 行の
+`送れない` / `宛先を確定できません。` が赤くなり、**私はそれを fixture の欠陥と読んで
+書き換え、「5行中3行がズレていた」と数えた**。
+
+間違っていたのは検査の側。`BLOCKED_TAG[reason] || "送れない"` は既定形で、
+`tmux-missing` 等の reason ではその文字列が**実際に出る**。正しい行を落としていた。
+fixture の blocked 行を戻し、「その種類で出しうる**集合**に居るか」へ設計を替え、
+数を **2行(tmux / worker)** に直した。対照には**陰性の1本**(別の producible な札に
+替えても緑のまま)を足した —— 初版の設計はこの1本で落ちる。
+
+### 検査(すべて数え直した値)
+
+- `test/view.test.mjs` 77件 / `test/worker.test.mjs` 69件 —— fail 0
+- `test/fixture-labels-producible.test.mjs` 2件 —— fail 0 / skipped 0(飛ばしていない事も見た)
+- `.harness/fixture-label-parity-controls.sh` —— PASS 8 / FAIL 0 / UNMEASURED 0
+  (ズレ5通り + 陰性1 + 木の形2。**飛ばしを緑と読まない**事を対照自身が測る)
+- `test/interrupt-honesty-control.sh` —— PASS 15 / FAIL 0 / UNMEASURED 0(⑬⑭⑮ を追加)
+- `test/wire-shape-controls.sh` —— PASS 20 / FAIL 0
+
+### 測れていない事
+
+3語はどれも `src/worker.mjs` に実在の出所が在る(`idle` = entry 不在時の `status()`、
+`ready` = 起動直後、`busy` = 書き込み時)。つまり訳は余っていない。
+逆に **`String(state)` のフォールバックは現在の実装からは到達しない** ——
+`entry.state` に入る値がこの2語に閉じている為で、今それを踏むのは検査だけである。
+将来 state が増えた日の為の物なので消さないが、「実機で赤くなる所を見た」とは言えない。

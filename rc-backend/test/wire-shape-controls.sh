@@ -99,7 +99,7 @@ cat >"$SCRATCH/payload.json" <<'JSON'
       "updatedAt": "2026-08-05T00:00:00.000Z",
       "metadataIncomplete": false,
       "live": { "route": "tmux", "pane": "SENTINEL-PANE", "screen": "SENDABLE", "limited": false },
-      "display": { "route": { "kind": "tmux", "short": "机・静か", "text": "SENTINEL-TEXT", "screen": "SENDABLE" },
+      "display": { "route": { "kind": "tmux", "short": "SHORT-KEPT", "text": "SENTINEL-TEXT", "screen": "SENDABLE" },
                    "subtitle": "SENTINEL-SUBTITLE" }
     },
     {
@@ -111,7 +111,7 @@ cat >"$SCRATCH/payload.json" <<'JSON'
       "metadataIncomplete": false,
       "fromRegistryOnly": true,
       "live": { "route": "worker", "worker": "SENTINEL-WORKER", "state": "idle", "queued": 0 },
-      "display": { "route": { "kind": "worker", "short": "ワーカー・idle", "text": "SENTINEL-TEXT2", "screen": "" },
+      "display": { "route": { "kind": "worker", "short": "SHORT-KEPT2", "text": "SENTINEL-TEXT2", "screen": "" },
                    "subtitle": "SENTINEL-SUBTITLE2" }
     }
   ],
@@ -148,8 +148,17 @@ fi
 # ★探す形は `\"tmux\"`(引用符ごと)。道具は「値を残した」事を引用符で名乗るので、
 #   裸の `tmux` を探すと**鍵の名前**に当たって緑になる —— 実際に初回はそれで
 #   `"worker"` だけが通り、他3つが赤くなって取り違えが出た(鍵 `worker` に当たっていた)。
+#
+# ★`SHORT-KEPT` は**わざと production に無い形**にしてある(2026-08-08)。以前は
+#   `机・静か` `ワーカー・idle` と、いかにも本物らしい札が書いてあった。此の台本が測るのは
+#   鍵の形であって文言ではないので値は何でもよいのだが、本物らしい札は**本番の文言の
+#   3枚目の写し**として読まれ、実際どちらも production が出せない文字列に腐っていた
+#   (`机・静か` は `workPhrase` に無く、`ワーカー・idle` は S8-19 で `ワーカー・未起動` に
+#   なった)。同じ夜に、電話の fixture が本番より綺麗な札を出していた事で1件見逃していた
+#   ので、此処も**一目で合成と分かる値**に替える。文言の正本は
+#   `.harness/fixture-label-parity-controls.sh` が1本だけ見張る。
 missing=""
-for s in '\"tmux\"' '\"worker\"' '\"机・静か\"' '\"SENDABLE\"' '\"tmux-missing\"'; do
+for s in '\"tmux\"' '\"worker\"' '\"SHORT-KEPT\"' '\"SENDABLE\"' '\"tmux-missing\"'; do
     grep -qF "$s" "$SCRATCH/out.txt" || missing="$missing $s"
 done
 if [ -z "$missing" ]; then

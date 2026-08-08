@@ -634,6 +634,18 @@ LOCAL_CTLS=(
                                      # UITests のどれを変えても動くか)と、中身か mtime か。
                                      # 指紋の式は build.sh から切り出して回す = 写しを持たない。
                                      # xcodebuild は回さないので実測 1 秒未満。
+    ../.harness/fixture-label-parity-controls.sh
+                                     # ★2026-08-08。電話の一覧 fixture
+                                     # (`ios/Sources/Core/SessionsListingFixture.swift`)の札が、
+                                     # `rc-backend/src/view.mjs` の `routeLabel` が実際に出す文字列と
+                                     # 一致しているか。実測で 5 行中 2 行(tmux / worker)がズレており、
+                                     # worker 行は fixture の方が**綺麗**だった(`ワーカー・実行中` /
+                                     # 本番は `ワーカー・busy`)= 画面を何度見ても欠陥が出て来ない形。
+                                     # 木を跨ぐので `.harness` に置いた(`rc-backend/test/` の宣言は
+                                     # rc-backend からの相対に解決されて `ios/…` を名指せない)。
+                                     # xcodebuild は回さず node だけ = 実測 2 秒。
+                                     # ★飛ばしを緑と読まない事を対照自身が測っている(部分木の
+                                     #   写しでは此の検査は正しく飛ぶので、そこが抜け道になる)。
 )
 # ── ★ここに**わざと入れていない**物(消えた訳ではない)────────────────────────
 # `test/verdict-mutants.sh` = `test/mutation-verdict-controls.sh` の陰性対照

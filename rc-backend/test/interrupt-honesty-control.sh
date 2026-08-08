@@ -181,6 +181,32 @@ probe "名指せない異常を上限だと創作する" "src/view.mjs" \
     'short: "ワーカー・★答えなし", text: `${w}(★直前の答えは返りませんでした。理由は名指せません)`' \
     'short: "★利用上限", text: `${w}(★利用上限)`'
 
+# ---- ここから S8-19(一覧の札の言葉)。見張る file が同じなので同じ対照に置く ----
+#
+# ★木を跨ぐ側(電話の fixture と本番の文字列が一致しているか)は
+#   `.harness/fixture-label-parity-controls.sh` が持つ。此処は `view.mjs` の中だけ、
+#   つまり**言葉の作り方**を守る。
+
+# ⑬ 内部のトークンを生で出す形に戻す。起票時の実物 —— 一覧に `ワーカー・busy` と
+#    出ていた。tmux 枝は全部日本語なので、片方の経路にだけ残っていた古い形。
+probe "内部トークンを生で出す(起票時の実物)" "src/view.mjs" \
+    'if (state === "busy") return "答え待ち";' \
+    'if (state === "busy") return state;'
+
+# ⑭ 観測していない事を書く。`busy` は「送ってから result がまだ返っていない」という
+#    事実で、Claude の中で何が起きているかではない。tmux 側が窓の無い時に「静か」と
+#    書かない(= 打って良いと読める)のと同じ線引きを、worker 側でも守らせる。
+probe "Claude の内心を書く(観測していない事を言う)" "src/view.mjs" \
+    'if (state === "busy") return "答え待ち";' \
+    'if (state === "busy") return "考え中";'
+
+# ⑮ 知らない state を既存の言葉へ丸める。**増えた事が誰にも見えないまま**別の状態に
+#    化ける形。`errored` 枝で理由を創作しないのと同じ方針で、読めない物を読めた事に
+#    しない事を機械に守らせる。
+probe "知らない state を既存の言葉へ丸める" "src/view.mjs" \
+    'return String(state);' \
+    'return "待機";'
+
 echo
 echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
 if [ "$UNMEASURED" -gt 0 ]; then exit 2; fi
