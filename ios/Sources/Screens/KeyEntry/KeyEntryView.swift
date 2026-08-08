@@ -17,10 +17,20 @@ struct KeyEntryView: View {
     /// `sentence(for:)` だけを測ると、`init` が `notice` を捨てる実装が緑のまま通る。
     let noticeText: String?
 
-    init(notice: SignOutNotice? = nil, onSaved: @escaping (Credentials) -> Void) {
+    /// - Parameter clients: 背後の3つの口。**既定値を置かない**。
+    ///
+    ///   2026-08-08 まで此処は何も渡しておらず、`KeyEntryViewModel` 側の既定値
+    ///   (本物の HTTP client 2つと `KeychainCredentialStore`)がそのまま生きていた ——
+    ///   UI 検査の面に出ているこの画面が**開発機の実 Keychain** を握っていた事になる。
+    ///   露見しなかったのは接続ボタンを押す検査が1本も無かったから。理由の全文は
+    ///   `ios/Sources/Core/KeyEntryClients.swift`。
+    init(clients: KeyEntryClients,
+         notice: SignOutNotice? = nil,
+         onSaved: @escaping (Credentials) -> Void) {
         self.noticeText = Self.sentence(for: notice)
         // URL は**届いた上で 401 が返った**ので正しい事が観測済み。打ち直させない。
-        _viewModel = StateObject(wrappedValue: KeyEntryViewModel(initialBaseURL: notice?.baseURL,
+        _viewModel = StateObject(wrappedValue: KeyEntryViewModel(clients: clients,
+                                                                initialBaseURL: notice?.baseURL,
                                                                 onSaved: onSaved))
     }
 
@@ -34,15 +44,30 @@ struct KeyEntryView: View {
             }
 
             Section {
+                // ★確かめている間は両方とも触れない。打てる欄を残すと、返事を待つ間に
+                // 打ち替えた値と**今飛んでいる要求が確かめている値**が食い違う ——
+                // その状態で返って来た「鍵が違います」は、画面に見えている鍵の話ではない。
                 TextField("Base URL", text: $viewModel.baseURLText, prompt: Text("https://"))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
+                    .disabled(viewModel.isChecking)
                     .accessibilityIdentifier("keyEntry.baseURL")
                 SecureField("API Key", text: $viewModel.apiKeyText)
+                    .disabled(viewModel.isChecking)
                     .accessibilityIdentifier("keyEntry.apiKey")
             } footer: {
-                if let message = viewModel.errorMessage {
+                // 2026-08-08(監査 X2-8)。此処は以前、押してから最大16秒**空白**だった。
+                // 出るのは丸い印だけで、何を待っているのか・いつ諦めるのかは何処にも
+                // 書いていない。DESIGN §2.68。
+                //
+                // 2つは排他。`submit()` が先頭で `errorMessage = nil` にするので、
+                // 走っている間に古い赤が下に居座る事は無い。
+                if let inFlight = viewModel.inFlightText {
+                    Text(inFlight)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("keyEntry.inFlight")
+                } else if let message = viewModel.errorMessage {
                     Text(message)
                         .foregroundStyle(.red)
                         .accessibilityIdentifier("keyEntry.error")

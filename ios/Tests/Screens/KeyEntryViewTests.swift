@@ -26,6 +26,13 @@ import SwiftUI
 final class KeyEntryViewTests: XCTestCase {
     private static let url = URL(string: "https://example.invalid")!
 
+    /// 組む時に渡す3つの口。**`.live` は使わない**。
+    ///
+    /// 単体検査は開発機の上で走るので、本物の `KeychainCredentialStore` を握らせた
+    /// 時点で Tom の鍵を読む / 消す経路が生える(`ios/Sources/Core/KeyEntryClients.swift`)。
+    /// 下の3本は接続を押さないが、「押さないから安全」は経路が在る事の言い換えでしかない。
+    private var clients: KeyEntryClients { .fixture(stallingAt: .url) }
+
     private func text(_ notice: SignOutNotice?) -> String? {
         KeyEntryView.sentence(for: notice)
     }
@@ -76,7 +83,7 @@ final class KeyEntryViewTests: XCTestCase {
     /// `viewModel` には触れない —— `@StateObject` は view 階層に載る前に中身を読むと
     /// 落ちる。読むのは `init` が決めた文だけで、それで足りる。
     func testTheViewBuiltWithANoticeCarriesTheSentence() {
-        let view = KeyEntryView(notice: SignOutNotice(reason: .keyRejected, baseURL: Self.url)) { _ in }
+        let view = KeyEntryView(clients: clients, notice: SignOutNotice(reason: .keyRejected, baseURL: Self.url)) { _ in }
 
         XCTAssertEqual(view.noticeText, text(SignOutNotice(reason: .keyRejected, baseURL: Self.url)),
                        "★notice を受け取って捨てる init を落とす")
@@ -93,10 +100,10 @@ final class KeyEntryViewTests: XCTestCase {
     /// 「常に nil」を守る為に在るのではない。錨は遠くの兄弟ではなく、直に食う派生の
     /// 隣に置く(`rc-backend/tools/vacuous-scan.py` の頭)。
     func testTheViewBuiltWithoutANoticeCarriesNothing() {
-        let withNotice = KeyEntryView(notice: SignOutNotice(reason: .keyRejected, baseURL: Self.url)) { _ in }
+        let withNotice = KeyEntryView(clients: clients, notice: SignOutNotice(reason: .keyRejected, baseURL: Self.url)) { _ in }
         XCTAssertNotNil(withNotice.noticeText, "前提: 同じ口が文を持ち得る")
 
-        let view = KeyEntryView(onSaved: { _ in })
+        let view = KeyEntryView(clients: clients, onSaved: { _ in })
 
         XCTAssertNil(view.noticeText)
     }

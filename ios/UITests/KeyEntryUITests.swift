@@ -88,4 +88,99 @@ final class KeyEntryUITests: XCTestCase {
         XCTAssertFalse(submit.isEnabled,
                        "★拒まれた鍵を欄に残す実装を落とす(URL が埋まっている以上、押せない理由は鍵が空だけ)")
     }
+
+    // MARK: - 押した後の無言(2026-08-08、監査 X2-8、DESIGN §2.68)
+
+    /// 文言は `KeyEntryViewModel` から**手で書き写す**。生成側を呼んで比べると
+    /// 「同じ関数が同じ物を返す」しか言えない。秒は `BackendSession.interactiveTimeout`
+    /// (= 8)の現物 —— 定数が動いたらこの検査が落ちるのが正しい。
+    private let urlStageSentence = "サーバに届くか確かめています…(返事を最大8秒待ちます)"
+    private let keyStageSentence = "鍵が通るか確かめています…(返事を最大8秒待ちます)"
+
+    /// 1段目で止まる面 = 既存の `keyentry-rejected`(口が `.fixture(stallingAt: .url)`)。
+    /// 2段目で止まる面 = `keyentry-slow-key`(`ios/Sources/Core/KeyEntryProbeFixture.swift`)。
+    private func launchStallingOnKey() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["RC_UI_FIXTURE"] = "keyentry-slow-key"
+        app.launch()
+        return app
+    }
+
+    /// 打つ。ASCII のみ(日本語入力は simulator の入力元に依存する)。
+    private func fill(_ app: XCUIApplication, _ identifier: String, _ text: String) {
+        let field = element(app, identifier)
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "錨: \(identifier) が画面に在る")
+        field.tap()
+        field.typeText(text)
+    }
+
+    /// 識別子で絞った上で**文言まで**一致する要素。識別子だけで待つと、2段目の面では
+    /// 1段目の文を掴んだ瞬間に緑になり得る(素通しの healthz は一瞬で返る)。
+    private func sentence(_ app: XCUIApplication, _ text: String) -> XCUIElement {
+        app.descendants(matching: .any)
+            .matching(identifier: "keyEntry.inFlight")
+            .matching(NSPredicate(format: "label == %@", text))
+            .firstMatch
+    }
+
+    /// ★1段目の最中、画面が何を待っているかを言う。
+    ///
+    /// 直す前、接続を押した後は丸い印だけで最大16秒無言だった —— 電話の側からは
+    /// 「押せていないのか / 待っているのか / 死んだのか」の区別が付かない。
+    func testTheURLStageSaysWhatItIsWaitingFor() {
+        let app = launchRejected()
+        fill(app, "keyEntry.apiKey", "fixture-key")
+
+        let submit = element(app, "keyEntry.submit")
+        XCTAssertTrue(submit.waitForExistence(timeout: 10))
+        submit.tap()
+
+        XCTAssertTrue(sentence(app, urlStageSentence).waitForExistence(timeout: 10),
+                      "★押した後を無言のままにする実装を落とす")
+        XCTAssertFalse(sentence(app, keyStageSentence).exists,
+                       "★2段を1つの文に畳む実装を落とす(どちらが詰まったかが消える)")
+
+        photograph(app, "keyentry-inflight-url")
+    }
+
+    /// ★2段目の文は別物で、しかも1段目を**通り抜けた**事の報告になっている。
+    ///
+    /// ここが分かれ道: 1段目で止まるなら tailnet か edith 自体、2段目で止まるなら
+    /// edith は起きていて rc-backend が詰まっている。旅先での直し方が別物。
+    func testTheKeyStageSaysThatTheURLAlreadyPassed() {
+        let app = launchStallingOnKey()
+        fill(app, "keyEntry.baseURL", seededURL)
+        fill(app, "keyEntry.apiKey", "fixture-key")
+
+        let submit = element(app, "keyEntry.submit")
+        XCTAssertTrue(submit.waitForExistence(timeout: 10))
+        submit.tap()
+
+        XCTAssertTrue(sentence(app, keyStageSentence).waitForExistence(timeout: 10),
+                      "★2段目を言葉にしない実装を落とす")
+
+        photograph(app, "keyentry-inflight-key")
+    }
+
+    /// ★確かめている間、欄は打ち替えられない。
+    ///
+    /// 打てる欄を残すと、返って来た「鍵が違います」が**画面に見えている鍵**の話では
+    /// なくなる。単体は `viewModel.isChecking` までしか見られないので、
+    /// `.disabled` が現に効いている事はここでしか測れない。
+    func testTheFieldsCannotBeEditedWhileAStageIsRunning() {
+        let app = launchRejected()
+        fill(app, "keyEntry.apiKey", "fixture-key")
+
+        let url = element(app, "keyEntry.baseURL")
+        XCTAssertTrue(url.isEnabled, "前提: 押す前は打てる")
+
+        let submit = element(app, "keyEntry.submit")
+        XCTAssertTrue(submit.waitForExistence(timeout: 10))
+        submit.tap()
+
+        XCTAssertTrue(sentence(app, urlStageSentence).waitForExistence(timeout: 10), "錨: 現に走っている")
+        XCTAssertFalse(url.isEnabled, "★確かめている間に URL を打ち替えられる実装を落とす")
+        XCTAssertFalse(element(app, "keyEntry.apiKey").isEnabled,
+                       "★確かめている間に鍵を打ち替えられる実装を落とす")
+    }
 }

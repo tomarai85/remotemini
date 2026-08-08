@@ -98,8 +98,31 @@ struct RootView: View {
                 onUnauthorized: { appState.clearCredentials() }
             )
         } else {
-            KeyEntryView(notice: appState.signOutNotice, onSaved: appState.setCredentials)
+            KeyEntryView(clients: keyEntryClients, notice: appState.signOutNotice, onSaved: appState.setCredentials)
         }
+    }
+
+    /// 鍵入力画面が握る3つの口。Release では必ず `.live`。
+    ///
+    /// ★`KeyEntryViewModel` の既定値ではなく**此処**で選ぶ理由(2026-08-08、監査 X2-8)。
+    /// 既定値の形だった間、`KeyEntryView` は何も渡していなかったので、UI 検査に出ている
+    /// 鍵入力画面が**開発機の実 Keychain と本物の HTTP client**を握っていた。既定値は
+    /// 「渡し忘れ」を静かに埋めるので、埋まった事に誰も気付けない ——
+    /// `ios/Sources/Core/KeyEntryClients.swift` は既定値を持たない。
+    ///
+    /// 上の2つの fixture と違って此処が `normalFlow` の**中**に居るのは、鍵入力画面が
+    /// 「`AppState` が鍵は無いと答えた」時にだけ現れる面だから(`AppState.forLaunch()` の
+    /// doc と同じ話)。迂回して直接描くと、断りが disk から画面まで通る事が測れなくなる。
+    private var keyEntryClients: KeyEntryClients {
+        #if DEBUG
+        if KeyEntryProbeFixture.fromEnvironment() != nil {
+            return .fixture(stallingAt: .key)
+        }
+        if SignOutNoticeFixture.fromEnvironment() != nil {
+            return .fixture(stallingAt: .url)
+        }
+        #endif
+        return .live
     }
 
     #if DEBUG
