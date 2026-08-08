@@ -164,9 +164,19 @@ struct ListView: View {
         .disabled(grayedOut)
     }
 
+    /// ★この関数が**開くたびに新しい ViewModel を作る**事が、DESIGN §2.53 の理由その物。
+    /// 打ちかけを ViewModel の平のプロパティに置いておくと、会話から一覧へ戻って開き直す
+    /// だけで消える —— OS も網も机も関係しない。`draftStore` を渡す事で、打ちかけの寿命が
+    /// 「画面」ではなく「セッション」に付く。
+    ///
+    /// store を毎回作り直しているのは、`UserDefaultsDraftStore` が読み書きのたびに
+    /// 全部を読み直す設計だから(写しを抱えないので、複数インスタンスが互いの
+    /// セッションを消さない)。「共有インスタンスにする」という呼ぶ側の約束に
+    /// 正しさを預けない為の形で、`DraftStoreTests` の⑥がそれを固定している。
     private func makeConversationViewModel(for row: SessionRow) -> ConversationViewModel {
         ConversationViewModel(
             client: HistoryClient(),
+            draftStore: UserDefaultsDraftStore(),
             baseURL: baseURL,
             apiKey: apiKey,
             sessionID: row.id,

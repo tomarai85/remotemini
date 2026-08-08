@@ -36,6 +36,10 @@ struct RootView: View {
                         // the inert fixture host in the background -- see
                         // `PollFetchingFixture`'s own doc for the full reasoning.
                         pollClient: PollFetchingFixture(historyState: conversationFixtureState),
+                        // DESIGN §2.53: ここは UI 検査(スクリーンショット)の面。本物の
+                        // store を渡すと**開発機の `UserDefaults` に検査の打ちかけが残り**、
+                        // 検査どうしが互いの打ちかけを見る。覚えない実装を明示的に渡す。
+                        draftStore: InMemoryDraftStore(),
                         baseURL: Self.fixtureBaseURL,
                         apiKey: "ui-fixture-key",
                         sessionID: "fixture-session",

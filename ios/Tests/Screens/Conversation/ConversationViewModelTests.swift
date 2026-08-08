@@ -166,6 +166,7 @@ final class ConversationViewModelTests: XCTestCase {
         interruptClient: Interrupting = UnusedInterruptClient(),
         choiceClient: ChoiceSending = UnusedChoiceClient(),
         pollClient: PollFetching = SilentPollFetching(),
+        draftStore: DraftStoring = InMemoryDraftStore(),
         initialLimit: Int = ConversationViewModel.initialLimit
     ) -> ConversationViewModel {
         unauthorizedCallCount = 0
@@ -175,6 +176,9 @@ final class ConversationViewModelTests: XCTestCase {
             sendClient: sendClient,
             interruptClient: interruptClient,
             choiceClient: choiceClient,
+            // 既定は覚えない実装。本番の `UserDefaults` を検査が触ると、検査どうしが
+            // 互いの打ちかけを見る上に開発機に残留物が残る(DESIGN §2.53)。
+            draftStore: draftStore,
             baseURL: URL(string: "https://unit-test.invalid")!,
             apiKey: "unit-test-fixture-key-not-real",
             sessionID: "sess-0001",
@@ -766,7 +770,8 @@ final class ConversationViewModelTests: XCTestCase {
         choiceClient: ChoiceSending = UnusedChoiceClient(),
         choiceJSON: String? = nil,
         initialHistory: [HistoryEntry] = [],
-        thenHistory: [Result<HistoryResponse, SessionsFetchError>] = []
+        thenHistory: [Result<HistoryResponse, SessionsFetchError>] = [],
+        draftStore: DraftStoring = InMemoryDraftStore()
     ) async throws -> ConversationViewModel {
         let client = RecordingClient()
         client.resultQueue =
@@ -775,7 +780,8 @@ final class ConversationViewModelTests: XCTestCase {
             client: client,
             sendClient: sendClient,
             interruptClient: interruptClient,
-            choiceClient: choiceClient
+            choiceClient: choiceClient,
+            draftStore: draftStore
         )
         await vm.load()
         if let screenValue {
@@ -1184,7 +1190,8 @@ final class ConversationViewModelTests: XCTestCase {
 
     private func sendUnknownViewModel(
         initialHistory: [HistoryEntry] = [],
-        thenHistory: [Result<HistoryResponse, SessionsFetchError>]
+        thenHistory: [Result<HistoryResponse, SessionsFetchError>],
+        draftStore: DraftStoring = InMemoryDraftStore()
     ) async throws -> (ConversationViewModel, RecordingSendClient) {
         let sendClient = RecordingSendClient()
         // `.unreachable` を代表に選ぶのは、結果不明の2つ(`.unreachable` /
@@ -1195,7 +1202,8 @@ final class ConversationViewModelTests: XCTestCase {
             screen: "SENDABLE",
             sendClient: sendClient,
             initialHistory: initialHistory,
-            thenHistory: thenHistory
+            thenHistory: thenHistory,
+            draftStore: draftStore
         )
         return (vm, sendClient)
     }
@@ -2307,5 +2315,99 @@ final class ConversationViewModelTests: XCTestCase {
         vm.applyInitial(.failure(.cancelled))
 
         XCTAssertEqual(vm.reachability.consecutiveFailures, 0, "§5-4 is 接続不可・タイムアウト・5xx and nothing else")
+    }
+
+    // MARK: - DESIGN §2.53: 打ちかけは画面ではなくセッションに属する
+    //
+    // §2.52 の3つの答えは全部「本文は残してあります」で終わる。特に見分けられなかった
+    // 時の文面は Tom に「上の記録と見比べろ」と頼んでいる —— その為に一覧へ戻る動きは
+    // 自然に起きるのに、戻って開き直すと ViewModel ごと作り直されて本文が消えていた。
+    // §2.52 が落とした「実行できない指示」を、別の実行できない指示に置き換えていた事に
+    // なる。ここで固定するのは**何が残ったか**であって、文言ではない。
+    //
+    // | 誤実装 | 落とす対照 |
+    // |---|---|
+    // | 復元しない(今まで) | ① |
+    // | 打鍵を書き通さず、背面に回った時にまとめて書く | ② |
+    // | 送信成功で store を消し忘れる | ③ |
+    // | 送信不通でも store を消す | ④ |
+    //
+    // ★④ が §2.52 の約束を本当にする1本。
+
+    /// ① 前に打ちかけた本文が、作り直した ViewModel に戻る。
+    func testADraftFromAnEarlierVisitComesBack() async throws {
+        let store = InMemoryDraftStore()
+        store.save("止めて", sessionID: "sess-0001")
+
+        let client = RecordingClient()
+        client.resultQueue = [.success(HistoryResponse(history: [], truncated: false))]
+        let vm = makeViewModel(client: client, draftStore: store)
+
+        XCTAssertEqual(vm.draft, "止めて", "画面を開き直しただけで打ちかけが消える実装を落とす")
+    }
+
+    /// ★② 打鍵は其のつど書き通される。
+    ///
+    /// まとめ書きにすると、送信成功で消した事が書き戻される窓ができる(落ちた後に
+    /// 送信済みの本文が composer へ蘇る)。
+    func testTypingIsWrittenThroughImmediately() async throws {
+        let store = InMemoryDraftStore()
+        let client = RecordingClient()
+        client.resultQueue = [.success(HistoryResponse(history: [], truncated: false))]
+        let vm = makeViewModel(client: client, draftStore: store)
+
+        vm.draft = "止め"
+        XCTAssertEqual(store.load(sessionID: "sess-0001"), "止め")
+
+        vm.draft = "止めて"
+        XCTAssertEqual(store.load(sessionID: "sess-0001"), "止めて", "★打鍵ごとに書き通す")
+    }
+
+    /// ③ 送信が通れば(`keepText:false`)、置き場からも消える。
+    func testASuccessfulSendAlsoForgetsTheStoredDraft() async throws {
+        let store = InMemoryDraftStore()
+        let sendClient = RecordingSendClient()
+        sendClient.outcomeQueue = [
+            .display(ResultDisplay(kind: "ok", text: "送りました。", keepText: false))
+        ]
+        let vm = try await loadedViewModel(
+            screen: "SENDABLE", sendClient: sendClient, draftStore: store
+        )
+        vm.draft = "止めて"
+        XCTAssertEqual(store.load(sessionID: "sess-0001"), "止めて")
+
+        await vm.send()
+
+        XCTAssertEqual(vm.draft, "")
+        XCTAssertNil(store.load(sessionID: "sess-0001"), "消した事も同じ経路で書かれる")
+    }
+
+    /// ★④ 送信が不通の時は残る —— §2.52 の「本文は残してあります」が、
+    /// 一覧へ戻って開き直しても本当である事。
+    ///
+    /// ★置き場の中身を見て終わりにしない。この検査の名前は**画面を出た後**と言って
+    /// いるので、実際に **2つ目の ViewModel を同じ置き場から作って**確かめる ——
+    /// 名前が主張する事を走らせていない検査は、名前の分だけ嘘を持つ(一覧へ戻る =
+    /// `ListView.makeConversationViewModel(for:)` が新しい ViewModel を作る、が
+    /// この節の病気そのもの)。
+    func testAnUnknownSendLeavesTheDraftRecoverableAfterLeavingTheScreen() async throws {
+        let store = InMemoryDraftStore()
+        let (vm, _) = try await sendUnknownViewModel(
+            thenHistory: [.success(HistoryResponse(history: [], truncated: false))],
+            draftStore: store
+        )
+        vm.draft = "止めて"
+
+        await vm.send()
+
+        XCTAssertEqual(vm.draft, "止めて")
+
+        // 一覧へ戻って開き直した所。復元は `init` で起きるので `load()` は要らない
+        // —— 履歴を1件も取らないまま打ちかけが戻る事まで含めて測る。
+        let reopened = makeViewModel(client: RecordingClient(), draftStore: store)
+        XCTAssertEqual(
+            reopened.draft, "止めて",
+            "★§2.52 は「本文は残してあります」と言う。一覧へ戻って開き直しても本当である事"
+        )
     }
 }

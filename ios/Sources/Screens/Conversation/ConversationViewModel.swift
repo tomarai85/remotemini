@@ -126,7 +126,18 @@ final class ConversationViewModel: ObservableObject {
     /// every keystroke through a method would buy nothing. Everything that *clears*
     /// it goes through `applySendOutcome(_:)`, which is where the `keepText` rule
     /// lives.
-    @Published var draft: String = ""
+    ///
+    /// ★2026-08-08(DESIGN §2.53): 打鍵ごとに `draftStore` へ書き通す。まとめ書きに
+    /// しないのは、送信成功で消した事が**書き戻される窓**ができるから —— 送った直後に
+    /// 落ちると、次に開いた時に送信済みの本文が composer へ蘇る。消した事も同じ経路で
+    /// 書かれるなら、その窓は原理的に無い。
+    ///
+    /// `didSet` は init 内の代入では発火しない。復元(`init` の `self.draft = …`)が
+    /// 書き戻しにならないのはその為で、§2.53 の「同じ本文で時刻を若返らせない」は
+    /// store 側にも独立して置いてある(呼ぶ側の作法に正しさを預けない)。
+    @Published var draft: String = "" {
+        didSet { draftStore.save(draft, sessionID: sessionID) }
+    }
     /// True from the moment the send button is pressed until the response has been
     /// applied. The composer text is deliberately NOT cleared on entry to this state
     /// (brief §2 steps 2 and 5, and the star between them): clearing before the
@@ -387,6 +398,10 @@ final class ConversationViewModel: ObservableObject {
     private let sendClient: MessageSending
     private let interruptClient: Interrupting
     private let choiceClient: ChoiceSending
+    /// 打ちかけの置き場(DESIGN §2.53)。**既定値を持たせていない** —— 既定を本物に
+    /// すると、`RootView` の UI 検査用の面が黙って実機の `UserDefaults` を触る。
+    /// 本番は `ListView` だけが `UserDefaultsDraftStore` を渡す。
+    private let draftStore: DraftStoring
     private let baseURL: URL
     private let apiKey: String
     private let sessionID: String
@@ -418,6 +433,7 @@ final class ConversationViewModel: ObservableObject {
         sendClient: MessageSending = SendClient(),
         interruptClient: Interrupting = InterruptClient(),
         choiceClient: ChoiceSending = ChoiceClient(),
+        draftStore: DraftStoring,
         baseURL: URL,
         apiKey: String,
         sessionID: String,
@@ -430,12 +446,18 @@ final class ConversationViewModel: ObservableObject {
         self.sendClient = sendClient
         self.interruptClient = interruptClient
         self.choiceClient = choiceClient
+        self.draftStore = draftStore
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.sessionID = sessionID
         self.title = title
         self.onUnauthorized = onUnauthorized
         self.currentLimit = initialLimit
+
+        // 打ちかけの復元(DESIGN §2.53)。`didSet` は init 内では発火しないので、
+        // ここで書き戻しは起きない —— 開き直すだけで時刻が若返る型を、呼ぶ側でも
+        // 踏まない形にしてある。
+        self.draft = draftStore.load(sessionID: sessionID) ?? ""
     }
 
     func load() async {
