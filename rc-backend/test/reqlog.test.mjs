@@ -15,24 +15,12 @@ import { EventEmitter } from "node:events";
 import {
   attachRequestLog, markResult, noteBody, pathShape, sessionOf, token, errSlug, SESSION_ROUTE_RE,
 } from "../src/reqlog.mjs";
+import { stripComments } from "./jssrc.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SERVER_SRC = readFileSync(join(ROOT, "src", "server.mjs"), "utf8");
 const REQLOG_SRC = readFileSync(join(ROOT, "src", "reqlog.mjs"), "utf8");
 
-/**
- * 注釈を落とす。**検査は散文ではなく実装を読む**。
- *
- * ★これを書く羽目になった経緯を残す: 最初は生の本文を走査していて、`LOG_PATHS` に付けた
- *   自分の注釈(「`path === "…"` を読んで突き合わせる」)を**振り分けとして拾い**、
- *   `…` という道が実在する事になって落ちた。検査が自分の説明文に当たる形は、
- *   直さないと「説明を書き足すと赤くなる」検査になる。
- */
-function stripComments(src) {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/.*$/gm, "$1");
-}
 const SERVER_CODE = stripComments(SERVER_SRC);
 
 /** 応答の真似。`writeHead` を持つだけの物で足りる(仕掛けが差し替えるのはそこ)。 */
