@@ -42,6 +42,16 @@ targets:
         CFBundleDisplayName: Remote Mini
         CFBundleShortVersionString: "0.1"
         CFBundleVersion: "1"
+        # ★どの commit を焼いたか(2026-08-08 / 監査 X2-7)。上の2つは直値の定数で、
+        # 最初のビルドから一度も変わっていない —— 版として画面に出しても何も識別しない。
+        # 実物の名乗りはこの鍵が持つ。`ios/tools/build.sh` が `xcodegen generate` の
+        # **前**に `RC_BUILD_REV` を export し、xcodegen がここへ差し込む。
+        #
+        # ★変数が未定義でも xcodegen は落ちない —— `${RC_BUILD_REV}` という文字列を
+        # そのまま Info.plist に書く(実測、xcodegen 2.45.3)。`${VAR:-既定値}` も
+        # 解釈されず literal になる。だから「差し込み損ね」は例外ではなく**もっともらしい
+        # 文字列**として画面に届く。それを版と読ませない分岐は `BuildInfo.displayRev` に在る。
+        RCBuildRev: "${RC_BUILD_REV}"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

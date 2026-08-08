@@ -42,6 +42,14 @@ struct ListView: View {
                     .accessibilityIdentifier("list.refreshing")
             }
         }
+        // ★帯は**相ごとではなく此処で一度だけ**貼る(2026-08-08 / 監査 X2-7)。
+        // 以前は `content` の中の3つの case にだけ `.safeAreaInset` が付いていて、
+        // 失敗している3相(`.initialLoading` / `.retryable` / `.unreachable`)では
+        // 帯ごと消えていた。帯には版の名乗りが載るので、「古いビルドで動いていないか」を
+        // 最も疑う場面で版が見えない、という向きの欠け方をしていた。
+        // 走査行を持つかは `ListViewModel.Phase.scanLine` が答える(default 無しの
+        // switch なので、新しい相はそれを答えずには足せない)。
+        .safeAreaInset(edge: .bottom) { footer(scanLine: viewModel.phase.scanLine) }
         .navigationTitle("セッション")
         .refreshable { await viewModel.refresh() } // pull-to-refresh (brief §3-d trigger #2)
         .task { await viewModel.refresh() } // initial display (brief §3-d trigger #1)
@@ -83,7 +91,7 @@ struct ListView: View {
                     .accessibilityIdentifier("list.loading")
             }
 
-        case .empty(let scanLine):
+        case .empty:
             ScrollView {
                 Text("会話がありません")
                     .font(.headline)
@@ -92,9 +100,8 @@ struct ListView: View {
                     .frame(maxWidth: .infinity)
                     .accessibilityIdentifier("list.empty")
             }
-            .safeAreaInset(edge: .bottom) { footer(scanLine: scanLine) }
 
-        case .paneFault(let reason, let detail, let sessions, let scanLine):
+        case .paneFault(let reason, let detail, let sessions, _):
             VStack(spacing: 0) {
                 faultBanner(reason: reason, detail: detail)
                     .accessibilityIdentifier("list.paneFault")
@@ -106,11 +113,9 @@ struct ListView: View {
                     rows(sessions, grayedOut: false)
                 }
             }
-            .safeAreaInset(edge: .bottom) { footer(scanLine: scanLine) }
 
-        case .list(let sessions, let scanLine):
+        case .list(let sessions, _):
             rows(sessions, grayedOut: false)
-                .safeAreaInset(edge: .bottom) { footer(scanLine: scanLine) }
 
         case .retryable(let priorSessions):
             VStack(spacing: 0) {
@@ -200,13 +205,22 @@ struct ListView: View {
         )
     }
 
-    private func footer(scanLine: String) -> some View {
+    /// `scanLine == nil` = 机側の走査行をまだ一度も受け取っていない相。行ごと出さない
+    /// (空文字を出すと「走査が空だった」に読めるので、無い物は無いままにする)。
+    /// 版の行はその場合も出る —— 取得が失敗している時こそ「電話が古いのでは」を疑う。
+    private func footer(scanLine: String?) -> some View {
         VStack(spacing: 2) {
             freshnessLine()
-            Text(scanLine) // brief §3-b: rendered verbatim, never reassembled client-side
+            if let scanLine {
+                Text(scanLine) // brief §3-b: rendered verbatim, never reassembled client-side
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("list.scanLine")
+            }
+            Text(BuildInfo.line)
                 .font(.caption2.monospaced())
                 .foregroundStyle(.secondary)
-                .accessibilityIdentifier("list.scanLine")
+                .accessibilityIdentifier("list.buildInfo")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal)

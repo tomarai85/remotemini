@@ -21,6 +21,13 @@ mkdir -p "$OUT_DIR"
 STATES=("$@")
 [ "${#STATES[@]}" -eq 0 ] && STATES=(list-normal list-panefault list-empty)
 
+# 版を差し込んでから generate する(2026-08-08 / 監査 X2-7)。此処は撮った絵が
+# そのまま DoD の証拠になる経路なので、版の行が `rev unknown` のまま写ると
+# 「機能が壊れている」と読まれる —— 実際には差し込みを通っていないだけ。
+# 計算は build.sh にしか無い(`--print-rev`)。写しを持つと片方だけ腐る。
+RC_BUILD_REV="$("$HERE/tools/build.sh" --print-rev)"
+export RC_BUILD_REV
+
 xcodegen generate >"$DERIVED/xcodegen-shots.log" 2>&1
 if [ $? -ne 0 ]; then
     echo "xcodegen generate に失敗"

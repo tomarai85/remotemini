@@ -32,6 +32,30 @@ final class ListViewModel: ObservableObject {
         /// red banner, and the prior list (if any) is grayed out rather than
         /// replaced -- brief: "既存の一覧を空の一覧に差し替えない".
         case unreachable(priorSessions: [SessionRow]?)
+
+        /// 机側が返した走査の行。持っていない相(まだ一度も成功していない / 取得に失敗した)
+        /// では `nil`。
+        ///
+        /// ★此処に置いた理由(2026-08-08 / 監査 X2-7)。`ListView` は帯を各 case の中で
+        /// 個別に貼っていて、6つのうち3つ(`.empty` / `.paneFault` / `.list`)にしか
+        /// 付いていなかった —— **失敗している時だけ帯が消える**形になっていた。
+        /// 帯は版の名乗りも載せるので、「古いビルドで動いていないか」を最も疑う場面で
+        /// 版が見えない、が起きる。
+        ///
+        /// 直しを「残り3つにも貼る」で済ませなかったのは、それが**次に case を足す人が
+        /// 憶えていなければ再発する**形だから。相の側に走査行を持たせて `ListView` が
+        /// 帯を一度だけ貼れば、新しい case は「走査行が在るか」を答える以外に選択肢が無い。
+        /// `default` を書かない事がその強制で、書いた瞬間に強制が消える。
+        var scanLine: String? {
+            switch self {
+            case .initialLoading: return nil
+            case .empty(let scanLine): return scanLine
+            case .paneFault(_, _, _, let scanLine): return scanLine
+            case .list(_, let scanLine): return scanLine
+            case .retryable: return nil
+            case .unreachable: return nil
+            }
+        }
     }
 
     /// Named constant, never a bare literal (brief §4-a): resolves the §5-4 vs §3-6
