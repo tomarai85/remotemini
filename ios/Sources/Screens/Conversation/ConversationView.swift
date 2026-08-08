@@ -15,11 +15,14 @@ struct ConversationView: View {
     /// pushed case it pops back to List exactly like the nav bar's own back button.
     @Environment(\.dismiss) private var dismiss
     /// N4 (brief §1-a item 5): background -> foreground on THIS screen runs the same
-    /// resync procedure as a gap notice or the stage-2 auto-recovery. Only the
-    /// `.background` -> `.active` edge fires it -- `.inactive` is the transient state
-    /// iOS passes through on its way to both backgrounding and the app-switcher
-    /// snapshot, not a real return.
+    /// resync procedure as a gap notice or the stage-2 auto-recovery.
     @Environment(\.scenePhase) private var scenePhase
+    /// N4 の番人。`@State` なのは、判定が**1辺では決まらない**から —— 「途中で背面に
+    /// 居たか」を `.onChange` の呼び出しを跨いで憶える必要が在る。Sprint 4 から
+    /// 2026-08-08 まで此処は `(old, new)` の対を見る純関数で、その条件
+    /// (`.background -> .active`)は iOS が一度も配らない辺だった = N4 は一度も
+    /// 発火していない。実測列と経緯は `ForegroundResume` の doc に全文。
+    @State private var resumeGate = ForegroundResume()
 
     /// 一番下の錨の id。行の identity は `Array.enumerated()` の `Int` offset なので、
     /// ぶつからない型(`String`)を選んでいる -- `Int` にすると、たまたま同じ番号の行が
@@ -49,26 +52,17 @@ struct ConversationView: View {
             // must not keep running once nobody is looking at it (nav pop, or the
             // fixture/UI-test host tearing the view down).
             .onDisappear { viewModel.stopPolling() }
-            .onChange(of: scenePhase) { oldPhase, newPhase in
-                if Self.shouldResumeOnForeground(oldPhase: oldPhase, newPhase: newPhase) {
+            // N4's guard, now in `ForegroundResume` (S8-5). It lived here as
+            // `shouldResumeOnForeground` from Sprint 4 until the List screen was
+            // measured -- at which point the actual `scenePhase` sequence iOS delivers
+            // turned out to make the old condition (`oldPhase == .background &&
+            // newPhase == .active`) UNSATISFIABLE, i.e. this resync has never once
+            // fired since Sprint 4. Full measurement in that type's doc.
+            .onChange(of: scenePhase) { _, newPhase in
+                if resumeGate.shouldResume(newPhase: newPhase) {
                     viewModel.handleForegroundResume()
                 }
             }
-    }
-
-    /// N4's guard, extracted as a pure function (Sprint 4 Evaluator RED 2, item c) --
-    /// `.onChange(of:)`'s closure itself isn't unit-testable, but the decision it
-    /// makes is, once separated from the view lifecycle around it.
-    ///
-    /// Guarding on `oldPhase == .background` specifically (not just "arrived at
-    /// `.active`") matters: iOS routes app launch itself through `.inactive` ->
-    /// `.active`, and that transition can land right after `.task { await
-    /// viewModel.load() }` already started polling fresh -- an unguarded check would
-    /// fire a redundant resync on every screen appearance, not only on a genuine
-    /// backgrounding round trip. `ConversationViewTests` asserts this exact case:
-    /// `.inactive -> .active` must NOT resume.
-    static func shouldResumeOnForeground(oldPhase: ScenePhase, newPhase: ScenePhase) -> Bool {
-        oldPhase == .background && newPhase == .active
     }
 
     @ViewBuilder
@@ -343,9 +337,9 @@ struct ConversationView: View {
     /// `.warn` by `ResultDisplay.tone`) lands on the neutral one rather than
     /// borrowing either success or failure.
     /// Internal rather than `private` for the same reason as
-    /// `shouldResumeOnForeground`: it is a pure decision lifted out of the view body so
-    /// that it can be asserted directly (`ConversationViewTests`). A `private` helper
-    /// here would be a rule about what the user sees that no test can reach.
+    /// `ForegroundResume.shouldResume`: it is a pure decision lifted out of the view
+    /// body so that it can be asserted directly (`ConversationViewTests`). A `private`
+    /// helper here would be a rule about what the user sees that no test can reach.
     static func color(for tone: ResultDisplay.Tone) -> Color {
         switch tone {
         case .ok: return .secondary

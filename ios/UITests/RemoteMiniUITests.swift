@@ -61,4 +61,159 @@ final class RemoteMiniUITests: XCTestCase {
         XCTAssertFalse(element(app, "list.paneFault").exists)
         XCTAssertFalse(element(app, "list.unreachable").exists)
     }
+
+    // MARK: - 一覧が机側へ走査を飛ばす回数(S8-5)
+    //
+    // 下の2本が測っているのは表示ではなく**回数**で、これは画面を見ても絶対に
+    // 判らない: 同じ応答なら `phase` は同じ値に落ち着くので、1回取っても2回取っても
+    // 一覧はまったく同じに見える。`SessionsListingFixture` の scan 行に取得の通し番号を
+    // 載せてあるのがその為で、UI から取得回数を読む唯一の口。
+    //
+    // 「回数」を主張する検査には固有の落とし穴が在って、**器が死ぬと静かに緑になる**
+    // (番号が増えなくなれば「取り直していない」も「計器が壊れた」も同じ見え方)。
+    // だから両方とも、番号が読めなかった時は `XCTUnwrap` で**錨として落とす** ——
+    // 「番号が無い」を 0 に丸めない。`ios/tools/list-return-refresh-control.sh` の
+    // M3 がその区別を実測で固定する。
+
+    /// 起動で何回取るか。**1回**でなければならない。
+    ///
+    /// 2026-08-08 までここは 2 だった: `ListView` の `.onChange(of: scenePhase)` が
+    /// `oldPhase` を捨てて「`.active` に着いたか」だけを見ていて、iOS が起動を
+    /// `.inactive -> .active` で通す為に `.task` の初回取得と重なって二重に撃っていた。
+    /// 会話画面は Sprint 4 で同じ穴を塞いでおり(`ForegroundResume`)、一覧だけが
+    /// 5 sprint 空いていた。通知バナーの出入りや Control Center を引いて戻す操作でも
+    /// 同じ事が起きていた = 電話では1日に何度も起こる。
+    ///
+    /// ★「一瞬を掴む」形にしない為に、3秒の窓で**最大値**を見る。1回目を読んだ直後に
+    ///   終わる検査は、2回目が 0.2 秒後に来る実装を緑で通す。
+    func testColdLaunchFetchesTheListExactlyOnce() throws {
+        let app = launch(fixture: "list-normal")
+
+        let scan = element(app, "list.scanLine")
+        XCTAssertTrue(scan.waitForExistence(timeout: 10))
+
+        let highest = try XCTUnwrap(
+            highestFetchCount(scan, over: 3),
+            "錨: scan 行に取得の番号が一度も載らない(実測: \(scan.label))= 以下の主張は何も測っていない"
+        )
+        XCTAssertEqual(highest, 1, "起動から3秒の間に走った取得の回数。2 = `.task` と scenePhase が両方撃っている")
+    }
+
+    /// 背面から戻った時に何回取るか。**ちょうど1回**増えなければならない
+    /// (brief §3-d 引き金 #3)。
+    ///
+    /// 上の `testColdLaunchFetchesTheListExactlyOnce` と対になっていて、片方だけでは
+    /// 意味を成さない: 起動側の主張だけなら `.onChange(of: scenePhase)` の塊を丸ごと
+    /// 消しても緑のままで、「余分に取らない」を「一度も取り直さない」で満たせてしまう。
+    /// 番人が**区別している**事は、落とす辺と通す辺の両方を測って初めて主張になる。
+    ///
+    /// `press(.home)` -> `activate()` は本物の背面往復(`.active -> .inactive ->
+    /// .background`、戻りはその逆)。`ForegroundResume` の単体検査は規則そのものを
+    /// 測るが、規則が**この画面に繋がっている**事は測れない —— それが此処。
+    func testReturningFromTheBackgroundRefreshesTheListExactlyOnce() throws {
+        let app = launch(fixture: "list-normal")
+
+        let scan = element(app, "list.scanLine")
+        XCTAssertTrue(scan.waitForExistence(timeout: 10))
+        let beforeLabel = scan.label
+        let before = try XCTUnwrap(
+            fetchCount(beforeLabel),
+            "錨: scan 行に取得の番号が載っていない(実測: \(beforeLabel))= 以下の主張は何も測っていない"
+        )
+
+        XCUIDevice.shared.press(.home)
+        app.activate()
+
+        let after = try XCTUnwrap(
+            settledFetchCount(scan, changedFrom: beforeLabel, timeout: 15),
+            "背面から戻っても番号が動かない = 引き金 #3 が繋がっていない(取得 #\(before) のまま)"
+        )
+        XCTAssertEqual(after, before + 1, "背面から戻った時の取り直しはちょうど1回")
+    }
+
+    /// 会話から戻った時に何回取るか。**ちょうど1回**増えなければならない。
+    ///
+    /// 5つ目の引き金は `ListView` に1行も書かれていない —— SwiftUI が push の間だけ
+    /// 覆われた `ListView` の `.task` を中断し、pop で走らせ直す事から出ている
+    /// (詳細と実測表は `ListViewModel.refresh()` の doc)。書かれていないという事は
+    /// 整理の一手で静かに消せるという事なので、配線ではなく振る舞いを此処に固定する。
+    ///
+    /// ★主張が「番号が変わった」ではなく **ちょうど +1** なのが要点。「変わった」
+    ///   だけだと、戻るたびに2回撃つ実装を緑で通してしまう —— 電話から見ると同じに
+    ///   見えて、机側には毎回2倍の走査が飛ぶ。実際 S8-5 が最初に足した
+    ///   `.onDisappear { refresh() }` の1行がまさにそれで、この `+1` が掴んだ。
+    func testReturningFromAConversationRefreshesTheListExactlyOnce() throws {
+        let app = launch(fixture: "list-normal")
+
+        let scan = element(app, "list.scanLine")
+        XCTAssertTrue(scan.waitForExistence(timeout: 10))
+        let beforeLabel = scan.label
+        let before = try XCTUnwrap(
+            fetchCount(beforeLabel),
+            "錨: scan 行に取得の番号が載っていない(実測: \(beforeLabel))= 以下の主張は何も測っていない"
+        )
+
+        app.staticTexts["承認待ちの一件"].tap()
+        // 会話画面へ push できた事の錨。戻るボタンの label は一覧側の
+        // `navigationTitle`(= 「セッション」)。`ConversationView` は toolbar を
+        // 一つも持たないので、この bar に他のボタンは居ない。
+        let back = app.navigationBars.buttons["セッション"]
+        XCTAssertTrue(back.waitForExistence(timeout: 10), "錨: 会話画面へ push できていない")
+        back.tap()
+
+        let after = try XCTUnwrap(
+            settledFetchCount(scan, changedFrom: beforeLabel, timeout: 10),
+            "戻っても scan 行の番号が動かない = 5つ目の引き金が繋がっていない(取得 #\(before) のまま)"
+        )
+        XCTAssertEqual(after, before + 1, "会話から戻った時の取り直しはちょうど1回")
+    }
+
+    /// `scan: … (取得 #N)` から N を読む。載っていなければ `nil` -- 「番号が無い」を
+    /// 0 や -1 に丸めない(丸めると、器が死んだ回が差分の主張を素通りし得る)。
+    private func fetchCount(_ label: String) -> Int? {
+        guard let hash = label.lastIndex(of: "#") else { return nil }
+        let digits = label[label.index(after: hash)...].prefix { $0.isNumber }
+        return Int(digits)
+    }
+
+    /// 窓の間ずっと標本を取り、読めた取得番号の**最大**を返す(一度も読めなければ `nil`)。
+    ///
+    /// 最大を採るのは、「何回撃ったか」の主張が**一瞬の読み**で崩れるから: 1回目を
+    /// 読んで即座に終わる検査は、2回目が少し遅れて来る実装をそのまま緑で通す。
+    /// 逆に最後の1点だけを読む形も駄目で、途中で番号が飛んでも見えない。窓の中の
+    /// 最大なら、余分な発火は窓に入った時点で必ず主張を壊す。
+    private func highestFetchCount(_ subject: XCUIElement, over seconds: TimeInterval) -> Int? {
+        let deadline = Date().addingTimeInterval(seconds)
+        var highest: Int?
+        while Date() < deadline {
+            if let n = fetchCount(subject.label) {
+                highest = max(highest ?? n, n)
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return highest
+    }
+
+    /// scan 行が「**変わって、かつ落ち着いた**」所まで待って、その時の取得番号を返す。
+    ///
+    /// なぜ2段構えか(片方だけでは倒れる方向が違う):
+    /// - 「変わるまで待つ」だけだと、2回撃つ実装が `#before+1` を通過する一瞬を
+    ///   掴んでしまい得る = **偽の緑**。
+    /// - 「落ち着くまで待つ」だけだと、取り直しが始まる前の値を静止と読む = 偽の赤。
+    ///
+    /// 変化を待った上で「同じ値を2回続けて読めた事」を静止の条件にすると、2回撃つ
+    /// 実装は途中で掴んでも次の読みで値が動くので、必ず最終値(= +2)へ落ちる。
+    private func settledFetchCount(_ subject: XCUIElement, changedFrom previous: String, timeout: TimeInterval) -> Int? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastSeen: String?
+        while Date() < deadline {
+            let now = subject.label
+            if now != previous {
+                if let lastSeen, lastSeen == now { return fetchCount(now) }
+                lastSeen = now
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return nil
+    }
 }

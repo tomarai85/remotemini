@@ -5,6 +5,9 @@ import SwiftUI
 struct ListView: View {
     @StateObject private var viewModel: ListViewModel
     @Environment(\.scenePhase) private var scenePhase
+    /// 引き金 #3 の器。`@State` なのは、判定が**1辺では決まらない**から ——
+    /// `.onChange` の呼び出しを跨いで「背面を通ったか」を憶える必要が在る。
+    @State private var resumeGate = ForegroundResume()
 
     // Sprint 3 brief §1-a (List -> Conversation navigation): kept as plain
     // constructor params here rather than read off `viewModel` (which keeps its own
@@ -42,11 +45,23 @@ struct ListView: View {
         .navigationTitle("セッション")
         .refreshable { await viewModel.refresh() } // pull-to-refresh (brief §3-d trigger #2)
         .task { await viewModel.refresh() } // initial display (brief §3-d trigger #1)
+        // Foreground-resume (brief §3-d trigger #3). No timer anywhere in this screen
+        // (§2-2/§3-c): this is the one non-user-initiated refresh trigger, and it
+        // fires once per background round trip, not on an interval.
+        //
+        // ★2026-08-08 実測で此処は**2つ**欠けていた。どちらも画面には出ない類:
+        //   ① 此処は Sprint 3 から `oldPhase` を捨てて `newPhase == .active` だけを
+        //      見ていた。iOS は起動そのものを `.inactive -> .active` で通すので、
+        //      直上の `.task` の初回取得と重なって**起動のたびに2回**机側へ走査が
+        //      飛んでいた。通知バナーや Control Center の上下でも同じ。
+        //   ② では会話画面が Sprint 4 で置いた
+        //      `oldPhase == .background && newPhase == .active` を借りれば済むかと
+        //      いうと済まない —— その辺は iOS が**一度も配らない**(復帰は
+        //      `background -> inactive -> active` の2段)。つまり会話側の N4 も
+        //      発火していなかった。実測列は `ForegroundResume` の doc に全文。
+        //   だから直しは条件の借用ではなく、履歴を憶える器の共有になった。
         .onChange(of: scenePhase) { _, newPhase in
-            // Foreground-resume (brief §3-d trigger #3). No timer anywhere in this
-            // screen (§2-2/§3-c): this is the one non-user-initiated refresh trigger,
-            // and it fires once per foreground transition, not on an interval.
-            if newPhase == .active {
+            if resumeGate.shouldResume(newPhase: newPhase) {
                 Task { await viewModel.refresh() }
             }
         }

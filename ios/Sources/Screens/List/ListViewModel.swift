@@ -86,10 +86,60 @@ final class ListViewModel: ObservableObject {
         self.now = now
     }
 
-    /// The single entry point for all four refresh triggers (brief §3-d: initial
-    /// display / pull-to-refresh / foreground-resume / the retry button -- there is
-    /// no fifth trigger, and in particular no "return from Conversation": that screen
-    /// does not exist yet).
+    /// The single entry point for all **five** refresh triggers. Four are the brief's
+    /// (§3-d): initial display / pull-to-refresh / foreground-resume / the retry
+    /// button. The fifth is returning from a pushed `ConversationView` -- and it is
+    /// the one that is **not written anywhere in `ListView`** (DESIGN §2.55, S8-5).
+    ///
+    /// ★5つ目の仕組み(2026-08-08 実測、推測ではない): SwiftUI は `NavigationStack` が
+    ///   会話画面を push している間、覆われた `ListView` の `.task` を**中断**し、
+    ///   pop した時に**もう一度走らせる**。だから取り直しは `.onDisappear` の様な
+    ///   明示の1行ではなく、`.task { await viewModel.refresh() }` の生存期間その物から
+    ///   出ている。つまり Sprint 3 で会話画面を足した日から既に在った ——
+    ///   名前が無く、doc に無く、一度も測られていない引き金として。
+    ///
+    ///   測り方(単一検査を3通りで走らせて消去法):
+    ///   | 配線                          | 戻った時の取得 |
+    ///   |-------------------------------|---------------|
+    ///   | `.task` + `.onDisappear` 追加 | **+2**(二重発火)|
+    ///   | `.task` のみ(= 現状)        | **+1**        |
+    ///   | どちらも無し                  | **+0**        |
+    ///   S8-5 が最初に足そうとした `.onDisappear` の1行は、直しではなく二重発火だった。
+    ///   それを掴めたのは UI 検査の主張が「番号が変わった」ではなく
+    ///   **ちょうど +1** だったから —— `!=` で書いていたら緑で通って、机側には
+    ///   戻るたびに2倍の走査が飛び続けていた。
+    ///
+    /// ★暗黙なので壊れ方も静か: `navigationDestination` への書き換え、初回取得を
+    ///   `.task` から `.onAppear` や `init` へ動かす整理、`ListView` を
+    ///   `NavigationStack` の外へ出す変更 —— どれも「取り直しを消した」と気付かずに
+    ///   5つ目を殺せる。画面上は何も変わらない(古い一覧が古いまま出るだけ)。
+    ///   だから配線ではなく**振る舞い**の側に錨を打った:
+    ///   `ios/tools/list-return-refresh-control.sh` が、`.task` を外すと検査が赤に
+    ///   なる事を実測で示す。
+    ///
+    /// 5つ目だけ性質が違う: 1-4 は「古いかもしれない」= 時間由来、5 は「変わったと
+    /// 分かっている」= 因果由来。だから鮮度(`Freshness`)で門番させてはいけない ——
+    /// Tom が机側で何かした直後こそ `stale` は false なので、門番は必ず一番要る瞬間に
+    /// 黙る。
+    ///
+    /// ★引き金 #3(背面から戻る)も同じ日に測って、**両側とも壊れていた**事が判った。
+    ///   数え上げの doc を信じて配線を見なかったら、5つ目を足して終わっていた:
+    ///   - 一覧側は `oldPhase` を捨てて `.active` に着いた事だけを見ていたので、
+    ///     iOS が起動を `.inactive -> .active` で通す分と `.task` の初回取得が重なり、
+    ///     **起動のたびに2回**机側へ走査を飛ばしていた(通知バナーや Control Center の
+    ///     上下でも同じ = 電話では1日に何度も)。
+    ///   - 会話側は Sprint 4 で `oldPhase == .background && newPhase == .active` を
+    ///     置いていたが、iOS はその辺を**一度も配らない**(復帰は `background ->
+    ///     inactive -> active` の2段)。つまり会話画面の N4 は Sprint 4 から
+    ///     一度も発火していなかった —— 単体2本と変異2本が緑を出したまま。
+    ///   直しは条件の借用ではなく `ForegroundResume`(履歴を憶える器)の共有。
+    ///   実測列と「なぜ4本の緑が素通りしたか」はその型の doc に全文。
+    ///
+    /// ★この doc は 2026-08-08 まで「there is no fifth trigger, and in particular no
+    ///   "return from Conversation": that screen does not exist yet」と書いてあった。
+    ///   会話画面は Sprint 3 で出来ている。書いた当時は正しかった事実が、5 sprint
+    ///   そのまま残って嘘になった —— **引き金を数え上げる doc は、画面が増えた日に
+    ///   嘘になる形をしている**。数を維持する責任を人からも外す為に、上の錨を置いた。
     func refresh() async {
         isRefreshing = true
         let result = await client.fetch(baseURL: baseURL, apiKey: apiKey)

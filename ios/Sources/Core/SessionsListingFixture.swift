@@ -2,6 +2,25 @@ import Foundation
 
 #if DEBUG
 
+/// `SessionsListingFixture.fetch` が呼ばれた回数。**個体の外に置く必要が在る**:
+/// fixture は `struct` で、`SessionsListingFactory.make()` は呼ばれるたびに新しい値を
+/// 返すので、数える器を中に持たせると数が毎回 0 に戻り、常に「#1」を表示して
+/// 「取り直していない」と見分けが付かなくなる。
+///
+/// `@MainActor` なのは、数を守るのに鍵を自前で持たない為。`fetch` は nonisolated な
+/// async なので MainActor を継承せず、呼ぶ側が `await` を書く事になる —— その
+/// `await` が「ここで隔離を跨いだ」と読める形で残るのが、`nonisolated(unsafe)` な
+/// static 変数より良い所。DEBUG にしか居ないので Release の実行経路には一切出ない。
+@MainActor
+enum SessionsListingFixtureFetchCount {
+    private static var count = 0
+
+    static func next() -> Int {
+        count += 1
+        return count
+    }
+}
+
 /// DEBUG-only fixture data source for `RemoteMiniUITests` (Sprint 2 brief §5-b).
 ///
 /// A new, dedicated protocol conformance -- not `SessionsAuthProbe`, which discards
@@ -35,25 +54,38 @@ struct SessionsListingFixture: SessionsListing {
     let state: State
 
     func fetch(baseURL: URL, apiKey: String) async -> Result<SessionsResponse, SessionsFetchError> {
+        // 数えるのは分岐の**手前**。`.unauthorized` も取得の一回で、失敗した回だけ
+        // 数え落とすと「何回撃ったか」ではなく「何回成功したか」を数える器になる。
+        let n = await SessionsListingFixtureFetchCount.next()
         switch state {
         case .unauthorized:
             return .failure(.unauthorized)
         case .normal:
-            return .success(Self.response(sessions: Self.sampleRows, paneFault: nil))
+            return .success(Self.response(sessions: Self.sampleRows, paneFault: nil, fetchCount: n))
         case .paneFault:
             return .success(Self.response(
                 sessions: [Self.sampleRows[0]],
-                paneFault: .init(reason: "pane-scan-timeout", detail: "tmux ペインの走査がタイムアウトしました。")
+                paneFault: .init(reason: "pane-scan-timeout", detail: "tmux ペインの走査がタイムアウトしました。"),
+                fetchCount: n
             ))
         case .empty:
-            return .success(Self.response(sessions: [], paneFault: nil))
+            return .success(Self.response(sessions: [], paneFault: nil, fetchCount: n))
         }
     }
 
-    private static func response(sessions: [SessionRow], paneFault: SessionsResponse.PaneFault?) -> SessionsResponse {
+    /// scan 行に取得の通し番号を載せる。**これが UI から取得回数を読む唯一の口**。
+    ///
+    /// なぜ画面に出す必要が在るか: `ListView` の引き金は5つ在るが(`ListViewModel.refresh()`
+    /// の doc)、どれも `refresh()` を呼ぶだけで、呼ばれた事は ViewModel の中に痕跡を残さない
+    /// —— `phase` は同じ応答なら同じ値に落ち着くので、「取り直した」と「取り直していない」が
+    /// 画面上で**同じ**になる。番号を載せて初めて、UI 検査が引き金の配線そのものを見られる。
+    ///
+    /// 「違う番号になった」ではなく「**ちょうど +1**」を主張できる形にしてあるのが要点で、
+    /// 戻るたびに2回撃つ実装(引き金を二重に配線した等)を緑で通さない。
+    private static func response(sessions: [SessionRow], paneFault: SessionsResponse.PaneFault?, fetchCount: Int) -> SessionsResponse {
         SessionsResponse(
             sessions: sessions,
-            display: .init(scan: "scan: fixture data, no real scan ran"),
+            display: .init(scan: "scan: fixture data, no real scan ran (取得 #\(fetchCount))"),
             paneFault: paneFault
         )
     }
