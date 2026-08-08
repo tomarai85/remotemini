@@ -105,13 +105,28 @@ struct SessionsListingFixture: SessionsListing {
 
     /// One row per `RouteLabel.Kind` the brief requires distinct visual treatment
     /// for (§1-b), so a screenshot of `list-normal` alone demonstrates all five.
+    ///
+    /// ★ここの文字列は**私が読みやすく書き直してよい所ではない**。サーバの `routeLabel`
+    ///   (`rc-backend/src/view.mjs`)が実際に出す物と1バイト違えば、この fixture で撮った
+    ///   画面は本番の画面ではなくなる。
+    ///
+    ///   2026-08-08 の実測で、5行中2行(tmux / worker)が production に作れない文字列
+    ///   だった。worker 行は `ワーカー・実行中` と綺麗な日本語で、本番は `ワーカー・busy` と
+    ///   内部トークンを生で出していた —— **fixture の方が本番より良く見えていたので、その
+    ///   欠陥は画面を何度見ても原理的に見つからなかった**。「答えを書き込んだ fixture は
+    ///   何も証明しない」の、緑ではなく見た目で騙す方の形。
+    ///
+    ///   以後は `rc-backend/test/fixture-labels-producible.test.mjs` が、この5行を
+    ///   `routeLabel` が**出しうる集合**と突き合わせる(1つの代表とのバイト一致ではない ——
+    ///   同日、その形にしたら正しい blocked 行を誤って赤にした)。文言を変える時は先に
+    ///   サーバを変える事。この表を先に書き換えると、検査が「本番に作れない札」として止める。
     private static let sampleRows: [SessionRow] = [
         row(id: "fixture-choice-001", title: "承認待ちの一件", kind: .choice, short: "★選択待ち",
             text: "机で開いている・★選択待ち(Enter が承認や課金になります)", screen: "CHOICE"),
-        row(id: "fixture-tmux-002", title: "作業中のセッション", kind: .tmux, short: "机・作業中",
-            text: "机で開いている・作業中", screen: "MAIN"),
-        row(id: "fixture-worker-003", title: "バックグラウンド処理", kind: .worker, short: "ワーカー・実行中",
-            text: "ワーカーが実行中", screen: ""),
+        row(id: "fixture-tmux-002", title: "作業中のセッション", kind: .tmux, short: "机・動いている",
+            text: "机で開いている・動いている", screen: "MAIN"),
+        row(id: "fixture-worker-003", title: "バックグラウンド処理", kind: .worker, short: "ワーカー・答え待ち",
+            text: "ワーカー・答え待ち", screen: ""),
         row(id: "fixture-blocked-004", title: "宛先不明のセッション", kind: .blocked, short: "送れない",
             text: "宛先を確定できません。", screen: ""),
         row(id: "fixture-unknown-005", title: "未知の経路", kind: .unknown, short: "状態不明",
