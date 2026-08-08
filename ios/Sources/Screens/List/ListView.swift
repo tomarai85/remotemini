@@ -255,8 +255,13 @@ struct ListView: View {
     }
 
     private func retryButton() -> some View {
-        Button("再試行") {
+        Button {
             Task { await viewModel.refresh() }
+        } label: {
+            // ★X2-3。`.padding()` は Button の**外**に在るので、広く見えるのに
+            // 押せるのは文字の上だけだった。旅程で「一覧が出ない」は最も起きやすい
+            // 失敗で、これはその時に押す唯一の的。
+            Text("再試行").tapTarget()
         }
         .padding()
         .accessibilityIdentifier("list.retry")

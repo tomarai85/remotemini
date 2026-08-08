@@ -99,10 +99,19 @@ struct ConversationView: View {
                     .font(.headline)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
-                Button("一覧に戻る") { dismiss() }
-                    .accessibilityIdentifier("conversation.notFound.backToList")
+                Button {
+                    dismiss()
+                } label: {
+                    Text("一覧に戻る").tapTarget()
+                }
+                .accessibilityIdentifier("conversation.notFound.backToList")
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // ★2026-08-08(監査 X2-3)。`choiceCard` が同じ穴で一度直っているのに、
+            // 入れ物に識別子を付けた面が此処を含めて4つ残っていた —— 付けた時点で
+            // SwiftUI は中身を1つの要素に畳むので、**中のボタンは XCUITest からも
+            // VoiceOver からも触れない**。「一覧に戻る」はこの画面の唯一の出口。
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("conversation.notFound")
 
         case .contractViolation(let violation):
@@ -328,12 +337,19 @@ struct ConversationView: View {
                 Button {
                     Task { await viewModel.interrupt() }
                 } label: {
-                    if viewModel.isInterrupting {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "stop.circle")
-                            .font(.title2)
+                    // ★`Group` で束ねて `.tapTarget()` を**内側**に当てる(X2-3)。
+                    // 枝ごとに当てると、飛んでいる間の `ProgressView` に付け忘れた時に
+                    // 「押し直しを止めたい局面でだけ的が縮む」が起きる —— 実測で
+                    // idle 25.33×26.0 に対し飛行中は 20.0×20.0 だった。
+                    Group {
+                        if viewModel.isInterrupting {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "stop.circle")
+                                .font(.title2)
+                        }
                     }
+                    .tapTarget()
                 }
                 .disabled(!viewModel.canInterrupt)
                 .accessibilityLabel("割り込む")
@@ -350,12 +366,15 @@ struct ConversationView: View {
                 } label: {
                     // 取り直しの間も回す(DESIGN §2.52)。要求は飛び終わっているが
                     // 届いたか分からないので、ボタンは伏せたまま = 二重配達を作らない。
-                    if viewModel.isSending || viewModel.isVerifyingSend {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title2)
+                    Group {
+                        if viewModel.isSending || viewModel.isVerifyingSend {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.title2)
+                        }
                     }
+                    .tapTarget()
                 }
                 .disabled(!viewModel.canSend)
                 .accessibilityIdentifier("conversation.sendButton")
@@ -400,10 +419,18 @@ struct ConversationView: View {
     private func failureView(message: String, identifier: String) -> some View {
         VStack(spacing: 12) {
             Text(message).font(.headline)
-            Button("再試行") { Task { await viewModel.load() } }
-                .accessibilityIdentifier("conversation.retry")
+            Button {
+                Task { await viewModel.load() }
+            } label: {
+                Text("再試行").tapTarget()
+            }
+            .accessibilityIdentifier("conversation.retry")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // ★X2-3。此処が一番静かだった: 入れ物の識別子は引数で来るので、
+        // `conversation.unreachable` と `conversation.retry` は名前が親子に見えず、
+        // 前方一致の走査では取れない。畳まれている事は brace の入れ子でしか判らない。
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(identifier)
     }
 
@@ -437,13 +464,16 @@ struct ConversationView: View {
                 Button {
                     Task { await viewModel.loadEarlier() }
                 } label: {
-                    if viewModel.loadEarlierState == .loading {
-                        ProgressView()
-                    } else if viewModel.loadEarlierState == .stalledRetry {
-                        Text("もう一度試す")
-                    } else {
-                        Text("以前を読む")
+                    Group {
+                        if viewModel.loadEarlierState == .loading {
+                            ProgressView()
+                        } else if viewModel.loadEarlierState == .stalledRetry {
+                            Text("もう一度試す")
+                        } else {
+                            Text("以前を読む")
+                        }
                     }
+                    .tapTarget()
                 }
                 .disabled(viewModel.loadEarlierState == .loading)
                 .accessibilityIdentifier("conversation.loadEarlier")
@@ -577,6 +607,11 @@ struct ConversationView: View {
                                     .font(.callout)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                    // ★X2-3。実測 33.33pt。此処は誤タップが**別の答えの
+                                    // 送信**になる唯一の面なので、下限割れの害が他と違う。
+                                    // `.bordered` の内側に当てるので、枠(見えている物)と
+                                    // 当たり判定(押せる物)が一緒に育つ。
+                                    .tapTarget()
                             }
                             .buttonStyle(.bordered)
                             .disabled(!viewModel.choiceEnabled)
@@ -662,6 +697,11 @@ struct ConversationView: View {
                     .accessibilityIdentifier("conversation.lastReadableAt")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // ★X2-3。ボタンは無いが `conversation.lastReadableAt` を畳んでいた。
+            // `TapTargetUITests` はこの面で **`.contain` が効いている事そのもの**を
+            // 測る —— 下の `.stalled` と違い、此処には的が無いので「寸法が通った」に
+            // 紛れずに、畳みの解除だけを単独で見られる唯一の面。
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("conversation.degraded")
 
         case .stalled:
@@ -676,14 +716,26 @@ struct ConversationView: View {
                         .accessibilityIdentifier("conversation.lastReadableAt")
                 }
                 HStack(spacing: 16) {
-                    Button("再試行") { viewModel.retryPollingNow() }
-                        .accessibilityIdentifier("conversation.stalled.retry")
-                    Button("読み直す") { viewModel.rereadNow() }
-                        .accessibilityIdentifier("conversation.stalled.reread")
+                    Button {
+                        viewModel.retryPollingNow()
+                    } label: {
+                        Text("再試行").tapTarget()
+                    }
+                    .accessibilityIdentifier("conversation.stalled.retry")
+                    Button {
+                        viewModel.rereadNow()
+                    } label: {
+                        Text("読み直す").tapTarget()
+                    }
+                    .accessibilityIdentifier("conversation.stalled.reread")
                 }
                 .font(.caption)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // ★X2-3。この2つは画面で一番小さい的(`.font(.caption)`)であり、かつ
+            // **一番追い詰められた時に押す物**。しかも畳まれていて、寸法を測る以前に
+            // 触る事すらできなかった —— 「居るか」しか聞かない検査では緑のままだった。
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("conversation.stalled")
         }
     }

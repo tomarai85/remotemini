@@ -10961,3 +10961,111 @@ Release で `root flow:fixture` が出ない事を毎 commit 測る)。fixture �
 知らない —— それは実装の不注意ではなく、消す処理の既定の結果。だから
 「戻された先の画面が、戻された理由を出せるか」は毎回別に設計する必要が在る。
 出さない画面は嘘をつくわけではないが、**利用者に原因の推測をさせる**。推測は外れる。
+
+### 2.66 「44pt に足りない」を測りに行ったら、**そもそも触れない的**が出て来た —— 寸法の欠陥の下に、畳まれた入れ物が4つ埋まっていた(2026-08-08、実測)
+
+監査 X2-3 の題は「割り込み/送信/選択肢/以前を読む に 44pt の的が無い」。移動中に
+片手で押す道具として作っているのに、押す物の寸法を一度も測っていなかった。
+
+#### 測る側を先に書いて、赤を見た
+
+`ios/UITests/TapTargetUITests.swift` を**当てる前に**走らせた。XCUITest は色も材質も
+読めない(X-1 / X-3 がバイトの走査に落ちたのはその為)が、**`XCUIElement.frame` は
+読める** —— 寸法は実行時に取れる唯一の見た目の量なので、この項目だけは画面を
+撮らずに機械が判定できる。
+
+| 的 | 実測(修正前) | 下限 |
+|---|---|---|
+| `conversation.interruptButton`(待機) | 高 25.33 × 幅 26.0 | 44 |
+| `conversation.sendButton`(待機) | 高 25.33 × 幅 26.0 | 44 |
+| `conversation.interruptButton`(飛行中 = `ProgressView`) | 20.0 × 20.0 | 44 |
+| `conversation.choiceButton.1 / .2 / .escape` | 高 33.33(3つとも) | 44 |
+| `conversation.loadEarlier` | 高 20.33 | 44 |
+| `keyEntry.submit` | **合格**(`Form` の行) | 44 |
+
+飛行中が待機より**更に縮む**のは、`Image` が `ProgressView` に入れ替わって的が
+中身の寸法をそのまま取るから。押し直しを止めたい局面でだけ的が小さくなるが、
+その間ボタンは伏せてあるので**症状としては出ない** —— 伏せに助けられているだけで、
+寸法としては直っていない。
+
+`keyEntry.submit` に修飾子を当てていないのは、`Form` の `Section` の行が既に下限を
+満たしている**筈**だから。だがそれは思い込みだったので、当てない判断の根拠を
+思い込みではなく此処の数にした。合格したので、以後は観測。
+
+#### 赤が「小さい」ではなく「居ない」と言った
+
+2つの的が寸法ではなく `Failed to get matching snapshot` で落ちた。
+
+**`conversation.stalled.retry` / `.reread`** —— 入れ物の `VStack` に
+`.accessibilityIdentifier("conversation.stalled")` を付けた時点で SwiftUI は中身を
+1つの要素に畳む。中のボタンは XCUITest からも VoiceOver からも触れない。
+画面には見えているので、目で見る限り何も壊れていない。
+
+同じ穴は `choiceCard` で一度直っている。当時の註がそのまま今回の診断になっていた ——
+「カードが在るか?しか聞かない UI 検査は、あらゆるボタンが触れない画面を緑で通す。
+VoiceOver 利用者が出会うのも同じ画面である」。**直した本人が、同じ形を4箇所
+残していた。**
+
+brace の入れ子で数えて4件。名前の前方一致では取れない:
+
+| 入れ物 | 中で消えていた物 |
+|---|---|
+| `conversation.notFound` | `conversation.notFound.backToList`(この画面の唯一の出口) |
+| `conversation.unreachable` ほか(`failureView` の引数) | `conversation.retry` |
+| `conversation.degraded` | `conversation.lastReadableAt` |
+| `conversation.stalled` | `conversation.lastReadableAt` / `.retry` / `.reread` |
+
+2行目が要点で、入れ物の識別子は**引数で渡って来る**。`conversation.unreachable` と
+`conversation.retry` は字面が親子に見えないので、名前で走査する検査は永久に当たらない。
+構造で数えて初めて出る。
+
+**`list.retry`** —— こちらは畳みではなく、fixture の選び方の誤り。`list-panefault` は
+brief §4 で「banner を単独で見せる」と決まっていて再試行のボタンを持たない。
+`retryButton()` が出るのは `.retryable` と `.unreachable` だけで、既存の fixture は
+どれもそこへ行けなかった。旅程で最も起きる失敗(一覧が出ない)の唯一の的が、
+一度も測れる状態に無かった事になる。`list-fetchfail` を足した。名前を
+`list-unreachable` にしないのは、どの phase に落ちるかが失敗の**回数**で決まる為 ——
+fixture が決めているのは結果ではなく入力なので、名前も入力の側で付ける。
+
+#### 当てた物
+
+`ios/Sources/Screens/Shared/TapTarget.swift` に定数1つと `View.tapTarget()` を置いた。
+`frame(minWidth:minHeight:)` + `.contentShape(Rectangle())`。3点だけ設計がある:
+
+1. **`Button` の外ではなく label の内側に当てる。** 外だと layout の枠は育つのに
+   押せる領域が label のまま残る事が有り、`.buttonStyle(.bordered)` では更に
+   **見えている枠の外側**が押せる状態になる。選択肢の画面は誤タップが
+   **別の答えの送信**になる唯一の面なので、見た目と当たりのずれは害が違う。
+2. **`.contentShape(Rectangle())` は飾りではない。** 無いと `frame` は 44pt を名乗るのに
+   反応するのは絵柄の上だけ。寸法しか見ない検査はその実装で緑のまま通る ——
+   既定の `tap()` が中心 = 絵柄の上を叩く為。だから的の**端**を叩く検査を別に1本持つ。
+3. **`min` であって固定ではない。** 折り返して超える的は在るし、超えて困る物は無い。
+
+畳まれていた4つの入れ物には `.accessibilityElement(children: .contain)` を併せた。
+
+#### 測れていない物(緑に丸めない)
+
+`conversation.retry` と `conversation.notFound.backToList` は作り物の面が無いので、
+修飾子は当てたが**寸法は測っていない**。この2つの入れ物に当てた `.contain` も同じ理由で
+未測定 —— 効いている事を主張できるのは `.degraded` と `.stalled` の2面だけ。
+
+`.degraded` の面には的が1つも無い。畳みの解除**だけ**が緑/赤を決める面として
+検査を1本置いてある。`.stalled` でも同じ事は起きているが、あちらは寸法の検査と
+同居しているので「44pt を満たした」の緑に紛れる。
+
+#### 変異対照を置かない判断
+
+X-1 / X-3 に `*-control.sh` を置いたのは、あちらの検査が**バイトの走査**で、整形・改名・
+枝の追加で静かに的を外し、外れた事が緑で出るから。此処の主張は走っている画面から
+実測した数なので、`.tapTarget()` を1つ落とせばその的の行が**そのまま赤くなる**。
+検査自身が失敗する側に錨を持っている。代わりに払った証拠が、当てる前の赤の実測値。
+
+#### この節の一般形
+
+**「小さすぎる」を測りに行くと、その手前に「そもそも触れない」が出る事が有る。
+寸法の検査は、触れる事を前提にして初めて寸法の話ができる。**
+
+そして畳まれた入れ物は、**目でも、単体でも、「居るか」を聞く UI 検査でも見えない**。
+画面には正しく描かれていて、押せば動く。消えているのは「機械と支援技術から
+名指しできる」という性質だけで、それは人間が見ている限り一生気付かない。
+気付く道は2つしか無い —— 中の物を名指しで測りに行くか、構造で数えるか。
