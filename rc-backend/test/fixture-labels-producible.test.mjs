@@ -36,14 +36,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { routeLabel, choiceView } from "../src/view.mjs";
+import { routeLabel, choiceView, whoOf } from "../src/view.mjs";
 import { paneFaultReason, paneFaultView } from "../src/blocked.mjs";
 import { REPO, requireOutside } from "./subtree.mjs";
 
 const FIXTURE = "ios/Sources/Core/SessionsListingFixture.swift";
 const POLL_FIXTURE = "ios/Sources/Core/PollFixture.swift";
 const FAULT_UITEST = "ios/UITests/RemoteMiniUITests.swift";
-const outside = requireOutside([FIXTURE, POLL_FIXTURE, FAULT_UITEST]);
+const HISTORY_FIXTURE = "ios/Sources/Core/HistoryFixture.swift";
+const outside = requireOutside([FIXTURE, POLL_FIXTURE, FAULT_UITEST, HISTORY_FIXTURE]);
 
 /**
  * 種類ごとに `routeLabel` へ渡す入力。**期待値は書かない** —— 書いた瞬間に本番の文言の
@@ -356,6 +357,108 @@ test("★一覧の障害バナーは、サーバが実際に出せる文であ�
   assert.deepEqual([...asserted].sort(), [headline[1], body[1]].sort(),
     `UI 検査の主張が fixture の出す組と違う\n  検査  : ${asserted.join(" | ")}\n` +
     `  fixture: ${headline[1]} | ${body[1]}`);
+});
+
+const WHO_MARK = "display: .init(who:";
+
+/**
+ * 手書きの `who` を1件ずつ拾う。**近い方の `role:` を後ろ向きに探す**のは、
+ * `HistoryEntry(...)` の書き方が両 fixture で違う為(片方は1行、片方は複数行で
+ * `text:` が関数呼び出し)。前から一気に正規表現で取ると、書き方の違う方が
+ * **黙って0件**になる —— 拾えていない事が緑に見えるのが此の種の検査の一番の穴で、
+ * だから下の検査は「拾えた数」ではなく **`who` の総数**を錨にしている。
+ */
+function whoSites(src) {
+  const sites = [];
+  let i = 0;
+  while ((i = src.indexOf(WHO_MARK, i)) !== -1) {
+    const before = src.slice(0, i);
+    const roleRe = /role:\s*([^,\n]+),/g;
+    let m;
+    let last = null;
+    while ((m = roleRe.exec(before)) !== null) last = m;
+
+    const after = src.slice(i + WHO_MARK.length);
+    const lit = /^\s*"([^"]*)"\)/.exec(after);
+    const between = last ? before.slice(last.index) : "";
+    const text = /text:\s*"([^"]*)"/.exec(between);
+
+    sites.push({
+      role: last ? last[1].trim() : null,
+      who: lit ? lit[1] : null,   // null = 文字列リテラルで書かれていない(= 例外宣言が要る)
+      text: text ? text[1] : null,
+    });
+    i += WHO_MARK.length;
+  }
+  return sites;
+}
+
+/**
+ * リテラルで書けない `who` の宣言。**行番号ではなく式そのもの**で名指す ——
+ * 行は動くが式は動かないし、式が動けば宣言が外れて総数が合わなくなり赤になる。
+ * 免除ではなく「別の規則で測る」宣言である事に注意: 中の文字列は下で
+ * whoOf の値域に属する事を要求される。
+ */
+const WHO_EXCEPTIONS = {
+  [HISTORY_FIXTURE]: [
+    'display: .init(who: role == .user ? "Tom" : "Claude")',
+  ],
+  [POLL_FIXTURE]: [],
+};
+
+test("★会話 fixture の発言者名は、サーバが role から作る名前と一致する", { skip: outside.skip }, () => {
+  // 本番で `who` を作るのは `server.mjs` の1箇所だけ(whoOf(entry.role))で、
+  // 電話は entry.display.who を逐語で描き role から作り直さない。つまり
+  // fixture が本番の作れない名前を書けば、その名前がそのまま画面に出る ——
+  // S8-19(札)/ S8-20(選択ボタン)/ S8-22(障害バナー)と同じ形の4面目。
+  const PRODUCIBLE_WHO = new Set(["user", "assistant", "tool", "unknown"].map(whoOf));
+
+  for (const rel of Object.keys(WHO_EXCEPTIONS)) {
+    const src = readFileSync(join(REPO, rel), "utf8");
+    const sites = whoSites(src);
+    assert.ok(sites.length > 0, `${rel}: 手書きの who を1件も拾えていない(錨)`);
+
+    const literal = sites.filter((s) => s.who !== null);
+    const exceptions = WHO_EXCEPTIONS[rel];
+
+    // 宣言そのものの健全さを先に見る。**総数の帳尻より前**に置くのは、宣言が
+    // 腐った時に出てほしい言葉が「式が 0 箇所」であって「数が合わない」ではない為 ——
+    // 後者を先に投げると、次の読み手は数を合わせにいって宣言の腐りを見落とす。
+    for (const decl of exceptions) {
+      const n = src.split(decl).length - 1;
+      assert.equal(n, 1, `${rel}: 宣言した式が ${n} 箇所(1 でない)\n  ${decl}`);
+      const inside = [...decl.matchAll(/"([^"]*)"/g)].map((x) => x[1]);
+      assert.ok(inside.length > 0, `${rel}: 宣言した式に名前が無い\n  ${decl}`);
+      for (const w of inside) {
+        assert.ok(PRODUCIBLE_WHO.has(w),
+          `${rel}: 宣言の中の名前をサーバは作れない\n  ${w}\n  作れる: ${[...PRODUCIBLE_WHO].join(" / ")}`);
+      }
+    }
+
+    // ★総数の帳尻。新しい書き方の who が増えたら、照合も宣言もされないまま
+    //   此処で赤になる —— 「拾えなかった物は無かった事にする」を塞ぐ唯一の場所。
+    assert.equal(
+      literal.length + exceptions.length, sites.length,
+      `${rel}: who の書き方が増えている(全 ${sites.length} / 文字列 ${literal.length} / 宣言 ${exceptions.length})`
+    );
+
+    for (const s of literal) {
+      assert.ok(s.role !== null, `${rel}: who の前に role が無い(who=${s.who})`);
+      assert.ok(/^\.\w+$/.test(s.role),
+        `${rel}: role が case で書かれていない(${s.role})—— 照合できないなら宣言側へ`);
+      const wire = s.role.slice(1);
+      assert.equal(s.who, whoOf(wire),
+        `${rel}: 発言者名をサーバは作れない(role=${wire})\n  fixture: ${s.who}\n  本番   : ${whoOf(wire)}`);
+
+      // 道具の行の本文は `sessions.mjs` の toolNames が作る形しか無い。
+      // 名前だけ合っていても本文が別形なら、それは本番の出さない画面である。
+      if (wire === "tool") {
+        assert.ok(s.text !== null, `${rel}: 道具の行の本文が文字列で書かれていない`);
+        assert.ok(s.text.startsWith("⚙ "),
+          `${rel}: 道具の行の本文が本番の形でない\n  fixture: ${s.text}\n  本番   : ⚙ <道具名>`);
+      }
+    }
+  }
 });
 
 test("★入力の列挙は5種類すべてを覆っている(種類が増えたら気付く)", () => {

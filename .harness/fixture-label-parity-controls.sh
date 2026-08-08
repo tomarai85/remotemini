@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/test/fixture-labels-producible.test.mjs rc-backend/src/view.mjs rc-backend/src/blocked.mjs ios/Sources/Core/SessionsListingFixture.swift ios/Sources/Core/PollFixture.swift ios/UITests/RemoteMiniUITests.swift
+# controls-for: rc-backend/test/fixture-labels-producible.test.mjs rc-backend/src/view.mjs rc-backend/src/blocked.mjs ios/Sources/Core/SessionsListingFixture.swift ios/Sources/Core/PollFixture.swift ios/Sources/Core/HistoryFixture.swift ios/UITests/RemoteMiniUITests.swift
 #
 # 何を守る対照か —— **電話の見た目を確かめる時に使う fixture が、本番より綺麗な文字列を
 # 出していない事**。
@@ -29,6 +29,15 @@
 #   実在しなかった。だから此の対照は fixture だけでなく `RemoteMiniUITests.swift` が
 #   主張する文言そのものも見張る。
 #
+# ★4件目(S8-21、同日)。**発言者名**(`display.who`)。本番で此れを作るのは
+#   `server.mjs` の1箇所(`whoOf(entry.role)`)だけで、電話は逐語で描き role から
+#   作り直さない —— つまり fixture の手書きの名前が、そのまま画面の名前になる。
+#   此処までの3件と違って**起票時に腐ってはいなかった**。腐っていなかった物を
+#   囲うのは、3件が3件とも「誰も照合していない手書き」から生まれたから ——
+#   照合の無い手書きは、いま正しいかどうかではなく**次に動いた時に誰も気付かない**
+#   のが欠陥である。加えて `who` は片方が三項式で書かれていて素朴な正規表現では
+#   拾えない: 拾えない物を黙って0件にしない為、検査は総数の帳尻を要求する。
+#
 # 検査(`fixture-labels-producible.test.mjs`)は書いた。だが検査が在る事は、その検査が
 # ズレを止める事を意味しない。この対照はズレを1つずつ植え直して、そのたびに赤が出る事を
 # 実演する。
@@ -55,9 +64,10 @@ trap 'find "$WORK" -type f -print0 2>/dev/null | xargs -0 /bin/rm -f 2>/dev/null
 FIXTURE="ios/Sources/Core/SessionsListingFixture.swift"
 POLLF="ios/Sources/Core/PollFixture.swift"
 UITESTF="ios/UITests/RemoteMiniUITests.swift"
+HISTF="ios/Sources/Core/HistoryFixture.swift"
 TESTF="rc-backend/test/fixture-labels-producible.test.mjs"
 
-for f in "$FIXTURE" "$POLLF" "$UITESTF" "$TESTF" \
+for f in "$FIXTURE" "$POLLF" "$UITESTF" "$HISTF" "$TESTF" \
          rc-backend/test/subtree.mjs rc-backend/src/view.mjs rc-backend/src/blocked.mjs DESIGN.md; do
     if [ ! -f "$ROOT/$f" ]; then
         echo "UNMEASURED  読む file が無い: $f"
@@ -68,7 +78,7 @@ done
 /bin/mkdir -p "$WORK/rc-backend/src" "$WORK/rc-backend/test" "$WORK/ios/Sources/Core" "$WORK/ios/UITests"
 /bin/cp "$ROOT"/rc-backend/src/*.mjs "$WORK/rc-backend/src/"
 /bin/cp "$ROOT/$TESTF" "$ROOT/rc-backend/test/subtree.mjs" "$WORK/rc-backend/test/"
-/bin/cp "$ROOT/$FIXTURE" "$ROOT/$POLLF" "$WORK/ios/Sources/Core/"
+/bin/cp "$ROOT/$FIXTURE" "$ROOT/$POLLF" "$ROOT/$HISTF" "$WORK/ios/Sources/Core/"
 /bin/cp "$ROOT/$UITESTF" "$WORK/ios/UITests/"
 # 根の目印。`subtree.mjs` は此の1本の実在だけで「親が本物か」を決める。
 /bin/cp "$ROOT/DESIGN.md" "$WORK/DESIGN.md"
@@ -258,6 +268,50 @@ probe "帯を1枚も拾えなくする(錨が働くか)" "$TESTF" \
     '"paneFault: .init@@@never@@@("'
 
 echo
+echo "== 会話の発言者名(S8-21。腐ってはいなかったが誰も照合していなかった) =="
+
+# ⑲ 名前だけを本番の作れない語へ。`whoOf` の値域は3語しかない。
+probe "発言者名を本番が作れない語にする" "$HISTF" \
+    'display: .init(who: "道具")' \
+    'display: .init(who: "ツール")'
+
+# ⑳ ★役と名前の取り違え。両方とも producible なので、集合しか見ない検査は通す。
+probe "役と名前を取り違える(両方 producible なので集合検査では捕まらない)" "$HISTF" \
+    'HistoryEntry(role: .tool, text: "⚙ Bash", display: .init(who: "道具")),' \
+    'HistoryEntry(role: .tool, text: "⚙ Bash", display: .init(who: "Claude")),'
+
+# ㉑ もう一方の fixture。1件しか who を持たないので、見張りから漏れやすい。
+probe "もう一方の fixture の発言者名がズレる(PollFixture も見張られているか)" "$POLLF" \
+    'display: .init(who: "Claude")' \
+    'display: .init(who: "クロード")'
+
+# ㉒ 三項式が動く。宣言は行番号ではなく式そのものなので、式が動けば宣言が外れる。
+probe "三項式が動いて宣言が外れる(行ではなく式で名指している事の確認)" "$HISTF" \
+    'role == .user ? "Tom" : "Claude"' \
+    'role == .user ? "Tom"  : "Claude"'
+
+# ㉓ ★宣言側の腐り。宣言は免除ではなく「別の規則で測る」印なので、
+#    宣言の中の名前も producible でなければならない。
+probe "宣言の中の名前が本番の作れない語(宣言は免除ではない)" "$TESTF" \
+    "'display: .init(who: role == .user ? \"Tom\" : \"Claude\")'," \
+    "'text: \"予約の状況を確認して\"',"
+
+# ㉔ 道具の行の本文。名前が合っていても本文が別形なら本番の出さない画面である。
+probe "道具の行の本文が本番の形(⚙ 名前)でない" "$HISTF" \
+    'text: "⚙ Bash"' \
+    'text: "Bash"'
+
+# ㉕ role を照合できない書き方へ。**黙って飛ばさず**、宣言側へ回せと言う事。
+probe "role が case で書かれなくなる(照合できない物を黙って飛ばさないか)" "$HISTF" \
+    'HistoryEntry(role: .tool, text: "⚙ Bash"' \
+    'HistoryEntry(role: EntryRole.tool, text: "⚙ Bash"'
+
+# ㉖ who を1件も拾えなくする。⑤⑩⑱ と同じ穴 —— 拾えなければ「比べる物ゼロ = 全部一致」。
+probe "発言者名を1件も拾えなくする(錨が働くか)" "$TESTF" \
+    'const WHO_MARK = "display: .init(who:";' \
+    'const WHO_MARK = "display: .init@@@never@@@(who:";'
+
+echo
 echo "== 正しい別の札は赤にしない(検査自身の陰性対照) =="
 # ★此処が要る理由は、私が実際に踏んだから(2026-08-08)。初版は種類ごとに代表を1つ決めて
 #   バイト一致を要求し、blocked 行の `送れない` を「本番に無い」と赤にした —— 実際には
@@ -347,6 +401,47 @@ else
     [ -f "$WORK/$FIXTURE.orig" ] && restore "$FIXTURE"
 fi
 
+# ★発言者名は「特定のバイト」ではなく「役との対応」で縛っている事の陰性対照。
+#   役と名前を**揃えて**動かすのは本番が実際に作れる画面なので、緑でなければならない。
+#   此処が赤い検査は fixture を今日の姿に固定してしまい、fixture を書き換える人が
+#   正しい変更を「検査が通らない」で諦める —— S8-19 の初版で私が踏んだ形と同じ。
+if mutate "$HISTF" \
+    'HistoryEntry(role: .user, text: "予約の状況を確認して", display: .init(who: "Tom")),' \
+    'HistoryEntry(role: .assistant, text: "予約の状況を確認して", display: .init(who: "Claude")),'; then
+    if run_suite; then
+        echo "  PASS  役と名前を揃えて動かすのは緑のまま"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL  正しい対応を赤にした = fixture を今日の姿に固定している"
+        FAIL=$((FAIL + 1))
+    fi
+    restore "$HISTF"
+else
+    echo "  UNMEASURED  発言者名側の陰性対照の錨が1箇所に定まらない"
+    UNMEASURED=$((UNMEASURED + 1))
+    [ -f "$WORK/$HISTF.orig" ] && restore "$HISTF"
+fi
+
+# ★`⚙ ` を要求するのは**道具の行だけ**である事の陰性対照。本文は本来自由記述で、
+#   道具の行にだけ `sessions.mjs` の作る形が在る。人と Claude の行まで形を縛ると、
+#   会話の中身を書き換えるたびに赤が出る = 誰も直さない検査になる。
+if mutate "$HISTF" \
+    'text: "予約が2件見つかりました。詳細を送ります。"' \
+    'text: "別の文に書き換えた(道具ではないので形は自由)"'; then
+    if run_suite; then
+        echo "  PASS  道具以外の行の本文は何に替えても緑のまま"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL  道具以外の本文まで縛った = 会話を書き換えるたびに赤が出る"
+        FAIL=$((FAIL + 1))
+    fi
+    restore "$HISTF"
+else
+    echo "  UNMEASURED  本文側の陰性対照の錨が1箇所に定まらない"
+    UNMEASURED=$((UNMEASURED + 1))
+    [ -f "$WORK/$HISTF.orig" ] && restore "$HISTF"
+fi
+
 echo
 echo "== 飛ばしは緑ではない(部分木の写しを模す) =="
 # `test/mutation-controls.py` は rc-backend だけを写す。その世界では此の検査は
@@ -369,7 +464,7 @@ fi
 #   (`subtree.mjs` の3値の契約 —— 「無い」を「測らなくてよい」に丸めない)。
 echo
 echo "== 親が健在なのに対象が消えたら赤(飛ばしに逃げない) =="
-for gone in "$FIXTURE" "$POLLF" "$UITESTF"; do
+for gone in "$FIXTURE" "$POLLF" "$UITESTF" "$HISTF"; do
     /bin/mv "$WORK/$gone" "$WORK/gone.off"
     if run_suite; then
         echo "  FAIL  $(basename "$gone") が消えたのに緑 = 欠けを『問題なし』に丸めている"
