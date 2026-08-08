@@ -21,7 +21,14 @@ final class ListViewModel: ObservableObject {
         /// a11y id `list.paneFault`. `sessions` may itself be empty (paneFault only
         /// suppresses `registryOnlySessions`, not the scanned sessions) -- when it
         /// is, this case is shown instead of `.empty`, never both.
-        case paneFault(reason: String, detail: String, sessions: [SessionRow], scanLine: String)
+        ///
+        /// ★`reason` / `detail` は**載せない**(2026-08-08 / 監査 S8-22)。以前は其の2つを
+        /// 載せていて、`ListView` が見出しに `panes-unreadable`、本文に生の JS エラー文を
+        /// そのまま描いていた。直しを「View で描く物を替える」で済ませなかったのは、
+        /// 生の値が相に載っている限り**次に描く人が同じ事を書ける**から。相が読める文しか
+        /// 持たなければ、View に選択肢が無い。落とし所(サーバが説明を送らない古い版)は
+        /// `SessionsResponse.PaneFault.bannerDisplay` の1箇所だけに在る。
+        case paneFault(headline: String, body: String, sessions: [SessionRow], scanLine: String)
         case list(sessions: [SessionRow], scanLine: String)
         /// 1-2 consecutive failures (brief §4-a). `priorSessions == nil` is the third,
         /// distinct "まだ取れていません" state -- not `.empty`, not a bare spinner.
@@ -233,7 +240,12 @@ final class ListViewModel: ObservableObject {
         // paneFault is checked FIRST -- brief §4: never stack "no conversations"
         // underneath a paneFault banner, even when `sessions` is also empty.
         if let fault = response.paneFault {
-            return .paneFault(reason: fault.reason, detail: fault.detail, sessions: response.sessions, scanLine: response.display.scan)
+            // ★`bannerDisplay` を通す(2026-08-08 / 監査 S8-22)。サーバが説明を送ってくる
+            //   のが常だが、電話がサーバより新しい事は実際に起きている(edith が HEAD より
+            //   古い版で走っていたのを観測済み)。落とし所を1箇所に置いてあるので、此処は
+            //   在るか無いかを見ない。
+            return .paneFault(headline: fault.bannerDisplay.headline, body: fault.bannerDisplay.body,
+                              sessions: response.sessions, scanLine: response.display.scan)
         }
         if response.sessions.isEmpty {
             return .empty(scanLine: response.display.scan)

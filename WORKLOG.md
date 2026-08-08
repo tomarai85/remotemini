@@ -11147,3 +11147,100 @@ UITests に1本も無い —— `ConversationUITests` / `TapTargetUITests` / `In
 と読まれる可能性は消していない。真上の行が「割り込みでは止めません」と言っているので
 文脈で分かる筈、という判断でこの語にした。読み違いが出たら `選ばずに閉じる` へ替える
 —— その時に変えるのは `CHOICE_KEY_ACTION` の1語だけで済む。
+
+## 2026-08-08 #44 一覧が出ない時の帯が、内部トークンと生の JS エラーだった —— UI 検査は実在しない2文を主張して緑だった(監査 S8-22)
+
+#42 / #43 と同じ形の3件目。出る場所が一番悪い —— `paneFault` は一覧が1件も
+出ない故障で、旅程で踏む確率が最も高く、電話に出せる情報が帯の1枚しか無い。
+
+### 出ていた物
+
+`ListView` の帯は、見出しに `reason`、本文に `detail` をそのまま描いていた。
+
+```
+panes-unreadable
+TypeError: Cannot read properties of undefined (reading 'split')
+```
+
+見出しは電話に見せる為の語ではなくサーバ内部の分類語で、本文は `e.message` の生。
+**日本語ですらない。**
+
+しかも `detail` は `rc-backend/test/wire-shape-controls.sh` が「此処が一番危ない鍵」と
+名指して診断出力から伏せている鍵である —— ペイン名や作業ディレクトリの絶対パスが
+乗りうる。伏せる側と描く側で判断が割れていた。
+
+### 隠していた物
+
+`SessionsListingFixture.swift` の `paneFault` は `pane-scan-timeout` +
+「tmux ペインの走査がタイムアウトしました。」を持っていた。前者は `paneFaultReason` が
+**作れない語**(分岐は2つしか無い)、後者は本番が一度も出した事のない文。
+`RC_UI_FIXTURE=list-panefault` で撮った帯だけが読める日本語だったので、
+本番が英語である事は画面から分かりようがなかった。
+
+もう一段悪いのが UI 検査で、`RemoteMiniUITests` は帯の文言を
+「right phase, wrong words を捕まえる為」と自分で明記した上で主張しており、
+その2文が両方とも本番に存在しない文字列だった。
+**検査は在り、走り、緑で、測っていた物が架空。**
+
+### 直した所
+
+- `rc-backend/src/blocked.mjs` —— `PANE_FAULT_VIEW` / `paneFaultView` を追加。
+  `paneFaultReason` の2値それぞれに見出しと本文を持つ。2つの故障は直し方が違う
+  (tmux に届いていない / 返事は来ているが読めない)ので文も別。知らない `reason` は
+  原因を名乗らず理由コードだけを出す —— `blockedMessage` の既定と同じ作法。
+- `rc-backend/src/server.mjs` —— `/api/sessions` の `paneFault` に `display` を足す。
+- `ios/Sources/Core/SessionsModels.swift` —— `PaneFault.display` は optional。
+  無い時は `bannerDisplay` が落とし所の文を出す(電話がサーバより新しい事は実際に
+  起きている —— edith が HEAD より古い版で走っていたのを観測済み)。
+- `ios/Sources/Screens/List/ListViewModel.swift` / `ListView.swift` ——
+  `.paneFault` が運ぶのは**描く2文だけ**。`reason` も `detail` も `ListView` へ
+  渡らないので、生の値を描く選択肢が構造的に無い。
+- `ios/Sources/Core/SessionsListingFixture.swift` —— `reason` を本番が作れる語へ、
+  `display` を `paneFaultView` の出す組へ。`detail` は一目で合成と分かる英語に。
+- `ios/UITests/RemoteMiniUITests.swift` —— 主張する2文を本番の物へ。
+- `ios/Tests/Screens/List/ListViewModelTests.swift` / `ios/Tests/Core/SessionsModelsTests.swift`
+  —— `display` 有り/無しの両方を測る。無い時の落とし所が**生の理由コードを見出しに
+  据えない / 生の detail を本文に載せない**事まで含める。
+- `rc-backend/test/blocked.test.mjs` —— 帯の文が `paneFaultReason` の全域を覆う事、
+  「この会話」ではなく「どの会話にも」と言う事、「下の」と数えない事。
+  最後の1つが要るのは、`paneFault` が立つと全行が抑止されて
+  **下に1件も並ばず帯だけが出る面が実在する**から。
+- `rc-backend/test/wire-shape-controls.sh` —— 対照の payload に置いてあった
+  `tmux-missing` を `REASON-KEPT` へ。producible に見えて `paneFaultReason` が
+  作れない値だった(`SHORT-KEPT` と同じ判断)。同じ晩に `pane-scan-timeout` を
+  見落とした直後なので、隣接する偽の語を一緒に潰した。
+
+### 検査(すべて数え直した値)
+
+- `rc-backend` 全体 `npm test` —— tests 762 / pass 762 / fail 0 / skipped 0
+- `test/fixture-labels-producible.test.mjs` —— pass 4 / fail 0 / skipped 0
+- `test/blocked.test.mjs` —— pass 10 / fail 0
+- `test/wire-shape-controls.sh` —— PASS 20 / FAIL 0
+- `.harness/fixture-label-parity-controls.sh` —— PASS 26 / FAIL 0 / UNMEASURED 0
+  (植えたズレ 18 通りが全部赤 / 陰性4本が緑 / 部分木の写しは緑にならない 1 /
+  対象を消したら3 file とも赤 = 18+4+1+3)
+- `RemoteMiniTests` 一式 —— 487 tests, 0 failures(`** TEST SUCCEEDED **`)。
+  `RemoteMiniUITests` は**コンパイルだけ**通っている(実行はしていない)。
+
+検査は**先に赤で走らせた**。`pane-scan-timeout` に対して作れる集合が2語だけ、と
+表示されるのを見てから直した。直した後に手で1文だけ落として赤に戻る事も確認した。
+
+### 自分で踏んだ罠(対照に1本足した理由)
+
+UI 検査の中に「此処は `staticTexts` を突き合わせている」と**説明を書いた瞬間に赤**が
+出た —— 注釈の中の `staticTexts["…"]` を主張として数えていた。直し方を「注釈の書き方を
+変える」にすると次に書く人が同じ罠を踏むので、検査の側で Swift の注釈を落とす様にし
+(`stripSwiftComments`)、対照に「注釈の中に書き足しても緑のまま」を1本足した。
+
+対照の陰性はもう1本足してある —— `detail` を別の文字列へ替えても緑。本番の `detail` は
+`e.message` = 自由記述で閉じた語彙が無く、「作れる集合」が存在しない。ここを赤にする
+検査は、正解の無い鍵に正解を1つ発明している事になる。
+
+### 測れていない事
+
+- 帯の**色と可読性**は測っていない。GUI を開かない制約下では、橙の見出しと 15% 不透明の
+  背景が実機で読めるかを確かめる手段が無い。保証されているのは文字列の正しさだけ。
+- UI 検査そのものは**走らせていない**。此の repo の対照はどれも UI 一式を回さない ——
+  実行は Tom が電話を1回開く時に初めて起きる。
+- `paneFault` を**実際に起こした**状態は見ていない。fixture 経由の面と、サーバ側の
+  `paneFaultView` の単体だけ。tmux を落として一覧を取る経路は測っていない。

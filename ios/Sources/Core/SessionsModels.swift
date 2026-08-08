@@ -31,8 +31,51 @@ struct SessionsResponse: Decodable, Equatable {
     }
 
     struct PaneFault: Decodable, Equatable {
+        /// Internal token from the server's `paneFaultReason` -- a closed vocabulary
+        /// (`panes-unreadable` / `tmux-unavailable`), kept for diagnostics. **Never
+        /// drawn**: see `display`.
         let reason: String
+        /// The raw `e.message` of whatever threw while listing panes. Free text that
+        /// can carry pane names and working-directory paths -- `test/wire-shape-controls.sh`
+        /// redacts it from diagnostic output for exactly that reason. **Never drawn.**
         let detail: String
+        /// The banner's copy, computed server-side (`paneFaultView` in `blocked.mjs`).
+        ///
+        /// Optional on purpose: the phone can be newer than the server (edith has
+        /// already been observed running behind HEAD). A non-optional field here would
+        /// make an old server fail the *whole* `/api/sessions` decode, i.e. the list
+        /// screen would show "取れていません" with no explanation at all -- strictly
+        /// worse than a banner that names no cause. Same judgment `RouteLabel.Kind`
+        /// already makes for an unknown route name.
+        let display: Display?
+
+        struct Display: Decodable, Equatable {
+            let headline: String
+            let body: String
+        }
+
+        init(reason: String, detail: String, display: Display? = nil) {
+            self.reason = reason
+            self.detail = detail
+            self.display = display
+        }
+    }
+}
+
+extension SessionsResponse.PaneFault {
+    /// 帯に描く1組。サーバが説明を送ってこなかった時だけ、此処の組に落ちる。
+    ///
+    /// ★**原因を作らない**。落ちた時に分かっているのは「説明が来ていない」事だけで、
+    /// `reason` の意味を電話側で解釈し直すと、サーバの文言ともう1枚の写しができる
+    /// (`blocked.mjs` の「文面の出所を1つに保つ」)。`reason` は**診断コードとして**だけ
+    /// 出す —— 生のトークンを見出しに据えていたのが此の監査(S8-22)で潰した形なので、
+    /// 見出しではなく、説明が来ていないと名乗った後ろに置く。
+    var bannerDisplay: Display {
+        display ?? Display(
+            headline: "机の画面一覧を取れていません",
+            body: "この故障の説明をサーバが送ってきません(サーバの版が古い可能性があります)。"
+                + "復旧するまで、どの会話にも送れません。机で確認してください。診断コード: \(reason)"
+        )
     }
 }
 

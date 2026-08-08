@@ -69,14 +69,41 @@ final class ListViewModelTests: XCTestCase {
         // Brief §4: `paneFault` is checked FIRST -- never render "会話がありません"
         // underneath a paneFault banner, even when `sessions` is also empty.
         let vm = makeViewModel()
-        vm.apply(.success(response(sessions: [], paneFault: .init(reason: "r", detail: "d"))))
+        vm.apply(.success(response(sessions: [], paneFault: .init(
+            reason: "panes-unreadable",
+            detail: "detail-never-drawn",
+            display: .init(headline: "見出し", body: "本文")
+        ))))
 
-        guard case .paneFault(let reason, let detail, let sessions, _) = vm.phase else {
+        guard case .paneFault(let headline, let body, let sessions, _) = vm.phase else {
             return XCTFail("expected .paneFault, got \(vm.phase)")
         }
-        XCTAssertEqual(reason, "r")
-        XCTAssertEqual(detail, "d")
+        XCTAssertEqual(headline, "見出し")
+        XCTAssertEqual(body, "本文")
         XCTAssertTrue(sessions.isEmpty)
+    }
+
+    /// サーバが説明を送ってこない場合 —— 電話の方が新しい時(2026-08-08 / 監査 S8-22)。
+    ///
+    /// 相に載るのは**読める文**でなければならない。以前は相が `reason` / `detail` を
+    /// そのまま運んでいて、`ListView` が見出しに `panes-unreadable`、本文に生の JS
+    /// エラー文を描いていた。相の型から生の値を外したので、描く側に選択肢が無い ——
+    /// 此処が測るのは、その落とし所が**説明の代わりに空文字を配らない**事。
+    func testPaneFaultWithoutServerCopyFallsBackToReadableTextNotTheRawFields() {
+        let vm = makeViewModel()
+        vm.apply(.success(response(sessions: [], paneFault: .init(
+            reason: "panes-unreadable",
+            detail: "pane 'secret-project' の出力が壊れています"
+        ))))
+
+        guard case .paneFault(let headline, let body, _, _) = vm.phase else {
+            return XCTFail("expected .paneFault, got \(vm.phase)")
+        }
+        // 錨(此処が無いと、空文字を配る実装でも下の2つを満たせてしまう)。
+        XCTAssertTrue(headline.contains("一覧"), "落とし所の見出しが文になっていない: \(headline)")
+        XCTAssertTrue(body.contains("机で確認"), "落とし所の本文が文になっていない: \(body)")
+        XCTAssertFalse(headline.contains("panes-unreadable"), "生の理由コードを見出しに据えている: \(headline)")
+        XCTAssertFalse(body.contains("secret-project"), "生の detail を本文に載せている: \(body)")
     }
 
     func testPaneFaultWithSessionsShowsPaneFaultBannerAboveTheList() {

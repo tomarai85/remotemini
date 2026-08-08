@@ -57,9 +57,33 @@ final class SessionsModelsTests: XCTestCase {
 
     func testPaneFaultDecodesWhenPresent() throws {
         let response = try decode(Self.paneFaultFixture)
+        let fault = try XCTUnwrap(response.paneFault)
 
-        XCTAssertEqual(response.paneFault?.reason, "panes-unreadable")
-        XCTAssertEqual(response.paneFault?.detail, "サーバが tmux の画面一覧を読めていません(故障)。")
+        XCTAssertEqual(fault.reason, "panes-unreadable")
+        XCTAssertEqual(fault.detail, "TypeError: Cannot read properties of undefined (reading 'split')")
+        XCTAssertEqual(fault.display?.headline, "帯の見出し")
+        XCTAssertEqual(fault.display?.body, "帯の本文")
+        // 帯に描くのはサーバの文そのもの。落とし所へ落ちていない事まで見る。
+        XCTAssertEqual(fault.bannerDisplay.headline, "帯の見出し")
+        XCTAssertEqual(fault.bannerDisplay.body, "帯の本文")
+    }
+
+    /// 電話の方が新しい場合(2026-08-08 / 監査 S8-22)。`display` は**任意**でなければ
+    /// ならない —— 必須にすると、説明を持たない古いサーバに対して `/api/sessions` の
+    /// decode が丸ごと落ち、一覧が出ない上に理由も出ない画面になる。edith が HEAD より
+    /// 古い版で走っていたのは実際に観測している。
+    func testPaneFaultDecodesWithoutDisplayAndFallsBackToReadableText() throws {
+        let response = try decode(Self.paneFaultWithoutDisplayFixture)
+        let fault = try XCTUnwrap(response.paneFault, "display が無いだけで応答ごと decode に失敗している")
+
+        XCTAssertNil(fault.display)
+        XCTAssertEqual(fault.reason, "panes-unreadable")
+        // 錨: 落とし所は空文字ではなく文である。
+        XCTAssertTrue(fault.bannerDisplay.headline.contains("一覧"), "実測: \(fault.bannerDisplay.headline)")
+        XCTAssertTrue(fault.bannerDisplay.body.contains("机で確認"), "実測: \(fault.bannerDisplay.body)")
+        // 生の値は画面へ出さない。理由コードだけは診断として本文の末尾に残す。
+        XCTAssertFalse(fault.bannerDisplay.headline.contains("panes-unreadable"))
+        XCTAssertFalse(fault.bannerDisplay.body.contains(fault.detail))
     }
 
     // MARK: - Brief §1-a: `live` is never decoded, regardless of which route's shape it carries
@@ -179,11 +203,33 @@ final class SessionsModelsTests: XCTestCase {
     }
     """
 
+    /// 説明付き = 今のサーバ(`paneFaultView` を `display` に載せる)。
+    ///
+    /// `detail` は本番では `e.message` = 自由記述なので、**生の JS エラーらしい形**に
+    /// してある。以前は此処が綺麗な日本語1文で、画面に出しても違和感が無い見た目だった
+    /// —— それが「fixture の方が本番より良く見える」形(監査 S8-19 / S8-20 / S8-22)。
     private static let paneFaultFixture = """
     {
       "sessions": [],
       "display": { "scan": "" },
-      "paneFault": { "reason": "panes-unreadable", "detail": "サーバが tmux の画面一覧を読めていません(故障)。" }
+      "paneFault": {
+        "reason": "panes-unreadable",
+        "detail": "TypeError: Cannot read properties of undefined (reading 'split')",
+        "display": { "headline": "帯の見出し", "body": "帯の本文" }
+      }
+    }
+    """
+
+    /// 説明**無し** = 電話より古いサーバ。`display` の欠落で `/api/sessions` の
+    /// decode 全体が落ちてはいけない(落ちると、一覧が出ない上に理由も出ない)。
+    private static let paneFaultWithoutDisplayFixture = """
+    {
+      "sessions": [],
+      "display": { "scan": "" },
+      "paneFault": {
+        "reason": "panes-unreadable",
+        "detail": "TypeError: Cannot read properties of undefined (reading 'split')"
+      }
     }
     """
 

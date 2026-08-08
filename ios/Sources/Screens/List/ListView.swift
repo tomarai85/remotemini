@@ -101,9 +101,9 @@ struct ListView: View {
                     .accessibilityIdentifier("list.empty")
             }
 
-        case .paneFault(let reason, let detail, let sessions, _):
+        case .paneFault(let headline, let body, let sessions, _):
             VStack(spacing: 0) {
-                faultBanner(reason: reason, detail: detail)
+                faultBanner(headline: headline, body: body)
                     .accessibilityIdentifier("list.paneFault")
                 if sessions.isEmpty {
                     // Brief §4: paneFault + no sessions shows the banner ALONE --
@@ -257,15 +257,32 @@ struct ListView: View {
     /// "in case": a two-case enum with one live case is a branch nothing exercises,
     /// which this project has repeatedly measured as the shape that looks like a
     /// guard and measures nothing.
-    private func faultBanner(reason: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(reason).font(.subheadline.weight(.semibold))
-            Text(detail).font(.caption)
+    ///
+    /// ★2026-08-08(監査 S8-22)。以前の引数は `reason` / `detail` で、見出しに
+    ///   `panes-unreadable`、本文に生の JS エラー文をそのまま描いていた —— 旅程で一番
+    ///   踏みそうな画面(一覧が出ない)が、日本語ですらなかった。文は `ListViewModel.Phase`
+    ///   が既に読める形で持っている(出所は `blocked.mjs` の `paneFaultView`)ので、
+    ///   此処は貼るだけ。
+    ///
+    ///   本文を `.primary` にしてあるのは、橙の上に橙の小さい字を置くと**故障の説明が
+    ///   一番読みにくい**からで、見出しだけ橙に残して「警告である」事を保つ。長さも
+    ///   `blockedMessage` 並みの1〜2文に伸びたので `.footnote` + `fixedSize` で、
+    ///   端末の幅に関係なく畳んで全部出す(切り捨てない)。
+    ///   ★色そのものの可読性は測っていない —— GUI を開かない約束なので、見た目は
+    ///   人の目でしか確かめられない(WORKLOG の「測れていない事」に出す)。
+    private func faultBanner(headline: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(headline)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.orange)
+            Text(body)
+                .font(.footnote)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(Color.orange.opacity(0.15))
-        .foregroundStyle(Color.orange)
     }
 
     private func retryButton() -> some View {
