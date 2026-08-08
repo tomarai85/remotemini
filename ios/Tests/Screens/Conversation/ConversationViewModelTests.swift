@@ -1679,19 +1679,28 @@ final class ConversationViewModelTests: XCTestCase {
     /// ★★The defect a screenshot caught and 397 passing assertions did not.
     ///
     /// With a card offering `escape`, the screen showed 「v1 は電話から中断しません」 and
-    /// a 「中止(Escape)」 button about 40 points apart. Each half was individually
+    /// an escape button about 40 points apart. Each half was individually
     /// correct -- the interrupt path really is blocked, and that Escape really is
     /// allowlisted -- and every test passed, because each rule was checked against its
     /// own sentence and nothing checked the PAIR. So the pair is what is asserted here:
     /// while a stop key is on offer, no sentence on screen may say stopping is
     /// impossible.
+    ///
+    /// ★2026-08-08 (監査 S8-20). The button in the screenshot was labelled 「中止(Escape)」
+    /// -- a string the server never produced. It came from `PollFixture.swift`, which had
+    /// been hand-written prettier than production; the real label was the bare `Escape`,
+    /// so the sentence 「下の選択肢から選んでください」 pointed at a card with no 中止 on it.
+    /// The fix above is still right and still needed; what was wrong was the evidence it
+    /// was built on. Production now emits `Escape(中止)`, and
+    /// `rc-backend/test/fixture-labels-producible.test.mjs` holds these fixtures to what
+    /// `choiceView` can actually emit, so the next screenshot shows a real screen.
     func testNoSentenceDeniesStoppingWhileTheCardOffersAStopKey() async throws {
         let withEscape = """
         {
           "show": true, "reason": "", "digest": "d-esc",
           "head": ["この変更を適用しますか？"],
           "options": [{ "n": 1, "label": "はい" }],
-          "buttons": [{ "key": "1", "label": "1. はい" }, { "key": "escape", "label": "中止(Escape)" }]
+          "buttons": [{ "key": "1", "label": "1. はい" }, { "key": "escape", "label": "Escape(中止)" }]
         }
         """
         let vm = try await loadedViewModel(screen: "CHOICE", choiceJSON: withEscape)

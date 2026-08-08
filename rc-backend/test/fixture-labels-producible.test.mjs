@@ -36,11 +36,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { routeLabel } from "../src/view.mjs";
+import { routeLabel, choiceView } from "../src/view.mjs";
 import { REPO, requireOutside } from "./subtree.mjs";
 
 const FIXTURE = "ios/Sources/Core/SessionsListingFixture.swift";
-const outside = requireOutside([FIXTURE]);
+const POLL_FIXTURE = "ios/Sources/Core/PollFixture.swift";
+const outside = requireOutside([FIXTURE, POLL_FIXTURE]);
 
 /**
  * 種類ごとに `routeLabel` へ渡す入力。**期待値は書かない** —— 書いた瞬間に本番の文言の
@@ -110,6 +111,93 @@ test("★一覧 fixture の札は、サーバが実際に出せる物である",
       `.${row.kind} の札を routeLabel は出せない(fixture だけが綺麗に見える)\n` +
       `  fixture : ${got}\n` +
       `  出しうる: \n    ${set.join("\n    ")}`);
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// 会話画面の選択カード。上と**同じ問い**を別の fixture に当てる:
+// 「この Swift に手で書いた文字列を、サーバは実際に出せるか」。
+//
+// 実測(2026-08-08、S8-20):
+//   `PollFixture.swift` の benign な選択カードは `中止(Escape)` というボタンを持っていた。
+//   この文字列は rc-backend の何処にも無い —— 本番の escape は `CHOICE_KEY_LABEL` の
+//   生の `Escape` 一語である。電話は `Text(button.label)` で札をそのまま描くので、
+//   撮った画面に出ていた `中止(Escape)` は**一度も存在した事が無い**。
+//   しかも Sprint 7 に「画面を見て」直した割り込みの注意文は、この実在しないボタンを
+//   指していた —— 見た目で見つけた欠陥を、見た目の嘘の上で直していた事になる。
+//
+// 上と違って「種類ごとの入力表」を持たないのは、選択カードは fixture 自身が入力
+// (`options` / `digest` / どの鍵を許したか)を全部書いている為。だから期待値どころか
+// 入力も此処には書かず、**fixture の入力をサーバへ通し直して**出て来た物と比べる。
+
+/** `ChoiceView( … digest: "…" )` を1枚ずつ。`digest` が最後の項なので其処で切る。 */
+function choiceBlocks(src) {
+  const parts = src.split("ChoiceView(");
+  parts.shift(); // 先頭 = 1枚目より前の本文
+  return parts.map((raw) => {
+    const d = /digest:\s*"([^"]*)"/.exec(raw);
+    if (!d) return null; // digest で閉じない = Swift 側の形が変わった
+    const block = raw.slice(0, d.index + d[0].length);
+    const options = [];
+    const buttons = [];
+    let m;
+    const optRe = /ChoiceOption\(n:\s*(\d+),\s*label:\s*"([^"]*)"\)/g;
+    while ((m = optRe.exec(block)) !== null) options.push({ n: Number(m[1]), label: m[2] });
+    const btnRe = /ChoiceButton\(key:\s*"([^"]*)",\s*label:\s*"([^"]*)"\)/g;
+    while ((m = btnRe.exec(block)) !== null) buttons.push({ key: m[1], label: m[2] });
+    const reason = /reason:\s*"([^"]*)"/.exec(block);
+    return { options, buttons, digest: d[1], reason: reason ? reason[1] : null };
+  });
+}
+
+/**
+ * その入力でサーバが出しうるボタン列(JSON 文字列)の集合。
+ *
+ * カーソル位置だけは fixture が持っていない(Swift の `ChoiceView` に其の項が無い)。
+ * 決め打ちで補うと「fixture の書いた答えを読んでいる」形になるので、**在りうる位置を
+ * 全部サーバに通して集合を作る**。上の一覧と同じ「一致ではなく所属」。
+ */
+function producibleButtons(options, keys, digest) {
+  return [undefined, ...options.map((o) => o.n)].map((cursor) =>
+    JSON.stringify(choiceView({ screen: "CHOICE", choice: { head: [], options, keys, digest, cursor } }).buttons));
+}
+
+/** 断り文の出しうる集合。`CHOICE_BLOCKED` は export されていないので関数に作らせる。 */
+function producibleReasons() {
+  const c = { head: [], options: [], keys: [], digest: "d" };
+  return [
+    "", // 押せる画面 = 断らない
+    choiceView({ screen: "CHOICE", choice: { ...c, kind: "hard-stop" } }).reason,
+    choiceView({ screen: "CHOICE", choice: { ...c, kind: "unrecognized" } }).reason,
+    choiceView({ screen: "CHOICE", choice: { ...c, digest: "" } }).reason,
+  ];
+}
+
+test("★会話 fixture の選択ボタンは、サーバが実際に出せる物である", { skip: outside.skip }, () => {
+  const blocks = choiceBlocks(readFileSync(join(REPO, POLL_FIXTURE), "utf8"));
+
+  // ★錨。0枚を「全部一致」と読ませない。ボタンを1つも持たない枚数で通るのも防ぐ ——
+  //   断り画面(`buttons: []`)だけを見て緑になったら、此の検査は札を一度も見ていない。
+  assert.ok(blocks.length >= 2, `ChoiceView を拾えていない(${blocks.length} 枚)`);
+  assert.ok(blocks.every((b) => b !== null), "ChoiceView が digest で閉じていない(Swift の形が変わった)");
+  assert.ok(blocks.some((b) => b.buttons.length > 0), "ボタンを持つ ChoiceView が1枚も無い(札を見ていない)");
+
+  const reasons = producibleReasons();
+  for (const b of blocks) {
+    // 許した鍵の種別は fixture のボタンから起こす。`keys` の中身は種別語であって
+    // `"1"`..`"9"` ではない(`choice.mjs` の `keyKind`)。
+    const keys = [];
+    if (b.buttons.some((x) => /^[1-9]$/.test(x.key))) keys.push("digit");
+    for (const k of ["enter", "escape"]) if (b.buttons.some((x) => x.key === k)) keys.push(k);
+
+    const sets = producibleButtons(b.options, keys, b.digest);
+    const got = JSON.stringify(b.buttons);
+    assert.ok(sets.includes(got),
+      `選択ボタンをサーバは出せない(fixture だけが綺麗に見える)\n` +
+      `  fixture : ${got}\n  出しうる:\n    ${sets.join("\n    ")}`);
+
+    assert.ok(reasons.includes(b.reason),
+      `断り文をサーバは出せない\n  fixture : ${b.reason}\n  出しうる:\n    ${reasons.join("\n    ")}`);
   }
 });
 

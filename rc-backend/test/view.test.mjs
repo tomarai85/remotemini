@@ -607,7 +607,9 @@ test("ボタンの語に選択肢の本文が入る(押す物が読める)", () 
   assert.equal(v.buttons[0].label, "1. Opus 5");
   // Enter はカーソルの載っている選択肢を名乗る = 人の目でも「見た物と押す物が同じ」
   assert.equal(v.buttons[3].label, "Enter(2. Sonnet 5 で決定)");
-  assert.equal(v.buttons[4].label, "Escape");
+  // Escape はカーソルに依らないので、括弧の中は固定の語。★鍵名だけで出してはいけない
+  //   —— 同じカードに `1. Opus 5` と `Enter(…)` が並ぶ中で其処だけ英語になる(監査 S8-20)。
+  assert.equal(v.buttons[4].label, "Escape(中止)");
 });
 
 test("カーソルが読めない時、Enter は何を決めるか名乗らない(断定しない)", () => {
