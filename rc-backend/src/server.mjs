@@ -13,7 +13,8 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync } from "node:child_process";
-import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord } from "./sessions.mjs";
+import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow } from "./sessions.mjs";
+import { sessionRow, sessionsBody } from "./wire.mjs";
 import { JsonlTail, formatPollCursor, pollDecision, resumeDecision } from "./tail.mjs";
 import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
@@ -32,14 +33,14 @@ import { PaneRegistry, resolveSessionPane, registryOnlySessions } from "./regist
 //   手が滑って裸で呼んでも**静かに通る**位置に居る(HTTP 応答のつもりが枝の頭を書く)。
 import { readHead as readBranchHead, writeHead as writeBranchHead, readAllHeads } from "./heads.mjs";
 import { psSnapshot } from "./procs.mjs";
-import { paneFaultReason, paneFaultView, UNDECIDABLE, blockedMessage, blockedBody, WORKER_REFUSAL } from "./blocked.mjs";
+import { paneFaultReason, UNDECIDABLE, blockedMessage, blockedBody, WORKER_REFUSAL } from "./blocked.mjs";
 import { cwdVerdict } from "./trust.mjs";
 // ★向きは server -> view の一方向だけ(view.mjs は node の API を一切 import しない)。
 //   ここで view.mjs を呼ぶのは、ネイティブの器が `import "/view.mjs"` を**できない**為
 //   (DESIGN §2.13「view.mjs は電話に配られている」)。web は今まで通り自分で import して
 //   計算するので、実装は1本のまま = 判断の写しは増えない。
 import {
-  routeLabel, subtitleOf, scanLine, whoOf, gapNotice, choiceView,
+  whoOf, gapNotice, choiceView,
   sendResult, interruptResult, choiceResult, clearQueueResult,
 } from "./view.mjs";
 import { redact } from "./redact.mjs";
@@ -222,18 +223,13 @@ function scanSessions({ only = null, limit = 0, heads = null } = {}) {
         metaCache.set(key, meta);
       } catch (e) {
         if (e.code === "ENOENT") continue; // 走査中に消えた = 普通の入れ替わり、黙って良い
-        // ★読めない会話を黙って消さない。消えると「一番長い会話だけが居なくなる」型に戻る。
-        unreadable.push({
+        // ★読めない会話を黙って消さない(行の形は sessions.mjs の `unreadableRow`)。
+        unreadable.push(unreadableRow({
           id: sessionId,
           project: slug,
-          cwd: null,
-          title: "(読めない)",
-          lastPrompt: "",
-          turns: null,
           updatedAt: new Date(sortMs).toISOString(),
-          readable: false,
           errorCode: e.code === "EACCES" ? "TRANSCRIPT_UNREADABLE" : String(e.code || "TRANSCRIPT_UNREADABLE"),
-        });
+        }));
         continue;
       }
     } else {
@@ -1121,38 +1117,14 @@ const server = createServer(async (req, res) => {
           : UNDECIDABLE.has(r.reason)
             ? blockedBody(r)
             : { route: "worker", ...manager.status(s.id) };
-        // ★`display` = **計算済み**と一目で分かる名前空間。生データの兄弟キーとして
-        //   `routeLabelText` の様に散らすと、電話側が「これは観測値か表示語か」を
-        //   毎回思い出す羽目になる。追加のみ = 既存の鍵は1つも動かさないので、
-        //   `app.html` は無改修のまま(自分で view.mjs を呼び続ける)。
-        return { ...s, live, display: { route: routeLabel(live), subtitle: subtitleOf(s) } };
+        return sessionRow(s, live);
       });
       // 何本見て何本開いたかを毎回名乗る。★「速い」を主張する側が計器を持たないと、
       // 遅くなった時に「気のせい」で片付く(この置き換え自体、測って初めて見つかった)。
       const scanBody = { scope: requestedScope, limit, files: scan.files, read: scan.read, cached: scan.cached, examined: scan.examined };
-      return json(res, 200, {
-        sessions: listing,
-        // `examined` = 実際に開いて中身を見た file 数。`files` は候補の総数。
-        // ★これが要る理由: `limit` が「会話の件数」になったので、**一覧が短い理由が2つ**ある —
-        //   (a) ページが埋まって止めた(`examined < files`) (b) 全部見た上でこれだけ
-        //   (`examined === files` = これ以上は無い)。区別できないと「以前を読む」が
-        //   押しても何も起きないボタンになる(変異 M65 と同じ形)。
-        scan: scanBody,
-        // ★`scanLine` は `scan` **本体**を受ける(行ごとの値ではない)。ここを取り違えても
-        //   「関数を呼んだか」を見る検査は緑のままなので、検査は期待値を独立に組む
-        //   (DESIGN §2.13 の訂正3)。
-        display: { scan: scanLine(scanBody) },
-        // ★故障を一覧の本文に載せる。行が全部 blocked になった時、原因が「机で開いていない」
-        //   なのか「サーバが tmux を読めない」なのかは電話から区別できない。
-        //   reason まで載せるのは、直す先が違うから(書式/locale か、tmux 自体かソケットか)。
-        // ★`display` を足した(2026-08-08 / 監査 S8-22)。`reason` は内部の英語トークン、
-        //   `detail` は生の `e.message` で、電話はこの2つを**そのまま帯に描いていた** ——
-        //   一覧が出ない時に出る、旅程で一番踏みそうな画面が、日本語ですらなかった。
-        //   `reason` / `detail` は観測値として残す(診断と app.html の互換)。描くのは `display`。
-        paneFault: paneFault
-          ? { reason: paneFault.reason, detail: paneFault.detail, display: paneFaultView(paneFault.reason) }
-          : null,
-      });
+      // 封筒の形と、その形である理由は `src/wire.mjs`(単体から実行して鍵名を採れる場所)。
+      // ここは観測値を渡すだけ。
+      return json(res, 200, sessionsBody({ sessions: listing, scan: scanBody, paneFault }));
     }
 
     if (path === "/api/account" && req.method === "GET") {
