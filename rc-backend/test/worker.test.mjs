@@ -912,6 +912,77 @@ test("★陰性対照: 半端な JSON / 空の buf では何も出さない", ()
   assert.equal(ev2.filter((d) => d.type === "result").length, 0, "空の buf から事象が生えている");
 });
 
+// ============ 上限に当たった事を黙って飲み込まない(§2.69、監査 R2-2) ============
+//
+// 起票の実測(2026-08-08): 上限の時も正常完了の時も一覧の札が同一だった。材料は両方
+// 揃っていた —— 子は `is_error:true` の正しい JSON を返し(2026-08-02、
+// `tools/live-fork-check.mjs`)、正本の判定器はその文面を上限と読む。受け手だけが居なかった。
+//
+// 実測済みの文面。`test/live-exit-codes.test.mjs` の見本と同じ形を使う(勝手な創作をしない)。
+const LIMIT_LINE = { type: "result", subtype: "error_during_execution", is_error: true,
+  result: "You've hit your usage limit for this 5-hour window" };
+
+test("上限で終わった turn は status に `limited` として残る", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "a");
+  spawned[0].emitLine(LIMIT_LINE);
+  const st = mgr.status("s1");
+  assert.equal(st.limited, true, "上限に当たったのに電話へ出す印が立っていない");
+  assert.equal(st.errored, true, "上限は異常終了でもある(2段の下側が立っていない)");
+});
+
+test("★上限と名指せない異常は `errored` だけ立てる(理由を創作しない)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "a");
+  // 上限ではない失敗。文面は未知で構わない —— これが「知らない形でも無音にならない」枝。
+  spawned[0].emitLine({ type: "result", is_error: true, result: "ENOENT: no such file or directory" });
+  const st = mgr.status("s1");
+  assert.equal(st.errored, true, "異常で終わったのに何も残っていない = 電話は無音のまま");
+  assert.equal(st.limited, false, "上限でない失敗を上限と名乗っている(偽の診断)");
+});
+
+test("★文面が当たっても `is_error` が false なら上限と名乗らない", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "a");
+  // Claude が返答の**中で**上限の話をしただけ。画面を読む側が踏んだ誤爆と同じ型。
+  spawned[0].emitLine({ type: "result", is_error: false,
+    result: "前回 You've hit your usage limit と出ていた件ですが、" });
+  const st = mgr.status("s1");
+  assert.equal(st.limited, false, "本文に語が在るだけで上限にしている");
+  assert.equal(st.state, "ready", "正常な result なのに走り終わっていない");
+});
+
+test("★印は次に答えが返った時に降りる(時計ではなく現在形の観測で上書きする)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "a");
+  spawned[0].emitLine(LIMIT_LINE);
+  assert.equal(mgr.status("s1").limited, true, "前提が崩れている(上限が立っていない)");
+  mgr.send("s1", "b");
+  spawned[0].emitLine({ type: "result", is_error: false, result: "答えました" });
+  const st = mgr.status("s1");
+  assert.equal(st.limited, false, "上限が明けて答えが返っているのに上限と出し続けている");
+  assert.equal(st.errored, false, "異常の印も一緒に降りていない");
+});
+
+test("★上限でも行列は止めない(『送れない』ではなく『答えが返らない』)", () => {
+  const { mgr, spawned } = makeMgr();
+  mgr.send("s1", "a");
+  mgr.send("s1", "b"); // a が走っている間に積む
+  assert.equal(mgr.status("s1").queued, 1, "前提が崩れている(積まれていない)");
+  spawned[0].emitLine(LIMIT_LINE);
+  assert.equal(spawned[0].written.length, 2, "上限を遮断条件にしている(明けた瞬間に送れる物まで止まる)");
+  assert.equal(JSON.parse(spawned[0].written[1]).message.content[0].text, "b", "降ろした物が違う");
+  assert.equal(mgr.status("s1").limited, true, "行列は流れたが印が消えている");
+});
+
+test("★ワーカーが居ない時も形は欠かさない(『観測していない』を『異常なし』に丸めない)", () => {
+  const { mgr } = makeMgr();
+  const st = mgr.status("居ないセッション");
+  assert.equal(st.worker, "none", "前提が崩れている");
+  assert.equal(st.errored, false, "印の欄そのものが無い = 読む側が undefined を偽と読む形");
+  assert.equal(st.limited, false, "同上");
+});
+
 test("★`_flushStdout` は2度呼んでも1度しか出さない(buf を空にしている)", () => {
   const { mgr, spawned } = makeMgr();
   const events = [];
