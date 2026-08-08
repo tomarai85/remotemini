@@ -749,15 +749,28 @@ final class ConversationViewModelTests: XCTestCase {
 
     /// A view model that has loaded and then observed exactly one poll response
     /// carrying `screenValue` (or none at all, when `screenValue` is nil).
+    ///
+    /// `initialHistory` / `thenHistory` exist for DESIGN §2.52: the phone now issues a
+    /// SECOND `/history` of its own after an unknown-result action, so a fixture that
+    /// can only answer the first one no longer describes the whole path. `thenHistory`
+    /// is what that re-read gets, in order.
+    ///
+    /// Leaving `thenHistory` empty is not a neutral default -- `RecordingClient`
+    /// answers an exhausted queue with `.unreachable` -- so a test that does not name
+    /// it is describing "the re-read could not be made", which is a real case and the
+    /// one the pre-§2.52 tests were already implicitly in.
     private func loadedViewModel(
         screen screenValue: String?,
         sendClient: MessageSending = UnusedSendClient(),
         interruptClient: Interrupting = UnusedInterruptClient(),
         choiceClient: ChoiceSending = UnusedChoiceClient(),
-        choiceJSON: String? = nil
+        choiceJSON: String? = nil,
+        initialHistory: [HistoryEntry] = [],
+        thenHistory: [Result<HistoryResponse, SessionsFetchError>] = []
     ) async throws -> ConversationViewModel {
         let client = RecordingClient()
-        client.resultQueue = [.success(HistoryResponse(history: [], truncated: false))]
+        client.resultQueue =
+            [.success(HistoryResponse(history: initialHistory, truncated: false))] + thenHistory
         let vm = makeViewModel(
             client: client,
             sendClient: sendClient,
@@ -1140,9 +1153,204 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertEqual(vm.sendBanner?.tone, .warn)
         XCTAssertEqual(
             vm.sendBanner?.text,
-            "送れたかどうか確認できませんでした。本文は残してあります。机の画面を確認してください。"
+            ConversationViewModel.sendUnknownInterim,
+            "★これは答えではなく途中経過(DESIGN §2.52)。この method だけを叩いた時に見えるのはここまでで、"
+                + "観測で置き換えるのは send() の側。文言と戻り値が同じ義務を指している。"
         )
         guard case .loaded = vm.phase else { return XCTFail("a transport failure must not tear the screen down") }
+    }
+
+    // MARK: - DESIGN §2.52: 結果が分からない時、電話が自分で机を読み直す
+    //
+    // 落とした一文は「机の画面を確認してください」だった。あの命令が出る条件は
+    // 「電話しか手元に無い」で、渡米中はその条件が常に成立する —— 唯一の回復手段
+    // として、構造的に実行できない事を指示していた。
+    //
+    // 置き換え先は**観測**であって推測ではない。だからどの本も、答えの文言ではなく
+    // 「電話が何を見たか」を固定している。
+    //
+    // 数を書かないのは、この一覧が増えた実績が在るから(4本 → 7本)。代わりに条件で
+    // 書く: **誤実装を1本ずつ名指しで落とす対照が要る**。実際に測った3つの誤実装と、
+    // それを落とす対照は下の通り。
+    //
+    // | 誤実装 | 落とす対照 |
+    // |---|---|
+    // | 取り直した履歴に同じ本文が在る事**だけ**を見る | ④(負の対照)と⑦(重なり無し) |
+    // | 差分を**件数の差**で書く | ⑥(窓ずれ)と⑦(重なり無し) |
+    // | 「見分けられない」を「出ていません」へ潰す | ⑦だけ |
+    //
+    // ★上2つは、一度も落ちず単体検査も緑のまま、答えだけが常に当たりに見える型。
+    // 3つ目は緑のまま**再送を勧める** = 二重配達を作る型。対照が無ければ全部通る。
+
+    private func sendUnknownViewModel(
+        initialHistory: [HistoryEntry] = [],
+        thenHistory: [Result<HistoryResponse, SessionsFetchError>]
+    ) async throws -> (ConversationViewModel, RecordingSendClient) {
+        let sendClient = RecordingSendClient()
+        // `.unreachable` を代表に選ぶのは、結果不明の2つ(`.unreachable` /
+        // `.contractViolation`)のうち渡米中に実際に起きる方だから。分岐は
+        // `applySendOutcome` の戻り値で1本に合流しており、そこは既存の検査が持つ。
+        sendClient.outcomeQueue = [.unreachable]
+        let vm = try await loadedViewModel(
+            screen: "SENDABLE",
+            sendClient: sendClient,
+            initialHistory: initialHistory,
+            thenHistory: thenHistory
+        )
+        return (vm, sendClient)
+    }
+
+    /// ① 送れていた。電話は取り直した机にそれを見つけ、そう言う。
+    func testAnUnknownSendIsAnsweredByWhatThePhoneSeesOnTheDeskAfterRereading() async throws {
+        let (vm, sendClient) = try await sendUnknownViewModel(
+            thenHistory: [.success(HistoryResponse(history: [e(.user, "止めて")], truncated: false))]
+        )
+        vm.draft = "止めて"
+
+        await vm.send()
+
+        XCTAssertEqual(sendClient.sentTexts, ["止めて"])
+        XCTAssertEqual(vm.sendBanner?.text, ConversationViewModel.sendLandedText)
+        XCTAssertEqual(vm.sendBanner?.tone, .ok)
+        XCTAssertEqual(vm.sendBanner?.fromServer, false, "server は何も言えなかった。此処の文は電話自身の観測")
+        XCTAssertEqual(vm.draft, "止めて", "★届いていても消さない。消して外した時だけ本文が失われる(非対称)")
+        XCTAssertFalse(vm.isVerifyingSend, "取り直しは終わっている")
+    }
+
+    /// ② 今の机には出ていない。**「届いていません」とは言わない** —— 机側でまだ
+    /// 処理中の可能性は取り直しでは消えないので、言えるのは見た物までとする。
+    func testAnUnknownSendReportsOnlyWhatTheDeskShowsWhenTheTextIsNotThere() async throws {
+        let (vm, _) = try await sendUnknownViewModel(
+            thenHistory: [.success(HistoryResponse(history: [e(.assistant, "別の話")], truncated: false))]
+        )
+        vm.draft = "止めて"
+
+        await vm.send()
+
+        XCTAssertEqual(vm.sendBanner?.text, ConversationViewModel.sendNotOnDeskText)
+        XCTAssertEqual(vm.sendBanner?.tone, .warn)
+        XCTAssertFalse(
+            try XCTUnwrap(vm.sendBanner?.text).contains("届いていません"),
+            "★取り直して見えなかっただけで、届いていない事の証明にはならない"
+        )
+        XCTAssertEqual(vm.draft, "止めて", "もう一度送れる状態で返す")
+    }
+
+    /// ③ 取り直しそのものが通らなかった。此処だけは何も観測できていないので、
+    /// 送信の可否について一切主張しない。
+    func testAnUnknownSendSaysTheRereadItselfFailedRatherThanGuessing() async throws {
+        let (vm, _) = try await sendUnknownViewModel(thenHistory: [.failure(.unreachable)])
+        vm.draft = "止めて"
+
+        await vm.send()
+
+        XCTAssertEqual(vm.sendBanner?.text, ConversationViewModel.sendStillUnreachableText)
+        XCTAssertEqual(vm.sendBanner?.tone, .warn)
+        XCTAssertEqual(vm.draft, "止めて")
+        XCTAssertFalse(vm.isVerifyingSend, "失敗しても錠は外す。外さないと二度と送れない")
+    }
+
+    /// ★④ 負の対照。**送る前から同じ本文が机に在る会話**。
+    ///
+    /// 取り直した履歴には確かに「止めて」の user 行が在る —— 但しそれは1通目で、
+    /// 今回送った物ではない。存在で見る実装はここで「届いていました」と言い、
+    /// Tom は届いていない指示を届いたと信じる。差分で見る実装だけが通る。
+    func testAnUnknownSendDoesNotClaimDeliveryFromAnIdenticalOlderMessageNegativeControl() async throws {
+        let alreadyThere = [e(.user, "止めて"), e(.assistant, "了解")]
+        let (vm, _) = try await sendUnknownViewModel(
+            initialHistory: alreadyThere,
+            // 取り直しても増えた区間は空 = 2通目は机に無い。
+            thenHistory: [.success(HistoryResponse(history: alreadyThere, truncated: false))]
+        )
+        vm.draft = "止めて"
+
+        await vm.send()
+
+        XCTAssertEqual(
+            vm.sendBanner?.text,
+            ConversationViewModel.sendNotOnDeskText,
+            "★同じ本文が過去に在るだけで「届いた」と読む実装を落とす(実測: 変異①で⑦と共に赤)"
+        )
+        XCTAssertNotEqual(vm.sendBanner?.text, ConversationViewModel.sendLandedText)
+    }
+
+    /// ★⑥ 窓がずれた時。**「件数の差」で書いた実装を落とす**(実測: 変異②で⑦と共に赤)。
+    ///
+    /// 両方の履歴は同じ `limit` で取った**末尾の窓**なので、机が1行進めば窓は前から
+    /// 1行こぼれる。ここでは送る前の一番古い行が、たまたま同じ本文の `user` 行だった:
+    /// 取り直すとそれが窓から落ち、代わりに今送った物が末尾に付く。件数は 1 → 1 で
+    /// 動かない。
+    ///
+    /// 件数で見る実装はここで「今の机には出ていません」と言う —— **届いているのに**。
+    /// それは Tom に再送を勧める向きで、`POST /messages` に冪等鍵は無いので二重配達に
+    /// なる。増えた区間(重なりの外側)で見る実装だけが通る。
+    func testALandedMessageIsStillSeenWhenTheOldestEntryFellOutOfTheWindow() async throws {
+        let oldest = e(.user, "止めて")
+        let middle = [e(.assistant, "1"), e(.assistant, "2")]
+        let (vm, _) = try await sendUnknownViewModel(
+            initialHistory: [oldest] + middle,
+            // 先頭が1行こぼれ、末尾に今回の送信が付いた。件数は増えていない。
+            thenHistory: [.success(HistoryResponse(history: middle + [e(.user, "止めて")], truncated: true))]
+        )
+        vm.draft = "止めて"
+
+        await vm.send()
+
+        XCTAssertEqual(
+            vm.sendBanner?.text,
+            ConversationViewModel.sendLandedText,
+            "★窓がずれても、重なりの外側に在る物は新しく来た物"
+        )
+    }
+
+    /// ⑦ 重なりが1つも見付からない = 送信と取り直しの間に窓1枚分が丸ごと流れた
+    /// (机側の圧縮や `/clear` は記録を丸ごと入れ替えるので、これは机上の空論ではない)。
+    /// 境目が分からないので `after` 全体を見るしかなくなるが、そこには過去の同じ本文が
+    /// 居るかもしれない。**見当を失った時は主張しない**方に倒す。
+    ///
+    /// ★答えは3つ目の専用文で、「今の机には出ていません」ではない。あの文は
+    /// 「机に無い」と断言した上に「もう一度送れます」で再送 = 二重配達を勧める。
+    /// 電話は境目を見失っていて、在るとも無いとも言えない —— ここで潰すのは、この節が
+    /// 直している「電話が机の状態を語る」誤りそのものを、当ての中で再演する事になる。
+    func testNoClaimIsMadeWhenThePhoneCannotLocateWhereTheNewEntriesBegin() async throws {
+        let (vm, _) = try await sendUnknownViewModel(
+            initialHistory: [e(.user, "古い話"), e(.assistant, "古い返事")],
+            // 一行も重ならない。中に「止めて」は在るが、それが今回の物である保証は無い。
+            thenHistory: [.success(HistoryResponse(
+                history: [e(.user, "止めて"), e(.assistant, "全く別の区間")], truncated: true
+            ))]
+        )
+        vm.draft = "止めて"
+
+        await vm.send()
+
+        XCTAssertEqual(
+            vm.sendBanner?.text,
+            ConversationViewModel.sendCannotTellText,
+            "★一致行は在るが、それが今回の配達だとは言えない"
+        )
+        XCTAssertNotEqual(
+            vm.sendBanner?.text,
+            ConversationViewModel.sendNotOnDeskText,
+            "★「分からない」を「無い」へ潰すと、再送 = 二重配達を勧める向きに出る"
+        )
+        XCTAssertNotEqual(vm.sendBanner?.text, ConversationViewModel.sendLandedText)
+        XCTAssertEqual(vm.draft, "止めて", "本文はどちらに転んでも消さない")
+    }
+
+    /// ⑤ ④の裏返し。同じ本文を意図して2回送るのは正当な操作。増えた区間の中に在れば
+    /// 2通目も「届いた」になる。`after` 全体への存在の真偽で見る実装は、④で落ちる。
+    func testASecondIdenticalMessageIsSeenAsLandedWhenItArrivesInTheNewRegion() async throws {
+        let before = [e(.user, "止めて")]
+        let (vm, _) = try await sendUnknownViewModel(
+            initialHistory: before,
+            thenHistory: [.success(HistoryResponse(history: before + [e(.user, "止めて")], truncated: false))]
+        )
+        vm.draft = "止めて"
+
+        await vm.send()
+
+        XCTAssertEqual(vm.sendBanner?.text, ConversationViewModel.sendLandedText)
     }
 
     func testCancelledChangesNothingAtAll() async throws {
@@ -1189,7 +1397,7 @@ final class ConversationViewModelTests: XCTestCase {
         guard case .loaded = vm.phase else {
             return XCTFail("the conversation and its poll loop must survive: this is the one view that can tell the user what happened")
         }
-        XCTAssertEqual(vm.sendBanner?.text, violation.displayText)
+        XCTAssertEqual(vm.sendBanner?.text, violation.displayText + ConversationViewModel.sendUnknownInterim)
         XCTAssertFalse(vm.sendBanner?.text.isEmpty ?? true, "§3-a control 1: the screen must not go silent on an unreadable response")
         XCTAssertEqual(vm.sendBanner?.tone, .error)
         XCTAssertEqual(vm.sendBanner?.fromServer, false, "there was no server wording to carry -- that is the whole finding")
@@ -1653,7 +1861,13 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertNil(vm.staleChoiceDigest)
         XCTAssertTrue(vm.choiceEnabled, "still pressable -- a repeat is refused server-side, a dead card is not")
         let text = try XCTUnwrap(vm.choiceBanner?.text)
-        XCTAssertTrue(text.contains("確認できませんでした"))
+        XCTAssertTrue(
+            text.contains("押せたかどうかは分かりません"),
+            "★どちらの結末も主張しない、が此処の全て(DESIGN §2.52 でも打鍵は「効いた」を主張しない)"
+        )
+        // `thenHistory` を渡していないので取り直しも届かない = 「まだ繋がりません」側。
+        // 繋がらない機械に打って、その直後だけ繋がる筋書きの方が不自然。
+        XCTAssertTrue(text.hasPrefix("まだ繋がりません"), "取り直しも同じ回線を通る")
         XCTAssertEqual(vm.choiceBanner?.fromServer, false)
     }
 
@@ -1912,7 +2126,7 @@ final class ConversationViewModelTests: XCTestCase {
         vm.applyInterruptOutcome(.unreachable)
 
         XCTAssertEqual(vm.interruptBanner?.tone, .warn)
-        XCTAssertEqual(vm.interruptBanner?.text, "止められたかどうか確認できませんでした。机の画面を確認してください。")
+        XCTAssertEqual(vm.interruptBanner?.text, ConversationViewModel.interruptUnknownInterim)
         guard case .loaded = vm.phase else { return XCTFail("a transport failure must not tear the screen down") }
     }
 
@@ -1943,7 +2157,7 @@ final class ConversationViewModelTests: XCTestCase {
         vm.applyInterruptOutcome(.contractViolation(violation))
 
         guard case .loaded = vm.phase else { return XCTFail("the screen and its poll loop must survive") }
-        XCTAssertEqual(vm.interruptBanner?.text, violation.displayText)
+        XCTAssertEqual(vm.interruptBanner?.text, violation.displayText + ConversationViewModel.interruptUnknownInterim)
         XCTAssertFalse(vm.interruptBanner?.text.isEmpty ?? true, "the screen must not go silent on an unreadable response")
         XCTAssertEqual(vm.interruptBanner?.tone, .error)
         XCTAssertEqual(vm.interruptBanner?.fromServer, false, "there was no server wording to carry -- that is the finding")

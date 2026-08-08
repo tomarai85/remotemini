@@ -295,7 +295,9 @@ struct ConversationView: View {
                 Button {
                     Task { await viewModel.send() }
                 } label: {
-                    if viewModel.isSending {
+                    // 取り直しの間も回す(DESIGN §2.52)。要求は飛び終わっているが
+                    // 届いたか分からないので、ボタンは伏せたまま = 二重配達を作らない。
+                    if viewModel.isSending || viewModel.isVerifyingSend {
                         ProgressView()
                     } else {
                         Image(systemName: "arrow.up.circle.fill")
