@@ -14,6 +14,12 @@
 import { randomBytes } from "node:crypto";
 import { EventRing } from "./ring.mjs";
 import { redact } from "./redact.mjs";
+// 上限の判定は**正本を引く**。写しを持たない(§2.28 の型)。
+// 依存は一方向 = worker.mjs → inject.mjs。inject.mjs はワーカーを引かないので循環しない。
+// ★写しが2本在ると同じ機械について逆の事を言い出すのは 2026-08-02 に一度起きていて、
+//   `test/live-exit-codes.test.mjs` の D 節がその包含関係を今も測っている。
+//   ここで3本目を作ると、その検査が見ていない所で同じ事が起きる。
+import { limitNoticeIn } from "./inject.mjs";
 
 const noop = () => {};
 
@@ -170,8 +176,14 @@ export class WorkerManager {
   /** 実行状態の真実(jsonl からの推測はしない — Codex 補正)。 */
   status(sessionId) {
     const e = this.workers.get(sessionId);
-    if (!e) return { worker: "none", state: "idle", queued: 0 };
-    return { worker: "running", state: e.state, queued: e.queue.length };
+    if (!e) return { worker: "none", state: "idle", queued: 0, errored: false, limited: false };
+    return {
+      worker: "running",
+      state: e.state,
+      queued: e.queue.length,
+      errored: e.errored,
+      limited: e.limited,
+    };
   }
 
   /**
@@ -294,6 +306,12 @@ export class WorkerManager {
       dead: false,
       forked: plan.fork,
       headWritten: false,
+      // 直前の turn が**どう終わったか**。2段で持つ理由は `_recordTurnEnd` に書いた。
+      // ★寿命はワーカーと同じ。回収されたら我々はもう何も観測していないので印も消える
+      //   —— `status()` の `worker:"none"` 枝が両方 false を返すのはその表明で、
+      //   「観測していない」を「異常は無い」に丸めない為に**形は欠かさず**返す。
+      errored: false,
+      limited: false,
       killTimer: null,
       stderrTail: [],
       errBuf: "",
@@ -413,6 +431,7 @@ export class WorkerManager {
     this._commitHead(sessionId, entry, ev);
     this._emit(sessionId, ev);
     if (ev.type === "result" && live) {
+      this._recordTurnEnd(entry, ev, line);
       entry.lastActive = this.now();
       if (entry.queue.length > 0) {
         const next = entry.queue.shift();
@@ -422,6 +441,52 @@ export class WorkerManager {
       }
     }
     return true;
+  }
+
+  /**
+   * 直前の turn が**どう終わったか**を entry に残す(DESIGN §2.69、監査 R2-2)。
+   *
+   * 起票: 上限に当たった事が電話に一切出ていなかった。実測(2026-08-08)では上限の時も
+   * 正常完了の時も一覧の札が**バイト単位で同一**(どちらも `ワーカー・busy`)で、
+   * 会話の履歴に流れる上限の告知は転写の合成記録(`isApiErrorMessage`)なので
+   * `role:"assistant"` の**ふつうの発言**として出る = Claude が上限の話をしたのと
+   * 見分けが付かない。tmux 経路は 2026-08-02 に此処を直しており、
+   * **片方の経路にだけ古い形が残っていた**(R2-3 と同じ残り方)。
+   *
+   * ★2段で持つ。片方だけでは必ずどちらかで倒れる:
+   *   `errored` だけ … 上限だと**名指せない**。外出先で取る行動が変わるのに。
+   *   `limited` だけ … 文面が未知の形に変わった日、この関数は黙って false を返す
+   *                    = 異常で終わった事すら電話に出ない。`inject.mjs` の
+   *                    `USAGE_LIMIT` が固定列挙をやめた時に書いた懸念そのもの。
+   * `is_error` は**構造化された事実**なので推測が要らない。文面は当たった時だけ名指す。
+   *
+   * ★`limited` は `is_error === true` を**必ず**要求する。文面だけで立てると、
+   *   Claude が返答の中で上限の話をしただけで上限と表示される(`inject.mjs` が
+   *   画面を読む時に踏んだ誤爆と同じ型)。
+   *
+   * ★当てる先は生の1行。`ev.result` に限らないのは、8/02 の実測
+   *   (`tools/live-fork-check.mjs`)が生の出力と `result` の両方に当てていたから。
+   *   `is_error:true` で既に狭めてあるので、生に当てても人の本文は混ざらない。
+   *
+   * ★降ろすのは**次に答えが返った時**。時計で腐らせない。事象駆動なので一度立てた印は
+   *   自分では消えず、放置すると上限が明けた後も永久に上限と出る —— tmux 側が
+   *   「現に返っている最中の物を否定する」として明示的に避けた偽陽性そのもの。
+   *   現在形の観測(`is_error:false` の result)で上書きするのが同じ骨格。
+   *
+   * ★**行列は止めない**。`inject.mjs` の裁定「上限は『送れない』ではなく『答えが
+   *   返らない』。ここを遮断条件にすると、上限が解けた瞬間に送れる物まで送れなくなる」
+   *   を経路差なくそのまま継ぐ。この関数は名指すだけで、`entry.queue` に触らない。
+   *
+   * @param {string} raw JSON.parse に通った後の元の1行
+   */
+  _recordTurnEnd(entry, ev, raw) {
+    if (ev.is_error !== true) {
+      entry.errored = false;
+      entry.limited = false;
+      return;
+    }
+    entry.errored = true;
+    entry.limited = limitNoticeIn(raw);
   }
 
   /**

@@ -286,6 +286,35 @@ test("★routeLabel: 選択待ちは**一覧の札から**見える(Enter が承
   assert.doesNotMatch(routeLabel({ route: "worker", state: "idle" }).short, /選択待ち/);
 });
 
+test("★routeLabel: worker 経路の上限が一覧の札に出る(§2.69、監査 R2-2)", () => {
+  // 見つけ方(2026-08-08、実測): 上限で終わった会話と正常に答え終わった会話の札が
+  // **バイト単位で同一**だった(どちらも `ワーカー・busy`)。tmux 側は 2026-08-02 に
+  // 直っており、片方の経路にだけ古い形が残っていた —— R2-3 と同じ残り方。
+  const busy = routeLabel({ route: "worker", state: "busy", limited: true });
+  assert.match(busy.short, /上限/, "★一覧に出る側(short)に入っている事");
+  assert.match(busy.text, /返っていません/, "何が起きたかを会話画面で言う");
+  // ★過去形と現在形を混ぜない。`limited` は**直前の turn**、`state` は**今**。
+  //   上限の直後に次の一件が走り始めるのは普通に起きる(行列を止めない裁定)。
+  assert.match(busy.text, /busy/, "今走っている事が消えている(過去形が現在形を上書きしている)");
+
+  const idle = routeLabel({ route: "worker", state: "idle", limited: true });
+  assert.match(idle.short, /利用上限/, "走っていない時は上限が見出しに立つ");
+
+  // 上限と名指せない異常 —— **理由を創作しない**枝。文面が未知の形に変わった日に
+  // 無音にならない事が此処の仕事。
+  const errored = routeLabel({ route: "worker", state: "idle", errored: true });
+  assert.match(errored.short, /答えなし/, "異常で終わったのに一覧が平常と同じ");
+  assert.doesNotMatch(errored.text, /上限/, "上限でない失敗を上限と名乗っている(偽の診断)");
+  assert.match(errored.text, /名指せません/, "分からない事を分かった風に書いている");
+
+  // 陰性対照1 — 常に上限と書く実装との差。何も無い時は従来どおりの札に戻る。
+  assert.equal(routeLabel({ route: "worker", state: "busy" }).short, "ワーカー・busy");
+  assert.equal(routeLabel({ route: "worker", state: "busy" }).text, "ワーカー・busy");
+  // 陰性対照2 — 一覧の札が説明文まで抱え込んでいない事(丸い札に入る長さ)。
+  assert.ok(busy.short.length <= 12, `一覧の札は短い(実際 ${busy.short.length} 文字)`);
+  assert.ok(idle.short.length <= 12, `一覧の札は短い(実際 ${idle.short.length} 文字)`);
+});
+
 test("★routeLabel: 一覧の札は短く、説明は会話画面(92文字の札を一覧に出さない)", () => {
   // 実測 2026-08-02: 本番14行のうち6行が blocked で、札が**全部同じ92文字**だった。
   // 他の札は 9-10 文字。丸い札(border-radius:999px / 12px)に入る長さではない。
