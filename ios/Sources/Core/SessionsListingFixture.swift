@@ -49,6 +49,17 @@ struct SessionsListingFixture: SessionsListing {
         /// path has no real `AppState` to tear down, so that callback is a no-op
         /// there. Not a required DoD screenshot; not pursued further this sprint.
         case unauthorized = "list-401"
+        /// ★2026-08-08(監査 X2-3)。**取得が毎回失敗する**面。名前を `list-unreachable`
+        /// にしないのは、どの phase に落ちるかが失敗の**回数**で決まる為 ——
+        /// 1回目は `.retryable(priorSessions: nil)`、`unreachableThreshold` を超えて
+        /// 初めて `.unreachable` になる。fixture が決めているのは結果ではなく入力なので、
+        /// 名前も入力の側で付ける。
+        ///
+        /// 此処を足した理由: `list.retry` は `.retryable` と `.unreachable` にしか
+        /// 出ないのに、既存の状態はどれもそこへ行けなかった —— `list-panefault` は
+        /// 「banner を単独で見せる」面で、再試行のボタンを持たない(brief §4)。
+        /// 旅程で最も起きる失敗(一覧が出ない)の唯一の的が、一度も測れていなかった。
+        case fetchFailure = "list-fetchfail"
     }
 
     let state: State
@@ -60,6 +71,8 @@ struct SessionsListingFixture: SessionsListing {
         switch state {
         case .unauthorized:
             return .failure(.unauthorized)
+        case .fetchFailure:
+            return .failure(.unreachable)
         case .normal:
             return .success(Self.response(sessions: Self.sampleRows, paneFault: nil, fetchCount: n))
         case .paneFault:
