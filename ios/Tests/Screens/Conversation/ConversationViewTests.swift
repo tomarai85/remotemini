@@ -40,4 +40,27 @@ final class ConversationViewTests: XCTestCase {
 
         XCTAssertEqual(Set(colours.map { String(describing: $0) }).count, 3)
     }
+
+    // MARK: - Sprint 8 (§2.56): 回るのは押した鍵だけ
+
+    /// 選択肢のボタンは複数並ぶ。全部回す実装でも「飛んでいる間に何か出る」という
+    /// 検査は緑で通るので、**どれが回るか**を別に測る。
+    ///
+    /// この規則を view body の中に `viewModel.inFlightChoiceKey == button.key` と
+    /// 直接書くと、画面の規則なのにどの検査からも触れない —— S8-5 で見付けたのは
+    /// その裏側(規則は正しいのに画面に繋がっていなかった)で、同じ穴の両側。
+    func testOnlyThePressedKeySpins() {
+        XCTAssertTrue(ConversationView.spins(key: "2", inFlight: "2"))
+        XCTAssertFalse(ConversationView.spins(key: "1", inFlight: "2"),
+                       "★他の鍵は回らない。回ると「どれを押したか」が消える")
+        XCTAssertFalse(ConversationView.spins(key: "escape", inFlight: "enter"))
+    }
+
+    /// 何も飛んでいなければ、どの鍵も回らない。`!= nil` 型の誤実装だけでなく、
+    /// 「常に true」型もここで落ちる。
+    func testNoKeySpinsWhenNothingIsInFlight() {
+        XCTAssertFalse(ConversationView.spins(key: "1", inFlight: nil))
+        XCTAssertFalse(ConversationView.spins(key: "2", inFlight: nil))
+        XCTAssertFalse(ConversationView.spins(key: "", inFlight: nil))
+    }
 }

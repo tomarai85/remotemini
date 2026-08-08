@@ -389,6 +389,31 @@ final class ConversationViewModel: ObservableObject {
         isSending ? Self.sendInFlightText(timeout: BackendSession.writeTimeout) : nil
     }
 
+    /// ★2026-08-08(DESIGN §2.56): 割り込みと打鍵の、同じ窓。
+    ///
+    /// §2.54 は送信だけを直した。残る2操作を測ったら **非対称が3段階だった**:
+    ///
+    /// | 操作 | 飛んでいる間 | 結果不明の取り直しの間 |
+    /// |---|---|---|
+    /// | 送信 | スピナ + 文(§2.54) | 文 + ボタン伏せ |
+    /// | 割り込み | スピナ、**文なし** | 文 (`interruptUnknownInterim`) |
+    /// | 打鍵 | **スピナも文も無し**(灰色になるだけ) | 文 (`choiceUnknownInterim`) |
+    ///
+    /// 直すのは**左の列だけ**。右の列は3操作とも既に文が在る —— この節は一度
+    /// 「割り込みと打鍵は取り直しの間も無言」と書き、`applyInterruptOutcome` の先頭と
+    /// `.display` 枝しか読まずに結論を出していた。結果不明の枝
+    /// (`.unreachable` / `.contractViolation`)を読めば両方とも文を置いている。
+    /// **足す物が無い所に足しに行くのは、S8-5 で踏んだばかりの穴。**
+    ///
+    /// 新しい `@Published` を持たないのは `sendInFlightNotice` と同じ理由。
+    var interruptInFlightNotice: String? {
+        isInterrupting ? Self.interruptInFlightText(timeout: BackendSession.writeTimeout) : nil
+    }
+
+    var choiceInFlightNotice: String? {
+        inFlightChoiceKey == nil ? nil : Self.choiceInFlightText(timeout: BackendSession.writeTimeout)
+    }
+
     /// 結果の分からなかった送信について、電話が机の履歴を取り直している間(DESIGN §2.52)。
     ///
     /// `isSending` と分ける理由は意味が違うから —— あちらは要求が飛んでいる間、
@@ -691,6 +716,29 @@ final class ConversationViewModel: ObservableObject {
         "送っています…(机の返事を最大\(Int(timeout))秒待ちます)"
     }
 
+    /// ★2026-08-08(DESIGN §2.56): 割り込みと打鍵の、同じ段の文。
+    ///
+    /// **秒数の出所が送信と同じ `writeTimeout` なのは、測って決めた。** この節は当初
+    /// 「割り込み/打鍵は `interactiveTimeout` = 8秒だから、文は要らないかもしれない」
+    /// という前提で始まった。実測(`InterruptClient` / `ChoiceClient`)では両方とも
+    /// `request.timeoutInterval = BackendSession.writeTimeout` で、8秒が使われているのは
+    /// **読みだけ**(`healthz` / `history` / `sessions`)。`BackendSession` の doc が
+    /// 理由まで書いている ——「Sends and interrupts keep the long timeout, deliberately.」
+    ///
+    /// この訂正で §2.54 の裁定がそのまま効く: 文の無いスピナが最大30秒続くのは
+    /// 正常な待ちの見え方ではない。**判断ではなく、既に出た答えの適用。**
+    ///
+    /// 3つの文言を分けてあるのは、`sendInFlightText` が `sendUnknownInterim` と分かれて
+    /// いるのと同じ理由 —— 同じ画面に3つの操作が在り、生き残った一文がどれの物か
+    /// 読み手が判別できなくなる。動詞まで操作ごとに違えてある。
+    static func interruptInFlightText(timeout: TimeInterval) -> String {
+        "止めるよう伝えています…(机の返事を最大\(Int(timeout))秒待ちます)"
+    }
+
+    static func choiceInFlightText(timeout: TimeInterval) -> String {
+        "選んだ答えを送っています…(机の返事を最大\(Int(timeout))秒待ちます)"
+    }
+
     static let sendLandedText = "届いていました(取り直した机の履歴に、この本文が在ります)。本文は消していません —— 要らなければ消してください。"
     /// ★「届いていません」とは書かない。取り直しに成功して行が無くても、机の側で
     /// まだ処理中の可能性は消えていない。**電話は自分が見た物だけを言う。**
@@ -833,11 +881,20 @@ final class ConversationViewModel: ObservableObject {
 
     // MARK: - Choice (answering the desk's menu from the phone)
 
-    /// One keystroke in flight. Its own flag, not `isSending`: the composer and the
-    /// menu are never both live (the composer is disabled on `CHOICE`), but sharing a
-    /// flag would still mean a future screen that enabled both could disable the wrong
-    /// control.
-    @Published private(set) var isChoosing = false
+    /// One keystroke in flight, **and which key it is**. Its own state, not `isSending`:
+    /// the composer and the menu are never both live (the composer is disabled on
+    /// `CHOICE`), but sharing a flag would still mean a future screen that enabled both
+    /// could disable the wrong control.
+    ///
+    /// ★2026-08-08(§2.56): `Bool` から `String?` に**置き換えた**(足したのではない)。
+    /// 画面が「押した鍵だけを回す」為に鍵が要るが、`Bool` と鍵を両方持つと
+    /// 「飛んでいる事」の真実が2箇所になり、片方だけ倒れる版が書ける。
+    /// `isChoosing` は下の computed として残してあるので、読む側の意味は変わらない。
+    @Published private(set) var inFlightChoiceKey: String?
+
+    /// 「今どれかの鍵が飛んでいる」だけを聞きたい側の口。**保持しない** ——
+    /// 唯一の真実は `inFlightChoiceKey` で、これはその読み方の一つでしかない。
+    var isChoosing: Bool { inFlightChoiceKey != nil }
 
     /// Its own band, for `interruptBanner`'s reason: three operations, three answers,
     /// and no way for the reader to tell whose sentence survived if they share a slot.
@@ -916,7 +973,7 @@ final class ConversationViewModel: ObservableObject {
         guard card.buttons.contains(where: { $0.key == key }) else { return }
 
         let sentDigest = card.digest
-        isChoosing = true
+        inFlightChoiceKey = key
         choiceBanner = nil
 
         let attempt = await choiceClient.choose(
@@ -951,7 +1008,9 @@ final class ConversationViewModel: ObservableObject {
     /// 安全確認に答える事だが、履歴を読み直すのは机に何も起こさない。
     @discardableResult
     func applyChoiceAttempt(_ attempt: ChoiceAttempt, sentDigest: String) -> Bool {
-        isChoosing = false
+        // ★飛んでいる文が消えるのはここ。残せば「答えの顔をした待ち」になる ——
+        // この行を消す変異が §2.56 の対照で一番要る錨。
+        inFlightChoiceKey = nil
 
         // Behaviour binds to the fingerprint, never to the refusal vocabulary -- see
         // `ChoiceAttempt`'s ★. A server that says nothing about the current screen

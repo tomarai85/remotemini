@@ -243,6 +243,22 @@ struct ConversationView: View {
                     .accessibilityIdentifier("conversation.interruptDisabledReason")
             }
 
+            // ★DESIGN §2.56: 割り込みが飛んでいる間の一文。割り込みの帯の**続き**に置く
+            // (banner → 押せない理由 → 飛んでいる)—— 3操作が同じ縦列に文を出す画面で、
+            // 読み手が「これはどの操作の話か」を位置で判別できる様に。
+            //
+            // 下の送信と同じ `.secondary` の caption。§2.54 の2つの理由がそのまま効く:
+            // `interruptBanner` は `interrupt()` の入口で明示的に `nil` にされるし、
+            // `ResultDisplay.Tone` に中立色が無い。
+            if let notice = viewModel.interruptInFlightNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.interruptInFlightNotice")
+            }
+
             // ★DESIGN §2.54: 要求が飛んでいる間の一文。
             //
             // **`sendBanner` に入れない。** 理由は2つあり、どちらも構造的:
@@ -286,6 +302,24 @@ struct ConversationView: View {
             // thing on screen the user is being asked to *do* -- it belongs where the
             // thumb already is, not at the far end of the screen from it.
             choiceCard
+
+            // ★DESIGN §2.56: 打鍵が飛んでいる間の一文。**カードの中に置かない。**
+            //
+            // 理由が構造的: カードは `visibleChoice` が決めていて、飛んでいる最中に
+            // poll が `CHOICE` でない画面を届けるとカードは消える。中に置いた文は
+            // その時**一緒に消える** —— 押した直後に画面から全部消えるのが、この節が
+            // 直している当の症状。外に置けば、カードが消えても「今飛んでいる」は残る。
+            //
+            // 代わりに失う物(どの鍵を押したのか)は下のボタン側のスピナが持つ。
+            // 文は「飛んでいる事」、スピナは「どれを押したか」で、分担が違う。
+            if let notice = viewModel.choiceInFlightNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.choiceInFlightNotice")
+            }
 
             HStack(alignment: .bottom, spacing: 8) {
                 // Left of the field, deliberately far from the send button: these two
@@ -347,6 +381,20 @@ struct ConversationView: View {
         case .refused: return .orange
         case .error: return .red
         }
+    }
+
+    /// ★2026-08-08(§2.56): 選択肢のボタンが回るかどうか。
+    ///
+    /// `color(for:)` と同じ理由で `static` かつ internal —— view body の中に
+    /// `viewModel.inFlightChoiceKey == button.key` と直接書くと、それは**画面の規則**なのに
+    /// どの検査からも触れない。S8-5 で判ったのはまさにこれの裏側で、
+    /// 「規則は正しいが画面に繋がっていない」も「画面には在るが誰も測れない」も
+    /// 同じ穴の両側。純関数に出せば `ConversationViewTests` が直接撃てる。
+    ///
+    /// ★`inFlight != nil` ではなく **`==` である事**が測る対象。前者だと全ボタンが
+    /// 一斉に回り、「押した鍵だけが回る」という当の性質が消えたまま緑になる。
+    static func spins(key: String, inFlight: String?) -> Bool {
+        inFlight == key
     }
 
     private func failureView(message: String, identifier: String) -> some View {
@@ -492,10 +540,19 @@ struct ConversationView: View {
                         Button {
                             Task { await viewModel.choose(key: button.key) }
                         } label: {
-                            Text(button.label)
-                                .font(.callout)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            HStack(spacing: 6) {
+                                // ★§2.56: 押した鍵**だけ**が回る。全部回すと「どれを
+                                // 押したか」が消える —— 打鍵は3操作の中で唯一、同時に
+                                // 複数の的が画面に並ぶ操作なので、ここだけは
+                                // 「飛んでいる」より「何が飛んでいる」の方が要る。
+                                if Self.spins(key: button.key, inFlight: viewModel.inFlightChoiceKey) {
+                                    ProgressView()
+                                }
+                                Text(button.label)
+                                    .font(.callout)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                         .buttonStyle(.bordered)
                         .disabled(!viewModel.choiceEnabled)
