@@ -370,6 +370,25 @@ final class ConversationViewModel: ObservableObject {
             && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// ★2026-08-08(DESIGN §2.54): 要求が飛んでいる間、画面に出す一文。
+    ///
+    /// 体験側監査 #4 は「不通が分かっているなら送信を先に断れ」と言う。断らない —— 理由は
+    /// §2.54 に書いた(計器は片側にしか外れず、外れるのは常に「通るのに断る」側)。ただし
+    /// 指摘が指している痛みは本物で、それは**この段が無言だった**事。
+    ///
+    /// 測った所(2026-08-08、`ConversationView` の送信行):`isSending` の間、送信ボタンは
+    /// `ProgressView()` に化けて伏せられるが、**文は1つも出ていなかった**。次の段
+    /// (`isVerifyingSend`)には §2.52 の `sendUnknownInterim` が在るのに、その手前の
+    /// 最大30秒だけが回っているだけの窓だった。iOS で文の無いスピナが30秒続くのは、
+    /// 正常な待ちの見え方ではない。
+    ///
+    /// **新しい `@Published` を持たない**のがここの要点。`isSending` は既に `@Published`
+    /// なので computed で足り、`isBackendUnreachable` と同じ形になる —— 状態を増やすと
+    /// 「送信中である事」の真実が2箇所になり、食い違える。
+    var sendInFlightNotice: String? {
+        isSending ? Self.sendInFlightText(timeout: BackendSession.writeTimeout) : nil
+    }
+
     /// 結果の分からなかった送信について、電話が机の履歴を取り直している間(DESIGN §2.52)。
     ///
     /// `isSending` と分ける理由は意味が違うから —— あちらは要求が飛んでいる間、
@@ -658,6 +677,19 @@ final class ConversationViewModel: ObservableObject {
     static let sendUnknownInterim = "送れたかどうか分かりません。本文は残してあります。今、机の履歴を取り直しています…"
     static let interruptUnknownInterim = "止められたかどうか分かりません。今、机の履歴を取り直しています…"
     static let choiceUnknownInterim = "押せたかどうか分かりません。今、机の履歴を取り直しています…"
+
+    /// ★`sendUnknownInterim` の**一つ手前**の段の文(DESIGN §2.54)。すぐ上に置いてあるのは、
+    /// 2つの段が続けて起きるのに意味が正反対だから —— こちらは「まだ飛んでいる」、
+    /// あちらは「飛び終わったが届いたか分からない」。同じ文を出すと段が見分けられなくなる。
+    ///
+    /// ★**秒数を直書きしない。** 実際の timeout を受け取って作る。
+    /// `BackendSession.writeTimeout` は `pollTimeout` = `serverPollMaxWait + 10` で、
+    /// `serverPollMaxWait` はサーバ側の定数の写し。この鎖のどこかが変わった時に、
+    /// **文だけが古くなる**形にしない —— 電話が言った上限と実際の上限が違うのは、
+    /// この節が直している当の病気(電話が観測していない事を言う)と同じ型。
+    static func sendInFlightText(timeout: TimeInterval) -> String {
+        "送っています…(机の返事を最大\(Int(timeout))秒待ちます)"
+    }
 
     static let sendLandedText = "届いていました(取り直した机の履歴に、この本文が在ります)。本文は消していません —— 要らなければ消してください。"
     /// ★「届いていません」とは書かない。取り直しに成功して行が無くても、机の側で
