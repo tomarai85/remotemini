@@ -410,6 +410,13 @@ struct ConversationView: View {
     /// Brief §3-b-2's table, rendered. The two message wordings are never swapped
     /// for each other's row -- asserting the numeric ceiling ("最新 500 件まで") when
     /// the ceiling was never actually reached would assert an unobserved cause.
+    ///
+    /// ★§2.63: **灰色の帯(`.bar`)を敷かない。** 敷いていた頃、この入口は転写の続きを
+    /// 読む物なのに composer の道具に見えていた —— 撮った3枚で帯の上端が文字より
+    /// 上に在り、行の地は composer と同じ 246、転写は 255 だった(2026-08-08 実測)。
+    /// 灰色はこの画面で「電話の道具」を意味する材質なので、それを敷いた時点で
+    /// 所属が変わる。位置は動かさない: 遡る入口が画面の上端に在ると、遡る為に
+    /// 先ず遡らないと押せない。親指の側に固定で在る事の方が要る。
     @ViewBuilder
     private var loadEarlierFooter: some View {
         switch viewModel.loadEarlierState {
@@ -443,7 +450,6 @@ struct ConversationView: View {
             }
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity)
-            .background(.bar)
 
         case .atCeiling:
             Text("これより古い発言は在りますが、電話には最新 500 件までしか出せません")
@@ -451,7 +457,6 @@ struct ConversationView: View {
                 .foregroundStyle(.secondary)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity)
-                .background(.bar)
                 .accessibilityIdentifier("conversation.loadEarlierCeiling")
         }
     }
