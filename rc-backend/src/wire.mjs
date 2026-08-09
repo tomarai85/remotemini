@@ -152,3 +152,17 @@ export function pollBodyWorker({ items, queued, cursor, more }) {
 export function historyBody({ entries, truncated }) {
   return { history: entries.map(withWho), truncated };
 }
+
+/**
+ * `GET /healthz` の封筒(DESIGN §7-P)。**認証の外に出る唯一の応答**。
+ *
+ * ★引数を分解して受ける = 時計も pid もここでは読まない。読むとハンドラが渡した値と
+ *   検査が見る値がズレて、「鍵名は合っているのに中身が別物」を作れる形になる。
+ * ★返して良いのは**秘密でない値だけ**。セッション名も cwd も件数も入れない
+ *   (件数は「今日は何本開いていたか」を認証の外へ漏らす)。鍵を1つ足す時は
+ *   `test/wire-key-agreement.test.mjs` の `HealthzClient.Wire` の組が赤くなるので、
+ *   電話側と同時に足す手を必ず通る。
+ */
+export function healthzBody({ pid, uptime, version }) {
+  return { ok: true, pid, uptime, version };
+}

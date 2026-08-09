@@ -59,9 +59,10 @@ POLLM="ios/Sources/Core/PollModels.swift"
 SESSM="ios/Sources/Core/SessionsModels.swift"
 RESULTD="ios/Sources/Core/ResultDisplay.swift"
 HISTM="ios/Sources/Core/HistoryModels.swift"
+HEALTHM="ios/Sources/Core/HealthzClient.swift"
 
 for f in "$TESTF" "$VIEW" "$BLOCKED" "$WIRE" "$SESSJS" "$REGJS" "$SERVER" \
-         "$POLLM" "$SESSM" "$RESULTD" "$HISTM" \
+         "$POLLM" "$SESSM" "$RESULTD" "$HISTM" "$HEALTHM" \
          rc-backend/test/subtree.mjs rc-backend/test/swiftsrc.mjs rc-backend/test/jssrc.mjs \
          DESIGN.md; do
     if [ ! -f "$ROOT/$f" ]; then
@@ -242,6 +243,14 @@ probe "電話 HistoryEntry.EntryDisplay.who が改名される" "$HISTM" \
     "        let who: String" \
     "        let whom: String"
 
+# ㉞ 生存信号の1鍵。**認証の外**に在る唯一の応答なので、ここがズレると
+#    「机の機械が生きているか」を旅先で確かめる唯一の窓が、静かに `nil` を返す
+#    (`version` が落ちれば版の名乗りが空欄になる —— 誤りは出ない)。
+#    此の組は `mode` 無し = 完全一致なので、片側だけ動かせば必ず赤になるはず。
+probe "電話 HealthzClient.Wire.uptime が改名される" "$HEALTHM" \
+    "struct Wire: Decodable { let ok: Bool; let pid: Int; let uptime: Int; let version: String }" \
+    "struct Wire: Decodable { let ok: Bool; let pid: Int; let up: Int; let version: String }"
+
 echo
 echo "== サーバの側だけ鍵名が動く =="
 
@@ -342,6 +351,29 @@ probe "サーバ gapItem の display.notice が改名される" "$WIRE" \
 probe "サーバ withWho の display.who が改名される" "$WIRE" \
     "  return { ...entry, display: { who: whoOf(entry.role) } };" \
     "  return { ...entry, display: { name: whoOf(entry.role) } };"
+
+# ㉟ ★生存信号に鍵が**増える**。此処だけは `serverOnly` を1つも許していないので、
+#    増えた鍵は必ず赤になる —— 「電話は読まないから」で認証の外へ値を足す道を塞ぐのが
+#    この組を完全一致にした理由で、それが効いているかは此の1本でしか分からない。
+#    植える鍵はわざと**実際に危ない物**(開いている会話の件数)にしてある。
+probe "サーバ healthzBody が鍵を1つ増やす(認証の外へ件数が漏れる形)" "$WIRE" \
+    "  return { ok: true, pid, uptime, version };" \
+    "  return { ok: true, pid, uptime, version, sessions: 3 };"
+
+# ㊱ ★`/healthz` のハンドラが直書きへ戻る。⑳ の一覧版と同じ形だが、こちらは**認証の外**なので
+#    直書きへ戻った日に鍵を足しても、電話側の照合を1つも通らずに線へ出る。
+probe "ハンドラが /healthz を直書きへ戻す(healthzBody を通らなくなる)" "$SERVER" \
+    "      return json(res, 200, healthzBody({
+        pid: process.pid,
+        uptime: Math.floor((Date.now() - STARTED_AT) / 1000),
+        version: DEPLOYED_REV,
+      }));" \
+    "      return json(res, 200, {
+        ok: true,
+        pid: process.pid,
+        uptime: Math.floor((Date.now() - STARTED_AT) / 1000),
+        version: DEPLOYED_REV,
+      });"
 
 echo
 echo "== 走査から隠れる書き方が増える =="
@@ -622,7 +654,7 @@ fi
 
 echo
 echo "== 対象が消えたら赤(改名・削除を素通りさせない) =="
-for gone in "$POLLM" "$SESSM" "$RESULTD" "$HISTM" "$VIEW" "$BLOCKED" \
+for gone in "$POLLM" "$SESSM" "$RESULTD" "$HISTM" "$HEALTHM" "$VIEW" "$BLOCKED" \
             "$WIRE" "$SESSJS" "$REGJS" "$SERVER"; do
     /bin/mv "$WORK/$gone" "$WORK/$gone.hidden"
     if run_suite; then
