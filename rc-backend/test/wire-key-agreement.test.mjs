@@ -34,7 +34,7 @@ import { join } from "node:path";
 //   その2本が写しで throw して対照1(無変異の木は緑)が落ち、197件の変異走行が
 //   1件も起動しなくなっていた。木の外(`ios/**`)だけが `REPO` + `requireOutside` の領分。
 import { ROOT, REPO, requireOutside } from "./subtree.mjs";
-import { stripSwiftComments } from "./swiftsrc.mjs";
+import { stripSwiftComments, swiftFiles } from "./swiftsrc.mjs";
 import { stripComments, blockAfter } from "./jssrc.mjs";
 import * as view from "../src/view.mjs";
 import * as blocked from "../src/blocked.mjs";
@@ -366,15 +366,6 @@ function codingKeys(all, qname) {
   return keys;
 }
 
-function swiftFiles(dir, out = []) {
-  for (const e of readdirSync(dir).sort()) {
-    const p = join(dir, e);
-    if (statSync(p).isDirectory()) swiftFiles(p, out);
-    else if (e.endsWith(".swift")) out.push(p);
-  }
-  return out;
-}
-
 let CACHE = null;
 function phoneTypes() {
   if (CACHE) return CACHE;
@@ -495,15 +486,32 @@ const IGNORED = {};
  *   2026-08-08(S8-25)、poll と履歴の8本(PollResponse / PollDisplay / MessageItem /
  *   GapItem + DisplayBox / HistoryResponse / HistoryEntry + EntryDisplay)と
  *   生存信号の1本(HealthzClient.Wire)が 2026-08-09(S8-26)。
- *   残りも同じ手が効く。「難しいから」ではなく「まだやっていない」。
+ *
+ * ★★但し**誤り応答の4本には効かない**(2026-08-09、S8-26 phase 3 で測った)。
+ *   「残りも同じ手が効く」と書きかけて、書かずに `DESIGN.md §2.81` へ
+ *   「言い切れない、phase 3 で測る」と残した所。測った結果は下の4項に個別に書いた ——
+ *   要点は、あの4本が読む鍵は `display` / `code`(/ `digest`)の3つだけで、
+ *   **どちらも既に別の検査が測っている**事。切り出しても組が1つ増えるだけで、
+ *   その上に新しい主張は1つも乗らない。効かない場所で同じ手を繰り返さない。
+ *   本当に測れていなかったのは鍵名ではなく**値**で、其方は
+ *   `test/wire-vocabulary-agreement.test.mjs` が持つ(負の対照 =
+ *   `.harness/wire-vocabulary-agreement-controls.sh`)。
  */
 const UNPAIRED = {
   ScreenBody: "poll の `screen` の**中身**。封筒(`pollBodyTmux`)は受け取った物をそのまま載せるだけで、"
     + "鍵名を決めるのは `screenBody()`(`src/server.mjs` に居て単体から呼べない)と `blockedBody()` の2本",
-  "SendClient.Envelope": "送信の誤り応答の封筒(`code` + `display`)。`json()` が組む",
-  "InterruptClient.Envelope": "割り込みの誤り応答の封筒。`json()` が組む",
-  "ChoiceClient.Envelope": "打鍵の誤り応答の封筒。上の2つに `digest` を足した形で、やはり `json()` が組む",
-  RecoveryCode: "誤り本文の `code` だけを読む小さな型。builder が作る物ではない",
+  "SendClient.Envelope": "送信の誤り応答の封筒(`code` + `display`)。`json()`(`src/server.mjs`)が組む。"
+    + "★切り出しても得が無い事を測った(2026-08-09): `display` の**中身**は `test/e2e-local.mjs` 13-D が"
+    + "生きたサーバの応答と `sendResult()` の再計算で突き合わせ済(status 違い / 本文違い / 別の口の関数の3対照付き)、"
+    + "`code` は `test/recovery-codes.test.mjs` がサーバ側で守り、両側の**値**の一致は"
+    + "`test/wire-vocabulary-agreement.test.mjs` が持つ。鍵名の組を足しても其の上に何も乗らない",
+  "InterruptClient.Envelope": "割り込みの誤り応答の封筒。`json()` が組む。読む鍵は上と同じ2つで、"
+    + "測っている者も同じ3本(e2e 13-D の `interruptResult` / recovery-codes / wire-vocabulary-agreement)",
+  "ChoiceClient.Envelope": "打鍵の誤り応答の封筒。上の2つに `digest` を足した形で、やはり `json()` が組む。"
+    + "`digest` は誤り応答では使われず(電話が読むのは成功側の `choiceView`)、其方は `PollDisplay` の組で測っている",
+  RecoveryCode: "誤り本文の `code` だけを読む小さな型。builder が作る物ではない。"
+    + "★鍵名(`code` の1つ)ではなく**焼いている値**が此の型の中身なので、測る場所は"
+    + "`test/wire-vocabulary-agreement.test.mjs`(サーバの値 == 電話の値。片側だけ動けば赤)",
   "KeychainCredentialStore.Wire": "電話の中の保存形式(keychain)。線には出ない",
   "UserDefaultsDraftStore.StoredDraft": "電話の中の保存形式(打ちかけ)。線には出ない",
   SignOutNotice: "鍵切れの報せを画面間で渡す入れ物。電話の中で完結し、線には出ない",
