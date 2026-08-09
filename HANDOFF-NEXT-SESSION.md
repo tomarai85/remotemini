@@ -40,7 +40,8 @@
 > | ビルドと検査の唯一の口 | `bash ios/tools/build.sh --sim`。**527件**(2026-08-09 の実測、失敗0、`** TEST SUCCEEDED **`。`ios/Tests`=491 + `ios/UITests`=36。log 側の突き合わせも 527)。★実機へ入れるのは**引数無し**の `bash ios/tools/build.sh`(build + 署名 + install) |
 > | サーバ側の検査の口 | `cd rc-backend && npm test`(= `node --test 'test/**/*.test.mjs'`)。**786件**(2026-08-09 の実測、失敗0、`# fail 0` / 6.4 秒)。★`node --test test/` は Node v22.14 で落ちる —— `npm test` を使う事 |
 > | ★検査の**数え方** | `grep -rhcE "^\s*(final )?func test[A-Za-z0-9_]*\(" <dir> \| paste -sd+ - \| bc`(file 毎の件数を足す)。**`sort \| uniq` を挟むと 389 に化ける** —— 別の file に同名の検査が在ると潰れる。log 側の突き合わせは `Test Case '-[…]' passed` を `sort -u \| wc -l` |
-> | **GUI を開かない** | Simulator.app も Xcode も**起動しない**。`xcrun simctl` の headless だけ。画面の確認は `xcrun simctl io … screenshot` |
+> | ★実機に載っている版 | **機械が突き合わせる**(2026-08-10)。`build.sh` が `CFBundleVersion` へ **ios/ を触った commit の通算数**を刻み、渡米前検査の鎖⑧が電話の `bundleVersion` と照合する。**`ios/` を触る commit の後は焼き直すまで赤い**(仕様。直し方は `bash ios/tools/build.sh` の1手)。期待値は `bash ios/tools/build.sh --print-build-num` に**訊く** —— 検査側で `git rev-list --count` を書き直さない事(対照 BN が其れを守っている)。★汚れた木で焼いた物は此の番号では見分けられない = 画面の rev(DESIGN §8-8)は**まだ要る** |
+| **GUI を開かない** | Simulator.app も Xcode も**起動しない**。`xcrun simctl` の headless だけ。画面の確認は `xcrun simctl io … screenshot` |
 > | SourceKit の赤 | 「Cannot find type X in scope」「No such module 'XCTest'」は**単一ファイル索引の副作用で偽**。本物の判定は上のビルド1本 |
 > | 鍵 | iOS Keychain のみ。ログにも fixture にも診断行にも出さない。**既定のサーバ名を Swift に焼かない**(placeholder もコメントも不可) |
 > | 設計の正本 | `.harness/spec-native-shell-2026-08-05.md`(器の決定・スコープ)+ `DESIGN.md` §2.51(選択 card の2つの裁定) |
