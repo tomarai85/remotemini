@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/test/wire-vocabulary-agreement.test.mjs rc-backend/src/server.mjs rc-backend/src/wire.mjs ios/Sources/Core/ResultDisplay.swift ios/Sources/Core/SessionsListingFixture.swift
+# controls-for: rc-backend/test/wire-vocabulary-agreement.test.mjs rc-backend/src/server.mjs rc-backend/src/wire.mjs rc-backend/src/blocked.mjs ios/Sources/Core/ResultDisplay.swift ios/Sources/Core/SessionsListingFixture.swift ios/Tests/Core/PollModelsTests.swift
 #
 # 何を守る対照か —— **線に出る語彙の「値」が両側で一致する事**。
 # 姉家族の `wire-key-agreement-controls.sh` が守るのは**鍵名**で、此処は其の値の側。
@@ -33,8 +33,12 @@ SERVER="rc-backend/src/server.mjs"
 WIRE="rc-backend/src/wire.mjs"
 RESULTD="ios/Sources/Core/ResultDisplay.swift"
 LISTFIX="ios/Sources/Core/SessionsListingFixture.swift"
+# S8-28。此処だけ `ios/Tests/**` を読む —— 検査の中に在る「サーバが送りうる理由の全部」
+# という主張を、サーバの正本(`src/blocked.mjs` の `WIRE_REASONS`)と突き合わせる為。
+BLOCKED="rc-backend/src/blocked.mjs"
+POLLTESTS="ios/Tests/Core/PollModelsTests.swift"
 
-for f in "$TESTF" "$SERVER" "$WIRE" "$RESULTD" "$LISTFIX" \
+for f in "$TESTF" "$SERVER" "$WIRE" "$RESULTD" "$LISTFIX" "$BLOCKED" "$POLLTESTS" \
          rc-backend/test/subtree.mjs rc-backend/test/swiftsrc.mjs rc-backend/test/jssrc.mjs \
          DESIGN.md; do
     if [ ! -f "$ROOT/$f" ]; then
@@ -51,6 +55,10 @@ done
 # Sources は**丸ごと**。検査は木を歩いて語彙を数え上げるので、選んで写すと
 # 「写した物にしか語が無い木」になり、走査の穴が見えなくなる。
 /bin/cp -R "$ROOT/ios/Sources" "$WORK/ios/Sources"
+# Tests 側は**名指しの1本だけ**(S8-28)。此の検査が読むのが其の1本だけで、丸ごと写すと
+# 「検査の木が在る」事を測っているのか「あの主張が在る」事を測っているのか読めなくなる。
+/bin/mkdir -p "$WORK/ios/Tests/Core"
+/bin/cp "$ROOT/$POLLTESTS" "$WORK/$POLLTESTS"
 # 根の目印。`subtree.mjs` は此の1本の実在だけで「親が本物か」を決める。
 /bin/cp "$ROOT/DESIGN.md" "$WORK/DESIGN.md"
 
@@ -280,6 +288,42 @@ probe "電話の RecoveryCode を切り出す錨が外れる" "$TESTF" \
     "復旧語彙の**値**"
 
 echo
+echo "== 送れない理由の8語が、片側でだけ動く(S8-28) =="
+# 此の4本が守るのは**電話の検査が名乗っている主張**の側。
+# `testEveryBlockedReasonTheServerCanSendDecodes` は名前で「サーバが送りうる理由の
+# 全部が復号できる」と言っているが、其の「全部」は手で並べた8語の写しでしかない。
+# 写しが痩せても太っても Swift 側は緑のまま —— 名前だけが嘘になる。
+
+# ⑬ 写しが痩せる。サーバが出しうる語のうち1つを、電話側が復号確認しなくなる形。
+probe "電話の写しから理由が1語落ちる" "$POLLTESTS" \
+    '"cwd-mismatch", "pane-gone", "panes-unreadable", "tmux-unavailable",' \
+    '"cwd-mismatch", "pane-gone", "panes-unreadable",' \
+    "送れない理由"
+
+# ⑭ 写しが太る。サーバが一度も出さない語で復号を確かめる形 = 測っているつもりの空振り。
+#    ⑬と向きが逆なだけに見えるが、痩せは「漏れ」、太りは「幻の安心」で症状が違う。
+probe "電話の写しにサーバが出さない理由が生える" "$POLLTESTS" \
+    '"cwd-mismatch", "pane-gone", "panes-unreadable", "tmux-unavailable",' \
+    '"cwd-mismatch", "pane-gone", "panes-unreadable", "tmux-unavailable", "pane-dead",' \
+    "送れない理由"
+
+# ⑮ 錨にした関数名が変わる/消える。採れる語が0になり、**空を一致と読む**道が開く。
+#    検査側の床(`length >= 6`)が此処を塞いでいるかを見る —— 塞いでいなければ
+#    「あの主張を測っている」ではなく「主張が在れば測る」になる。
+probe "電話側の錨にした関数が改名される" "$POLLTESTS" \
+    'func testEveryBlockedReasonTheServerCanSendDecodes() throws {' \
+    'func testEveryBlockedReasonTheServerCanSendDecodesRenamed() throws {' \
+    "送れない理由"
+
+# ⑯ サーバ側が語を減らす。電話の写しが古い側に取り残される形で、
+#    ⑬⑭と違って**製品の正本が動いた**時に鳴るか。
+probe "サーバの WIRE_REASONS から語が1つ消える" "$BLOCKED" \
+    '  "cwd-mismatch",
+  "pane-gone",' \
+    '  "cwd-mismatch",' \
+    "送れない理由"
+
+echo
 echo "== 正しい変更は赤にしない(陰性対照) =="
 
 probe_green_plant() {
@@ -375,6 +419,47 @@ fi
 restore_from_root "$SERVER"
 restore_from_root "$RESULTD"
 
+# Ⓕ ★背骨その3(S8-28)。送れない理由の綴りを**両側そろえて** `pane-gone` →
+#   `pane-vanished` へ。⑬〜⑯ の相方 —— 片側だけ動かした木が赤い事を先に押さえて
+#   いないと、此処の緑は「両側そろっている」でも「誰も此の8語を見ていない」でも
+#   同じ顔をする。理由札は今日の綴りに固定してよい物ではない(`pane-gone` 自体、
+#   `resolveSessionPane` が返さない名前をサーバが後から付けた語)。
+/usr/bin/python3 - "$WORK" <<'PYEOF'
+import io, os, sys
+work = sys.argv[1]
+edits = {
+    "rc-backend/src/blocked.mjs": [
+        ('  "cwd-mismatch",\n  "pane-gone",\n', '  "cwd-mismatch",\n  "pane-vanished",\n'),
+    ],
+    "ios/Tests/Core/PollModelsTests.swift": [
+        ('"cwd-mismatch", "pane-gone", "panes-unreadable", "tmux-unavailable",',
+         '"cwd-mismatch", "pane-vanished", "panes-unreadable", "tmux-unavailable",'),
+    ],
+}
+for rel, pairs in edits.items():
+    p = os.path.join(work, rel)
+    s = io.open(p, encoding="utf-8").read()
+    for frm, to in pairs:
+        if s.count(frm) != 1:
+            sys.stderr.write("anchor not unique: %s\n" % rel)
+            sys.exit(3)
+        s = s.replace(frm, to)
+    io.open(p, "w", encoding="utf-8").write(s)
+PYEOF
+if [ $? -ne 0 ]; then
+    echo "  UNMEASURED  送れない理由を両側そろえて改名  —— 錨が1箇所に定まらない"
+    UNMEASURED=$((UNMEASURED + 1))
+elif run_suite; then
+    echo "  PASS  送れない理由を両側そろえて改名するのは緑のまま"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL  そろえた改名を赤にした = 理由札を今日の綴りに固定している(追認機)"
+    FAIL=$((FAIL + 1))
+    /usr/bin/tail -12 "$WORK/out.txt"
+fi
+restore_from_root "$BLOCKED"
+restore_from_root "$POLLTESTS"
+
 # Ⓒ 注釈の中の語は**主張ではない**。`swiftsrc.mjs` の注釈落としが効いているかを、
 #   Swift 側から見る(此処が赤い検査は、説明を書いた瞬間に赤くなる = 誰も説明を書かなくなる)。
 probe_green_plant "Swift の注釈に語を書いても緑" "ios/Sources/Core/InventedForControlNote.swift" \
@@ -425,7 +510,8 @@ fi
 
 echo
 echo "== 名指しの入力が消えたら赤 =="
-# 此の検査が**名前で開いている**2本だけを見る(`server.mjs` と `ResultDisplay.swift`)。
+# 此の検査が**名前で開いている**3本だけを見る
+# (`server.mjs` / `ResultDisplay.swift` / `PollModelsTests.swift`。S8-28 で3本目が増えた)。
 # 他の file は木を歩いて拾われる側なので、消えても「語彙が減る」だけで、
 # 此の検査の仕事(両側の一致)ではない —— 其処まで赤にすると
 # 「file が消えた」を「語彙がズレた」と名乗る事になる。
@@ -435,7 +521,9 @@ echo "== 名指しの入力が消えたら赤 =="
 #   同じ綴りは `HistoryFixture` / `SignOutNoticeFixture` / `KeyEntryProbeFixture` にも
 #   在り、1本消しても語は残る。**検査ではなく対照の前提が誤っていた**ので、
 #   検査を変えずに此処から外した。①が同じ file を別の形(語の発明)で見ている。
-for gone in "$SERVER" "$RESULTD"; do
+#   ★`PollModelsTests.swift` は①の轍を踏んでいない —— 此の1本が消えると
+#   `requireOutside` の名簿から落ちるので、三値の契約(親が健在なら赤)がそのまま鳴る。
+for gone in "$SERVER" "$RESULTD" "$POLLTESTS"; do
     /bin/mv "$WORK/$gone" "$WORK/$gone.hidden"
     if run_suite; then
         echo "  FAIL  $gone が消えても緑"
