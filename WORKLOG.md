@@ -11740,3 +11740,27 @@ poll の封筒5件(`PollResponse` / `PollDisplay` / `MessageItem` / `GapItem` + 
 **残り(難所ではなく予定)。** 9件は全部「鍵名を決める場所が `src/server.mjs` の中に在り、
 あの file は import した瞬間 listen する」の1文で説明が付く。phase 2 = `healthzBody`、
 phase 3 = 誤り応答4本。同じ手が効く。
+
+### #52b S8-26 phase 2 —— `/healthz` を突き合わせた。塞いだのは1件だが、決めたのは**規則**(2026-08-09)
+
+**組 19 → 20、未突合 9 → 8。** 手は phase 1 と同一(`healthzBody` を `src/wire.mjs` へ出す)。
+書く価値が在るのは**この組だけ `mode` を書かなかった**理由の方。
+
+`/healthz` は認証の**外**に出る唯一の応答で、鍵を掛けない代わりに
+「返す物を秘密でない値だけに絞る」という約束で釣り合わせてある(DESIGN §7-P)。
+ここに `serverOnly` を1つでも認めれば、その約束は**「電話が読まない鍵なら足してよい」**に化ける。
+だから完全一致にした —— 認証の内側の5組(`phone-subset`)とは既定を変えている。
+
+**規則が効くかは、危ない鍵を実際に植てて見た。** 対照 ㉟ は `healthzBody` に `sessions: 3` を足す
+(「今日は何本の会話を開いていたか」= v1 で最も足したくなりそうな値)。赤が出た。
+併せて ㉞(電話が `uptime` を手放す)/ ㊱(ハンドラが直書きへ戻る)も赤を先に見てある。
+
+| 計器 | 前 | 後 |
+|---|---|---|
+| `wire-key-agreement.test.mjs` の組 | 19組 / 未突合 9型 | **20組 / 未突合 8型** |
+| backend 単体 | 777 pass | **777 pass / fail 0** |
+| `test/e2e-local.mjs` | pass 269 | **pass 269 / fail 0**(`/healthz` は鍵無し・鍵付き・非 GET の 404 まで実際に叩く) |
+| `.harness/wire-key-agreement-controls.sh` | PASS 51 / FAIL 0 / 未測定 0 | **PASS 55 / FAIL 0 / 未測定 0** |
+
+**次(phase 3)は同じ手が効くと言い切れない。** 誤り応答4本は `json()` が組むので、
+封筒の切り出し方がここまでと違う。効くかどうかは測ってから書く。

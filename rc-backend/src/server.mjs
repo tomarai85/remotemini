@@ -14,7 +14,7 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync } from "node:child_process";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow } from "./sessions.mjs";
-import { gapItem, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho } from "./wire.mjs";
+import { gapItem, healthzBody, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho } from "./wire.mjs";
 import { JsonlTail, formatPollCursor, pollDecision, resumeDecision } from "./tail.mjs";
 import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
@@ -1030,12 +1030,11 @@ const server = createServer(async (req, res) => {
     //   (件数は「今日は何本開いていたか」を外へ漏らす)。
     //   tailnet + `tailscale serve` の内側なので公開面でもない。
     if (req.method === "GET" && path === "/healthz") {
-      return json(res, 200, {
-        ok: true,
+      return json(res, 200, healthzBody({
         pid: process.pid,
         uptime: Math.floor((Date.now() - STARTED_AT) / 1000),
         version: DEPLOYED_REV,
-      });
+      }));
     }
 
     // ★表に無いパスはここで落ちる = 総当たりの静的ファイルサーバを作らない。

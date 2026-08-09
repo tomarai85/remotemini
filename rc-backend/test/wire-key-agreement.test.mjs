@@ -168,6 +168,9 @@ const CASES = {
     [{ entries: ENTRIES, truncated: true }],
     [{ entries: [], truncated: false }],
   ],
+  // 枝が1本しか無い唯一の builder。分岐が無い(`ok` は定数、残り3つは受けた値をそのまま)
+  // ので、枝を増やしても出る鍵は1組しか無い —— ②が「原文に在るのに出ない鍵」で裏を取る。
+  healthzBody: [[{ pid: 4242, uptime: 61, version: "abc1234" }]],
 };
 
 /**
@@ -199,6 +202,7 @@ const MODULE_OF = {
   pollBodyTmux: ["wire", "src/wire.mjs", "export function pollBodyTmux({ items, screen, cursor, more }) {"],
   pollBodyWorker: ["wire", "src/wire.mjs", "export function pollBodyWorker({ items, queued, cursor, more }) {"],
   historyBody: ["wire", "src/wire.mjs", "export function historyBody({ entries, truncated }) {"],
+  healthzBody: ["wire", "src/wire.mjs", "export function healthzBody({ pid, uptime, version }) {"],
 };
 const MODULES = { view, blocked, wire, sessions, registry };
 
@@ -467,6 +471,11 @@ const PAIRS = [
   { swift: "HistoryResponse", builders: ["historyBody"], at: "" },
   { swift: "HistoryEntry", builders: ["withWho"], at: "" },
   { swift: "HistoryEntry.EntryDisplay", builders: ["withWho"], at: "display" },
+  // ---- 生存信号(2026-08-09 / 監査 S8-26 の続き)
+  // **完全一致**(`mode` 無し)。認証の外へ出る唯一の応答なので、電話が読まない鍵が
+  // サーバ側に生える事を許さない —— `serverOnly` を1つでも認めた瞬間、
+  // 「電話は読まないから」で秘密を足せる形になる。増えたら赤、が此処では正しい既定。
+  { swift: "HealthzClient.Wire", builders: ["healthzBody"], at: "" },
 ];
 
 const IGNORED = {};
@@ -481,11 +490,12 @@ const IGNORED = {};
  *   その file は import した瞬間 listen するので単体から呼べない。静的に読めば触れるが、
  *   それは「実行して出た鍵」ではなく別種の測定なので、混ぜずに空けてある。
  *
- * ★塞ぎ方は2度実演済み —— 封筒を `src/wire.mjs` の純関数へ切り出して上の組へ移す。
+ * ★塞ぎ方は3度実演済み —— 封筒を `src/wire.mjs` の純関数へ切り出して上の組へ移す。
  *   一覧の5本(SessionsResponse / OuterDisplay / PaneFault / SessionRow / RowDisplay)が
  *   2026-08-08(S8-25)、poll と履歴の8本(PollResponse / PollDisplay / MessageItem /
- *   GapItem + DisplayBox / HistoryResponse / HistoryEntry + EntryDisplay)が
- *   2026-08-09(S8-26)。残りも同じ手が効く。「難しいから」ではなく「まだやっていない」。
+ *   GapItem + DisplayBox / HistoryResponse / HistoryEntry + EntryDisplay)と
+ *   生存信号の1本(HealthzClient.Wire)が 2026-08-09(S8-26)。
+ *   残りも同じ手が効く。「難しいから」ではなく「まだやっていない」。
  */
 const UNPAIRED = {
   ScreenBody: "poll の `screen` の**中身**。封筒(`pollBodyTmux`)は受け取った物をそのまま載せるだけで、"
@@ -494,7 +504,6 @@ const UNPAIRED = {
   "InterruptClient.Envelope": "割り込みの誤り応答の封筒。`json()` が組む",
   "ChoiceClient.Envelope": "打鍵の誤り応答の封筒。上の2つに `digest` を足した形で、やはり `json()` が組む",
   RecoveryCode: "誤り本文の `code` だけを読む小さな型。builder が作る物ではない",
-  "HealthzClient.Wire": "`/healthz` の本文。view の builder を1つも通らない",
   "KeychainCredentialStore.Wire": "電話の中の保存形式(keychain)。線には出ない",
   "UserDefaultsDraftStore.StoredDraft": "電話の中の保存形式(打ちかけ)。線には出ない",
   SignOutNotice: "鍵切れの報せを画面間で渡す入れ物。電話の中で完結し、線には出ない",
@@ -566,7 +575,7 @@ test("側B: Swift の走査が Decodable 型を取りこぼしていない", { s
 
 // --- ④ 本体: 鍵名が一致する ---------------------------------------------------
 
-test("19組の鍵名が、サーバの実出力と一字一句一致する", { skip }, () => {
+test("20組の鍵名が、サーバの実出力と一字一句一致する", { skip }, () => {
   const t = phoneTypes();
   const drift = {};
   for (const p of PAIRS) {
@@ -605,7 +614,7 @@ test("走査が見付けた鍵付き型は、突き合わせたか理由を書�
   assert.deepEqual(undeclared, [], "新しい Decodable 型がどちらの箱にも入っていない");
   assert.deepEqual(phantom, [], "宣言に在る型が Swift から消えた(改名なら宣言も直す)");
   assert.equal(found.length, declared.size);
-  assert.ok(paired.length >= 19 && unpaired.length > 0);
+  assert.ok(paired.length >= 20 && unpaired.length > 0);
   for (const [k, v] of Object.entries(UNPAIRED)) assert.ok(v.length >= 10, `${k} の理由が短すぎる`);
 });
 
@@ -630,11 +639,15 @@ test("ハンドラは切り出した builder を通って封筒を組んでい�
     // S8-26 で切り出した6本。`.map(withWho)` だけ呼び方が違うのは、これがハンドラ側で
     // **束に対して**掛かる為(封筒の引数として渡る形が本番の姿)。
     "historyBody({", "messageItem({", "pollBodyTmux({", "pollBodyWorker({", "gapItem(", ".map(withWho)",
+    "healthzBody({",
   ]) {
     assert.ok(src.includes(call), `src/server.mjs が ${call} を通っていない = 封筒が直書きへ戻り、上の照合が飾りになった`);
   }
   assert.match(src, /json\(res,\s*200,\s*sessionsBody\(/, "`/api/sessions` の 200 が `sessionsBody` を通っていない");
   assert.match(src, /json\(res,\s*200,\s*historyBody\(/, "`/history` の 200 が `historyBody` を通っていない");
+  // ★`/healthz` は認証の**外**。ここが直書きへ戻ると、鍵を1本足す改修が
+  //   電話側の照合を1つも通らずに認証の外へ出る道になる。
+  assert.match(src, /json\(res,\s*200,\s*healthzBody\(/, "`/healthz` の 200 が `healthzBody` を通っていない");
 });
 
 test("`phone-subset` の宣言が、緩める言い訳になっていない", () => {
