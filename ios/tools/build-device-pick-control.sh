@@ -1,5 +1,9 @@
 #!/bin/bash
 # controls-for: ios/tools/build.sh
+# controls-for: ios/tools/fixtures/devicectl-list-devices.json
+#   ↑ 2つ目は道具ではなく**入力**。此の対照は fixture の中身に判定を預けているので、
+#     fixture だけを触った commit でも此処が回らないと、対照は「読んでいる物が
+#     変わったのに緑のまま」になる(門が名指しで注記を出したので足した、2026-08-10)。
 #
 # `build.sh` が **どの電話へ入れるか決める所**(`resolve_device`)だけを撃つ。
 #
