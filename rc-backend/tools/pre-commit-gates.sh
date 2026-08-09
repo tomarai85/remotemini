@@ -82,6 +82,20 @@ bash "$ROOT/rc-backend/tools/doc-linerefs-gate.sh" || exit $?
 #   非ゼロ(未登録 1 / 未測定 2)はどちらも止める。降ろすなら RC_CTLREG_OK に理由を書く。
 bash "$ROOT/rc-backend/tools/controls-registration-gate.sh" || exit $?
 
+# ★2026-08-09 追加: 受け入れ表・証跡が**実在しない検査名**を引いていたら止める。
+#   本体 = rc-backend/tools/cited-testnames-gate.sh
+#   対照 = rc-backend/test/cited-testnames-gate-controls.sh(7 本)
+#   経緯: `.harness/dod-sprint-6.5.sh` は「切断を跨げるか」を検査名2つで名指ししていた。
+#   検査が改名され(否定対照も1本→4本に増えていた)、表だけが古い名前を持ったまま
+#   **製品の赤**を出し続けた —— 挙動は完全に覆われているのに「切断を跨げていない」と
+#   読める形で。計器の腐りが製品の欠陥に化けると、直す先を間違えるか、赤に慣れる。
+#   ★これは `doc-linerefs-gate` が止めた病の**次の段**である。あちらの指示は
+#     「行番号でなく関数名で引け」だった。逃げた先の関数名にも見張りが要る。
+#   0.2 秒。非ゼロ(腐り 1 / 未測定 2)はどちらも止める。
+#   ★上2本と同じ理由で**無条件・下の絞り込みより前**に呼ぶ。証跡の `.md` は
+#     `.harness/evidence-*/` に居て下の regex に届かない = 絞り込みの後だと死ぬ。
+bash "$ROOT/rc-backend/tools/cited-testnames-gate.sh" || exit $?
+
 if ! echo "$staged" | grep -qE '^(rc-backend/(src|test|tools)|ios/(Sources|Tests|tools))/|^ios/project\.yml$|^\.harness/[^/]*\.sh$'; then
     # ★2026-08-06: regex が外れても**まだ即断しない**。対照の見張り先の一覧を
     #   ここで推測するのをやめ、**持っている側に聞く**。

@@ -167,12 +167,29 @@ miss=""
 for f in Core/HistoryClient.swift Core/MergeHistory.swift Core/SendClient.swift; do
     [ -f "$SRC/$f" ] || miss="$miss $f"
 done
+# ★錨は**具体型の綴りでなく性質**で置く(2026-08-09 に踏んだ)。元は
+#   `grep -q 'SendClient(' ConversationViewModel.swift` だった。その後 client は
+#   `Core/ConversationClients.swift` の注入容器へ移り、ViewModel は protocol
+#   (`MessageSending`)に依存する形になった —— 設計としては正しい改修なのに、
+#   此処だけが取り残されて **「打てない」という製品の赤**を出し続けた。
+#   打てる事の性質は3つ: ViewModel が送り手を保持し / 実際に呼び / 容器が本物を挿す。
+VM="$SRC/Screens/Conversation/ConversationViewModel.swift"
+CC="$SRC/Core/ConversationClients.swift"
 if [ -n "$miss" ]; then
     row fail "2-a. §5-2 読める・打てる(実装経路)" "無い実装:$miss"
-elif ! grep -q 'SendClient(' "$SRC/Screens/Conversation/ConversationViewModel.swift" 2>/dev/null; then
-    row fail "2-a. §5-2 読める・打てる(実装経路)" "ConversationViewModel が SendClient を組み込んでいない = 打てない"
+elif [ ! -f "$VM" ] || [ ! -f "$CC" ]; then
+    # 空振り防止。file が無いのを「綴りが無い」と読むと、此処は永久に赤になる。
+    row skip "2-a. §5-2 読める・打てる(実装経路)" "ConversationViewModel.swift か ConversationClients.swift が無い = 測れていない"
+elif ! grep -q 'MessageSending' "$VM"; then
+    row fail "2-a. §5-2 読める・打てる(実装経路)" "ViewModel が送り手(MessageSending)を保持していない = 打てない"
+elif ! grep -qE '\.send\(' "$VM"; then
+    row fail "2-a. §5-2 読める・打てる(実装経路)" "ViewModel が送り手を保持するだけで呼んでいない = 打てない"
+elif ! grep -q 'send: SendClient()' "$CC"; then
+    # ★`SendClient()` だけを錨にすると同じ file の 7 行目の**注釈**に当たり、47 行目の
+    #   配線を潰しても緑のままだった(2026-08-09、対照が捕まえた)。錨は配線の綴りへ絞る。
+    row fail "2-a. §5-2 読める・打てる(実装経路)" "注入容器が本物の SendClient を挿していない = 打てない"
 else
-    row pass "2-a. §5-2 読める・打てる(実装経路)" "取得・併合・送信の3つが在り、ViewModel が送信を持っている"
+    row pass "2-a. §5-2 読める・打てる(実装経路)" "取得・併合・送信の3つが在り、ViewModel が送り手を保持して呼び、容器が本物を挿している"
 fi
 check_names "2-b. §5-2 読める・打てる(検査)" "3 役の表示・以前を読む・打ち切り印の在無" \
     testThreeRolesShowsAllThreeRolesAndTheLoadEarlierButton \
@@ -193,9 +210,9 @@ check_names "5-a. §5-5 切断を跨ぐ(机の上の検査)" "欠落の理由9�
     testAllNineKnownGapWhyValuesDecode \
     testGapWithNoticeDrawsTheNoticeAndAlwaysTriggersARefetch \
     testAutoResyncFiresAtMostOnceUntilAReadableResponseEndsTheEpisodeNegativeControl \
-    testBackgroundToActiveEdgeTriggersForegroundResume \
+    testARealBackgroundRoundTripResumesExactlyOnce \
     testHandleForegroundResumeRefetchesHistoryAndTheRefetchLandsInHistory \
-    testInactiveToActiveDoesNotTriggerForegroundResumeNegativeControl
+    testAPeekThatNeverReachesTheBackgroundIsNotAResumeNegativeControl
 
 # 5-b: Day 7 の3脚のうち、サーバ側(rc-backend 再起動を挟む)は閉じている。
 REC="$ROOT/rc-backend/test/restart-epoch-controls.sh"
