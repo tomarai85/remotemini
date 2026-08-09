@@ -27,7 +27,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { REPO, requireOutside } from "./subtree.mjs";
+// ★`ROOT` = rc-backend、`REPO` = その親。**木の中を読む時に `REPO` を経由しない**
+//   (2026-08-09、S8-29 で実際に踏んだ)。`join(REPO, "rc-backend", …)` は完全な木では
+//   `join(ROOT, …)` と同じ物を指すので手元では永遠に緑だが、`mutation-controls.py` が
+//   起こす **rc-backend だけの写し**には親が無く、同じ式が存在しない path になる。
+//   その2本が写しで throw して対照1(無変異の木は緑)が落ち、197件の変異走行が
+//   1件も起動しなくなっていた。木の外(`ios/**`)だけが `REPO` + `requireOutside` の領分。
+import { ROOT, REPO, requireOutside } from "./subtree.mjs";
 import { stripSwiftComments } from "./swiftsrc.mjs";
 import { stripComments, blockAfter } from "./jssrc.mjs";
 import * as view from "../src/view.mjs";
@@ -455,7 +461,7 @@ test("側A: builder は全部呼べて、どれも鍵を1つ以上出す(空の�
 test("側A: builder の原文に在る鍵位置の名前は、実行で全部出ている(狭い入力で緑にしない)", () => {
   const short = {};
   for (const [name, [mod, path, anchor]] of Object.entries(MODULE_OF)) {
-    const src = readFileSync(join(REPO, "rc-backend", path), "utf8");
+    const src = readFileSync(join(ROOT, path), "utf8");
     const marker = anchor ?? `export function ${name}(`;
     const body = blockAfter(src, marker);
     assert.ok(body, `${path} に ${marker} が無い(書き方が変わったら目印も直す)`);
@@ -548,7 +554,7 @@ test("例外表は空のまま(片側にしか無い鍵を1つも許していな
  * 実行では捕まえられない —— server.mjs は import した瞬間 listen するので。だから原文に錨を打つ。
  */
 test("ハンドラは切り出した builder を通って封筒を組んでいる(直書きへ戻っていない)", () => {
-  const src = stripComments(readFileSync(join(REPO, "rc-backend", "src", "server.mjs"), "utf8"));
+  const src = stripComments(readFileSync(join(ROOT, "src", "server.mjs"), "utf8"));
   for (const call of ["sessionsBody({", "sessionRow(", "unreadableRow({"]) {
     assert.ok(src.includes(call), `src/server.mjs が ${call} を通っていない = 封筒が直書きへ戻り、上の照合が飾りになった`);
   }
