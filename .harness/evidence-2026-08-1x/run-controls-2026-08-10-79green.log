@@ -1,0 +1,82 @@
+GREEN  design-supersede-world-controls.sh   0s  design-supersede world controls: pass=10 fail=0
+GREEN  mutation-run-live-controls.sh       12s  MUTATION-RUN-LIVE-CONTROLS: pass=32 fail=0 unmeasured=0
+GREEN  mutation-target-controls.sh          1s  MUTATION-TARGET-CONTROLS: pass=15 fail=0
+GREEN  orphan-instrument-scan-controls.sh   1s  --- 合計: PASS 14 / FAIL 0 ---
+GREEN  pii-controls.sh                      6s  --- 合計: PASS 22 / FAIL 0 ---
+GREEN  prove-control-controls.sh            1s  --- 合計: PASS 15 / FAIL 0 ---
+GREEN  prove-all-scope-controls.sh          1s  --- 合計: PASS 8 / FAIL 0 ---
+GREEN  verify-script-controls.sh            1s  --- 合計: PASS 10 / FAIL 0 ---
+GREEN  deploy-dirt-controls.sh              1s  DEPLOY-DIRT-CONTROLS: pass=10 fail=0
+GREEN  session-guard-controls.sh            0s  植えた物は残っていない(確認済み): /Users/tomtim/Infra/mobile-work/ios/Sources/__session_guard_control_probe.swift
+GREEN  wire-shape-controls.sh               0s  PASS 20 / FAIL 0
+GREEN  no-linerefs-controls.sh              2s  --- 合計: PASS 11 / FAIL 0 ---
+GREEN  disposable-session-controls.sh       1s  PASS 16 / FAIL 0
+GREEN  child-reaping-controls.sh           21s  CHILD-REAPING-CONTROLS: pass=3 fail=0
+GREEN  health-observer-controls.sh         17s  HEALTH-OBSERVER-CONTROLS: pass=116 fail=0
+GREEN  example-artifacts-controls.sh        0s  EXAMPLE-ARTIFACTS-CONTROLS: pass=21 fail=0
+GREEN  gui-run-controls.sh                  7s  GUI-RUN-CONTROLS: pass=9 fail=0
+GREEN  fork-check-controls.sh               1s  FORK-CHECK-CONTROLS: pass=10 fail=0
+GREEN  resume-cwd-controls.sh               2s  RESUME-CWD-CONTROLS: pass=17 fail=0
+GREEN  interrupt-honesty-control.sh         2s  --- 合計: PASS 15 / FAIL 0 / UNMEASURED 0 ---
+GREEN  limit-lifted-controls.sh             0s  LIMIT-LIFTED-CONTROLS: pass=10 fail=0
+GREEN  post-gate-batch-controls.sh          1s  post-gate-batch 門: OK=9 NG=0
+GREEN  rc-backend-launch-check.sh           5s  全部 OK
+GREEN  serve-decision-check.sh              0s  全ケース OK
+GREEN  remote-mini-root-controls.sh         9s  green=24 red=0
+GREEN  mutation-verdict-controls.sh       195s  VERDICT-CONTROLS: pass=27 fail=0
+GREEN  mutation-timeout-controls.sh         5s  全ケース OK(固まった脚は緑にも赤にも丸まらず、走行は1件だけ落として続く)
+GREEN  mutation-freeze-controls.sh        188s  FREEZE-CONTROLS: pass=6 fail=0
+GREEN  coldboot-chain-controls.sh           4s  --- 合計: PASS 17 / FAIL 0 ---
+GREEN  departure-survivability-controls.sh   9s  departure-survivability-controls: 全部 OK
+GREEN  commit-suite-gate-controls.sh        0s  --- 合計: PASS 15 / FAIL 0 ---
+GREEN  staged-controls-gate-controls.sh     3s  --- 合計: PASS 62 / FAIL 0 ---
+GREEN  warn-ledger-controls.sh              0s  --- 合計: PASS 16 / FAIL 0 ---
+GREEN  copied-tree-controls.sh             20s  COPIED-TREE-CONTROLS: pass=4 fail=0
+GREEN  run-controls-controls.sh            28s  --- 合計: PASS 37 / FAIL 0 ---
+GREEN  port-coverage-controls.sh            1s  --- 合計: PASS 36 / FAIL 0 ---
+GREEN  deploy-to-edith-controls.sh          0s  --- 合計: PASS 15 / FAIL 0 ---
+GREEN  deploy-to-edith-behavior-controls.sh   6s  --- 合計: PASS 34 / FAIL 0 ---
+GREEN  rsync-exclude-controls.sh            0s      ★edith 側の rsync は**ここでは測っていない**(別個体)= RC_RSYNC_EXCL_WHERE=edith
+GREEN  ui-fixture-absence-control.sh        9s  GREEN: Release=0件 / Debug(錨)=2件
+GREEN  ui-fixture-behavior-control.sh       7s  GREEN: Release + RC_UI_FIXTURE=list-empty は通常経路のみを通った(console: /Users/tomtim/Infra/mobile-work/ios/build/console-fixture-behavior.log)
+GREEN  verify-log-controls.sh               0s  --- 合計: PASS 19 / FAIL 0 ---
+GREEN  sim-log-summary-control.sh           0s  PASS 12 / FAIL 0
+GREEN  conversation-ui-control.sh         251s  --- 合計: PASS 4 / FAIL 0 / UNMEASURED 0 ---
+GREEN  list-return-refresh-control.sh     427s  --- 合計: PASS 6 / FAIL 0 / UNMEASURED 0 ---
+GREEN  inflight-sentence-control.sh       120s  --- 合計: PASS 6 / FAIL 0 / UNMEASURED 0 ---
+GREEN  signout-notice-control.sh          526s  --- 合計: PASS 13 / FAIL 0 / UNMEASURED 0 ---
+GREEN  bar-material-control.sh              1s  --- 合計: PASS 4 / FAIL 0 / UNMEASURED 0 ---
+GREEN  live-send-check-control.sh           0s  LIVE-SEND-VERDICT-CONTROLS: pass=23 fail=0
+GREEN  live-interrupt-check-control.sh      0s  LIVE-INTERRUPT-VERDICT-CONTROLS: pass=29 fail=0
+GREEN  build-device-pick-control.sh         1s  合計 OK=10 NG=0
+GREEN  dod-sprint-3-controls.sh             2s  === 集計: 緑=15 赤=0 未測定=0 (対照 13 本) ===
+GREEN  dod-sprint-4-controls.sh            12s  DOD-SPRINT-4-CONTROLS: pass=34 fail=0 unmeasured=0
+GREEN  doc-linerefs-gate-controls.sh        2s  DOC-LINEREFS-GATE-CONTROLS: pass=6 fail=0
+GREEN  pre-commit-gates-controls.sh         1s  PRE-COMMIT-GATES-CONTROLS: pass=15 fail=0
+GREEN  install-hooks-controls.sh            1s  INSTALL-HOOKS-CONTROLS: pass=11 fail=0
+GREEN  cited-testnames-gate-controls.sh     0s  CITED-TESTNAMES-GATE-CONTROLS: pass=7 fail=0
+GREEN  vacuous-gate-controls.sh             0s  VACUOUS-GATE-CONTROLS: pass=11 fail=0
+GREEN  vacuous-scan-controls.sh             1s  VACUOUS-SCAN-CONTROLS: pass=10 fail=0
+GREEN  port-coverage-gate-controls.sh       0s  PORT-COVERAGE-GATE-CONTROLS: pass=10 fail=0
+GREEN  test-discovery-controls.sh           0s  TEST-DISCOVERY-CONTROLS: pass=5 fail=0
+GREEN  controls-registration-gate-controls.sh   1s  --- 合計: PASS 9 / FAIL 0 ---
+GREEN  phone-window-judgment-controls.sh    0s    == PASS 25 / FAIL 0
+GREEN  poll-spend-controls.sh               0s  PASS  本物は緑、壊すと赤(負の対照が効いている)。
+GREEN  restart-epoch-controls.sh            1s  PASS  本物は緑、連番に戻すと赤(負の対照が効いている)。
+GREEN  verify-state-judgment-controls.sh    1s    == PASS 23 / FAIL 0
+GREEN  live-interrupt-wording-controls.sh   0s  == PASS 11 / FAIL 0
+GREEN  live-shell-key-controls.sh           0s  == PASS 40 / FAIL 0
+GREEN  dod-sprint-6-recovery-controls.sh    0s  == PASS 19 / FAIL 0
+GREEN  dod-sprint-6-controls.sh           266s  == PASS 13 / FAIL 0 / UNMEASURED 0
+GREEN  dod-sprint-6.5-controls.sh           7s    作業木は走らせる前と同一(git status の差 0 行、観測値)
+GREEN  build-fingerprint-controls.sh        0s  === 合計: OK 9 / NG 0 ===
+GREEN  fixture-label-parity-controls.sh     3s  --- 合計: PASS 37 / FAIL 0 / UNMEASURED 0 ---
+GREEN  timeout-agreement-controls.sh        2s  --- 合計: PASS 25 / FAIL 0 / UNMEASURED 0 ---
+GREEN  wire-key-agreement-controls.sh       6s  --- 合計: PASS 55 / FAIL 0 / UNMEASURED 0 ---
+GREEN  wire-vocabulary-agreement-controls.sh   2s  --- 合計: PASS 27 / FAIL 0 / UNMEASURED 0 ---
+GREEN  env-death-controls.sh               93s  全ケース OK(関門は本物の環境死だけで発火する)
+GREEN  phone-window-controls.sh             8s  合計 OK=50 NG=0
+GREEN  rsync-exclude-edith-controls.sh      2s      測った rsync: /usr/bin/rsync (WHERE=edith)
+
+RUN-CONTROLS: green=79 red=0 未測定=0  (対象 79本)
+exit=0

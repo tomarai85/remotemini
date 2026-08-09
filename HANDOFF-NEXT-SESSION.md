@@ -20,7 +20,13 @@
 > 本文(§0〜§6)が「電話の画面」と言う時に指しているのは `app.html` だが、**Tom が実機で開くのは
 > ネイティブの SwiftUI アプリ**(product `RemoteMini`、木は `~/Infra/mobile-work/ios/`)。
 > 2026-08-05 の spec で器を確定し、Sprint 5 で **v1 の4機能(一覧 / 履歴+ライブ / 打ち込む /
-> 割り込む)が実機到達済み**、Sprint 7(08-08)で選択メニューへ答える card まで乗った。
+> 割り込む)が机の上で緑**、Sprint 7(08-08)で選択メニューへ答える card まで乗った。
+> ★**2026-08-09 訂正 —— ここは「実機到達済み」と書いてあったが偽だった。**
+> `xcrun devicectl device info apps --bundle-id com.tomarai.remotemini` が 0 行を返す
+> (同じ電話に Blink Dev / Desk Guard / Jervis / MotionProbe / lingo の5本は在る)。
+> 一度入れた事が有るのか、入れた気になっていただけなのかは記録から判別できない ——
+> **判別できない事自体が、実機の在否をどの検査も見ていなかったという事**。
+> 受け入れ表の 5-c / 6-c(電話の側の体感)が未測定のまま動かない理由もこれ。
 > **Sprint 8(08-08)で9本(8-1〜8-9)出荷済み** —— 8-7 は体験ではなく**検査の面**の欠陥
 > (UI 検査用の会話画面が送信 / 割り込み / 打鍵の3口だけ本物の client を握っていた。
 > `DESIGN.md` §2.57)、**8-9 は Sprint 8 で唯一サーバ側**(同期の子プロセス4箇所に
@@ -31,8 +37,8 @@
 >
 > | 掘る前に知っておく事 | 一行で |
 > |---|---|
-> | ビルドと検査の唯一の口 | `bash ios/tools/build.sh --sim`。単体 **472件**(2026-08-08 Sprint 8-8 後の実測、失敗0、`EXIT=0`。`ios/Tests`=455 + `ios/UITests`=17) |
-> | サーバ側の検査の口 | `cd rc-backend && npm test`(= `node --test 'test/**/*.test.mjs'`)。**739件**(2026-08-08 Sprint 8-9 後の実測、失敗0、`EXIT=0`)。★`node --test test/` は Node v22.14 で落ちる —— `npm test` を使う事 |
+> | ビルドと検査の唯一の口 | `bash ios/tools/build.sh --sim`。**527件**(2026-08-09 の実測、失敗0、`** TEST SUCCEEDED **`。`ios/Tests`=491 + `ios/UITests`=36。log 側の突き合わせも 527)。★実機へ入れるのは**引数無し**の `bash ios/tools/build.sh`(build + 署名 + install) |
+> | サーバ側の検査の口 | `cd rc-backend && npm test`(= `node --test 'test/**/*.test.mjs'`)。**786件**(2026-08-09 の実測、失敗0、`# fail 0` / 6.4 秒)。★`node --test test/` は Node v22.14 で落ちる —— `npm test` を使う事 |
 > | ★検査の**数え方** | `grep -rhcE "^\s*(final )?func test[A-Za-z0-9_]*\(" <dir> \| paste -sd+ - \| bc`(file 毎の件数を足す)。**`sort \| uniq` を挟むと 389 に化ける** —— 別の file に同名の検査が在ると潰れる。log 側の突き合わせは `Test Case '-[…]' passed` を `sort -u \| wc -l` |
 > | **GUI を開かない** | Simulator.app も Xcode も**起動しない**。`xcrun simctl` の headless だけ。画面の確認は `xcrun simctl io … screenshot` |
 > | SourceKit の赤 | 「Cannot find type X in scope」「No such module 'XCTest'」は**単一ファイル索引の副作用で偽**。本物の判定は上のビルド1本 |

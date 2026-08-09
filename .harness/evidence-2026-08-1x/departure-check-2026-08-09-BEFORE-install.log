@@ -1,0 +1,37 @@
+3週間の無人耐久(旅程 30 日で判定)
+
+停電・強制再起動から独りで戻る鎖(coldboot-chain.sh @ edith)
+  緑    7/7 繋がっている
+  --    coldboot-chain.sh の版は手元と一致(61ebb1774be7)
+  --    ensure-phone-window.sh の版は手元と一致(c690f28d9a3b)
+
+面が上がっている事(冷起動の鎖とは別の問い = 今の状態)
+  緑    稼働中(最後の終了コード 0)
+  緑    /api/sessions が 401(生きている、かつ鍵が効いている)
+
+再起動の後、鎖②③ を戻す物(此処が空だと「読めるが送れない」で止まる)
+  緑    com.tom.work-tmux(最後の終了コード 0)
+  緑    com.edith.rc-phone-window(最後の終了コード 0)
+
+電話から打ち込める相手(本番の /api/sessions に数えさせている)
+  緑    tmux 経路 1 件 / 登録簿 22 件
+
+その相手が返事を返せるか(電話と同じ対話 shell 文脈の claude auth status)
+  緑    認証は生きている(従量課金の API キー)
+  --    この経路はサブスクの週次上限に当たらない代わりに、
+  --    token-failover.sh の予備アカウントに**守られていない**(切れたら手で戻す)
+  --    今日の緑は旅程25日目の保証にならない。切れた時の検知器は「電話から毎日触る」事
+
+余白
+  緑    空き 132GB
+
+tailnet の鍵(切れると復旧用の ssh も同じ経路なので同時に死ぬ)
+  赤    期限付き 5 台、最短 残り 40 日(旅程 30 日)—— admin console → Machines → Disable key expiry
+  --    機器名は出さない。どの台かは admin console 側で見る
+
+電話の側(この木で署名した RemoteMini が Tom の iPhone に入っているか)
+  赤    電話に RemoteMini が入っていない —— `bash ios/tools/build.sh`(引数無し = build + 署名 + install)
+  --    此処が赤の間、受け入れ表の 5-c / 6-c(電話の側の体感)は永久に未測定のまま
+
+赤 2 件(未測定 0 件)—— 各行に直し方が書いてある。渡米前に潰す。
+exit=1

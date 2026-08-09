@@ -41,10 +41,20 @@ targets:
       properties:
         CFBundleDisplayName: Remote Mini
         CFBundleShortVersionString: "0.1"
+        # ★此処を `"${RC_BUILD_NUM}"` に「直さない」事(2026-08-10)。此の直値は
+        # **build.sh を通さずに焼いた印**として意図的に置いてある。番号の刻印は
+        # `ios/tools/build.sh` が generate の**後**に PlistBuddy で書き換える ——
+        # 下の RCBuildRev と違って CFBundleVersion は OS が検証する枠なので、
+        # 変数が無い呼び手(ui-fixture-absence-control.sh / signout-notice-control.sh は
+        # 自分で `xcodegen generate` を撃つ)に `${RC_BUILD_NUM}` という literal を
+        # 配ると全ての焼き手が壊れる。此の形なら他の呼び手は無傷のまま、
+        # build.sh を通さずに焼いた物だけが「番号が合わない」= 渡米前検査の鎖⑧で赤。
         CFBundleVersion: "1"
-        # ★どの commit を焼いたか(2026-08-08 / 監査 X2-7)。上の2つは直値の定数で、
-        # 最初のビルドから一度も変わっていない —— 版として画面に出しても何も識別しない。
-        # 実物の名乗りはこの鍵が持つ。`ios/tools/build.sh` が `xcodegen generate` の
+        # ★どの commit を焼いたか(2026-08-08 / 監査 X2-7)。上の2つは元は直値の定数で、
+        # 最初のビルドから一度も変わっていなかった —— 版として画面に出しても何も識別しない。
+        # (2026-08-10 に CFBundleVersion だけは build.sh が commit の通算数を刻む様になった。
+        #  但しあれは**機械が突き合わせる為の番号**で、汚れた木で焼いた事は名乗れない。)
+        # 人が画面で読む実物の名乗りはこの鍵が持つ。`ios/tools/build.sh` が `xcodegen generate` の
         # **前**に `RC_BUILD_REV` を export し、xcodegen がここへ差し込む。
         #
         # ★変数が未定義でも xcodegen は落ちない —— `${RC_BUILD_REV}` という文字列を
