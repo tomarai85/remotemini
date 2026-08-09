@@ -38,6 +38,9 @@ WRK = "src/worker.mjs"
 RNG = "src/ring.mjs"
 HLT = "src/health.mjs"
 CHO = "src/choice.mjs"
+# 封筒を組む純関数(S8-25/S8-26 で server.mjs から切り出した)。`server.mjs` は import した
+# 瞬間 listen するので、封筒の literal は単体からは**呼べない**。切り出した先が此処。
+WIR = "src/wire.mjs"
 
 MUT = [
  ("M1 メニュー判定を外す(CHOICE を返さない)", INJ,
@@ -1195,9 +1198,12 @@ MUT = [
  #   倒れるので、検査が緑のままだと人は気付けない。だから4つの嘘それぞれに的を置く:
  #   ①観測していない数を断定する ②数の出所を持ち主から奪う ③捨てていないのに捨てたと言う
  #   ④取り消しが**走っている番**を巻き込む(= 人が読んだ意味と違う事をする)。
- ("Q1 机の会話の送信待ちを `0` と断定する(観測していない事の反対を言う)", SRV,
-  "            queued: null,",
-  "            queued: 0,"),
+ # ★的の所番地は S8-26 で `src/server.mjs` から `src/wire.mjs` へ移った(封筒を純関数へ
+ #   切り出した)。**変異の中身は一字も変えていない** —— 同じ嘘を、同じ行に、移った先で
+ #   当てている。錨が腐った事は pre-commit の `--dry` が「当たらない 1件」で捕まえた。
+ ("Q1 机の会話の送信待ちを `0` と断定する(観測していない事の反対を言う)", WIR,
+  "    queued: null,",
+  "    queued: 0,"),
  ("Q2 送信待ちの数を持ち主から貰わず固定にする(捨てても数が動かない)", SRV,
   "          queued: manager.status(sessionId).queued,",
   "          queued: 0,"),
