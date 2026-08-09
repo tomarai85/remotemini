@@ -70,8 +70,23 @@ WORKLOG を1行直す度に「中身が変わっていない電話」が赤く�
 画面の rev(DESIGN §8-8 / Tom が電話を1回開く手順)の役のまま。緑の時も検査自身が
 其れを名乗る(対照 BH2 が其の一行を守っている)。
 
+### 6. 実機で**赤も緑も**見た(砂場だけで済ませない)
+
+焼き直して入れた直後 = 鎖⑧「版: 電話 45 = この木 45」で緑。
+其の後 commit(ios/ を触る)で木が 46 へ進み、同じ検査が
+**「版: 電話は 45、この木は 46 —— 古い物が載っている。`bash ios/tools/build.sh` で
+焼き直す」**と赤を出した。対照の砂場ではなく**本物の電話**で、両方の向きを観測した。
+
+此の赤は仕様通り: 電話の番号は最後に入れた時点で止まるので、ios/ を触る commit の後は
+焼き直すまで赤い。もう一段絞る案(`ios/tools/**` を除外)は却下 —— 直近 30 本の
+ios/ commit のうち tools だけの物は **4 本**で、除外一覧を間違えると
+**古い binary を緑と言う**側へ倒れる。倒れる向きが非対称なので余計な赤を選ぶ。
+渡米前検査は人が撃つ物で、撃つ時点の木は止まっている。
+
 **証拠**: `departure-survivability-controls.sh` = 68 OK / 0 NG。変異 M1–M6 上表。
-`bash ios/tools/build.sh --print-build-num` → `45`。両 script `bash -n` 通過。
+`run-controls.sh --all` = green 79 / red 0 / 未測定 0。
+実機ログ = `.harness/evidence-2026-08-1x/departure-check-2026-08-10-version-match.log`。
+両 script `bash -n` 通過。
 
 **次の一手**: 掃討(79本)が終わり次第 `bash ios/tools/build.sh` で焼き直し →
 電話が `bundleVersion = 45` を名乗る事を確認 → 鎖⑧が「版: 電話 45 = この木 45」を
