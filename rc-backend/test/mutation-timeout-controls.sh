@@ -77,20 +77,69 @@ out=$(S fatal 2 fast)
 judge "対照の脚(fatal)が普通に終わった -> 通す" "測れた rc=0 timed_out=0" "$out"
 
 echo
-echo "=== §3 呼び出し側: soft は変異の脚**だけ**。対照2枚は fatal のまま ==="
-# 文字列で見る対照なので弱い。だが (c) の再発は「呼び出し側を1行変える」で起きるので、
-# ここは行を数える方が直接的。注釈行は `suites(dst` を含まないので当たらない
-# (= **緑になり得る**検査。緑になれない検査は誰も見なくなる。今日その形を1つ潰した)。
-n_fatal=$(grep -c '^[^#]*suites(dst)' test/mutation-controls.py)
-n_soft=$(grep -c '^[^#]*suites(dst, timeout_fatal=False)' test/mutation-controls.py)
-judge "対照の呼び出し(既定=fatal)が 2 箇所" "2" "$n_fatal"
-judge "変異の呼び出し(soft)が 1 箇所"       "1" "$n_soft"
+echo "=== §3 対照2枚の判定: 無変異の木では「赤」が2つの意味に割れる(2026-08-09)==="
+# 何を撃っているか: 対照1は **要約行の無い赤**(= 子が結果を出す前に死んだ)を
+# 「作業ツリーが赤」と診断していた。手元で `npm test` を回すと緑なので、
+# その指図に従った人は行き止まりに着く。混み合い / メモリ / kill と木の赤は別物。
+C() { python3 test/mutation-controls.py --control-verdict "$@"; }
+
+judge "対照1 両脚とも緑          -> ok"          "ok"         "$(C 1 f f -)"
+judge "対照1 要約行つきの赤      -> 木が赤"      "tree-red"   "$(C 1 t f -)"
+judge "対照1 要約行の無い赤      -> 未測定"      "unmeasured" "$(C 1 t f 単体)"
+judge "対照1 両脚とも死因不明の赤-> 未測定"      "unmeasured" "$(C 1 t t 単体,e2e)"
+# ★両種が混じったら**本物の赤が勝つ**。木が赤い事実の方が診断として強い。
+judge "対照1 片脚は本物の赤+片脚は死因不明" "tree-red" "$(C 1 t t 単体)"
+judge "対照1 時間切れ(None)      -> 未測定"      "unmeasured" "$(C 1 u f -)"
+# 対照2は逆に**要約行の有無を問わない**(e2e は起動段で落ちるので元から出ない)。
+# 見るのは「仕込んだ合言葉で赤いか」。混み合いで死んだ赤と見分ける唯一の手。
+judge "対照2 両脚赤+合言葉あり   -> ok"          "ok"                "$(C 2 t t - y)"
+judge "対照2 両脚赤だが合言葉なし-> 証明になっていない" "red-without-canary" "$(C 2 t t - n)"
+judge "対照2 片脚が緑            -> 赤くならない" "not-red"          "$(C 2 t f - y)"
+judge "対照2 もう片脚が緑        -> 赤くならない" "not-red"          "$(C 2 f t - y)"
 
 echo
-echo "=== §4 終了コード: 未測定を 0 に丸めない ==="
+echo "=== §4 その判定に**入力を渡す配線**(表が正しくても入力の作り方が食い違えば誤診)==="
+# ★ここが本命。直したのは判定表ではなく「要約行の無い赤をどう拾うか」だった。
+#   `read_suite` が NO_SUMMARY へ入れる脚の名前と、判定が探す名前が一致して初めて拾える。
+#   偽の子を本物の read_suite に通すので秒で済む。
+K() { python3 test/mutation-controls.py --selftest-control "$@" 2>/dev/null; }
+judge "要約行の無い落ち方 -> 未測定として拾えている" "unmeasured" "$(K blind)"
+# ★陰性対照。これが無いと「常に未測定と言う配線」でも上の1行は緑になる。
+judge "要約行つきの落ち方 -> 木の赤のまま"           "tree-red"   "$(K summary)"
+judge "両脚の出力に合言葉が在る -> ok"               "ok"         "$(K canary)"
+judge "出力を溜め損ねた -> 証明になっていない"       "red-without-canary" "$(K sink-empty)"
+# ★木の赤を報せる時に**何を印字するか**。落ちた検査は列の途中に在り、後ろを PASS が埋める。
+#   末尾を出す実装では「作業ツリーを緑にする事」と言いながら緑にする対象を伏せる事になる。
+judge "落ちた検査の名前を出す(末尾ではなく)"        "狙いが出る"           "$(K fail-lines)"
+# ★陰性対照。件数(要約)だけ在って名前が無い時に「出せた」と言わない事まで見る。
+judge "名前が読めない時は書式の変化として言う"      "書式が変わったと言う" "$(K fail-lines-unknown)"
+
+echo
+echo "=== §5 呼び出し側: soft は変異の脚**だけ**。対照2枚は fatal + 生出力を溜める ==="
+# 文字列で見る対照なので弱い。だが (c) の再発は「呼び出し側を1行変える」で起きるので、
+# ここは行を数える方が直接的。注釈行は `suites(dst` を含まないので当たらない
+# (= **緑になり得る**検査。緑になれない検査は誰も見なくなる)。
+# ★2026-08-09 に形を変えた。対照2枚が `sink=` を渡すようになり、旧 `suites(dst)` の
+#   直値は**どの行にも当たらなくなった** = 0 しか返せない検査になっていた。
+#   0 しか返せない数を「2 のはず」と judge しても、守っているのは自分の思い込みだけ。
+n_calls=$(grep -c '^[^#]*= suites(dst' test/mutation-controls.py)
+n_soft=$(grep -c '^[^#]*suites(dst, timeout_fatal=False)' test/mutation-controls.py)
+n_sink=$(grep -c '^[^#]*suites(dst, sink=' test/mutation-controls.py)
+judge "suites() の呼び口は全部で 3 箇所"          "3" "$n_calls"
+judge "変異の呼び出し(soft)が 1 箇所"             "1" "$n_soft"
+judge "対照2枚は既定=fatal で生出力を溜める(2)"   "2" "$n_sink"
+
+echo
+echo "=== §6 終了コード: 未測定を 0 にも 1 にも丸めない ==="
 # 走行本体は回さない(数時間かかる)。丸めの規則そのものを最終行から読む。
 tail_rule=$(grep -c 'sys.exit(1 if missed else (2 if unmeasured else 0))' test/mutation-controls.py)
 judge "素通り=1 / 未測定=2 / 全部測れて穴なし=0" "1" "$tail_rule"
+# 対照の段でも同じ区別を守る。1 で降りると呼び手には「欠陥が見つかった」と読める。
+python3 test/mutation-controls.py --selftest-control die-unmeasured >/dev/null 2>&1; rc_um=$?
+judge "対照が測れずに止まる -> 2 で降りる"       "2" "$rc_um"
+# ★陰性対照。全部 2 で降りる台本でも上の1行は緑になる。欠陥の停止は 1 のまま。
+python3 test/mutation-controls.py --control-verdict 1 >/dev/null 2>&1; rc_die=$?
+judge "引数不正など普通の停止 -> 1 のまま"       "1" "$rc_die"
 
 echo
 if [ $ng -eq 0 ]; then
