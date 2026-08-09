@@ -48,6 +48,19 @@
 //   **効かない欄にも本物の語彙しか置かない** —— 効かない事は、其の綴りが正しい事の
 //   証明ではない。
 //
+// ── S8-28 を此処へ畳んだ理由(2026-08-09、投資の側の判断)────────────────────────
+// 「電話の検査が持つ『送れない理由』8語の写しを `WIRE_REASONS` と照合する」は、当初
+// **別の検査 file + 専用の対照 suite** で立てる予定だった。着手前に通行量を測って畳んだ:
+//   ・`WIRE_REASONS` は生まれてから**一度も変わっていない**(`src/blocked.mjs` は全3 commit)
+//   ・電話は `reason` を**一度も描かない**(`PaneFault.reason` の注釈が "Never drawn"、
+//     分岐用の enum も持たず `String` のまま)。9個目が生えても電話の画面は何も変わらない
+//   ・サーバ側は既に2本が `WIRE_REASONS` を回している(`test/blocked.test.mjs` /
+//     `test/view.test.mjs`)ので、語が増えた時に文面の穴が開く方は既に赤くなる
+// → 残る穴は1つだけ、**電話の検査の「全部復号できる」という主張が黙って嘘になる**事。
+//   語彙の値が両側で一致するかは此の file の主題そのものなので、file を増やさず1本足した。
+//   ★「価値が無いからやらない」ではなく「**投資の形を実測に合わせた**」= 新しい media
+//     (小文字ハイフンの語彙)は増やすが、file と対照 suite は増やさない。
+//
 //   `fixture-labels-producible` 側を「`screen` も突き合わせる」形に広げるのは**採らなかった**:
 //   あの検査は「其の種類で出しうる (short, text) の集合」を毎回 `routeLabel` に作らせる形で、
 //   `screen` を足すには入力表が画面名まで列挙する事になる —— 誰も描かない1欄の為に
@@ -59,13 +72,19 @@ import { join } from "node:path";
 import { ROOT, REPO, REPO_INTACT, requireOutside } from "./subtree.mjs";
 import { stripSwiftComments, swiftFiles } from "./swiftsrc.mjs";
 import { stripComments } from "./jssrc.mjs";
+import { WIRE_REASONS } from "../src/blocked.mjs";
 
 const SWIFT_ROOT = join(REPO, "ios", "Sources");
 const SRC_ROOT = join(ROOT, "src");
 const SERVER = join(SRC_ROOT, "server.mjs");
 const RECOVERY_SWIFT = join(SWIFT_ROOT, "Core", "ResultDisplay.swift");
+const POLL_TESTS_SWIFT = join(REPO, "ios", "Tests", "Core", "PollModelsTests.swift");
 
-const NEED = ["ios/Sources", "ios/Sources/Core/ResultDisplay.swift"];
+const NEED = [
+  "ios/Sources",
+  "ios/Sources/Core/ResultDisplay.swift",
+  "ios/Tests/Core/PollModelsTests.swift",
+];
 const gate = requireOutside(NEED);
 const skip = gate.skip;
 
@@ -160,6 +179,38 @@ export function serverCodeValues(src) {
     if (code) out.set(m[1], code[1]);
   }
   return out;
+}
+
+/**
+ * 電話の検査が「サーバが送りうる `blocked` の理由の**全部**」として並べている語を採る
+ * (S8-28、2026-08-09)。
+ *
+ * ★鍵名(`reason:`)では採れない、と測ってから此の形にした。`ios/**` の `reason` 欄に
+ *   焼かれている literal を全部採ると `panes-unreadable` / `pane-gone` / `not-claude` に
+ *   混ざって `confirm` / `digest-mismatch` / 日本語の1文 / `""` が出てくる ——
+ *   **同じ `reason` という鍵名を、`blocked` の理由と選択カードの拒否理由という
+ *   別々の語彙が共有している**。鍵名で採る設計は此処で死ぬ。
+ *
+ * ★そこで錨は**主張している関数の名前**にした。`testEveryBlockedReasonTheServerCanSendDecodes`
+ *   は「サーバが送りうる理由は全部復号できる」と名乗っており、其の主張の範囲が此の配列。
+ *   関数が消えたり改名されれば空が返り、下の錨(`length >= 6`)が赤くなる。
+ *
+ * ★開き括弧まで含めて探す事。**書いた其の日に対照が此処を釣った**(2026-08-09) ——
+ *   `func ${fn}` だけで探すと、名前の**末尾に語を足した改名**が素通りする
+ *   (`...Decodes` は `...DecodesForAllRoutes` の接頭辞なので当たってしまう)。
+ *   Swift の検査名に語を足すのは有り触れた改名で、作り話の変異ではない。
+ *   接頭辞一致のままなら「其の主張を測っている」ではなく「其の主張で始まる何かを測っている」。
+ *
+ * ★配列の外まで採らない事(本文には `"route"` / `"blocked"` / `"message"` / `"m"` が在り、
+ *   どれも `[a-z-]+` に当たる)。だから最初の `[` から最初の `]` までに限る。
+ */
+export function phoneBlockedReasons(src, fn = "testEveryBlockedReasonTheServerCanSendDecodes") {
+  const at = src.indexOf(`func ${fn}(`);
+  if (at < 0) return [];
+  const open = src.indexOf("[", at);
+  const close = src.indexOf("]", open);
+  if (open < 0 || close < 0) return [];
+  return [...src.slice(open, close).matchAll(/"([^"\\]+)"/g)].map((m) => m[1]);
 }
 
 /** 電話が `RecoveryCode` に焼いている値を採る(`static let <名> = "<値>"`)。 */
@@ -258,6 +309,21 @@ test("★★電話が焼いている復旧語彙の**値**を、サーバが実�
   );
 });
 
+test("★★電話の検査が並べる『送れない理由』が、サーバの WIRE_REASONS と過不足なく一致する", { skip }, () => {
+  const phone = phoneBlockedReasons(readFileSync(POLL_TESTS_SWIFT, "utf8"));
+  assert.ok(
+    phone.length >= 6,
+    `電話側から理由を ${phone.length} 語しか採れない = 関数が改名/削除されたか、配列の形が変わった`,
+  );
+  assert.deepEqual(
+    [...phone].sort(), [...WIRE_REASONS].sort(),
+    "電話の検査が並べる理由と、サーバが実際に出しうる理由(`src/blocked.mjs` の `WIRE_REASONS`)が食い違う。\n" +
+      "  多い → サーバが一度も出さない語で復号を確かめている(測っているつもりの空振り)。\n" +
+      "  少ない → サーバが出しうる語のうち、電話で復号を確かめていない物が在る。\n" +
+      "  どちらも**あの検査の名前(『全部復号できる』)が嘘になる**形",
+  );
+});
+
 test("陰性対照: 判定が見分けている(常に緑を返しているのではない)", () => {
   // 採る側
   assert.deepEqual([...harvestTokens('a("SENDABLE") b("lower") c("X")')], ["SENDABLE"]);
@@ -283,6 +349,34 @@ test("陰性対照: 判定が見分けている(常に緑を返しているの�
   const sw = 'struct RecoveryCode: Decodable {\n  let code: String?\n  static let sessionNotFound = "SESSION_NOT_FOUND"\n}\n';
   assert.deepEqual([...phoneRecoveryValues(sw)], [["sessionNotFound", "SESSION_NOT_FOUND"]]);
   assert.deepEqual([...phoneRecoveryValues("struct Other {}")], [], "型が無い木では空 = 上の錨が赤くなる");
+  // ★『送れない理由』の採り方(S8-28)。**配列の外へ出ない**事が此の関数の肝で、
+  //   本文の JSON には `route` / `blocked` / `message` が居るので、範囲を誤ると
+  //   「サーバが出さない語を電話が持っている」と嘘の赤が出る。
+  const blockedFn =
+    'func testEveryBlockedReasonTheServerCanSendDecodes() throws {\n' +
+    '    for reason in [\n      "not-claude", "stale",\n    ] {\n' +
+    '        try decode(#"{ "route": "blocked", "reason": "x", "message": "m" }"#)\n    }\n}\n';
+  assert.deepEqual(phoneBlockedReasons(blockedFn), ["not-claude", "stale"]);
+  assert.deepEqual(
+    phoneBlockedReasons(blockedFn, "testRenamed"), [],
+    "錨にした関数名が無ければ空 = 上の `length >= 6` が赤くなる(改名を黙って飲まない)",
+  );
+  // ★★対照が釣った1件(2026-08-09)。**末尾に語を足した改名**が接頭辞一致で
+  //   素通りしていた。求めているのは「あの名前の関数」であって「あの名前で始まる
+  //   関数」ではないので、開き括弧まで含めて探す。
+  const renamed = blockedFn.replace(
+    "func testEveryBlockedReasonTheServerCanSendDecodes(",
+    "func testEveryBlockedReasonTheServerCanSendDecodesForAllRoutes(",
+  );
+  assert.ok(
+    renamed.includes("testEveryBlockedReasonTheServerCanSendDecodesForAllRoutes"),
+    "罠の前提: 改名が実際に入っている",
+  );
+  assert.deepEqual(
+    phoneBlockedReasons(renamed), [],
+    "名前の末尾に語を足した改名を、接頭辞一致で飲んでいる。\n" +
+      "  飲むと採れる語は元のまま = 改名した人の新しい主張を、古い名前の主張として測る事になる",
+  );
 });
 
 // ★逃げ道の錨。上の6本が `gate.skip` で飛べるので、完全な木で**飛んでいない**事を

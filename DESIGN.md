@@ -12257,3 +12257,59 @@ phase 1(§2.80)が 17 → 8 を1回で塞いだ勢いのまま「残りも同じ
   そちらは生きたサーバを叩いている。二重に持たない。
 - 8件のうち **1件が捕まえた欠陥は fixture の中**で、本番経路の値ではなかった。
   「線に出る値の顔をした placeholder」が実害になる手前で止まった、が正確な言い方。
+
+### 2.83 電話の検査が「サーバが送りうる理由の**全部**」と名乗っている8語は、誰とも突き合わされていなかった(2026-08-09、S8-28)
+
+`ios/Tests/Core/PollModelsTests.swift` に `testEveryBlockedReasonTheServerCanSendDecodes` という
+検査が在る。名前が主張しているのは「サーバが `blocked` で送りうる理由は**全部**復号できる」で、
+本文の注釈も `All 8 of WIRE_REASONS` と書いてある。だが実体は**手で並べた8語の写し**であって、
+`rc-backend/src/blocked.mjs` の `WIRE_REASONS` を読んでいるわけではない。片側が動けば、
+検査は緑のまま**名前だけが嘘になる**。
+
+| 動く側 | 起きる事 | 誰も気づかない理由 |
+|---|---|---|
+| サーバが語を足す | 電話で復号を確かめていない語が生まれる | Swift の検査は自分の8語を回して緑 |
+| サーバが語を減らす | 一度も来ない語で復号を確かめている(空振り) | 同上 |
+| 電話の写しが痩せる | 「全部」が全部でなくなる | JS 側は Swift の配列を知らない |
+
+**先に通行量を測った。** `WIRE_REASONS` は生まれてから**一度も変わっていない**
+(`src/blocked.mjs` は全3 commit)。電話は `reason` を**描かない**
+(`ios/Sources/Core/SessionsModels.swift` の `PaneFault.reason` に「Never drawn」と書いてある。
+人が読む1文はサーバが `message` として作り、電話はそれを貼るだけ)。サーバ側は
+`test/blocked.test.mjs` が既に全域を2通りで回している。**穴は1つだけ** ——
+Swift 側の「全部」という名乗り。だから新しい file も新しい対照 file も作らず、
+既に在る計器(`test/wire-vocabulary-agreement.test.mjs` と其の対照)へ**畳んだ**。
+
+**鍵名で採る設計は測った上で殺した。** 最初は `ios/**` の `reason:` 欄の literal を
+全部採る形を考えたが、実際に採ると `panes-unreadable` / `pane-gone` に混ざって
+`confirm` / `digest-mismatch` / 日本語の1文 / `""` / `"r"` が出てくる ——
+**同じ `reason` という鍵名を、`blocked` の理由と選択カードの拒否理由という2つの語彙が
+共有していた**。鍵名は語彙の境界ではない。錨は**主張している関数の名前**へ移した。
+
+**据えた其の日に対照が1件釣った。** 「錨にした関数が改名されたら赤」を植えたら**緑のまま**で、
+原因は検査側 —— `src.indexOf("func " + fn)` が**接頭辞一致**なので、
+`...Decodes` は `...DecodesForAllRoutes` に当たってしまう。Swift の検査名に語を足すのは
+有り触れた改名で、作り話の変異ではない。開き括弧まで含める形へ直し、同じ罠を
+検査の陰性対照にも入れた。**求めているのは「あの名前の関数」であって
+「あの名前で始まる何か」ではない。**
+
+**陰性対照Ⓕ。** 理由札を**両側そろえて** `pane-gone` → `pane-vanished` へ改名した木は緑。
+`pane-gone` 自体、`resolveSessionPane()` が返さない名前をサーバが後から付けた語なので、
+今日の綴りに固定してよい物ではない。Ⓐ/Ⓑ と同じ背骨 —— 値を縛るのに追認機にならない事は、
+そろえた改名が緑である事でしか主張できない。
+
+**検査。** backend **786** tests / fail 0(785 + 1)、`test/e2e-local.mjs` pass 269 / fail 0。
+`.harness/wire-vocabulary-agreement-controls.sh` **PASS 27 / FAIL 0 / UNMEASURED 0**
+(21 + 新設6 = ⑬⑭⑮⑯ とⒻ、名指しの入力が消えたら赤の3本目)。姉家族の
+`.harness/wire-key-agreement-controls.sh` **PASS 55 / FAIL 0**(据え置き)。
+対照の `controls-for:` に `rc-backend/src/blocked.mjs` と
+`ios/Tests/Core/PollModelsTests.swift` を足したので、どちらかを触った commit で門が此れを回す。
+
+**測っていない事。**
+
+- **理由札の「意味」は測っていない。** どの状況でサーバが `stale` を選ぶか、電話がそれを
+  どう扱うかは範囲外。**集合の一致だけ**である。
+- **人が読む1文(`message`)は此処では見ない。** 出所はサーバ1箇所で、同一性は e2e が持つ。
+- **`ios/Tests/**` からは此の1本しか写していない。** 対照の砂場に検査の木を丸ごと置くと、
+  「検査の木が在る」を測っているのか「あの主張が在る」を測っているのか読めなくなる。
+- 此の検査が守るのは**主張の範囲**であって、`PollModelsTests.swift` の他の検査ではない。

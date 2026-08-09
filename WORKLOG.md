@@ -11825,3 +11825,37 @@ FAIL が出て、調べると**検査ではなく対照の前提**の誤りだ�
 
 **次は S8-28**(電話側の検査が持つ「送れない理由」8語を、サーバの `WIRE_REASONS` と照合する)。
 今夜の語彙照合と同じ根だが、あちらは**大文字語ではない**ので採取の網が別になる。
+
+### #52d S8-28 —— 「全部復号できる」と名乗る検査の「全部」が、誰とも突き合わされていなかった(2026-08-09)
+
+電話側に `testEveryBlockedReasonTheServerCanSendDecodes` という検査が在り、注釈にも
+`All 8 of WIRE_REASONS` と書いてある。だが並んでいるのは**手で写した8語**で、サーバの正本を
+読んではいない。片側が動けば緑のまま**名前だけが嘘になる**。塞いだのは其の1点だけ。
+
+**作る前に通行量を測った。** `WIRE_REASONS` は生まれてから一度も変わっていない
+(`src/blocked.mjs` は全3 commit)。電話は `reason` を**描かない**(`PaneFault.reason` の
+doc に「Never drawn」と明記、型も `String` で enum ではない)。サーバ側は
+`test/blocked.test.mjs` が既に全域を2通り回している。**穴は Swift の名乗り1つ**だったので、
+新しい file も新しい対照 file も作らず、既存の計器へ畳んだ ——
+検査を1本(`wire-vocabulary-agreement.test.mjs`)、対照を6本
+(`.harness/wire-vocabulary-agreement-controls.sh`)。投資の形を実測に合わせた、が正確な言い方で、
+「価値が無いからやらない」ではない。
+
+**設計を1つ、書く前に殺した。** 最初は `reason:` という鍵名で literal を採る形だったが、
+実際に採ると `panes-unreadable` / `pane-gone` に混ざって `confirm` / `digest-mismatch` /
+日本語の1文 / `""` / `"r"` が出た —— **`reason` という鍵名を2つの語彙が共有していた**
+(`blocked` の理由と、選択カードの拒否理由)。鍵名は語彙の境界ではない。
+錨を**主張している関数の名前**へ移した。
+
+**据えた其の日に、対照が検査を1件釣った。** ⑮「錨にした関数が改名されたら赤」が**緑のまま**。
+原因は対照ではなく検査で、`src.indexOf("func " + fn)` が接頭辞一致 ——
+`...Decodes` は `...DecodesForAllRoutes` に当たる。Swift の検査名に語を足すのは
+有り触れた改名なので、これは作り話の変異ではない。開き括弧まで含める形へ直し、
+同じ罠を検査の中の陰性対照にも足した。**緑から始まった検査は信用できない**の実例が、
+書いた其の日に自分に返ってきた形。
+
+**通した鎖。** `npm test` **786 / fail 0**(785 + 1)。`node test/e2e-local.mjs` **269 / fail 0**。
+`bash .harness/wire-vocabulary-agreement-controls.sh` **PASS 27 / FAIL 0 / UNMEASURED 0**
+(21 → 27)。姉家族の `wire-key-agreement-controls.sh` **PASS 55 / FAIL 0**(据え置き)。
+対照の `controls-for:` へ `rc-backend/src/blocked.mjs` と
+`ios/Tests/Core/PollModelsTests.swift` を追記したので、以後どちらを触っても門が此れを回す。
