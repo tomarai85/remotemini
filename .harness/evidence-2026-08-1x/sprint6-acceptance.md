@@ -164,9 +164,9 @@ BUSY で干渉できる(Tom の裁定): `testBusyLeavesBothTheComposerAndTheInte
 切断を跨ぐ: `testAllNineKnownGapWhyValuesDecode` /
 `testGapWithNoticeDrawsTheNoticeAndAlwaysTriggersARefetch` /
 `testAutoResyncFiresAtMostOnceUntilAReadableResponseEndsTheEpisodeNegativeControl` /
-`testBackgroundToActiveEdgeTriggersForegroundResume` /
+`testARealBackgroundRoundTripResumesExactlyOnce` /
 `testHandleForegroundResumeRefetchesHistoryAndTheRefetchLandsInHistory` /
-`testInactiveToActiveDoesNotTriggerForegroundResumeNegativeControl`
+`testAPeekThatNeverReachesTheBackgroundIsNotAResumeNegativeControl`
 
 待ち時間: `testPollTimeoutIsDerivedFromTheServerConstantNotHandWritten` /
 `testInteractiveTimeoutIsShorterThanThePollTimeout` /

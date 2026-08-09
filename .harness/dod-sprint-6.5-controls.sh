@@ -173,11 +173,27 @@ if guard '1-b\.' "1-b log に無い"; then
     restore ios
 fi
 
-# --- 7. 2-a: 送信の組み込みが外れたら赤 ---------------------------------------
+# --- 7. 2-a: 送信の3つの性質、どれが外れても赤 -------------------------------
+# ★2026-08-09。元は `sendClient: MessageSending = SendClient()` を潰す1本だった。
+#   その綴りは client が注入容器(`Core/ConversationClients.swift`)へ移った時に消えて
+#   おり、sed は**空振りしていた** —— 壊していないのに「壊しても赤が出た」と読める形。
+#   気付けなかった理由が重要で、当時は表側の錨(`grep 'SendClient('`)も同じ改修で
+#   腐って 2-a が赤だったので、guard が此処を「基準が緑でない」として未測定へ落として
+#   いた。**二つの腐りが互いを隠していた**。表を性質3つで測る形にしたので対照も3つに割る。
 if guard '2-a\.' "2-a 送信の組み込み"; then
-    /usr/bin/sed -i '' 's|sendClient: MessageSending = SendClient()|sendClient: MessageSending = NullSender()|' \
-        "$WT/ios/Sources/Screens/Conversation/ConversationViewModel.swift"
-    chk "2-a ViewModel が SendClient を持たない -> 赤" '^  赤    2-a\.' "$(run_dod)"
+    VMW="$WT/ios/Sources/Screens/Conversation/ConversationViewModel.swift"
+    CCW="$WT/ios/Sources/Core/ConversationClients.swift"
+
+    /usr/bin/sed -i '' 's|private let sendClient: MessageSending|private let sendClient: AnyObject|' "$VMW"
+    chk "2-a ViewModel が送り手を保持しない -> 赤" '^  赤    2-a\.' "$(run_dod)"
+    restore ios
+
+    /usr/bin/sed -i '' 's|await sendClient\.send(|await sendClient.transmitNothing(|' "$VMW"
+    chk "2-a 保持するだけで呼んでいない -> 赤" '^  赤    2-a\.' "$(run_dod)"
+    restore ios
+
+    /usr/bin/sed -i '' 's|send: SendClient(),|send: NullSender(),|' "$CCW"
+    chk "2-a 容器が本物の送り手を挿さない -> 赤" '^  赤    2-a\.' "$(run_dod)"
     restore ios
 fi
 

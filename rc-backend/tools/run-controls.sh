@@ -534,6 +534,10 @@ LOCAL_CTLS=(
                                      # 絞り込みが何を通すかを、偽 repo とスタブで測る12本。
     test/install-hooks-controls.sh   # `.git/hooks/pre-commit` を据える台本。据え直しても
                                      # 壊れない事と、既存の hook を黙って上書きしない事。
+    test/cited-testnames-gate-controls.sh # 受け入れ表・証跡が**実在しない検査名**を引いていないか
+                                     # 見る門(7本)。要の1本は「表を1行も触らない commit
+                                     # (= 検査を改名しただけ)で赤が出るか」。腐りを作るのは
+                                     # 改名した側なので、表側だけを引き金にすると素通しする。
     test/vacuous-gate-controls.sh    # 「錨の無い検査」を書いた瞬間に止める門(11本)。
     test/vacuous-scan-controls.sh    # 同・走査の本体(10本)。
     test/port-coverage-gate-controls.sh # 移植の照合を**走らせる**門(10本)。道具側の対照は
