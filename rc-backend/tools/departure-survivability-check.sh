@@ -13,7 +13,7 @@
 #     「上の緑をこの repo のコードの緑として読めない」だけ)。deploy の半端な失敗が
 #     古い道具の緑を新しい保証に見せるのを止める。
 #
-# ここが足すのは、冷起動の鎖の外に在って**渡米すると触れなくなる** 7 つ:
+# ここが足すのは、冷起動の鎖の外に在って**渡米すると触れなくなる** 9 つ:
 #   (1) tailnet の鍵の期限 … 切れると tailnet から落ち、復旧用の ssh も同じ経路なので同時に死ぬ
 #   (2) job が今この瞬間 動いている事 … plist が正しくても、落ちて再起動を繰り返す形は別問題
 #   (3) 面が 401 を返す事      … 200 は鍵が外れている印。tailnet 内の誰でも読める状態
@@ -32,6 +32,15 @@
 #         `claude auth status --json` を読む(鍵は出さない = loggedIn と authMethod だけ)。
 #         今日の緑が旅程25日目の保証にならない事は承知の上で、**出発時点で既に
 #         切れている**形だけは潰す
+#   (8) **電話にアプリが入っている事** … (1)〜(7) は全部 edith 側で、旅程で使う2台の
+#         うち電話を誰も数えていなかった。2026-08-09 に測ったら**入っていなかった**
+#         (机の上は 527 件全緑、文書は「実機到達済み」)。載る先を数えない緑は、
+#         #56(edith が古い版で走っていた)と同じ型 —— 向きが違うだけ
+#   (9) **見張りそのものが生きている事** … (1)〜(8) が全部落ちた事を Tom へ知らせるのは
+#         athenas の rc-health-observer だけ。それが死ぬと**沈黙が健康と見分けが付かない**
+#         (yoda が 46 時間気付けなかった形)。ログの最新の刻みの齢を向こうの時計で測り、
+#         閾値は向こうの plist の StartInterval から導く —— 秒数を此処へ書き写すと、
+#         刻みを変えた日に此処が黙って嘘になる
 #
 # 使い方:
 #   bash rc-backend/tools/departure-survivability-check.sh [--days N] [--host user@host]
@@ -57,7 +66,10 @@ while [ $# -gt 0 ]; do
                 TRIP_DAYS="$2"; shift 2 ;;
         --host) [ $# -ge 2 ] || { echo "--host に値が無い" >&2; exit 2; }
                 HOST="$2"; shift 2 ;;
-        -h|--help) sed -n '2,44p' "$0"; exit 0 ;;   # 2..44 = 冒頭の説明。行を足したらここも直す
+        # 行番号を書かない。2026-08-09 に鎖(8)(9)を足した時、此処の `2,48p` を
+        # 直し忘れて説明が途中で切れた —— 説明の長さを2箇所に持つのが原因なので、
+        # 数える側を消す。冒頭の解説 = 2行目から `set -u` の手前まで。
+        -h|--help) awk 'NR>1 { if ($0 == "set -u") exit; print }' "$0"; exit 0 ;;
         *) echo "知らない引数: $1" >&2; exit 2 ;;
     esac
 done
@@ -163,6 +175,12 @@ print(\"auth_method=%s\" % (d.get(\"authMethod\") or \"-\"))
     else
         echo "auth=nozsh"
     fi
+
+    # claude 本体の版と自動更新の設定。**判定は付けない**(正しい版という物が無い)。
+    # 記録する理由は1つ —— 自動更新が入っているので、旅程の途中で版が黙って変わる。
+    # 帰ってから「いつ壊れたか」を突き合わせられる様に、出発時点の数字を残す。
+    p cli_ver "$(PATH="$HOME/.local/bin:$PATH" claude --version 2>/dev/null | awk "{print \$1}")"
+    p cli_auto "$(grep -oE "\"autoUpdates\"[^,}]*" "$HOME/.claude.json" 2>/dev/null | grep -oE "true|false" | head -1)"
 
     # 401 が正。200 = 鍵が外れている、それ以外 = 面が応答していない。
     p http "$(curl -sS -m 5 -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/api/sessions 2>/dev/null || echo 000)"
@@ -300,6 +318,15 @@ case "$(g auth)" in
     nozsh)   say_unm "edith に zsh が無く、電話と同じ文脈を再現できない" ;;
     ''|unparsed|*) say_unm "claude auth status が JSON を返さない(claude が PATH に無い等)" ;;
 esac
+# ★此処は**必ず記録だけ**。正しい版という物が存在しないので赤にも未測定にもしない
+#   (判定を付けると「更新された = 異常」になり、嘘の赤で検査ごと無視される)。
+cv=$(g cli_ver); ca=$(g cli_auto)
+if [ "$ca" = "true" ]; then
+    say_note "claude 本体は ${cv:-版が読めない} / **自動更新が入っている** —— 旅程の途中で版が黙って変わる。"
+    say_note "  壊れた日に此処を撃ち直せば、版が動いたのかを突き合わせられる(Jervis は持って出る)"
+else
+    say_note "claude 本体は ${cv:-版が読めない}(自動更新 ${ca:-不明})"
+fi
 
 # --- 余白 --------------------------------------------------------------------
 echo
@@ -328,6 +355,214 @@ case "$(g ts_state)" in
     unreadable) say_bad "tailscale status が JSON を返さない(tailscaled が落ちている疑い)" ;;
     *)          say_unm "tailnet の状態が読めない" ;;
 esac
+
+# --- 電話の側 ----------------------------------------------------------------
+# ★2026-08-09 追加。此処が無かったせいで「Sprint 5 で実機到達済み」と書かれた文書が
+#   2日間残り、その間ずっと **アプリは Tom の電話に入っていなかった**。
+#   #56(edith が古い版を走らせていた)と同じ型で、向きだけが違う ——
+#   机の上の緑は、**それが載る先**を一度も数えていない。
+#   鎖①〜⑦は全部 edith 側で、旅程で使う2台のうち**電話を誰も見ていなかった**。
+#   出さない物: 機器名・識別子。出すのは在否だけ(この file の他の項目と同じ規律)。
+#
+#   三色の割り当て(丸めない):
+#     電話が繋がっていない = **未測定**。渡米前に一度繋いで撃つのが此処の使い方で、
+#       繋がっていない事は「入っていない」の証拠ではない。
+#     繋がっていて 0 件     = **赤**。直し方は1行(`bash ios/tools/build.sh`)。
+#   ★2026-08-10: 版も測る様になった(Codex 指摘②)。此処には元々
+#     「版の一致は電話の画面(DESIGN §8-8)でしか見えない」と書いてあり、**人の目にしか
+#     出来ない事へ機械の仕事を預けていた**。#56(edith が 5 commit 古い版で走っていた)
+#     と同じ穴が電話側に開いたままだった。
+#     やり方: `ios/tools/build.sh` が CFBundleVersion に commit の通算数を刻み、此処が
+#     devicectl の `bundleVersion` と突き合わせる。期待値は **build.sh に訊く**
+#     (`--print-build-num`)—— 此処で `git rev-list --count` を書き直すと片方だけ腐る。
+#     三色: 一致 = 緑 / 不一致 = **赤**(古い物が電話に載っている、直し方は1行) /
+#     どちらかが読めない = **未測定**(在否の緑は据え置き、版だけ未測定)。
+#     ★これでも判らない物 = 汚れた木で焼いた事。番号は commit しないと動かないので、
+#       同じ番号で中身の違う app が焼ける。其れは画面の rev(RCBuildRev)の役 = §8-8 は
+#       まだ要る。**測れる様になったのは「どの commit か」まで**。
+echo
+echo "電話の側(この木で署名した RemoteMini が Tom の iPhone に入っているか)"
+PHONE_BUNDLE="com.tomarai.remotemini"
+# 対照が「道具そのものが無い」枝を測れる様に、名前だけ差し替えられる継ぎ目を置く
+# (ssh を PATH で偽装する此処の流儀と同じ理由。既定は素の xcrun)。
+PHONE_XCRUN="${RC_PHONE_XCRUN:-xcrun}"
+if ! command -v "$PHONE_XCRUN" >/dev/null 2>&1; then
+    say_unm "xcrun が無い —— 電話の側は測れていない"
+else
+    _dj=$(mktemp); _aj=$(mktemp)
+    if ! "$PHONE_XCRUN" devicectl list devices --timeout 30 --json-output "$_dj" >/dev/null 2>&1; then
+        say_unm "devicectl が機器一覧を返さない —— 電話の側は測れていない"
+    else
+        _dev=$(/usr/bin/python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+for x in d.get("result", {}).get("devices", []):
+    h = x.get("hardwareProperties", {}) or {}
+    c = x.get("connectionProperties", {}) or {}
+    if h.get("platform") == "iOS" and c.get("pairingState") == "paired":
+        print(x.get("identifier", ""))
+        break
+' "$_dj")
+        if [ -z "$_dev" ]; then
+            say_unm "iPhone が此処から見えない —— 繋いでから撃つ(繋がっていない事は「入っていない」の証拠にならない)"
+        elif ! "$PHONE_XCRUN" devicectl device info apps --device "$_dev" \
+                  --bundle-id "$PHONE_BUNDLE" --timeout 60 \
+                  --json-output "$_aj" >/dev/null 2>&1; then
+            say_unm "電話は見えるが一覧を返さない(tunnel が落ちた疑い)—— 測り直す"
+        else
+            # ★件数だけ数えない。`--bundle-id` で絞って問い合わせてはいるが、
+            #   **絞り込みが効いている事**まで此処で確かめる(Codex 2026-08-09 指摘①:
+            #   「1件以上」は対象アプリが在る事の証明になっていない)。名前の一致を
+            #   数える = 絞りが壊れて全アプリが返っても緑にならない。
+            #   版の突き合わせに使う `bundleVersion` も**同じ一問**で取る(2度引くと、
+            #   その間に入れ替わった物を「在る」と「どの版か」で別々に見る事になる)。
+            _info=$(/usr/bin/python3 -c '
+import json, sys
+try:
+    apps = json.load(open(sys.argv[1])).get("result", {}).get("apps", [])
+except Exception:
+    print("x -"); sys.exit(0)
+hit = [a for a in apps if a.get("bundleIdentifier") == sys.argv[2]]
+ver = "-"
+for a in hit:
+    b = a.get("bundleVersion")
+    if isinstance(b, str) and b.strip():
+        ver = b.strip().replace(" ", "_")   # 空白は下の語分割を壊すので潰す
+        break
+print("%d %s" % (len(hit), ver))
+' "$_aj" "$PHONE_BUNDLE")
+            _n=${_info%% *}; _ver=${_info##* }
+            case "$_n" in
+                0)  say_bad "電話に RemoteMini が入っていない —— \`bash ios/tools/build.sh\`(引数無し = build + 署名 + install)"
+                    say_note "此処が赤の間、受け入れ表の 5-c / 6-c(電話の側の体感)は永久に未測定のまま" ;;
+                ''|*[!0-9]*) say_unm "一覧の中身が読めない —— 電話の側は測れていない" ;;
+                *)  say_ok "電話に RemoteMini が入っている(${_n} 件)"
+                    # ★期待値は **build.sh に訊く**。此処で `git rev-list --count` を
+                    #   書き直すと、数える範囲を変えた日に片方だけ腐る(写しが2つ問題)。
+                    _bsh="${RC_BUILD_SH:-$HERE/../../ios/tools/build.sh}"
+                    if [ ! -f "$_bsh" ]; then
+                        say_unm "版: 番号を出す道具が見付からない($_bsh)—— 期待値が作れない"
+                    else
+                        _want="$(bash "$_bsh" --print-build-num 2>/dev/null || true)"
+                        case "$_want" in
+                            # 0 = build.sh が git から数えられなかった時の値。緑にも赤にも丸めない
+                            ''|0|*[!0-9]*)
+                                say_unm "版: この木の番号が出せない(--print-build-num = [${_want:-空}])" ;;
+                            *)
+                                case "$_ver" in
+                                    -|'') say_unm "版: 電話側の bundleVersion が一覧に無い" ;;
+                                    "$_want")
+                                        say_ok "版: 電話 ${_ver} = この木 ${_want}(ios/ を触った commit の通算数)"
+                                        say_note "同じ番号でも汚れた木で焼いた物は見分けられない —— そこは画面の rev(DESIGN §8-8)の役" ;;
+                                    *)  say_bad "版: 電話は ${_ver}、この木は ${_want} —— 古い物が載っている。\`bash ios/tools/build.sh\` で焼き直す"
+                                        say_note "番号が \"1\" なら build.sh を通さずに焼いた物(project.yml の直値のまま)" ;;
+                                esac ;;
+                        esac
+                    fi ;;
+            esac
+        fi
+    fi
+    rm -f "$_dj" "$_aj"
+fi
+
+# --- 見張りの側 --------------------------------------------------------------
+# ★2026-08-09 追加(Codex 指摘③「載る先を全部数えたか」の残り1台)。
+#   旅程中に edith が落ちた事を Tom へ知らせるのは athenas の監視だけで、
+#   **その監視が死んだ時に誰も気付かない**。静かな事が健康と見分けが付かない
+#   —— yoda が 46 時間気付けなかったのと同じ形。だから見張りを見張る。
+#
+#   測り方: ログの最新の刻みの齢。齢は **向こうの時計**で出す(此処と athenas の
+#   時計がずれていても嘘にならない)。閾値は plist の StartInterval から導く ——
+#   600 を此処へ書き写すと、向こうの刻みを変えた日に此処が黙って嘘になる。
+#   読めなければ閾値が作れないので **未測定**(既定値へ落として緑にしない)。
+echo
+echo "見張りの側(edith が落ちた事を知らせる監視そのものが生きているか)"
+MON_HOST="${RC_MONITOR_HOST:-athenas}"
+MON_LABEL="com.fleet.rc-health-observer"
+# ssh は host ごとに1本。edith の1本目と混ぜない = 向こうが落ちても此処までの判定は残る
+MRAW=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$MON_HOST" '
+    p() { printf "%s=%s\n" "$1" "$2"; }
+    L="$HOME/.rc-backend/health-observer.log"
+    PL="$HOME/Library/LaunchAgents/com.fleet.rc-health-observer.plist"
+
+    if launchctl list com.fleet.rc-health-observer >/dev/null 2>&1; then
+        p job loaded
+    else
+        p job absent
+    fi
+
+    # 刻みの設定。写しを作らない為、向こうの正本から読む
+    if [ -f "$PL" ]; then
+        iv=$(/usr/libexec/PlistBuddy -c "Print :StartInterval" "$PL" 2>/dev/null)
+        p interval "${iv:-unreadable}"
+    else
+        p interval noplist
+    fi
+
+    if [ ! -f "$L" ]; then
+        p log missing
+    else
+        p log present
+        # 判定行(ok / ng)だけを刻みとして数える。警報や鍵の行は刻みではない
+        last=$(grep -oE "^\[[0-9-]+ [0-9:]+\] (ok|ng)" "$L" | tail -1 \
+               | sed "s/^\[//; s/\].*//")
+        if [ -z "$last" ]; then
+            p age noticks
+        else
+            le=$(date -j -f "%Y-%m-%d %H:%M:%S" "$last" +%s 2>/dev/null)
+            if [ -z "$le" ]; then p age unparsed
+            else p age "$(( $(date +%s) - le ))"; fi
+        fi
+        p ticks "$(grep -cE "^\[[0-9-]+ [0-9:]+\] (ok|ng)" "$L" 2>/dev/null)"
+    fi
+' 2>/dev/null)
+
+mg() { printf '%s\n' "$MRAW" | sed -n "s/^$1=//p" | head -1; }
+
+if [ -z "$MRAW" ]; then
+    say_unm "監視の居る機械に届かない(${MON_HOST})—— **赤ではない**。此処の回線かもしれず、"
+    say_note "  届かない事は「監視が死んでいる」の証拠にならない。繋がる所で測り直す"
+else
+    case "$(mg job)" in
+        absent) say_bad "${MON_LABEL} が launchctl に居ない —— 旅程中ずっと黙る。据え直す" ;;
+        loaded) say_note "${MON_LABEL} は launchctl に居る(居る事と回っている事は別。下で測る)" ;;
+        *)      say_unm "監視の登録状態が読めない" ;;
+    esac
+
+    iv=$(mg interval); age=$(mg age)
+    case "$(mg log)" in
+        missing)
+            say_bad "監視のログが1本も無い —— 据えたが一度も書いていない疑い。手で1回撃って見る" ;;
+        present)
+            case "$iv" in
+                ''|*[!0-9]*)
+                    say_unm "刻みの設定(StartInterval)が読めない(${iv:-空})—— 何秒で古いと言えるのか決まらない" ;;
+                *)
+                    # 2刻み落とすまでは待つ。実測の最大ずれは 602 秒(2026-08-09、195 刻み)
+                    # なので、この余裕は観測されたぶれの倍以上ある
+                    lim=$(( iv * 2 + 300 ))
+                    case "$age" in
+                        noticks)  say_bad "ログに判定の行が1本も無い —— 回っていない" ;;
+                        unparsed) say_unm "最新の刻みの時刻が読めない —— 齢を出せない" ;;
+                        ''|*[!0-9]*) say_unm "最新の刻みの齢が読めない(${age:-空})" ;;
+                        *)
+                            if [ "$age" -le "$lim" ]; then
+                                say_ok "回っている(最新の刻みは ${age} 秒前 / 刻み ${iv} 秒 / 通算 $(mg ticks) 回)"
+                                say_note "此処の緑が言うのは「監視が動いている」まで。**Discord まで出るか**は"
+                                say_note "  此処では測れない(据付日に注入した失敗で経路は通っている、が最後)"
+                            else
+                                say_bad "監視が止まっている —— 最新の刻みが ${age} 秒前(上限 ${lim} 秒 = 刻み ${iv} の2回分+余裕)"
+                                say_note "  此処が赤の間、旅程中の沈黙は「無事」と区別が付かない。"
+                                say_note "  直す = ${MON_HOST} で launchctl kickstart -k gui/\$(id -u)/${MON_LABEL}"
+                            fi ;;
+                    esac ;;
+            esac ;;
+        *) say_unm "監視のログの在否が読めない" ;;
+    esac
+fi
 
 # --- 判定 --------------------------------------------------------------------
 # 順序が要点: 赤が1つでも在れば赤。無ければ未測定を緑に丸めない。

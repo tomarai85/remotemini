@@ -16,6 +16,8 @@
 #   ./tools/build.sh                 -- build + sign + install on the phone
 #   ./tools/build.sh --no-install    -- build + sign only (verifies the signature)
 #   ./tools/build.sh --sim           -- simulator build + test, no signing at all
+#   ./tools/build.sh --print-device  -- どの電話へ入れるつもりかだけを出す(焼かない)
+#   ./tools/build.sh --print-build-num -- 今焼くなら何番になるかだけを出す(焼かない)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,8 +34,10 @@ case "${1:-}" in
   --no-install) MODE="sign" ;;
   --sim) MODE="sim" ;;
   --print-rev) MODE="rev" ;;
+  --print-device) MODE="device" ;;
+  --print-build-num) MODE="num" ;;
   "") ;;
-  *) echo "usage: $0 [--no-install|--sim|--print-rev]" >&2; exit 2 ;;
+  *) echo "usage: $0 [--no-install|--sim|--print-rev|--print-device|--print-build-num]" >&2; exit 2 ;;
 esac
 
 step() { echo "==> $*"; }
@@ -84,6 +88,114 @@ if [ "$MODE" = "rev" ]; then
   exit 0
 fi
 
+# ★機械が突き合わせられる版(2026-08-10 / Codex 指摘②)。
+#
+# 何を直しに来たか: 鎖⑧(渡米前検査の「電話の側」)は **在るか無いか**しか言えず、
+# 自分の出力に「版の一致は此処では測れない —— 電話の画面の名乗りで見る」と書いていた。
+# それは #56(edith が 5 commit 古い版で走っていた)と同じ穴が電話側に開いたまま、
+# 塞ぐ役を Tom の目に預けている状態。**人の目にしか出来ない事へ機械の仕事を寄せない**。
+#
+# なぜ sha ではなく commit の通算数か: `xcrun devicectl device info apps` が返すのは
+# 固定の schema で、Info.plist の任意の鍵(RCBuildRev)は**出て来ない**。出て来る版の
+# 欄は version(CFBundleShortVersionString)と bundleVersion(CFBundleVersion)の2つだけ。
+# その CFBundleVersion は「点区切りの整数で単調増加」しか受けない枠なので、sha は
+# 構造上入らない(BuildInfo.swift の revKey の comment に同じ理由が書いてある)。
+# 通算数はその枠に其のまま乗る唯一の版の形。
+#
+# ★これで判らない物 = **汚れた木で焼いた事**。commit しない限り通算数は動かないので、
+#   同じ番号で中身の違う app が焼ける。其れを名乗るのは RCBuildRev(sha + -dirty)の役で、
+#   2つは写しではなく**役が違う**: 番号 = 機械が突き合わせる / rev = 人が画面で読む。
+#
+# ★数える範囲を **ios/ を触った commit だけ**にしてある(`-- .`。`$HERE` = ios/)。
+#   repo 全体の通算数にすると、WORKLOG や DESIGN を1行直しただけで番号が動き、
+#   **中身が1 byte も変わっていない電話**が「古い」と赤くなる。実測 2026-08-10:
+#   直近 10 commit のうち ios/ を触ったのは 2 本 —— 全体で数えると 8 回が嘘の赤だった。
+#   嘘の赤は2度払う(今日は違う場所を疑わせ、明日は本物の赤を読み飛ばさせる)。
+#   #61 で潰したばかりの型を、番号の側で作り直さない。
+#   逆側の危険(範囲を絞り過ぎて本物の変更を見落とす)には、絞りを Sources だけに
+#   しない事で対処した —— 見落とし = 古い app が緑、が此の鎖の潰したい形そのもの。
+#
+# 判らない時に 0 を返すのは、緑にも赤にも丸めない為の値。突き合わせる側(鎖⑧)は
+# 期待値が 0 なら **未測定** へ倒す。CFBundleVersion に非数値は入れられないので、
+# 「読めなかった」を文字で名乗る事が此処では出来ない。
+build_num() {
+  local n
+  n="$(git -C "$HERE" rev-list --count HEAD -- . 2>/dev/null || true)"
+  case "$n" in
+    ''|*[!0-9]*) echo "0" ;;
+    *) echo "$n" ;;
+  esac
+}
+
+if [ "$MODE" = "num" ]; then
+  # 鎖⑧が期待値を取る口。**計算は此処にしか無い** —— 検査側で
+  # `git rev-list --count` を書き直すと、片方だけ直る日が来る。
+  build_num
+  exit 0
+fi
+
+# どの電話へ入れるかを実行時に決める。UDID を焼き込むと「電話が繋がっていない」が
+# 「どこかへ入れた」に化けるので、それはしない。
+#
+# ★2026-08-09: 選ぶ条件を tunnelState から pairingState へ変えた。実測 ——
+#   一覧が `tunnelState=disconnected` を返した電話に対して install がそのまま通り、
+#   devicectl 自身が最初の行で `Acquired tunnel connection to device.` と言った。
+#   つまり tunnelState は「いま管が張られているか」であって「張れるか」ではない。
+#   これを門にすると、繋がる電話を「繋がっていない」と断って作業ごと止まる ——
+#   実際この行のせいで install が1回空振りし、電話の側を疑いに行った。
+#   正しい値を持たない診断を判定にすると、嘘の赤で検査ごと信用されなくなる。
+#   だから門は「対になっている iOS 機が1台に決まるか」だけにし、届くかどうかは
+#   install 自身に決めさせる(3回の撃ち直しが本物の判定)。
+#
+# 標準出力へ出すのは**識別子1行だけ**。説明も苦情も stderr へ出す(呼ぶ側が
+# `$(resolve_device)` で受けるので、混ぜると識別子が汚れる)。
+resolve_device() {
+  if [ -n "${RC_DEVICE:-}" ]; then
+    # 名指しされた時は一覧を引かない。一覧が引けない場所でも撃てる様にする為
+    echo "    RC_DEVICE で名指し: $RC_DEVICE" >&2
+    printf '%s\n' "$RC_DEVICE"
+    return 0
+  fi
+  xcrun devicectl list devices --json-output "$DERIVED/devices.json" >/dev/null 2>&1 \
+    || { echo "devicectl が機器の一覧を出せない -- Xcode の command line tools を確かめる" >&2; return 1; }
+  local dev
+  dev=$(/usr/bin/python3 -c '
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+except Exception as e:
+    sys.stderr.write("devicectl の一覧が読めない(%s)\n" % e); sys.exit(3)
+devs=d.get("result",{}).get("devices") if isinstance(d,dict) else None
+if not isinstance(devs,list):
+    sys.stderr.write("devicectl の一覧の形が変わった(result.devices が無い)\n"); sys.exit(3)
+out=[]
+for x in devs:
+    if not isinstance(x,dict): continue
+    ident=x.get("identifier")
+    plat=(x.get("hardwareProperties") or {}).get("platform")
+    pair=(x.get("connectionProperties") or {}).get("pairingState")
+    if isinstance(ident,str) and plat=="iOS" and pair=="paired":
+        out.append(ident)
+if len(out)==1:
+    print(out[0])
+elif len(out)>1:
+    # 複数居る時に黙って先頭を選ぶと「どこかへ入れた」になる。名指しさせる
+    sys.stderr.write("対になった iOS 機が %d 台ある。RC_DEVICE=<識別子> で名指しする:\n" % len(out))
+    for i in out: sys.stderr.write("  %s\n" % i)
+    sys.exit(4)
+' "$DERIVED/devices.json") || return $?
+  [ -n "$dev" ] || { echo "対になった iOS 機が1台も居ない -- 電話の鍵を外して、ペアリングを確かめる" >&2; return 1; }
+  printf '%s\n' "$dev"
+}
+
+if [ "$MODE" = "device" ]; then
+  # 焼かずに「今この機械はどの電話へ入れるつもりか」だけを出す口。
+  # 対照が此処を撃つ(step 6 と**同じ関数**を撃つので、写しにならない)。
+  mkdir -p "$DERIVED"
+  resolve_device
+  exit 0
+fi
+
 step "1. generate project"
 # xcodegen が project.yml の `RCBuildRev: "${RC_BUILD_REV}"` へ差し込む。**generate の前**に
 # export する事。未定義でも xcodegen は落ちず、`${RC_BUILD_REV}` という文字列をそのまま
@@ -93,6 +205,29 @@ RC_BUILD_REV="$(build_rev)"
 export RC_BUILD_REV
 echo "    版: $RC_BUILD_REV"
 xcodegen generate >/dev/null
+
+# 番号(CFBundleVersion)は xcodegen の `${VAR}` 差し込みに**乗せず**、生成された
+# Info.plist を此処で書き換える。理由(2026-08-10):
+#   `CFBundleVersion: "${RC_BUILD_NUM}"` と書くと、build.sh を通さない xcodegen の
+#   呼び手が壊れた値を貰う —— ios/tools/ui-fixture-absence-control.sh と
+#   signout-notice-control.sh は自分で `xcodegen generate` を撃つ。変数が無くても
+#   xcodegen は落ちず `${RC_BUILD_NUM}` という**文字列**を書く(RCBuildRev で実測済。
+#   現に此の瞬間の ios/Info.plist は掃引が生成した `RCBuildRev = ${RC_BUILD_REV}` を
+#   持っている)。RCBuildRev は誰も検証しない自作の鍵なので其れで済むが、
+#   CFBundleVersion は **OS が検証する枠**で、壊れた値を全ての焼き手へ配る事になる。
+#   此処で書き換えれば他の呼び手は project.yml の直値のまま無傷で、なお
+#   **build.sh を通さずに焼いた物は番号が合わない = 鎖⑧が赤**になる(fail-closed)。
+# Info.plist は xcodegen の生成物(ios/.gitignore 済)なので、毎回 generate → 刻印の順。
+RC_BUILD_NUM="$(build_num)"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $RC_BUILD_NUM" "$HERE/Info.plist" >/dev/null
+# 刻めた事を其の場で読み戻す。黙って効かない形(鍵の名前が変わった / 生成先が動いた)は
+# 読み戻さないと**焼いて電話に入れた後**にしか判らない。
+_stamped="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$HERE/Info.plist" 2>/dev/null || true)"
+[ "$_stamped" = "$RC_BUILD_NUM" ] || {
+  echo "CFBundleVersion を刻めなかった(読み戻し=[$_stamped] 期待=[$RC_BUILD_NUM])" >&2
+  exit 1
+}
+echo "    番号: $RC_BUILD_NUM"
 
 if [ "$MODE" = "sim" ]; then
   step "2. build + test on the simulator ($SIM_NAME)"
@@ -221,23 +356,7 @@ echo "    signed: $APP"
 [ "$MODE" = "install" ] || exit 0
 
 step "6. install"
-# Resolve the device at run time. A hard-coded UDID turns "the phone is not
-# plugged in" into "installed something somewhere", which is worse.
-DEV=$(xcrun devicectl list devices --json-output "$DERIVED/devices.json" >/dev/null 2>&1 &&
-  /usr/bin/python3 -c '
-import json,sys
-d=json.load(open(sys.argv[1]))
-def walk(o,out):
-    if isinstance(o,dict):
-        if "identifier" in o and isinstance(o.get("identifier"),str) and o.get("connectionProperties",{}).get("tunnelState") in ("connected","available"):
-            out.append(o["identifier"])
-        for v in o.values(): walk(v,out)
-    elif isinstance(o,list):
-        for x in o: walk(x,out)
-out=[]; walk(d,out)
-print(out[0] if out else "")
-' "$DERIVED/devices.json")
-[ -n "$DEV" ] || { echo "no connected device -- unlock the phone and make sure it is paired" >&2; exit 1; }
+DEV=$(resolve_device) || exit $?
 
 # Retry, because the tunnel genuinely flakes. Measured 2026-08-05: install
 # succeeded first try, the uninstall right after it died with CoreDeviceError

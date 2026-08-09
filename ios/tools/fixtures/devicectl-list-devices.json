@@ -1,0 +1,109 @@
+{
+  "info": {
+    "arguments": [
+      "devicectl",
+      "list",
+      "devices",
+      "--json-output",
+      "<path>"
+    ],
+    "commandType": "devicectl.list.devices",
+    "environment": {},
+    "jsonVersion": 3,
+    "outcome": "success",
+    "version": "518.33"
+  },
+  "result": {
+    "devices": [
+      {
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.acquireusageassertion",
+            "name": "Acquire Usage Assertion"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.connectdevice",
+            "name": "Connect to Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.tags",
+            "name": "Modify Tags"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.default.user.credentials",
+            "name": "Modify credentials for default users for a device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.unpairdevice",
+            "name": "Unpair Device"
+          }
+        ],
+        "connectionProperties": {
+          "authenticationType": "manualPairing",
+          "isMobileDeviceOnly": false,
+          "lastConnectionDate": "2026-08-09T14:50:00.000Z",
+          "pairingState": "paired",
+          "potentialHostnames": [
+            "iPhone-0.coredevice.local",
+            "11111111-2222-3333-4444-555555555555.coredevice.local",
+            "00000000-000000000000000.coredevice.local"
+          ],
+          "transportType": "localNetwork",
+          "tunnelState": "disconnected",
+          "tunnelTransportProtocol": "tcp"
+        },
+        "deviceProperties": {
+          "bootedFromSnapshot": true,
+          "bootedSnapshotName": "com.apple.os.update-0000000000000000000000000000000000000000000000000000000000000000",
+          "ddiServicesAvailable": false,
+          "developerModeStatus": "enabled",
+          "hasInternalOSBuild": false,
+          "name": "iPhone (0)",
+          "osBuildUpdate": "23F77",
+          "osVersionNumber": "26.5",
+          "rootFileSystemIsWritable": false,
+          "screenViewingURL": "devices://device/open?id=11111111-2222-3333-4444-555555555555",
+          "supportsCheckedAllocations": false
+        },
+        "hardwareProperties": {
+          "cpuType": {
+            "name": "arm64e",
+            "subType": 2,
+            "type": 16777228
+          },
+          "deviceType": "iPhone",
+          "ecid": 1111111111111111,
+          "hardwareModel": "D17AP",
+          "internalStorageCapacity": 128000000000,
+          "isProductionFused": true,
+          "marketingName": "iPhone 13",
+          "platform": "iOS",
+          "productType": "iPhone14,5",
+          "reality": "physical",
+          "serialNumber": "XXXXXXXXXX",
+          "supportedCPUTypes": [
+            {
+              "name": "arm64e",
+              "subType": 2,
+              "type": 16777228
+            },
+            {
+              "name": "arm64",
+              "subType": 0,
+              "type": 16777228
+            }
+          ],
+          "supportedDeviceFamilies": [
+            1
+          ],
+          "thinningProductType": "iPhone14,5",
+          "udid": "00000000-000000000000000"
+        },
+        "identifier": "11111111-2222-3333-4444-555555555555",
+        "tags": [],
+        "visibilityClass": "default"
+      }
+    ]
+  },
+  "_note": "\u672c\u7269\u306e `xcrun devicectl list devices --json-output` \u306e\u51fa\u529b(2026-08-09)\u304b\u3089\u3001\u500b\u4f53\u3092\u6307\u3059\u5024\u3060\u3051\u3092\u5dee\u3057\u66ff\u3048\u305f\u7269\u3002\u9375\u306e\u4e26\u3073\u30fb\u578b\u30fb\u5165\u308c\u5b50\u306f\u672c\u7269\u306e\u307e\u307e\u3002\u5dee\u3057\u66ff\u3048\u305f\u5024: identifier / serialNumber / udid / ecid / \u7aef\u672b\u540d / potentialHostnames / bootedSnapshotName\u3002\u2605tunnelState \u306f `disconnected` \u306e\u307e\u307e\u6b8b\u3057\u3066\u3042\u308b \u2014\u2014 \u3053\u306e\u72b6\u614b\u306e\u5b9f\u6a5f\u3078 install \u304c\u901a\u308b\u4e8b\u3092\u540c\u65e5\u306b\u5b9f\u6e2c\u3057\u3066\u304a\u308a\u3001\u3053\u308c\u304c\u5bfe\u7167\u306e\u4e3b\u984c\u305d\u306e\u3082\u306e\u3060\u304b\u3089\u3002"
+}

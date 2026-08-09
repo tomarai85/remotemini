@@ -482,6 +482,25 @@ LOCAL_CTLS=(
                                      # ★`.harness/live-interrupt-wording-controls.sh` とは別物:
                                      #   向こうは**掴む文が2つの file で一致しているか**、此処は
                                      #   **掴んだ後にどう裁くか**。同じ台本の別の穴。
+    ../ios/tools/build-device-pick-control.sh # ★2026-08-09。`ios/tools/build.sh` が
+                                     # **どの電話へ入れるか決める所**の対照(10 本)。
+                                     # 据えた理由 = 此処が同日、実際に**嘘の赤**を出した:
+                                     # 一覧の `tunnelState=disconnected` を門にしていたので
+                                     # 繋がる実機を「no connected device」と断り、電話の側を
+                                     # 疑いに行った。直後に同じ機へ install が通り、devicectl 自身が
+                                     # `Acquired tunnel connection to device.` と言った ——
+                                     # tunnelState は「いま管が張られているか」であって
+                                     # 「張れるか」ではない。正しい値を持たない診断を判定にすると、
+                                     # 嘘の赤で検査ごと信用されなくなる。
+                                     # 入力は**本物の devicectl の出力**から個体を指す値だけ
+                                     # 差し替えた物(tools/fixtures/devicectl-list-devices.json)。
+                                     # 継ぎ目 = `RC_BUILD_SH`。変異5通りが狙った行だけを倒す事まで
+                                     # 見た(M1 旧版へ戻す→A、M2 黙って先頭→C、M3 名指し外し→D、
+                                     # M4 形の変化を空へ丸め→F、M5 xcrun の失敗を飲む→H)。実測1秒未満。
+                                     # ★1本(I)だけは対象ではなく**入力**を測る = fixture に本物の
+                                     # 個体が残っていない事。作り直す人は必ず実機の前に居るので、
+                                     # 差し替え漏れがそのまま commit へ乗る(実際、欄の名前で潰したら
+                                     # potentialHostnames に3通りの形で残っていた)。型で見張る。
     ../.harness/dod-sprint-3-controls.sh # ★2026-08-05。Sprint 3 の DoD 照合表
                                      # (`.harness/dod-sprint-3.sh`)の対照 = 15 行のうち 12 行が
                                      # **本当に赤にも緑にもなる**事を測る。照合表は「全部緑」を
