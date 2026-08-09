@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/test/wire-key-agreement.test.mjs rc-backend/src/view.mjs rc-backend/src/blocked.mjs rc-backend/src/wire.mjs rc-backend/src/sessions.mjs rc-backend/src/registry.mjs rc-backend/src/server.mjs ios/Sources/Core/PollModels.swift ios/Sources/Core/SessionsModels.swift ios/Sources/Core/ResultDisplay.swift
+# controls-for: rc-backend/test/wire-key-agreement.test.mjs rc-backend/src/view.mjs rc-backend/src/blocked.mjs rc-backend/src/wire.mjs rc-backend/src/sessions.mjs rc-backend/src/registry.mjs rc-backend/src/server.mjs ios/Sources/Core/PollModels.swift ios/Sources/Core/SessionsModels.swift ios/Sources/Core/ResultDisplay.swift ios/Sources/Core/HistoryModels.swift
 #
 # 何を守る対照か —— **電話の `Decodable` が名乗る鍵名と、サーバが実際に吐く鍵名が、
 # 同じ綴りである事**。
@@ -58,9 +58,10 @@ SERVER="rc-backend/src/server.mjs"
 POLLM="ios/Sources/Core/PollModels.swift"
 SESSM="ios/Sources/Core/SessionsModels.swift"
 RESULTD="ios/Sources/Core/ResultDisplay.swift"
+HISTM="ios/Sources/Core/HistoryModels.swift"
 
 for f in "$TESTF" "$VIEW" "$BLOCKED" "$WIRE" "$SESSJS" "$REGJS" "$SERVER" \
-         "$POLLM" "$SESSM" "$RESULTD" \
+         "$POLLM" "$SESSM" "$RESULTD" "$HISTM" \
          rc-backend/test/subtree.mjs rc-backend/test/swiftsrc.mjs rc-backend/test/jssrc.mjs \
          DESIGN.md; do
     if [ ! -f "$ROOT/$f" ]; then
@@ -198,6 +199,49 @@ probe "電話 SessionRow.title だけ改名される(Ⓓ の相方)" "$SESSM" \
     "    let title: String" \
     "    let heading: String"
 
+# --- ここから S8-26(2026-08-09)で足した poll / 履歴の8組 ---------------------
+#
+# ★8組のうち3組は `phone-subset`(PollResponse / MessageItem / GapItem)なので、
+#   両側から植える。残り5組は完全一致なので、片側が死んでいれば組が空になり①が赤くなる
+#   —— だから1本で足りる。**「両方植てあるから丁寧」ではなく、mode で必要本数が違う**。
+
+# ㉑ poll の封筒で電話だけが `display` を落とす。ワーカー経路は元から `display` を送らないので、
+#    電話は `PollDisplay?` で受けている —— つまり**改名しても復号は通り、例外も出ない**。
+#    選択カードが二度と出なくなるのに、両側の単体検査は緑のまま。S8-24 の動機そのものの形。
+probe "電話 PollResponse.display が改名される" "$POLLM" \
+    "    let display: PollDisplay?" \
+    "    let shown: PollDisplay?"
+
+# ㉒ その一段内側。`choice` が落ちれば「選択待ちだと分かるのに答えられない」に戻る
+#    (S6 が直した症状)。`ChoiceView?` なので、これも黙って `nil` になるだけ。
+probe "電話 PollDisplay.choice が改名される" "$POLLM" \
+    "    let choice: ChoiceView?" \
+    "    let pick: ChoiceView?"
+
+# ㉓ tmux 経路の発言の束。`[HistoryEntry]?` は「ワーカー経路だから無い」と見分けが付かないので、
+#    改名すると**会話が永久に空のまま流れる**(切断でも誤りでもなく、ただ何も出ない)。
+probe "電話 MessageItem.entries が改名される" "$POLLM" \
+    "    let entries: [HistoryEntry]?" \
+    "    let rows: [HistoryEntry]?"
+
+# ㉔ 欠落の報せの `CodingKeys`。property 名は無傷なので Swift 側は何も気付かない。
+#    `seq` が落ちても v1 は誰も読まないが、`serverOnly` の宣言(`kind` だけ)は嘘になる。
+probe "電話 GapItem の CodingKeys seq が改名される" "$POLLM" \
+    "    private enum CodingKeys: String, CodingKey { case why, display, seq }" \
+    "    private enum CodingKeys: String, CodingKey { case why, display, num }"
+
+# ㉕ 履歴の封筒の `CodingKeys`。`truncated` が落ちると `decodeIfPresent ?? false` が
+#    **常に false** になり、「以前を読む」が出ない会話が出来る —— 押せないのではなく、無い。
+probe "電話 HistoryResponse の CodingKeys truncated が改名される" "$HISTM" \
+    "        case history, truncated" \
+    "        case history, cut"
+
+# ㉖ 発言者名。S8-21 が「fixture だけが良い版を持っていた」を直した所で、鍵名が動けば
+#    元の木阿弥になる —— 名前が出ないのではなく、`who` が空文字で描かれる。
+probe "電話 HistoryEntry.EntryDisplay.who が改名される" "$HISTM" \
+    "        let who: String" \
+    "        let whom: String"
+
 echo
 echo "== サーバの側だけ鍵名が動く =="
 
@@ -250,6 +294,55 @@ probe "サーバ sessionsBody が宣言していない鍵を1つ増やす" "$WIR
     "display: { scan: scanLine(scan) },
     debugTrace: \"x\","
 
+# --- ここから S8-26(2026-08-09)の側A ------------------------------------------
+
+# ㉗ 履歴の封筒の外側の鍵。落ちれば会話が**開いた瞬間に空**になる(誤りは出ない)。
+#    下の陰性Ⓕ(両側そろえて `history` → `entries`)の相方 —— 片側だけ動かした木が
+#    赤い事を先に押さえていないと、Ⓕ の緑は「両側そろっている」でも
+#    「`history` を誰も測っていない」でも同じ顔をする。
+probe "サーバ historyBody の history が改名される(Ⓕ の相方)" "$WIRE" \
+    "  return { history: entries.map(withWho), truncated };" \
+    "  return { entries: entries.map(withWho), truncated };"
+
+# ㉘ ★`serverOnly: ["route"]` が生きた宣言か作文かを決める1本。電話は経路を読まないので
+#    画面は1ピクセルも変わらない —— 此処が緑になる検査は「サーバは好きな鍵を足してよい」
+#    と言っているのと同じで、電話が読むべき鍵を落とした日も同じ緑を出す。
+probe "サーバ pollBodyTmux の route が改名される(宣言した serverOnly と食い違う)" "$WIRE" \
+    '    route: "tmux",' \
+    '    path: "tmux",'
+
+# ㉙ ★`display` は **tmux 経路にしか無い鍵**。ここを改名すると `PollDisplay` の組が
+#    比べる物ゼロになる —— 「0件 = 全部一致」を①が赤で止めているかの確認。
+probe "サーバ pollBodyTmux の display が改名される(PollDisplay の組が空になる)" "$WIRE" \
+    "    display: { choice: screen ? choiceView(screen) : null }," \
+    "    shown: { choice: screen ? choiceView(screen) : null },"
+
+# ㉚ ★ワーカー経路の封筒が**本当に読まれているか**。今日のワーカーの鍵は tmux の部分集合なので、
+#    和から外しても何も変わらない —— つまり此の1本が無いと、組の `builders` に
+#    `pollBodyWorker` が居る事に意味が在るかを誰も言えない。鍵を1つ足して赤を要求する
+#    (S8-18 で足した「上限に当たった」の類が、明日ここへ来る)。
+probe "サーバ pollBodyWorker が宣言していない鍵を1つ増やす" "$WIRE" \
+    "  return { items, screen: null, route: \"worker\", queued, cursor, more };" \
+    "  return { items, screen: null, route: \"worker\", queued, cursor, more, limitHit: false };"
+
+# ㉛ 項目の振り分け語。電話は `PollItem` の enum 側で読むので `serverOnly` に書いてある。
+#    改名すれば**発言も欠落も、どちらとしても解釈されない項目**が流れる。
+probe "サーバ messageItem の kind が改名される(宣言した serverOnly と食い違う)" "$WIRE" \
+    '    kind: "message",' \
+    '    type: "message",'
+
+# ㉜ 欠落の帯の文面。`GapItem` は `display` を1段剥がして `notice` を取るので、
+#    ここが動くと**切れ目は検出されるのに帯が白紙**になる(`nil` = 描かない、が正しい値と
+#    見分けられない —— `tail-attached` が実際に `null` を返す事の裏返し)。
+probe "サーバ gapItem の display.notice が改名される" "$WIRE" \
+    '  const item = { kind: "gap", why, display: { notice: gapNotice(why) } };' \
+    '  const item = { kind: "gap", why, display: { text: gapNotice(why) } };'
+
+# ㉝ 発言者名を作る側。S8-21 が fixture の手書きを潰した所の、サーバ側の相方。
+probe "サーバ withWho の display.who が改名される" "$WIRE" \
+    "  return { ...entry, display: { who: whoOf(entry.role) } };" \
+    "  return { ...entry, display: { name: whoOf(entry.role) } };"
+
 echo
 echo "== 走査から隠れる書き方が増える =="
 
@@ -288,9 +381,14 @@ echo "== 検査自身の錨が外れる(拾えない物を0件にしない) =="
 
 # ⑦ ★側Aの入力を痩せさせる。此の検査が**嘘の緑**を出しうる唯一の道 —— 選択カードの
 #    豊かな枝を1本落とすと `options[]`/`buttons[]` の鍵が一度も出ず、比べる物が消える。
+#
+#    ★2026-08-09、錨を `CHOICE_SCREEN` へ移した。S8-26 で fixture を定数へ括り出した時、
+#      綴りで引いていた此処が**1箇所に定まらない**へ落ちた —— そして UNMEASURED として
+#      声を上げた。S8-30 が潰した「錨が腐って製品の赤に化ける」型を、この対照は
+#      **腐った時に測れていないと言う**形で持っている。緑にも赤にも化けない事が肝。
 probe "側Aの入力が痩せて、或る枝の鍵が一度も出なくなる" "$TESTF" \
-    '    [{ screen: "CHOICE", choice: { head: ["h"], options: [{ n: 1, label: "a" }], keys: ["digit", "enter", "escape"], digest: "d", cursor: 1, kind: "select-model" } }],' \
-    '    [{ screen: "CHOICE", choice: null }],'
+    '  choice: { head: ["h"], options: [{ n: 1, label: "a" }], keys: ["digit", "enter", "escape"], digest: "d", cursor: 1, kind: "select-model" },' \
+    '  choice: null,'
 
 # ⑧ builder の原文を切り出す錨が外れる。原文が読めなければ②(実行と原文の突き合わせ)は
 #    比べる物ゼロになる —— 黙って飛ばさず赤で言う事の確認。
@@ -452,6 +550,48 @@ probe_green "serverOnly の並び順だけを入れ替える" "$TESTF" \
     '    serverOnly: ["project", "cwd", "lastPrompt", "turns", "metadataIncomplete", "readable", "errorCode", "live"],' \
     '    serverOnly: ["live", "errorCode", "readable", "metadataIncomplete", "turns", "lastPrompt", "cwd", "project"],'
 
+# Ⓕ ★履歴の外側の鍵を**両側そろえて** `history` → `entries` へ改名する(㉗ の相方)。
+#   電話側で動かすのは `CodingKeys` の1行**だけ**で、Swift の property は `history` の
+#   ままにする —— これが此の対照の眼目。境界に在るのは線の鍵名であって Swift の名前ではない
+#   ので、`case history = "entries"` と書いた木は**本番が取り得る正しい形**であり、
+#   緑でなければならない。`init(from:)` が `forKey: .history` を引き続き引けるので
+#   木は壊れない(Ⓑ の「property だけ改名」を、線の側から挟んだ格好)。
+/usr/bin/python3 - "$WORK" <<'PYEOF'
+import sys, io, os
+work = sys.argv[1]
+edits = {
+    "rc-backend/src/wire.mjs": [
+        ("  return { history: entries.map(withWho), truncated };",
+         "  return { entries: entries.map(withWho), truncated };"),
+    ],
+    "ios/Sources/Core/HistoryModels.swift": [
+        ("        case history, truncated", '        case history = "entries", truncated'),
+    ],
+}
+for rel, pairs in edits.items():
+    p = os.path.join(work, rel)
+    s = io.open(p, encoding="utf-8").read()
+    for frm, to in pairs:
+        if s.count(frm) != 1:
+            sys.stderr.write("anchor not unique: %s / %s\n" % (rel, frm))
+            sys.exit(3)
+        s = s.replace(frm, to)
+    io.open(p, "w", encoding="utf-8").write(s)
+PYEOF
+if [ $? -ne 0 ]; then
+    echo "  UNMEASURED  履歴の鍵を両側そろえて改名  —— 錨が1箇所に定まらない"
+    UNMEASURED=$((UNMEASURED + 1))
+elif run_suite; then
+    echo "  PASS  履歴の鍵を CodingKeys の側でそろえて改名するのは緑のまま"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL  そろえた改名を赤にした = Swift の property 名まで境界と読んでいる"
+    FAIL=$((FAIL + 1))
+    /usr/bin/tail -12 "$WORK/out.txt"
+fi
+restore_from_root "$WIRE"
+restore_from_root "$HISTM"
+
 echo
 echo "== 飛ばしは緑ではない(部分木で無音になる道) =="
 # 木の外が見えない写しでは `requireOutside` が `{ skip: 理由 }` を返し、node は
@@ -482,7 +622,7 @@ fi
 
 echo
 echo "== 対象が消えたら赤(改名・削除を素通りさせない) =="
-for gone in "$POLLM" "$SESSM" "$RESULTD" "$VIEW" "$BLOCKED" \
+for gone in "$POLLM" "$SESSM" "$RESULTD" "$HISTM" "$VIEW" "$BLOCKED" \
             "$WIRE" "$SESSJS" "$REGJS" "$SERVER"; do
     /bin/mv "$WORK/$gone" "$WORK/$gone.hidden"
     if run_suite; then

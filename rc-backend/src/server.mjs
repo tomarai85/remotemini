@@ -14,7 +14,7 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync } from "node:child_process";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow } from "./sessions.mjs";
-import { sessionRow, sessionsBody } from "./wire.mjs";
+import { gapItem, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho } from "./wire.mjs";
 import { JsonlTail, formatPollCursor, pollDecision, resumeDecision } from "./tail.mjs";
 import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
@@ -990,30 +990,6 @@ function json(res, code, obj) {
   res.end(body);
 }
 
-/**
- * 流れの切れ目1件。**帯に出す文面まで**をここで決める(S 群)。
- *
- * ★`gapNotice` は `tail-attached`(購読を張った瞬間の正直な継ぎ目)に `null` を返す =
- *   「出さない」。`null` を空文字に化かさない —— 「出す物が無い」と「文面が空」は別で、
- *   後者は帯に空の警告を出す。`why` は消さずに残す(電話が理由で分岐する道を塞がない)。
- */
-function gapItem(why, seq) {
-  const item = { kind: "gap", why, display: { notice: gapNotice(why) } };
-  return seq === undefined ? item : { ...item, seq };
-}
-
-/**
- * 履歴・ライブの1発言に**表示語だけ**を足す(DESIGN §2.13 の S 群)。
- *
- * ★`role` は消さない。ネイティブは `display.who` を描くが、`app.html` は今まで通り
- *   自分で `whoOf(role)` を呼ぶ。片方だけが読む鍵を消すと、追加のみという条件が壊れる。
- * ★発言そのもの(`text`)には触らない。ここは**語を足す**層で、丸める層ではない。
- */
-function withWho(entry) {
-  if (!entry || typeof entry !== "object") return entry;
-  return { ...entry, display: { who: whoOf(entry.role) } };
-}
-
 async function readBody(req, limit = 64 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -1182,7 +1158,10 @@ const server = createServer(async (req, res) => {
       try {
         const h = readHistoryFromPath(target, limit);
         // truncated = これより前がある。電話側が「以前を読む」を出せる様に名乗る。
-        return json(res, 200, { history: h.history.map(withWho), truncated: h.truncated });
+        // ★上下の `{ history: [] }` / `{ history: [], truncated: false }` は**均さない**。
+        //   空の応答に2つの形が実在する事を電話側が明示的に受けている(HistoryModels.swift)ので、
+        //   1つに揃えるとその受け方が測れない物になる(S8-26)。
+        return json(res, 200, historyBody({ entries: h.history, truncated: h.truncated }));
       } catch (e) {
         if (e.code === "ENOENT") return json(res, 200, { history: [], truncated: false });
         return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", errno: errnoOf(e) });
@@ -1470,7 +1449,7 @@ const server = createServer(async (req, res) => {
             for (const e of take) {
               cutSeq = e.seq;
               if (e.data.kind === "gap") items.push(gapItem(e.data.why, e.seq));
-              else items.push({ kind: "message", entries: e.data.entries.map(withWho), seq: e.seq });
+              else items.push(messageItem({ entries: e.data.entries.map(withWho), seq: e.seq }));
             }
           } else if (d.kind === "gap") {
             items.push(gapItem(d.why));
@@ -1479,23 +1458,14 @@ const server = createServer(async (req, res) => {
           const seq = cutSeq !== null ? cutSeq : d.kind === "resume" ? d.seq : f.ring.nextSeq - 1;
           // 画面は**読むだけ**。`screenBody()` は `f.work` を書き換えるので poll からは呼ばない。
           const screenChanged = f.screen && f.screen.rev !== (d.kind === "resume" ? d.screenRev : -1);
-          return {
+          // ★封筒そのものは `src/wire.mjs` が組む(S8-26)。此処に literal で書くと、
+          //   `server.mjs` は import した瞬間に listen する為に単体検査から**一度も呼べず**、
+          //   電話の Decodable との鍵名照合が写しの目視に戻る。読む状態(リングの巻き戻し・
+          //   画面の版)は此処に残し、渡すのは**既に決まった観測値**だけ。
+          //   `display.choice` を `screen` に揃える規則も builder 側の1箇所に在る。
+          return pollBodyTmux({
             items,
             screen: screenChanged ? f.screen.body : null,
-            // ★`screen` と**同じ規則**で運ぶ(変わった時だけ載る / `null` = 据え置き)。
-            //   ここを毎回載せると、画面が変わっていない poll が `show:false` を運んで
-            //   **電話が持っている選択待ちの面を消す**。`choiceView` は「サーバの payload の
-            //   純関数」だが、その payload は**毎回来るとは限らない** —— 添える先を
-            //   `screen` に揃える事で初めて S 群として正しくなる(2026-08-05、`readablePoll` を
-            //   C へ戻したのと同じ検討で見つけた)。
-            display: { choice: screenChanged ? choiceView(f.screen.body) : null },
-            route: "tmux",
-            // ★`null` であって `0` ではない(2026-08-04)。机で開かれている会話の送信待ちは
-            //   Claude Code の TUI が自分で持っていて(`Press up to edit queued messages`)、
-            //   我々はその数を**観測できない**。`0` と書けば「待っていない」という断定になる ——
-            //   この系が禁じている「観測できなかったを静かと書かない」そのもの。
-            //   電話側(`queueView`)は数でない値を「知らない」として何も出さない。
-            queued: null,
             cursor: formatPollCursor({
               route: "tmux",
               token: f.epoch,
@@ -1503,7 +1473,7 @@ const server = createServer(async (req, res) => {
               screenRev: f.screen ? f.screen.rev : d.kind === "resume" ? d.screenRev : 0,
             }),
             more,
-          };
+          });
         };
 
         const first = collect();
@@ -1571,15 +1541,16 @@ const server = createServer(async (req, res) => {
             // ★ワーカー経路の item は `entries` ではなく `event`(我々が起こした子の NDJSON
             //   1行)。`whoOf` の材料になる `role` を持たないので**語を足さない** ——
             //   ここに `display` を足すと、無い物から作った名前が付く。
-            items.push({ kind: "message", event: e.data, seq: e.seq });
+            items.push(messageItem({ event: e.data, seq: e.seq }));
           }
           // ★初回(栞なし)は**先端に合わせず 0 から返す**。tmux 経路と違い、ワーカーの出来事は
           //   我々が起こした物なので /history に載らない種類(worker_closed 等)が在る。
         }
-        return {
+        // ★封筒は `src/wire.mjs`(S8-26)。tmux 経路との差が `display` の有無1つだけである事は
+        //   builder の側で見える —— 此処に2つの literal を並べていた間は、差が**意図か
+        //   書き漏れか**を読む側が判別できなかった。
+        return pollBodyWorker({
           items,
-          screen: null,
-          route: "worker",
           // ★数は**持ち主から貰う**。ring からは復元できない —— 積む時は `user_queued` が
           //   出るが、降ろす時は `entry.queue.shift()` して書くだけで**何も出ない**
           //   (worker.mjs の `result` 処理)。事象を数えれば増える一方の数になる。
@@ -1587,7 +1558,7 @@ const server = createServer(async (req, res) => {
           queued: manager.status(sessionId).queued,
           cursor: formatPollCursor({ route: "worker", token: manager.generation, seq }),
           more,
-        };
+        });
       };
 
       const firstW = collectW();

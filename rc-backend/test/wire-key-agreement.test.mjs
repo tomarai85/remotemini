@@ -51,6 +51,10 @@ const NEED = [
   "ios/Sources/Core/PollModels.swift",
   "ios/Sources/Core/SessionsModels.swift",
   "ios/Sources/Core/ResultDisplay.swift",
+  // S8-26 で `HistoryResponse` / `HistoryEntry` / `EntryDisplay` を組に入れたので、
+  // 此の file が無い木は「測れていない」と言わせる。書かないと、消えた時に
+  // 「電話側に居ない = 改名か削除」という**別の理由**の赤に化ける。
+  "ios/Sources/Core/HistoryModels.swift",
 ];
 const gate = requireOutside(NEED);
 const skip = gate.skip;
@@ -93,6 +97,20 @@ const LIVES = [
   { route: "blocked", reason: "no-pane" },
 ];
 const SCAN = { scope: "all", limit: 20, files: 42, read: 7, cached: 35, examined: 42 };
+// 選択待ちの画面。`choiceView` と `pollBodyTmux` の**両方**が要る ——
+// ★写しを2つ置かない。`display.choice` は `pollBodyTmux` が `choiceView` を呼んで作るので、
+//   入力が別物だと「同じ画面から同じカードが出る」という肝心の関係が測れない。
+const CHOICE_SCREEN = {
+  screen: "CHOICE",
+  choice: { head: ["h"], options: [{ n: 1, label: "a" }], keys: ["digit", "enter", "escape"], digest: "d", cursor: 1, kind: "select-model" },
+};
+// 流れの1件・履歴の1件。★`{role, text}` **だけ**にするのは意図で、`sessions.mjs` が
+// 実際に押し込む形をそのまま写した(`out.push({ role: "user", text })`)。ここに線に無い鍵を
+// 足すと `withWho` の出力が増え、電話に無い鍵として④が赤くなる —— 製品ではなく入力の捏造で。
+const ENTRIES = [
+  { role: "user", text: "u" },
+  { role: "assistant", text: "a" },
+];
 
 /** 枝を割る為の入力。**返り値ではなく枝の数で選ぶ** —— 1本しか通さない表は側Aを痩せさせる。 */
 const CASES = {
@@ -107,7 +125,7 @@ const CASES = {
     [{}],
   ],
   choiceView: [
-    [{ screen: "CHOICE", choice: { head: ["h"], options: [{ n: 1, label: "a" }], keys: ["digit", "enter", "escape"], digest: "d", cursor: 1, kind: "select-model" } }],
+    [CHOICE_SCREEN],
     [{ screen: "CHOICE", choice: { head: [], options: [], keys: [], digest: "d", kind: "hard-stop" } }],
     [{ screen: "CHOICE", choice: null }],
     [{ screen: "SENDABLE" }],
@@ -129,6 +147,26 @@ const CASES = {
   sessionsBody: [
     [{ sessions: ROWS.map((r) => sessionRow(r, LIVES[0])), scan: SCAN, paneFault: null }],
     [{ sessions: [], scan: SCAN, paneFault: { reason: "tmux-unavailable", detail: "spawn tmux ENOENT" } }],
+  ],
+  // ★`seq` 有り/無しの**両方**を通す。`gapItem` は無い時に鍵ごと生やさないので、
+  //   片方しか通さないと「線に出る鍵」を測り損ねる(有り側が抜ければ電話は番号を失い、
+  //   無し側が抜ければ `seq: undefined` の混入に気付けない)。
+  gapItem: [
+    ["ring-overflow"], ["tail-attached"], ["cursor-too-long", 12], ["epoch-mismatch"],
+  ],
+  withWho: [[ENTRIES[0]], [ENTRIES[1]], [{ role: "tool", text: "⚙ Bash" }], [null]],
+  messageItem: [
+    [{ entries: ENTRIES.map((e) => wire.withWho(e)), seq: 7 }],
+    [{ event: { type: "assistant", text: "a" }, seq: 8 }],
+  ],
+  pollBodyTmux: [
+    [{ items: [], screen: CHOICE_SCREEN, cursor: "tmux:1:2:3", more: false }],
+    [{ items: [], screen: null, cursor: "tmux:1:2:3", more: true }],
+  ],
+  pollBodyWorker: [[{ items: [], queued: 2, cursor: "worker:1:2", more: false }]],
+  historyBody: [
+    [{ entries: ENTRIES, truncated: true }],
+    [{ entries: [], truncated: false }],
   ],
 };
 
@@ -153,6 +191,14 @@ const MODULE_OF = {
   registryOnlySessions: ["registry", "src/registry.mjs", "out.push("],
   sessionRow: ["wire", "src/wire.mjs"],
   sessionsBody: ["wire", "src/wire.mjs", "export function sessionsBody({ sessions, scan, paneFault }) {"],
+  // 引数を分解しない2本は既定の目印で本文に届く(`gapItem(why, seq)` / `withWho(entry)`)。
+  gapItem: ["wire", "src/wire.mjs"],
+  withWho: ["wire", "src/wire.mjs"],
+  // 残る4本は分解するので目印を明示する —— 既定だと**引数の分解**を本文と読んで0件になる。
+  messageItem: ["wire", "src/wire.mjs", "export function messageItem({ entries, event, seq }) {"],
+  pollBodyTmux: ["wire", "src/wire.mjs", "export function pollBodyTmux({ items, screen, cursor, more }) {"],
+  pollBodyWorker: ["wire", "src/wire.mjs", "export function pollBodyWorker({ items, queued, cursor, more }) {"],
+  historyBody: ["wire", "src/wire.mjs", "export function historyBody({ entries, truncated }) {"],
 };
 const MODULES = { view, blocked, wire, sessions, registry };
 
@@ -391,6 +437,36 @@ const PAIRS = [
     serverOnly: ["project", "cwd", "lastPrompt", "turns", "metadataIncomplete", "readable", "errorCode", "live"],
   },
   { swift: "SessionRow.RowDisplay", builders: ["sessionRow"], at: "display" },
+  // ---- poll と履歴(2026-08-09 / 監査 S8-26。同じ手を封筒の残りへ広げた)
+  {
+    // **経路2本の和**を取る。tmux だけを通すと `queued: null` の側しか出ず、
+    // ワーカーだけだと `display` が消える —— どちらも「電話に無い鍵」ではなく
+    // 「誰も吐かない鍵」として静かに落ちる、S8-25 で行の生産者3本を和にしたのと同じ形。
+    swift: "PollResponse", builders: ["pollBodyTmux", "pollBodyWorker"], at: "",
+    mode: "phone-subset",
+    // 電話は経路を `cursor` の中身で判る(`PollCursor` は不透明な文字列)ので `route` を読まない。
+    serverOnly: ["route"],
+  },
+  { swift: "PollDisplay", builders: ["pollBodyTmux"], at: "display" },
+  {
+    // tmux は `entries`、ワーカーは `event`。**片方ずつしか出ない鍵**なので和が要る。
+    swift: "MessageItem", builders: ["messageItem"], at: "",
+    mode: "phone-subset",
+    // `kind` は項目の振り分け語で、電話は `PollItem` の側(enum)で読む。
+    // `event` はワーカーの生の NDJSON 1行 —— v1 では描かないと決めた(brief §1-a/§1-b)。
+    serverOnly: ["event", "kind"],
+  },
+  {
+    swift: "GapItem", builders: ["gapItem"], at: "",
+    mode: "phone-subset",
+    // 同上・`kind` は振り分け語。`GapItem` の `CodingKeys` は `why, display, seq` で、
+    // `notice` は `display` を1段剥がして取る(下の DisplayBox が受け持つ)。
+    serverOnly: ["kind"],
+  },
+  { swift: "GapItem.DisplayBox", builders: ["gapItem"], at: "display" },
+  { swift: "HistoryResponse", builders: ["historyBody"], at: "" },
+  { swift: "HistoryEntry", builders: ["withWho"], at: "" },
+  { swift: "HistoryEntry.EntryDisplay", builders: ["withWho"], at: "display" },
 ];
 
 const IGNORED = {};
@@ -401,25 +477,19 @@ const IGNORED = {};
  * ★理由は1件ずつ自足させる(「同上」を使わない)。並び替えた瞬間に意味が消える
  *   書き方は、次に読む人には理由が無いのと同じになる。
  *
- * ★封筒(response の一番外側)がまとめて此処に居るのは、`src/server.mjs` が
- *   import した瞬間に listen する為 —— ハンドラの中の literal は単体から呼べない。
- *   静的に読めば触れるが、それは「実行して出た鍵」ではなく別種の測定なので、
- *   混ぜずに空けてある。塞ぐなら封筒を builder として切り出す方が先。
+ * ★此処に残る理由は**全部同じ1つ**に収斂した: 鍵名を決める場所が `src/server.mjs` の中に在り、
+ *   その file は import した瞬間 listen するので単体から呼べない。静的に読めば触れるが、
+ *   それは「実行して出た鍵」ではなく別種の測定なので、混ぜずに空けてある。
  *
- * ★一覧の5本(SessionsResponse / OuterDisplay / PaneFault / SessionRow / RowDisplay)は
- *   2026-08-08(S8-25)に**その順で塞いだ** —— `src/wire.mjs` へ切り出して上の組に移した。
- *   残りも同じ手が効く。此処に残っているのは「難しいから」ではなく「まだやっていない」。
+ * ★塞ぎ方は2度実演済み —— 封筒を `src/wire.mjs` の純関数へ切り出して上の組へ移す。
+ *   一覧の5本(SessionsResponse / OuterDisplay / PaneFault / SessionRow / RowDisplay)が
+ *   2026-08-08(S8-25)、poll と履歴の8本(PollResponse / PollDisplay / MessageItem /
+ *   GapItem + DisplayBox / HistoryResponse / HistoryEntry + EntryDisplay)が
+ *   2026-08-09(S8-26)。残りも同じ手が効く。「難しいから」ではなく「まだやっていない」。
  */
 const UNPAIRED = {
-  PollResponse: "poll の封筒。ハンドラの中の閉包で組まれるので、実行して鍵を出せない",
-  PollDisplay: "poll の封筒の一段内側(`display.choice`)。組む場所は同じくハンドラの中",
-  ScreenBody: "poll の `screen`。`screenBody()` はハンドラ側に居て単体から呼べない",
-  MessageItem: "poll の項目(発言の束)。組む場所はハンドラの中",
-  GapItem: "poll の項目(欠落の報せ)。中の `display.notice` は `gapNotice` が作るが、封筒の鍵はハンドラの中",
-  "GapItem.DisplayBox": "`display` を1段剥がす為だけの入れ物。中の `notice` の鍵名を決めるのもハンドラの中",
-  HistoryResponse: "履歴の封筒。ハンドラの中で組まれる",
-  HistoryEntry: "履歴の1件。封筒と同じくハンドラの中で組まれる",
-  "HistoryEntry.EntryDisplay": "履歴の1件の `display`。中身の `who` は `whoOf` が作るが、鍵名を決めるのはハンドラの中",
+  ScreenBody: "poll の `screen` の**中身**。封筒(`pollBodyTmux`)は受け取った物をそのまま載せるだけで、"
+    + "鍵名を決めるのは `screenBody()`(`src/server.mjs` に居て単体から呼べない)と `blockedBody()` の2本",
   "SendClient.Envelope": "送信の誤り応答の封筒(`code` + `display`)。`json()` が組む",
   "InterruptClient.Envelope": "割り込みの誤り応答の封筒。`json()` が組む",
   "ChoiceClient.Envelope": "打鍵の誤り応答の封筒。上の2つに `digest` を足した形で、やはり `json()` が組む",
@@ -496,7 +566,7 @@ test("側B: Swift の走査が Decodable 型を取りこぼしていない", { s
 
 // --- ④ 本体: 鍵名が一致する ---------------------------------------------------
 
-test("11組の鍵名が、サーバの実出力と一字一句一致する", { skip }, () => {
+test("19組の鍵名が、サーバの実出力と一字一句一致する", { skip }, () => {
   const t = phoneTypes();
   const drift = {};
   for (const p of PAIRS) {
@@ -535,7 +605,7 @@ test("走査が見付けた鍵付き型は、突き合わせたか理由を書�
   assert.deepEqual(undeclared, [], "新しい Decodable 型がどちらの箱にも入っていない");
   assert.deepEqual(phantom, [], "宣言に在る型が Swift から消えた(改名なら宣言も直す)");
   assert.equal(found.length, declared.size);
-  assert.ok(paired.length >= 11 && unpaired.length > 0);
+  assert.ok(paired.length >= 19 && unpaired.length > 0);
   for (const [k, v] of Object.entries(UNPAIRED)) assert.ok(v.length >= 10, `${k} の理由が短すぎる`);
 });
 
@@ -555,10 +625,16 @@ test("例外表は空のまま(片側にしか無い鍵を1つも許していな
  */
 test("ハンドラは切り出した builder を通って封筒を組んでいる(直書きへ戻っていない)", () => {
   const src = stripComments(readFileSync(join(ROOT, "src", "server.mjs"), "utf8"));
-  for (const call of ["sessionsBody({", "sessionRow(", "unreadableRow({"]) {
+  for (const call of [
+    "sessionsBody({", "sessionRow(", "unreadableRow({",
+    // S8-26 で切り出した6本。`.map(withWho)` だけ呼び方が違うのは、これがハンドラ側で
+    // **束に対して**掛かる為(封筒の引数として渡る形が本番の姿)。
+    "historyBody({", "messageItem({", "pollBodyTmux({", "pollBodyWorker({", "gapItem(", ".map(withWho)",
+  ]) {
     assert.ok(src.includes(call), `src/server.mjs が ${call} を通っていない = 封筒が直書きへ戻り、上の照合が飾りになった`);
   }
   assert.match(src, /json\(res,\s*200,\s*sessionsBody\(/, "`/api/sessions` の 200 が `sessionsBody` を通っていない");
+  assert.match(src, /json\(res,\s*200,\s*historyBody\(/, "`/history` の 200 が `historyBody` を通っていない");
 });
 
 test("`phone-subset` の宣言が、緩める言い訳になっていない", () => {
@@ -573,7 +649,7 @@ test("`phone-subset` の宣言が、緩める言い訳になっていない", ()
       `${p.swift}: phone-subset なのに serverOnly が空(なら mode を消す)`);
     assert.equal(new Set(p.serverOnly).size, p.serverOnly.length, `${p.swift}: serverOnly に重複`);
   }
-  // 部分集合を許した組は**一覧の2本だけ**。増える時は此処が赤くなり、理由を書く手が要る。
+  // 部分集合を許した組を**並び順ごと**に固定する。増える時は此処が赤くなり、理由を書く手が要る。
   assert.deepEqual(PAIRS.filter((p) => p.mode === "phone-subset").map((p) => p.swift),
-    ["SessionsResponse", "SessionRow"]);
+    ["SessionsResponse", "SessionRow", "PollResponse", "MessageItem", "GapItem"]);
 });
