@@ -11929,3 +11929,66 @@ SSE の同型2件 / `★poll の display.choice は画面の本体から組む`�
 成しているので、この決定は片肺ではない。落とすべき教訓は検査ではなく順番の方で、
 **「赤にする実験を先に走らせる」を守ったから、要らない計器を書かずに済んだ**。
 先に書いていたら、緑を見て「これが守っている」と読み違えたまま残った。
+
+### 2.78 検査が「親を経由して自分の中」を読んでいた —— 木の写しでは存在しない path になり、197件の変異が一度も起動していなかった(2026-08-09、実測)
+
+**症状。** `run-controls.sh` の走行で `copied-tree-controls.sh` が FAIL、
+`mutation-freeze-controls.sh` が RED、`mutation-verdict-controls.sh` が UNMEASURED。
+3本は別々の不調ではなく同じ1つの根で、根は `wire-key-agreement.test.mjs` の中に在った。
+
+**欠陥。** 検査②と⑦が、rc-backend の**中**の file を親経由の path で読んでいた ——
+②が原文を読む所は `join(REPO, "rc-backend", path)`、⑦は `join(REPO, "rc-backend", "src", "server.mjs")`。
+`subtree.mjs` の取り決めでは `ROOT` = rc-backend、`REPO` = その親で、**木の外**(`ios/**`)を
+読む時だけ `REPO` + `requireOutside` を通す。②⑦ が読むのはどちらも木の**中**なので
+`join(ROOT, path)` で足りる。
+
+**なぜ手元では永遠に緑だったか。** 完全な木では `join(REPO,"rc-backend",p)` と `join(ROOT,p)` は
+**同じ物を指す**。普通に走らせている限りこの2つは区別が付かない。区別が付くのは
+`mutation-controls.py` が作る **rc-backend だけの写し**の上だけで、そこには親が無いので
+同じ式が存在しない path になる。②⑦ が throw → 対照1(無変異の木は緑)が落ちる →
+`mutation-controls.py` はそこで `die()` する → **197件の変異が1件も起動しない**。
+
+**なぜ門が見逃したか —— 構造で見えない。** `commit-suite-gate.sh` も `staged-controls-gate.sh` も
+**完全な木で走る**。上の等式が成り立つ側でしか測っていないので、この欠陥は門からは
+**原理的に見えない**。見える位置に居たのは写しの上で走る `copied-tree-controls.sh` だけで、
+そしてその1本は実際に赤を出していた。門を足す話ではなく、**既に鳴っていた警報を
+読んでいなかった**話。
+
+**いつから死んでいたか(実測)。**
+
+| コミット | 時刻 | 誤った基点の数 |
+|---|---|---|
+| `9f87ad1`(S8-23) | 08-08 22:29 | file がまだ無い |
+| `ebf988c`(S8-24) | 08-08 23:18 | **1**(この file が生まれたコミット) |
+| `b71ba0e`(S8-25) | 08-08 23:55 | 2 |
+| `9b24edb`(S8-27) | 08-09 00:53 | 2 |
+
+**生まれた瞬間から壊れていた。** 途中で壊れたのではないので、この計器が写しの上で正しく
+走った時間は**ゼロ**。S8-24 で「鍵名の照合を置いた」と書いた時、置いた物は完全な木でしか
+動いていなかった —— 置いた事と、置き場所の全部で動く事は別。
+
+**直した後(実測)。**
+
+| 対照 | 前 | 後 |
+|---|---|---|
+| `copied-tree-controls.sh` | FAIL (pass=3 fail=1)、`not ok 702` / `not ok 707` を名指し | **pass=4 fail=0**、写しの走行は `tests=777 skipped=40` |
+| `mutation-freeze-controls.sh` | RED | **pass=6 fail=0** |
+| `mutation-verdict-controls.sh` | UNMEASURED | **pass=27 fail=0** |
+| `node --test test/wire-key-agreement.test.mjs` | —— | 8/8 |
+
+**同型の掃き出し。** `grep -rn 'REPO, "rc-backend"' test/ tools/` は、直した後は自分で書いた
+注釈にしか当たらない。`REPO` を使いながら `requireOutside` を呼ばない file
+(`design-supersede` / `doc-linerefs` / `no-linerefs` / `request-shape` / `session-guard`)は
+全部**本当に木の外**を読んでいるので正しく、写しの対照が名指ししたのもその2本だけだった。
+
+**陰性対照を手で足すか —— 足さない。** 起票時の完了条件には「直した後にわざと②の錨を壊して
+赤が出る事を見る」と書いた。書かない理由は2つ。`copied-tree-controls.sh` が既に自前の
+陰性対照(「木の外を読む file を植えると赤になり、**その file を名指しで**出す」)を持っていて
+緑である事、そして**実欠陥そのもので RED→GREEN の対を測っている**事。ここで手作りの
+錨壊しを足すと、既に在る計器の写しが1本増えるだけになる —— S8-27 で断ったのと同じ形。
+
+**測っていない事。**
+- 写しの上で 197件の変異が**実際に何本仕留めるか**は、この修正の後まだ通しで走らせていない。
+  起動する事(`mutation-verdict` pass=27)までが観測値。
+- 同型が `ios/tools` 側の対照に無いかは掛けていない。見たのは `rc-backend/test` と
+  `rc-backend/tools` の grep と、写しの対照が名指しした2本だけ。
