@@ -7,6 +7,8 @@
  * この一連の commit (S8-19〜S8-23) が潰して回っている型そのものなので、
  * 書き写す代わりに1本へ寄せた。読む側が増えたら import を足すだけにする。
  */
+import { readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 /**
  * Swift の注釈(行注釈と塊注釈の両方)を落とす。文字列の中の `//` は落とさない。
@@ -20,6 +22,23 @@
  * `"""` の複数行文字列は扱わない(読んでいる Swift file には無い)。増えたら
  * 此処が壊れるので、その時に足す。
  */
+/**
+ * `dir` の下の `.swift` を名前順で全部拾う。
+ *
+ * ★2本目を書く直前に此処へ移した(2026-08-09、S8-26 phase 3)。元は
+ * `wire-key-agreement.test.mjs` の中の局所関数で、語彙の検査を書き始めた時に
+ * **同じ物を書き写しかけた** —— この module の冒頭が書いている失敗の2度目。
+ * 走査の順序が2本で違うと、赤の出方まで木ごとに変わる。
+ */
+export function swiftFiles(dir, out = []) {
+  for (const e of readdirSync(dir).sort()) {
+    const p = join(dir, e);
+    if (statSync(p).isDirectory()) swiftFiles(p, out);
+    else if (e.endsWith(".swift")) out.push(p);
+  }
+  return out;
+}
+
 export function stripSwiftComments(src) {
   let out = "";
   let i = 0;

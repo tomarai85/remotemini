@@ -56,13 +56,22 @@ const INPUTS = {
     { route: "tmux", screen: "CHOICE" },
     { route: "tmux", screen: "CHOICE", limited: true },
   ],
+  // ★`screen` は 2026-08-09 まで `"MAIN"` だった。`routeLabel` の tmux 枝は `=== "CHOICE"`
+  //   しか見ず、それ以外は `v.screen || ""` と素通しするので、**此の検査が見ている
+  //   (short, text) には一切効かない** = 6行とも緑のままだった。効かない欄に
+  //   `classifyScreen` が返さない綴りが置ける事が問題で、実際に
+  //   `SessionsListingFixture.swift` へ写って「線に出る値」の顔をした
+  //   (`test/wire-vocabulary-agreement.test.mjs` が捕まえた1件)。
+  //   分類器が返すのは `SENDABLE` / `CHOICE` / `UNKNOWN` の3つだけ
+  //   (`src/inject.mjs` の `classifyScreen()`)。
+  //   入力表に「入力として在りうる物」以外を置かない、を此処でも守る。
   tmux: [
-    { route: "tmux", work: "observed", screen: "MAIN" },
-    { route: "tmux", work: "quiet", windowMs: 90_000, screen: "MAIN" },
-    { route: "tmux", work: "quiet", windowMs: 0, screen: "MAIN" },
-    { route: "tmux", screen: "MAIN" }, // work も activity も無い = 状態不明
-    { route: "tmux", work: "observed", screen: "MAIN", limited: true },
-    { route: "tmux", work: "quiet", windowMs: 90_000, screen: "MAIN", limited: true },
+    { route: "tmux", work: "observed", screen: "SENDABLE" },
+    { route: "tmux", work: "quiet", windowMs: 90_000, screen: "SENDABLE" },
+    { route: "tmux", work: "quiet", windowMs: 0, screen: "SENDABLE" },
+    { route: "tmux", screen: "UNKNOWN" }, // work も activity も無い = 状態不明
+    { route: "tmux", work: "observed", screen: "SENDABLE", limited: true },
+    { route: "tmux", work: "quiet", windowMs: 90_000, screen: "SENDABLE", limited: true },
   ],
   worker: [
     { route: "worker", state: "busy" },

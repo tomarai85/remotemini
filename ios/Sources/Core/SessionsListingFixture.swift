@@ -136,8 +136,16 @@ struct SessionsListingFixture: SessionsListing {
     private static let sampleRows: [SessionRow] = [
         row(id: "fixture-choice-001", title: "承認待ちの一件", kind: .choice, short: "★選択待ち",
             text: "机で開いている・★選択待ち(Enter が承認や課金になります)", screen: "CHOICE"),
+        // ★`screen` は `"MAIN"` だった(2026-08-09 に訂正)。サーバの `routeLabel` が tmux の枝で
+        //   入れるのは `v.screen || ""` = `classifyScreen` の `SENDABLE` / `CHOICE` / `UNKNOWN` だけで、
+        //   `MAIN` は**どの枝からも出ない**。出所は `test/fixture-labels-producible.test.mjs` の
+        //   入力表で、其処では `routeLabel` が `=== "CHOICE"` しか見ない為に値が効かず、
+        //   置き場所の無い placeholder が此処へ写った時にだけ「線に出る値」の顔をした。
+        //   `SENDABLE` を選んだのは実測に依る —— `view.mjs` に、生成中の実画面
+        //   (`generating-spinner-visible.txt`)が `{state:"SENDABLE", activity:"observed"}` に
+        //   なると記録が在る。「動いている」は `activity` 側の話で、`screen` とは別の軸。
         row(id: "fixture-tmux-002", title: "作業中のセッション", kind: .tmux, short: "机・動いている",
-            text: "机で開いている・動いている", screen: "MAIN"),
+            text: "机で開いている・動いている", screen: "SENDABLE"),
         row(id: "fixture-worker-003", title: "バックグラウンド処理", kind: .worker, short: "ワーカー・答え待ち",
             text: "ワーカー・答え待ち", screen: ""),
         row(id: "fixture-blocked-004", title: "宛先不明のセッション", kind: .blocked, short: "送れない",
