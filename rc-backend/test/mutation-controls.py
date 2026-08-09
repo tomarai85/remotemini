@@ -1294,6 +1294,16 @@ E2E_FAIL = re.compile(r"fail=(\d+)")
 def die(msg):
     sys.exit(f"★台本を止める: {msg}\n(緑を報告しない。測れていない事を隠すのが一番害が大きい)")
 
+def die_unmeasured(msg):
+    """**測れていない**事による停止。`die` と分けるのは終了コードが違うから。
+
+    走行の最終行が `1 = 素通りが在る / 2 = 未測定 / 0 = 全部測れて穴なし` で返している以上、
+    対照の段でも同じ区別を守る。1 で降りると呼び手には「欠陥が見つかった」と読める。
+    """
+    sys.stderr.write(f"★台本を止める(測れていない): {msg}\n")
+    sys.stderr.write("(この赤は木の話ではない。緑にも赤にも丸めずに 2 で降りる)\n")
+    sys.exit(2)
+
 # ★「変異のせいで落ちた」と「検査が環境の都合で死んだ」を分ける印(2026-08-02 追加)。
 #
 # 動機は推測ではなく実測: `test/e2e-local.mjs` は以前 `8790 + random(0..99)` で port を
@@ -1573,10 +1583,19 @@ def run_child(cmd, cwd, label, timeout_fatal=True, timeout_s=None):
         return None      # ★「測れていない」を**型で**表す。read_suite に渡さない
     return subprocess.CompletedProcess(cmd, p.returncode, out, err)
 
-def suites(dst, timeout_fatal=True):
-    """(単体, e2e) を返す。各要素は True=落ちた / False=緑 / **None=測れていない**。"""
+def suites(dst, timeout_fatal=True, sink=None):
+    """(単体, e2e) を返す。各要素は True=落ちた / False=緑 / **None=測れていない**。
+
+    sink: 渡すと生の出力を `(脚名, stdout+stderr)` で溜める。**対照2枚だけ**が渡す。
+    変異 197 件ぶんの生出力を抱えると数百 MB になるので、既定では捨てる。
+    対照は 2 回しか走らないので、そこだけ全部持つ。
+    """
     u = run_child(["npm", "test", "--silent"], dst, "単体", timeout_fatal)
     e = run_child(["node", "test/e2e-local.mjs"], dst, "e2e", timeout_fatal)
+    if sink is not None:
+        for lbl, r in (("単体", u), ("e2e", e)):
+            if r is not None:
+                sink.append((lbl, r.stdout + r.stderr))
     return (None if u is None else read_suite(u, "単体", UNIT_FAIL),
             None if e is None else read_suite(e, "e2e", E2E_FAIL))
 
@@ -1613,6 +1632,159 @@ if "--verdict" in sys.argv:
         die(f"--verdict の引数は t|f|u のみ: {_a[:2]}")
     _why = _a[2] if len(_a) > 2 and _a[2] not in ("", "-") else None
     print(verdict_of(_m[_a[0]], _m[_a[1]], _why, []))
+    sys.exit(0)
+
+# --- 対照2枚の判定 -----------------------------------------------------------
+#
+# 変異の脚(verdict_of)と分けて書く理由: **同じ赤が別の意味を持つ**から。
+# 変異の脚では「要約行の無い赤」は正当で有り触れている(変異が import を壊せばそうなる)。
+# 対照1の木は**変異していない**ので、同じ形が正当ではなくなる。
+#
+#   要約行(`# fail N`)の在る赤 = 検査が本当に落ちた   = 作業ツリーが赤
+#   要約行の無い赤             = 結果を出す前に子が死んだ = 混み合い / メモリ / kill / 環境死
+#
+# ここを畳んでいた間、後者を「まず作業ツリーを緑にする事」と診断していた。
+# 手元で `npm test` を回すと緑なので、指示どおり動いた人は行き止まりに着く(進捗の記録に
+# この症状が残っている)。**次の一手を指図する出力は、その一手が当たる事まで責任を持つ**。
+def blind_labels(no_summary):
+    """要約行を出さないまま落ちた脚の名前。`read_suite` が溜めた物から採る**唯一の道**。
+
+    小さくても関数にするのは、対照(test/mutation-timeout-controls.sh)が
+    ここを叩けるようにするため。呼び出し側に書き写すと、read_suite が入れる名前と
+    読み手が探す名前が食い違った時に**誰も気付かない**(= 死んだ子が今まで通り
+    「作業ツリーが赤」に化けるが、対照は判定表だけ見て緑を出す)。
+    """
+    return {lbl for lbl, _ in no_summary}
+
+def canary_seen(sink):
+    """仕込んだ合言葉が**両脚**の出力に在るか。片脚でも欠ければ False。
+
+    ★配線が壊れた時(suite が sink を埋め忘れる等)は False に倒れる = 対照2が止まる。
+      黙って緑になる向きには壊れない。
+    """
+    return len(sink) == 2 and all("canary" in t for _, t in sink)
+
+def _tail(sink, want, n=40):
+    """sink に溜めた生出力から、名前が want に在る脚の末尾だけを取り出す。"""
+    return "\n".join(f"--- {lbl} の出力末尾 ---\n" + "\n".join(t.splitlines()[-n:])
+                     for lbl, t in sink if lbl in want)
+
+def _failing(sink, want, n=30):
+    """**落ちた行だけ**を拾う。末尾ではない。
+
+    ★書いた其の日にこれが要ると分かった(2026-08-09)。対照1が木の赤を報せた時、
+      末尾40行を印字していたが —— 落ちた検査は列の**途中**に在り、その後ろに
+      PASS が何十行も続く。受け取った人が見るのは PASS の壁で、**どの検査が落ちたかは
+      1つも書いていない**。「作業ツリーを緑にする事」と言いながら、緑にする対象を伏せていた。
+      未測定の側を直したのと同じ欠陥が、赤の側にも在ったという事。
+    拾い方は各脚の書式に従う: 単体(TAP)= `not ok`、e2e = `FAIL`。要約行も足す。
+    印が1つも無いのに落ちている = 書式が変わった合図なので、その時だけ末尾へ落とす。
+    """
+    marks = ("not ok ", "FAIL")
+    out = []
+    for lbl, t in sink:
+        if lbl not in want:
+            continue
+        lines = t.splitlines()
+        cases = [ln for ln in lines if ln.startswith(marks)]
+        summary = [ln for ln in lines if ln.startswith("# fail ") or "fail=" in ln]
+        if cases:
+            out.append(f"--- {lbl} の落ちた行({len(cases)}件)---\n"
+                       + "\n".join(cases[:n] + summary[-1:]))
+        else:
+            # ★要約だけ在って名前が無い、も「読めない」側に入れる。件数だけ渡されても
+            #   受け取った人は次の一手を打てない —— それが此の節で直している欠陥そのもの。
+            out.append(f"--- {lbl}: 落ちた検査の名前が1つも読めない(書式が変わった?)。末尾を出す ---\n"
+                       + "\n".join(summary[-1:] + lines[-n:]))
+    return "\n".join(out)
+
+def control1_verdict(ufail, efail, blind):
+    """無変異の木の判定。blind = **要約行を出さずに**落ちた脚の名前の集合。
+
+    返す語: ok / tree-red / unmeasured。
+    赤が両種混じった時は tree-red が勝つ —— 本物の赤が1本でも在れば、それが診断。
+    """
+    legs = (("単体", ufail), ("e2e", efail))
+    if any(f is True and n not in blind for n, f in legs):
+        return "tree-red"
+    if any(f is True for n, f in legs):
+        return "unmeasured"          # 赤は在るが全部「死因不明」= 木の話ではない
+    if any(f is None for _, f in legs):
+        return "unmeasured"          # 時間切れ(対照の脚では run_child が先に止めるが、口では在りうる)
+    return "ok"
+
+def control2_verdict(ufail, efail, canary_seen):
+    """故意に壊した木の判定。canary_seen = 仕込んだ合言葉が出力に在ったか。
+
+    ★赤が出た事だけでは足りない。混み合いで死んだ子も赤なので、**仕込んだ物が
+      効いて赤い**事まで言えないと、この対照は「何かが赤くなった」しか測っていない。
+      変異の脚に 5 番目の引数(どの検査が倒れるはず)を足したのと同じ作法。
+    ここでは逆に **要約行の有無は問わない** —— e2e は起動段で落ちるので要約行は出ない。
+    それが期待どおりの形。対照1と対照2で見る物が違うのは、赤の意味が違うから。
+    """
+    if not (ufail and efail):
+        return "not-red"
+    if not canary_seen:
+        return "red-without-canary"
+    return "ok"
+
+# --- `--control-verdict <1|2> <u> <e> <blind> [canary]`: 上の2つを外から駆動する口 ---
+# 作法は `--env-death` / `--verdict` と同じ。対照(test/mutation-timeout-controls.sh)は
+# 判定を書き写さず、ここを叩く。<blind> は `単体` / `e2e` の comma 列、無ければ `-`。
+if "--control-verdict" in sys.argv:
+    _i = sys.argv.index("--control-verdict")
+    _a = sys.argv[_i + 1:]
+    if len(_a) < 4:
+        die("--control-verdict の後に <1|2> <u> <e> <blind> [canary] が要る")
+    _m = {"t": True, "f": False, "u": None}
+    if _a[0] not in ("1", "2") or _a[1] not in _m or _a[2] not in _m:
+        die(f"--control-verdict の引数が不正: {_a[:4]}")
+    _blind = set() if _a[3] in ("-", "") else set(_a[3].split(","))
+    if _a[0] == "1":
+        print(control1_verdict(_m[_a[1]], _m[_a[2]], _blind))
+    else:
+        print(control2_verdict(_m[_a[1]], _m[_a[2]],
+                               len(_a) > 4 and _a[4] == "y"))
+    sys.exit(0)
+
+# --- `--selftest-control <blind|summary|canary|sink-empty>`: 対照の**配線**を駆動する口 ---
+#
+# ★`--control-verdict` だけでは足りない。判定表が正しくても、**入力の作り方**が
+#   食い違っていれば対照は今まで通り誤診する。実際に直したのはそこ:
+#   `read_suite` が NO_SUMMARY へ入れる脚の名前と、判定が探す名前が一致して初めて
+#   「要約行の無い赤」が拾える。ここを写しで通すと、その一致を誰も測らない。
+# 偽の子を作るので秒で済む(検査一式は回さない)。
+if "--selftest-control" in sys.argv:
+    _i = sys.argv.index("--selftest-control")
+    _a = sys.argv[_i + 1:]
+    if not _a or _a[0] not in ("blind", "summary", "canary", "sink-empty",
+                               "die-unmeasured", "fail-lines", "fail-lines-unknown"):
+        die("--selftest-control <blind|summary|canary|sink-empty|die-unmeasured|"
+            "fail-lines|fail-lines-unknown>")
+    if _a[0].startswith("fail-lines"):
+        # 落ちた行が**列の途中**に在り、その後ろを PASS が埋める形を作る。
+        # 末尾を印字する実装ならここで落ちた検査の名前が出ない = 対照が赤くなる。
+        _known = _a[0] == "fail-lines"
+        _mid = "FAIL  ★狙いの検査" if _known else "こけた(印の無い書式)"
+        _txt = ("\n".join(f"PASS  前の検査{i}" for i in range(50)) + "\n" + _mid + "\n"
+                + "\n".join(f"PASS  後ろの検査{i}" for i in range(50)) + "\nE2E: pass=100 fail=1\n")
+        _o = _failing([("e2e", _txt)], {"e2e"})
+        print("狙いが出る" if "★狙いの検査" in _o else
+              ("書式が変わったと言う" if "名前が1つも読めない" in _o else "出ない"))
+        sys.exit(0)
+    if _a[0] == "die-unmeasured":
+        # 終了コードの取り決め(1=素通りが在る / 2=未測定)を**現物で**見せる口。
+        die_unmeasured("配線の確認(この文は対照が読む)")
+    if _a[0] in ("blind", "summary"):
+        # 落ちた脚を1本ぶん**本物の read_suite に通す**。要約行の有無だけを変える。
+        _out = "落ちた形跡はあるが要約行が無い\n" if _a[0] == "blind" else "# fail 1\n"
+        NO_SUMMARY.clear()
+        _u = read_suite(subprocess.CompletedProcess(["x"], 1, _out, ""), "単体", UNIT_FAIL)
+        print(control1_verdict(_u, False, blind_labels(NO_SUMMARY)))
+    else:
+        _sink = ([] if _a[0] == "sink-empty"
+                 else [("単体", "Error: canary\n"), ("e2e", "Error: canary\n")])
+        print(control2_verdict(True, True, canary_seen(_sink)))
     sys.exit(0)
 
 # --- `--selftest-timeout <fatal|soft> <秒> <hang|fast>`: **配線**を駆動する口 ---------
@@ -1926,19 +2098,45 @@ def copy_tree():
 # --- 対照2枚: 測る前に「この台本は赤を見分けられる」ことを証明する ---
 # これが無いと、書式が変わった機械で全部緑(あるいは全部検出)を報告し続ける。
 d, dst = copy_tree()
-if any(suites(dst)):
-    die("対照1(無変異): 手を加えていない木で検査が落ちた。まず作業ツリーを緑にする事")
+c1sink = []
+NO_SUMMARY.clear()
+cu, ce = suites(dst, sink=c1sink)
+c1blind = blind_labels(NO_SUMMARY)
+v1 = control1_verdict(cu, ce, c1blind)
+if v1 == "tree-red":
+    die("対照1(無変異): 手を加えていない木で検査が落ちた。まず作業ツリーを緑にする事\n"
+        + _failing(c1sink, {n for n, f in (("単体", cu), ("e2e", ce))
+                            if f is True and n not in c1blind}))
+if v1 == "unmeasured":
+    die_unmeasured(
+        "対照1(無変異): 検査が**結果を出す前に**死んだ(要約行が無い)。\n"
+        "  木には手を加えていないのだから、これは「検査が落ちた」ではない ——\n"
+        "  本当に落ちたなら要約行(`# fail N`)が出る。出ていない = 子が結果を出す前に消えた。\n"
+        "  ありうる相手: 混み合い(この台本の二重起動) / メモリ切れ / 外からの kill / 環境死。\n"
+        "  次の一手:\n"
+        "    1. `cd rc-backend && npm test` を単独で回す。緑ならこれは木の話ではない。\n"
+        "    2. `pgrep -fl mutation-controls` —— 同じ台本が既に走っていないか見る。\n"
+        "    3. 単独で回しても赤なら、その時こそ作業ツリーの話。\n"
+        + "\n".join(t for _, t in NO_SUMMARY))
 shutil.rmtree(d, ignore_errors=True)
 d, dst = copy_tree()
 p = os.path.join(dst, INJ)
 orig = open(p, encoding="utf-8").read()
 open(p, "w", encoding="utf-8").write('throw new Error("canary");\n' + orig)
-cu, ce = suites(dst)
-if not (cu and ce):
+c2sink = []
+cu, ce = suites(dst, sink=c2sink)
+v2 = control2_verdict(cu, ce, canary_seen(c2sink))
+if v2 == "not-red":
     die(f"対照2(故意に壊した木): 赤にならなかった(単体={cu} e2e={ce})。"
         "落ちるはずの木で落ちない = この台本は何も測れていない")
+if v2 == "red-without-canary":
+    die_unmeasured(
+        "対照2(故意に壊した木): 赤くはなったが、**仕込んだ合言葉 canary が出力に無い**。\n"
+        "  赤い理由が仕込みだと言えない = 混み合いで死んだ赤と見分けが付いていない。\n"
+        "  『何かが赤くなった』は「この台本は赤を見分けられる」の証明にならない。\n"
+        + _tail(c2sink, {"単体", "e2e"}, 20))
 shutil.rmtree(d, ignore_errors=True)
-print("対照 OK: 無変異=緑 / 故意に壊した木=赤。以降の判定は意味を持つ\n")
+print("対照 OK: 無変異=緑 / 故意に壊した木=canary で赤。以降の判定は意味を持つ\n")
 
 rows = []
 blind = []          # 要約が読めないまま落ちた検査を含む変異(行8)
