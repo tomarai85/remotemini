@@ -1,5 +1,9 @@
 #!/bin/bash
 # controls-for: tools/departure-survivability-check.sh
+# controls-for: tools/phone-expected-apps.txt
+#   ↑ 2つ目は道具ではなく**入力**(電話に載っているべき物の想定表)。此の対照は
+#     BX で本物の表を解析させているので、表だけを触った commit でも此処が回らないと
+#     「読んでいる物が変わったのに緑のまま」になる。
 # departure-survivability-controls.sh — 渡米前の耐久検査が**赤へ倒れる**事を測る。
 #
 # なぜ要るのか:
@@ -19,7 +23,10 @@
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-SUT="$HERE/../tools/departure-survivability-check.sh"
+# 継ぎ目(2026-08-10)。守っている物を外から差し替えられる形にしておく ——
+# これが無いと `tools/prove-control.sh`(直す前の版で本当に赤くなるかを見る道具)が
+# この対照を測れず、「継ぎ目が無いので未測定」で終わる。live の file は一度も触らない。
+SUT="${RC_DEPARTURE_SUT:-$HERE/../tools/departure-survivability-check.sh}"
 [ -f "$SUT" ] || { echo "検査本体が無い: $SUT" >&2; exit 2; }
 
 T=$(mktemp -d /tmp/rc-dep-controls.XXXXXX) || exit 2
@@ -85,9 +92,38 @@ chmod +x "$T/bin/ssh"
 cat > "$T/bin/xcrun" <<'EOX'
 #!/bin/bash
 mode="${FAKE_XCRUN_MODE:-installed}"
-out=""; prev=""
-for a in "$@"; do [ "$prev" = "--json-output" ] && out="$a"; prev="$a"; done
+inv="${FAKE_INV_MODE:-ok}"
+# ★電話に載っている物の**唯一の素**(2026-08-10、在庫の照合を足した時に作り直した)。
+#   絞り有り(RemoteMini 1本)の答えも、絞り無し(在庫)の答えも此処から作る。
+#   2つの問いに別々の真実を持たせると、対照が**現実に在り得ない電話**を組む ——
+#   絞り有りでは「入っていない」と言い、在庫では「入っている」と言う電話。
+#   そんな入力で通った検査は、本物の電話について何も言っていない。
+ids="${FAKE_INV_IDS:-com.tomarai.remotemini com.tomarai.blink com.tomarai.deskguard}"
+case "$mode" in
+    absent)    ids="com.tomarai.blink com.tomarai.deskguard" ;;                  # RemoteMini だけ居ない
+    otherapps) ids="com.tomarai.blink com.tomarai.lingo.Lingo" ;;                # 絞りが壊れた時に返る素
+esac
+out=""; prev=""; filtered=""
+for a in "$@"; do
+    [ "$prev" = "--json-output" ] && out="$a"
+    [ "$prev" = "--bundle-id" ] && filtered="$a"
+    prev="$a"
+done
 [ -n "$out" ] || exit 64
+emit() {  # emit <bundle id...> -> devicectl の形で $out へ。引数無し = 0 件
+    local first=1 b
+    printf '{"result":{"apps":[' > "$out"
+    for b in "$@"; do
+        [ "$first" = 1 ] || printf ',' >> "$out"
+        first=0
+        if [ "$mode" = "noversion" ]; then
+            printf '{"bundleIdentifier":"%s"}' "$b" >> "$out"
+        else
+            printf '{"bundleIdentifier":"%s","bundleVersion":"%s"}' "$b" "${FAKE_APP_VER:-777}" >> "$out"
+        fi
+    done
+    printf ']}}\n' >> "$out"
+}
 case "$2" in
   list)
       [ "$mode" = "listfail" ] && exit 1
@@ -98,23 +134,44 @@ case "$2" in
       fi
       ;;
   device)
-      case "$mode" in
-          appsfail) exit 1 ;;
-          absent)   printf '{"result":{"apps":[]}}\n' > "$out" ;;
-          garbage)  printf 'not json at all\n' > "$out" ;;
-          # 絞り込みが壊れて**別のアプリ**が返る形。件数だけ数えていると緑になる
-          otherapps) printf '{"result":{"apps":[{"bundleIdentifier":"com.tomarai.blink"},{"bundleIdentifier":"com.tomarai.lingo.Lingo"}]}}\n' > "$out" ;;
-          # 在るのに版の欄が無い形(古い devicectl / schema 変更)。在否は緑のまま
-          # 版だけ未測定へ倒れる事を測る為に、既定とは別の枝で置く。
-          noversion) printf '{"result":{"apps":[{"bundleIdentifier":"com.tomarai.remotemini"}]}}\n' > "$out" ;;
-          *)        printf '{"result":{"apps":[{"bundleIdentifier":"com.tomarai.remotemini","bundleVersion":"%s"}]}}\n' "${FAKE_APP_VER:-777}" > "$out" ;;
-      esac
+      if [ -n "$filtered" ]; then
+          # 絞り有り = 「RemoteMini は入っているか」の問い
+          case "$mode" in
+              appsfail) exit 1 ;;
+              garbage)  printf 'not json at all\n' > "$out" ;;
+              # 絞り込みが壊れて**素をそのまま**返す形。件数だけ数えていると緑になる
+              otherapps) emit $ids ;;
+              *) hit=""
+                 for b in $ids; do [ "$b" = "$filtered" ] && hit="$b"; done
+                 emit $hit ;;
+          esac
+      else
+          # 絞り無し = 在庫の問い(2026-08-10)。此処が落ちる枝は絞り有りとは別に持つ
+          # —— 同じ電話でも、問いが違えば別々に失敗し得る。
+          case "$inv" in
+              invfail)    exit 1 ;;
+              invgarbage) printf 'not json at all\n' > "$out" ;;
+              invempty)   printf '{"result":{"apps":[]}}\n' > "$out" ;;
+              *)          emit $ids ;;
+          esac
+      fi
       ;;
   *) exit 64 ;;
 esac
 exit 0
 EOX
 chmod +x "$T/bin/xcrun"
+
+# 鎖(8)の在庫の**想定表**の継ぎ目(2026-08-10)。本物(tools/phone-expected-apps.txt)を
+# 読ませない理由は build.sh の時と同じ —— 対照が「今日の電話の中身」に依存して明日壊れる。
+# 既定の素(上の ids)と過不足無く一致させる。此処がずれると、狙った項目とは別の理由で
+# 全対照が汚染される。
+cat > "$T/expected.txt" <<'EOE'
+# 対照用の想定表(本物ではない)
+com.tomarai.remotemini  req
+com.tomarai.blink       req
+com.tomarai.deskguard   opt
+EOE
 
 # 鎖(8)の**期待値**を出す道具の継ぎ目(2026-08-10)。検査は
 # `ios/tools/build.sh --print-build-num` へ番号を訊きに行く —— 其処を偽物へ向ける。
@@ -137,6 +194,10 @@ XBIN="$T/bin/xcrun"
 XVER=777
 WANTNUM=777
 BSH="$T/bin/fake-build.sh"
+# 在庫(2026-08-10)。既定は「想定表の通り」= 差が1件も無い形。
+XEXP="$T/expected.txt"
+XINV=ok
+XIDS=""          # 空 = 偽 xcrun の既定の素(remotemini / blink / deskguard)
 
 # 鎖(9)(見張りが生きているか)の「全部良い」返答。GOOD と同じ規律で、
 # 各対照は此処から **1 行だけ** 差し替える。
@@ -165,6 +226,7 @@ run() {  # run <answer-text> [args...]
     printf '%s\n' "$MON_ANS" > "$T/mon-answer"
     OUT=$(FAKE_SSH_ANSWER="$T/answer" FAKE_MON_ANSWER="$T/mon-answer" \
           FAKE_XCRUN_MODE="$XMODE" FAKE_APP_VER="$XVER" FAKE_WANT_NUM="$WANTNUM" \
+          FAKE_INV_MODE="$XINV" FAKE_INV_IDS="$XIDS" RC_PHONE_EXPECTED="$XEXP" \
           RC_PHONE_XCRUN="$XBIN" RC_BUILD_SH="$BSH" PATH="$T/bin:$PATH" bash "$SUT" "$@" 2>&1)
     RC=$?
 }
@@ -344,6 +406,108 @@ BSH="$T/no-such-dir/build.sh"; run "$GOOD" --days 30; BSH="$T/bin/fake-build.sh"
 if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -q "番号を出す道具が見付からない"; then
     ok "BN 道具が無い -> 未測定(自前で数え始めない)"
 else ng "BN 道具不在: 終了 $RC"; fi
+
+# --- 鎖(8)の在庫(2026-08-10)-------------------------------------------------
+# 足した理由: 鎖⑧は RemoteMini **1本だけ**を厳しく測っていて、電話に載っている物の
+# 総数を一度も数えていなかった。実際、Tom 本人が何のアプリか判らない物が2ヶ月以上
+# 載っていて、机の上の検査はその間ずっと全部緑だった。**見ている1点は正しく、
+# 見ていない面が在る**型(#56 と同じ、向きだけ違う3つ目)。
+# 以下が測るのはその三色の割り当てと、**検査が電話から何も消さない**事。
+
+# BO: 想定表の通り -> 緑。**両方の本数**ではなく在庫の本数を名乗る事まで測る
+#     (数だけの緑は、突き合わせる相手を間違えていても同じ顔をする)。
+run "$GOOD" --days 30
+if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -q "在庫: 電話の 3 本が想定表と一致"; then
+    ok "BO 在庫が想定表の通り -> 緑、本数を名乗る"
+else ng "BO 在庫が一致しているのに 終了 $RC / 本数を名乗っていない"; fi
+
+# BP: req が消えた -> **赤**。旅程で使う物が電話から消えたのを注記に落とさない。
+XIDS="com.tomarai.remotemini com.tomarai.deskguard"; run "$GOOD" --days 30; XIDS=""
+if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q "在庫: com.tomarai.blink が電話に無い"; then
+    ok "BP req が消えた -> 赤、名指しで出る"
+else ng "BP req 欠落: 終了 $RC"; fi
+
+# BQ: opt が消えた -> **注記**であって赤ではない。此処を赤にすると、旅程に関係の無い
+#     アプリを消した日に検査が赤くなり、**嘘の赤**で検査ごと信用されなくなる。
+XIDS="com.tomarai.remotemini com.tomarai.blink"; run "$GOOD" --days 30; XIDS=""
+if [ "$RC" -eq 0 ] \
+   && printf '%s\n' "$OUT" | grep -q "在庫: com.tomarai.deskguard が電話に無い" \
+   && ! printf '%s\n' "$OUT" | grep -q "赤.*com.tomarai.deskguard"; then
+    ok "BQ opt が消えた -> 注記(赤にしない)"
+else ng "BQ opt 欠落: 終了 $RC"; fi
+
+# BR: 想定表に無い物が載っている -> **注記**。此処が今回の本丸 ——
+#     この形(出所の判らないアプリが載っている)が2ヶ月見過ごされた。名指しで出す事、
+#     そして**赤にしない**事の両方を測る(増えた事は旅程を壊さない)。
+XIDS="com.tomarai.remotemini com.tomarai.blink com.tomarai.deskguard com.tomiees.utsurundesu"
+run "$GOOD" --days 30; XIDS=""
+if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -q "想定表に無い物が載っている —— com.tomiees.utsurundesu"; then
+    ok "BR 表に無い物が載っている -> 注記、bundle id を名指し"
+else ng "BR 未知のアプリ: 終了 $RC"; fi
+
+# BR2: **検査は電話から何も消さない**(Tom 2026-08-10「別の AI が作った作成物までは
+#      消さないでね」)。偽 xcrun は uninstall を知らないので、呼べば必ず終了 64 で
+#      落ちる = 呼んでいない事が此処の緑の意味。語の側でも見張る。
+if ! printf '%s\n' "$OUT" | grep -qi "uninstall\|削除しました\|消しました"; then
+    ok "BR2 未知のアプリを見付けても消さない・消したと言わない"
+else ng "BR2 検査が電話から物を消している"; fi
+
+# BS: 想定表が無い -> **未測定**。表が無い事を「載っている物は全部想定内」に丸めない。
+XEXP="$T/no-such-file.txt"; run "$GOOD" --days 30; XEXP="$T/expected.txt"
+if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -q "在庫: 想定表が無い"; then
+    ok "BS 想定表が無い -> 未測定"
+else ng "BS 想定表不在: 終了 $RC"; fi
+
+# BT: 絞り無しの一覧が引けない -> 未測定。RemoteMini の在否(緑)は据え置かれる。
+XINV=invfail; run "$GOOD" --days 30; XINV=ok
+if [ "$RC" -eq 2 ] \
+   && printf '%s\n' "$OUT" | grep -q "在庫: 絞り無しの一覧が引けない" \
+   && printf '%s\n' "$OUT" | grep -q "電話に RemoteMini が入っている"; then
+    ok "BT 在庫が引けない -> 未測定(在否の緑は据え置き)"
+else ng "BT 在庫が引けない: 終了 $RC"; fi
+
+# BU: 一覧が JSON でない -> 未測定。
+XINV=invgarbage; run "$GOOD" --days 30; XINV=ok
+if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -q "在庫: 一覧が読めない"; then
+    ok "BU 在庫の一覧が JSON でない -> 未測定"
+else ng "BU 在庫が壊れた JSON: 終了 $RC"; fi
+
+# BV: 絞り有りには答えた電話が、絞り無しで**空**を返した -> 未測定。
+#     此処を素直に読むと「req が2本とも消えた」= 嘘の赤が2件出る。道具の矛盾は
+#     電話の事実ではない(#61 で嘘の赤を出して電話の側を疑いに行った、その再発防止)。
+XINV=invempty; run "$GOOD" --days 30; XINV=ok
+if [ "$RC" -eq 2 ] \
+   && printf '%s\n' "$OUT" | grep -q "一覧が空で返った" \
+   && ! printf '%s\n' "$OUT" | grep -q "が電話に無い"; then
+    ok "BV 在庫が空で返る -> 未測定(嘘の赤を出さない)"
+else ng "BV 在庫が空: 終了 $RC"; fi
+
+# BW: 想定表の行が壊れている(req/opt でない語)-> 未測定。
+#     黙って読み飛ばすと、綴りを間違えた行が**想定表から消える** = 見張っている
+#     つもりの物が見張られていない状態が、緑の顔で残る。
+printf 'com.tomarai.remotemini req\ncom.tomarai.blink おそらく必須\n' > "$T/broken.txt"
+XEXP="$T/broken.txt"; run "$GOOD" --days 30; XEXP="$T/expected.txt"
+if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -q "想定表の行が読めない: com.tomarai.blink"; then
+    ok "BW 想定表の行が壊れている -> 未測定(読み飛ばさない)"
+else ng "BW 壊れた想定表: 終了 $RC"; fi
+
+# BW2: 想定表が注記だけ(有効な行が0)-> 未測定。**空の表で緑を出さない**。
+#      全部 comment out した表は「見張る物が無い」であって「全部揃っている」ではない。
+printf '# 全部注記\n#com.tomarai.remotemini req\n\n' > "$T/empty.txt"
+XEXP="$T/empty.txt"; run "$GOOD" --days 30; XEXP="$T/expected.txt"
+if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -q "想定表に1行も無い"; then
+    ok "BW2 想定表が空 -> 未測定(空の表で緑を出さない)"
+else ng "BW2 空の想定表: 終了 $RC"; fi
+
+# BX: 此処だけは対象(check の論理)ではなく **本物の想定表**を測る。
+#     `tools/phone-expected-apps.txt` は人が手で足す表で、綴りを間違えた行は
+#     BW の通り未測定になる —— つまり**出荷している表が読めるか**は別に測らないと
+#     判らない。継ぎ目を外して本物を読ませ、解析が落ちない事だけを見る
+#     (中身は電話の実態で変わるので、本数や id は測らない = 明日壊れる対照にしない)。
+XEXP=""; XIDS="com.example.nothing"; run "$GOOD" --days 30; XEXP="$T/expected.txt"; XIDS=""
+if ! printf '%s\n' "$OUT" | grep -q "想定表の行が読めない\|想定表に1行も無い\|想定表が無い"; then
+    ok "BX 出荷している想定表(tools/phone-expected-apps.txt)が解析できる"
+else ng "BX 本物の想定表が読めない —— 手で足した行の綴りを直す"; fi
 
 # --- 鎖(9): 見張りが生きているか ---------------------------------------------
 # 此処の対照が守るのは1点 —— **監視の沈黙を健康と読まない**事。

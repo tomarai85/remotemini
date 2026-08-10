@@ -214,6 +214,26 @@ OS 更新が `sleep` を戻す・deploy が plist を置き換える・誰かが
 (其の `(1)` は**刻印が出来る前に焼いた値**。上の突き合わせを入れた今、焼き直すまでは
 鎖⑧が「build.sh を通さずに焼いた物」と名指しで赤にする —— 正しい赤。)
 
+**→ 2026-08-10 に、鎖⑧が電話の「在庫」も数える様になった。** それまで此処は
+RemoteMini **1本だけ**を厳しく測っていて、電話に何本載っているかは一度も数えていない。
+その盲点が実際に効いていた —— `com.tomiees.utsurundesu`(TestFlight 経由 / 持ち主不明 /
+Tom 本人も何のアプリか判らない)が2ヶ月以上載ったまま、机の上の検査はずっと全部緑だった。
+想定表 = `rc-backend/tools/phone-expected-apps.txt`(`bundle id` + `req|opt`)。
+req が無い = **赤** / opt が無い = 注記 / **表に無い物が載っている = 注記**(増えた事は
+旅程を壊さない。赤にすると嘘の赤が出て検査ごと信用されなくなる)/ 表か一覧が読めない、
+または絞り無しの一覧が**空**で返った = 未測定。
+**検査は電話から何も消さない**(Tom 2026-08-10「別の AI が作った作成物までは消さないでね」)
+—— 出るのは名指しの報告だけで、消すのは人の判断。
+数える範囲は `devicectl` の既定の一覧 = **開発者が入れた物だけ**(App Store 分は出ない)。
+つまり見張るのは「この Mac 経由 / TestFlight で入った物」= 出所を説明できるべき物だけ。
+
+**2026-08-10 に電話から2本外した**: Jervis(`com.tomarai.jervisglass`)と
+lingo(`com.tomarai.lingo.Lingo`)。Tom の指示で、外したのは**電話の上のアプリだけ** ——
+どちらもソースは手元に残っている(`~/Projects/metaglass-mac` / `~/micro-frustration-lab/lingo`)。
+残り4本 = Remote Mini / Blink Dev / Desk Guard / Utsurundesu。
+**utsurundesu は 2026-08-24 頃に TestFlight 側で自動失効する**(渡米の4日後)。
+持ち主が判っていないので此方からは消さない。消えたら想定表から1行落とす。
+
 **入れる途中で、検査ではなく道具の側に嘘の赤が1つ見つかった。**
 `ios/tools/build.sh` は「どの電話へ入れるか」を選ぶのに一覧の `tunnelState` を使っていて、
 それが `disconnected` だったので `no connected device` と言って止まった。

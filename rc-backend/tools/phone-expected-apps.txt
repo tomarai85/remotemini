@@ -1,0 +1,28 @@
+# 電話に載っているべき物の想定表(departure-survivability-check.sh の鎖⑧が読む)
+#
+# なぜ在るか(2026-08-10):
+#   鎖⑧は RemoteMini **1本だけ**を厳しく測っていた。1本を厳しく測る検査は、
+#   **載っている物の総数を一度も数えない**。実際、Tom 本人が何のアプリか判らない物
+#   (com.tomiees.utsurundesu)が2ヶ月以上電話に載っていて、机の上の検査は全部緑だった。
+#   此処に書いていない物が載っていたら、鎖⑧が bundle id を名指しで出す。
+#
+# ★此の表は**報告の基準**であって、消す指示ではない。検査は電話から何も消さない
+#   (Tom 2026-08-10「別の AI が作った作成物までは消さないでね」)。
+#
+# 形式: <bundle id>  <req|opt>  # 覚え書き
+#   req = 無いと旅程が壊れる -> 鎖⑧が **赤**
+#   opt = 無くても旅程は回る -> 注記だけ
+#   此処に無い物が載っている -> 注記だけ(増えた事は旅程を壊さない。赤にすると
+#     嘘の赤が出て、検査ごと信用されなくなる)
+#
+# 数える範囲: `devicectl device info apps`(絞り無し)が返すのは **開発者が入れた物だけ**
+#   で、App Store から入れた物は出ない(`--include-all-apps` を付けると 121 本出る)。
+#   つまり此処が見張るのは「この Mac 経由 / TestFlight で入った物」= 出所を説明できる
+#   べき物だけ。それが狙い。
+
+com.tomarai.remotemini   req  # Remote Mini。旅程の本体。無ければ `bash ios/tools/build.sh`
+com.tomarai.blink        req  # Blink Dev(自作版)。電話から ssh する側。無ければ ~/Infra/blink-selfbuild
+com.tomarai.deskguard    opt  # Desk Guard。旅程では使わない
+com.tomiees.utsurundesu  opt  # ★Tom の物ではない。TestFlight 経由 / 持ち主不明 /
+                              #   2026-05-26 頃に上げられた物で **2026-08-24 頃に自動で失効**する。
+                              #   消えていても正常(表から消すのは失効を見届けてから)。
