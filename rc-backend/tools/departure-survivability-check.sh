@@ -463,6 +463,84 @@ print("%d %s" % (len(hit), ver))
                         esac
                     fi ;;
             esac
+
+            # ★電話の在庫の照合(2026-08-10 に足した)。
+            # 足した理由: 此処までは RemoteMini **1本だけ**を見ていた。1本を厳しく測る
+            #   検査は、**載っている物の総数を一度も数えない**。実際、Tom 本人が何のアプリか
+            #   判らない物(com.tomiees.utsurundesu / TestFlight 経由 / 持ち主不明)が
+            #   2ヶ月以上電話に載っていて、其の間ずっと机の上の検査は全部緑だった。
+            #   #56 と同じ型の3つ目 —— 見ている1点は正しく、**見ていない面**が在る。
+            # 出さない物: 機器名・識別子(此処も同じ規律)。出すのは bundle id だけ。
+            # 三色: 想定表の req が無い = 赤 / opt が無い = 注記 / 表に無い物が載って
+            #   いる = **注記**(増えた事は旅程を壊さない。此処を赤にすると嘘の赤が出て、
+            #   検査ごと信用されなくなる)/ 表か一覧が読めない = 未測定。
+            # **消しはしない。此処は報告だけ**(Tom 2026-08-10「別の AI が作った作成物
+            #   までは消さないでね」= 検査が電話から物を消す造りは作らない)。
+            _exp="${RC_PHONE_EXPECTED:-$HERE/phone-expected-apps.txt}"
+            _ij=$(mktemp)
+            if [ ! -f "$_exp" ]; then
+                say_unm "在庫: 想定表が無い($_exp)—— 何が載っているべきかを誰も書いていない"
+            elif ! "$PHONE_XCRUN" devicectl device info apps --device "$_dev" \
+                      --timeout 60 --json-output "$_ij" >/dev/null 2>&1; then
+                say_unm "在庫: 絞り無しの一覧が引けない —— 電話に何が載っているかは測れていない"
+            else
+                # 一覧と想定表の差だけを行で吐く。判定(色)は shell 側が持つ。
+                _inv=$(/usr/bin/python3 -c '
+import json, sys
+try:
+    apps = json.load(open(sys.argv[1]))["result"]["apps"]
+except Exception:
+    print("BAD 一覧が読めない"); sys.exit(0)
+got = sorted({a.get("bundleIdentifier") for a in apps if a.get("bundleIdentifier")})
+want = {}
+for line in open(sys.argv[2], encoding="utf-8"):
+    line = line.split("#", 1)[0].strip()
+    if not line:
+        continue
+    f = line.split()
+    if len(f) < 2 or f[1] not in ("req", "opt"):
+        print("BAD 想定表の行が読めない: " + f[0]); sys.exit(0)
+    want[f[0]] = f[1]
+if not want:
+    print("BAD 想定表に1行も無い"); sys.exit(0)
+# 絞り有りの問いには答えた電話が、絞り無しで空を返すのは**道具の矛盾**。
+# 「全部消えた」と読むと嘘の赤になるので未測定へ倒す。
+if not got:
+    print("BAD 一覧が空で返った(絞り有りでは答えたのに)"); sys.exit(0)
+print("TOTAL %d %d" % (len(got), len(want)))
+for b in sorted(want):
+    if b not in got:
+        print(("MISSREQ " if want[b] == "req" else "MISSOPT ") + b)
+for b in got:
+    if b not in want:
+        print("EXTRA " + b)
+' "$_ij" "$_exp")
+                case "$_inv" in
+                    '')    say_unm "在庫: 突き合わせが何も返さなかった —— 測れていない" ;;
+                    BAD*)  say_unm "在庫: ${_inv#BAD }" ;;
+                    *)
+                        _tot=""; _diff=0
+                        while read -r _k _v _w; do
+                            case "$_k" in
+                                TOTAL)   _tot="$_v" ;;
+                                MISSREQ) say_bad "在庫: ${_v} が電話に無い(想定表で req)—— 旅程で使う物が消えている"
+                                         _diff=$((_diff+1)) ;;
+                                MISSOPT) say_note "在庫: ${_v} が電話に無い(想定表で opt = 消えていて構わない)"
+                                         _diff=$((_diff+1)) ;;
+                                EXTRA)   say_note "在庫: 想定表に無い物が載っている —— ${_v}(出所を説明できるなら $_exp へ1行足す)"
+                                         _diff=$((_diff+1)) ;;
+                            esac
+                        done <<EOF_INV
+$_inv
+EOF_INV
+                        # 差が1つも無い時だけ緑。**両方の本数を名乗る** ——
+                        # 片方だけ出す緑は、突き合わせる相手を間違えていても同じ顔をする。
+                        if [ "$_diff" -eq 0 ]; then
+                            say_ok "在庫: 電話の ${_tot} 本が想定表と一致"
+                        fi ;;
+                esac
+            fi
+            rm -f "$_ij"
         fi
     fi
     rm -f "$_dj" "$_aj"

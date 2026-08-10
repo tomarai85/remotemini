@@ -41,7 +41,8 @@
 > | サーバ側の検査の口 | `cd rc-backend && npm test`(= `node --test 'test/**/*.test.mjs'`)。**786件**(2026-08-09 の実測、失敗0、`# fail 0` / 6.4 秒)。★`node --test test/` は Node v22.14 で落ちる —— `npm test` を使う事 |
 > | ★検査の**数え方** | `grep -rhcE "^\s*(final )?func test[A-Za-z0-9_]*\(" <dir> \| paste -sd+ - \| bc`(file 毎の件数を足す)。**`sort \| uniq` を挟むと 389 に化ける** —— 別の file に同名の検査が在ると潰れる。log 側の突き合わせは `Test Case '-[…]' passed` を `sort -u \| wc -l` |
 > | ★実機に載っている版 | **機械が突き合わせる**(2026-08-10)。`build.sh` が `CFBundleVersion` へ **ios/ を触った commit の通算数**を刻み、渡米前検査の鎖⑧が電話の `bundleVersion` と照合する。**`ios/` を触る commit の後は焼き直すまで赤い**(仕様。直し方は `bash ios/tools/build.sh` の1手)。期待値は `bash ios/tools/build.sh --print-build-num` に**訊く** —— 検査側で `git rev-list --count` を書き直さない事(対照 BN が其れを守っている)。★汚れた木で焼いた物は此の番号では見分けられない = 画面の rev(DESIGN §8-8)は**まだ要る** |
-| **GUI を開かない** | Simulator.app も Xcode も**起動しない**。`xcrun simctl` の headless だけ。画面の確認は `xcrun simctl io … screenshot` |
+> | ★実機に載っている**アプリの集合** | **機械が突き合わせる**(2026-08-10)。想定表 = `rc-backend/tools/phone-expected-apps.txt`、照合するのは渡米前検査の鎖⑧。req 欠 = 赤 / opt 欠 = 注記 / **表に無い物が載っている = 注記**(赤にすると嘘の赤になる)/ 読めない・絞り無しの一覧が空 = 未測定。**検査は電話から何も消さない**(Tom 2026-08-10「別の AI が作った作成物までは消さないでね」)。現状 4 本 = Remote Mini / Blink Dev / Desk Guard / **Utsurundesu(Tom の物ではない。TestFlight 経由・持ち主不明・2026-08-24 頃に自動失効)**。★2026-08-10 に Jervis と lingo を電話から外した(**アプリだけ**。ソースは両方とも手元に在る) |
+> | **GUI を開かない** | Simulator.app も Xcode も**起動しない**。`xcrun simctl` の headless だけ。画面の確認は `xcrun simctl io … screenshot` |
 > | SourceKit の赤 | 「Cannot find type X in scope」「No such module 'XCTest'」は**単一ファイル索引の副作用で偽**。本物の判定は上のビルド1本 |
 > | 鍵 | iOS Keychain のみ。ログにも fixture にも診断行にも出さない。**既定のサーバ名を Swift に焼かない**(placeholder もコメントも不可) |
 > | 設計の正本 | `.harness/spec-native-shell-2026-08-05.md`(器の決定・スコープ)+ `DESIGN.md` §2.51(選択 card の2つの裁定) |
