@@ -115,9 +115,24 @@ final class AppState: ObservableObject {
         guard let seed = provisioning.seed else { return nil }
         let digest = SeedDigest.of(seed)
         guard seedLedger.plantedSeedDigest != digest else { return nil }
-        // 書けなくても此の起動は memory の資格情報で通す。`KeyEntryViewModel.submit()` が
-        // Keychain の失敗を握り潰すのと同じ判断 —— 保存できない事は使えない事ではない。
-        try? store.save(seed)
+        do {
+            try store.save(seed)
+        } catch {
+            // 書けなくても此の起動は memory の資格情報で通す。`KeyEntryViewModel.submit()` が
+            // Keychain の失敗を握り潰すのと同じ判断 —— 保存できない事は使えない事ではない。
+            // ★但し記録は付けない。上の doc が言っている通り、書けなかった種を「蒔いた」と
+            //   記録すると次の起動で二度と蒔かず、**欄が出る**(= 此の #64 が直しに来た形)。
+            //   `try?` で握り潰していた頃は此処を素通りして記録が付いていた(2026-08-11 に是正)。
+            //
+            // ★払った代償を隠さない: Keychain が**恒久的に**書けない上に鍵が 401 で拒まれる、
+            //   の両方が同時に起きた電話は、起動の度に種を蒔き直す(記録が付かないので)。
+            //   断りは其の起動の中では画面に出るが、次の起動で掃かれて残らない。
+            //   それでも此方を取るのは、恒久的に書けない電話では**手で打った鍵も保存できず**
+            //   (`KeyEntryViewModel.submit()` も同じ握り潰し)、旧実装が代わりに見せるのは
+            //   「打っても翌起動で消える欄」だから —— 直る見込みの無い欄より、毎回繋がる方が良い。
+            //   一過性の失敗(此方が普通)では、次の起動で書けて記録も付き、輪は1回で閉じる。
+            return seed
+        }
         seedLedger.plantedSeedDigest = digest
         return seed
     }

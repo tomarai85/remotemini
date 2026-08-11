@@ -4,7 +4,7 @@
 # 鍵入力画面の負の対照。守っている物は3つ在り、**同じ file 群**の上に載っている:
 #   (a) 401 で戻された時の断り(DESIGN §2.65 / 監査 X2-6) …… M1-M9
 #   (b) 接続を押した後の「確かめています」(DESIGN §2.68 / 監査 X2-8) …… M10-M12
-#   (c) 焼き込んだ種で初回起動が一覧に着く事(2026-08-11 の欠陥) …… M13-M19
+#   (c) 焼き込んだ種で初回起動が一覧に着く事(2026-08-11 の欠陥) …… M13-M20
 #       M13-M17 = 蒔く側(AppState / RootView)。M18-M19 = **刻印の形を落とす門**
 #       (`Provisioning.clean` と scheme+host)。後者は `vacuous-gate` が
 #       「否定だけで錨なし」と挙げた6本の錨が本当に効くかを測る為に足した。
@@ -88,8 +88,12 @@
 #       ★M18/M19 は**両方とも**「整った刻印は種になる」を緑のまま残す。此の2本は
 #         `vacuous-gate` が「否定だけ・錨なし」と挙げた6本(①〜⑥)の錨が本当に
 #         効くかを測る為に足した —— 錨を足しただけでは、其の錨が働く証拠にならない。
+#   M20 保存の失敗を握り潰して記録だけ付ける -> 「書けなかった種は蒔いた事にしない」が赤
+#       ★同時に**順序の検査(M16 の的)は緑のまま**。順序を見る対照だけでは、
+#         `try?` で握り潰す実装が通る —— 一度きりの保存失敗で、次の起動が入力欄に戻る。
+#         此の変異は commit 26d4566 直後まで実際に出荷していた姿そのもの。
 #
-# 費用(隠さない): xcodebuild を20回(基準1 + 変異19)。うち6回は UI 検査を含むので重い。
+# 費用(隠さない): xcodebuild を21回(基準1 + 変異20)。うち6回は UI 検査を含むので重い。
 #   実測値は rc-backend/tools/run-controls.sh の登録行に書く。
 #
 # ★目印(INFLIGHT)は ios の変異対照で**共有**する。分けると片方の取り残しを
@@ -142,6 +146,7 @@ WANT_SEEDED=testAnEmptyKeychainIsSeededFromTheStampSoTheFirstScreenIsNotTheForm
 WANT_ONCE=testARejectedSeedIsNotPlantedAgainOnTheNextLaunch
 WANT_UNREADABLE=testAnUnreadableKeychainIsNotTreatedAsEmpty
 WANT_SEED_ORDER=testTheLedgerIsWrittenAfterTheKeychain
+WANT_SEED_FAIL=testASeedThatCouldNotBeSavedIsNotRecordedAsPlanted
 WANT_FIRSTRUN=testAProvisionedPhoneReachesTheListWithoutBeingAskedToTypeAnything
 # 刻印の**形**を落とす側(M18/M19)。整った刻印は種になる、を同じ検査の中で錨にしてある。
 WANT_TEMPLATE=testAnUnresolvedTemplateIsNotASeed
@@ -386,7 +391,7 @@ BASE_PASSED="$(passed_tests "$BASE_LOG")"
 WANTS="$WANT_LEFT $WANT_ORDER $WANT_SWEEP $WANT_CARRIED $WANT_SENTENCE
        $WANT_TWO $WANT_DISK $WANT_NOKEY $WANT_SCREEN
        $WANT_STAGES $WANT_TIMEOUT $WANT_INFLIGHT $WANT_LOCKED $WANT_LOCKED_UNIT
-       $WANT_SEEDED $WANT_ONCE $WANT_UNREADABLE $WANT_SEED_ORDER $WANT_FIRSTRUN
+       $WANT_SEEDED $WANT_ONCE $WANT_UNREADABLE $WANT_SEED_ORDER $WANT_SEED_FAIL $WANT_FIRSTRUN
        $WANT_TEMPLATE $WANT_PLAINTEXT"
 WANT_N="$(printf '%s' "$WANTS" | wc -w | tr -d ' ')"
 
@@ -486,8 +491,15 @@ mutate_m15() {
 # 蒔けた時の結果は同じなので、順序を見る検査にしか映らない。間で殺されると
 # 「書けなかった種を蒔いたと記録して二度と蒔かない」= 電話が永久に空のまま。
 mutate_m16() {
-    /usr/bin/sed -i '' 's|^        try? store.save(seed)$|        seedLedger.plantedSeedDigest = digest; try? store.save(seed)|' "$AS"
+    /usr/bin/sed -i '' 's|^            try store.save(seed)$|            seedLedger.plantedSeedDigest = digest; try store.save(seed)|' "$AS"
     /usr/bin/sed -i '' '/^        seedLedger.plantedSeedDigest = digest$/d' "$AS"
+}
+# ---- 変異 M20: 保存の失敗を握り潰して記録だけ付ける ---------------------------
+# catch の `return seed` を消すと、書けなかった種が下の記録行まで落ちる = 2026-08-11
+# の commit 直後まで実際に出荷していた `try?` の姿。順序(M16)は正しいまま壊れるので、
+# 見えるのは⑮だけ —— 一度きりの保存失敗で、次の起動が**鍵の入力欄**に戻る。
+mutate_m20() {
+    /usr/bin/sed -i '' '/^            return seed$/d' "$AS"
 }
 # ---- 変異 M17: 鍵を持っていても鍵入力画面を出す -------------------------------
 # `isLoadingCredentials` は此処では必ず false なので、資格情報が在っても else に落ちる。
@@ -573,6 +585,7 @@ probe M16-ledger-before-keychain mutate_m16 "$AS" "$WANT_SEED_ORDER" "$WANT_SEED
 probe M17-key-but-still-the-form mutate_m17 "$RV" "$WANT_FIRSTRUN" "$WANT_SEEDED" run_firstrun
 probe M18-clean-rejects-nothing  mutate_m18 "$PR" "$WANT_TEMPLATE"  "$WANT_SEEDED"
 probe M19-any-scheme-accepted    mutate_m19 "$PR" "$WANT_PLAINTEXT" "$WANT_SEEDED"
+probe M20-unsaved-seed-recorded  mutate_m20 "$AS" "$WANT_SEED_FAIL" "$WANT_SEED_ORDER"
 
 # ---- 復元の確認(想定ではなく観測する) ---------------------------------------
 # 此処は trap が走る**前**なので、戻っていなければ此処で言える。
