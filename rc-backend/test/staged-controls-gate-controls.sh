@@ -15,6 +15,16 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GATE="${STAGED_GATE:-$ROOT/tools/staged-controls-gate.sh}"
 
+# ★`RC_STAGED_FILES` を**此処で1度だけ落とす**(2026-08-12)。
+#   経緯: 此の対照は commit の門の中から走るので、其の時**本物の門が既に
+#   `RC_STAGED_FILES` を export した後**に居る。落とさないと、export を消した変異体
+#   (S57)でも環境から継承した値が偽の子に届き、**単体では緑・門の中では赤**になる。
+#   実際に此れで commit が1回止まった(12分の全走行を挟んで)。
+#   ★継承値で判定が変わる検査は、測る対象を測っていない。
+#   ★各呼び出しに `env -u` を貼らないのは、貼り忘れが**次に足す1本**で必ず起きるから ——
+#     此の repo が6回踏んだ「手で同期する一覧」を、8箇所ぶん作る事になる。
+unset RC_STAGED_FILES
+
 pass=0; fail=0
 chk() { # chk <名前> <期待rc> <実rc> <含むべき> <含んではいけない> <出力>
   local name=$1 want=$2 got=$3 must=$4 mustnot=$5 out=$6 bad=""
@@ -526,6 +536,37 @@ else
   chk "S55 ★床を消すと判子が通る(= S54 に歯が在る)" 0 $? "免れた道具 1 本" "" "$mut_out"
 fi
 /bin/rm -f "$R/rc-backend/tools/inst.sh"
+
+# ── S56 ★選んだ**理由**(staged の一覧)を対照へ渡す(#66、2026-08-12)──────────
+#   何故此処を測るか: 之は継ぎ目で、両側とも単体では緑に見える。門は「渡したつもり」で
+#   通り、対照は「貰えないので全部回す」= 安全側に落ちるので**遅くなるだけで赤が出ない**。
+#   静かに効かなくなる形なので、渡っている事を正面から観測する。
+#   ★宣言の行を**字面で書かない**。門は `# controls-for:` を持つ行を対照の宣言として
+#     走査するので、此の file の中に其の綴りを行頭で1回置くと、**此の対照自身が
+#     偽の repo にしか無い道具を見張ると宣言した事になる**(実測 2026-08-12: 門が
+#     「宣言先が実在しない対照」として名指しした)。綴りを2片に割って組み立てる。
+#   ★偽の道具の名前を backtick で引かない事 —— 引くと今度は
+#     `test/no-linerefs.test.mjs` が「実在しない名前を引いている」で止める(同日、実測)。
+#     偽の repo の中の名前は、本物の木から見れば存在しない名前である。
+_decl="controls-for"
+printf '#!/bin/bash\n# %s: tools/envtool.sh\necho "SAW:[${RC_STAGED_FILES:-未設定}]"\nexit 0\n' \
+    "$_decl" > "$R/rc-backend/test/env-controls.sh"
+/bin/chmod +x "$R/rc-backend/test/env-controls.sh"
+: > "$R/rc-backend/tools/envtool.sh"
+out=$(run_gate 'rc-backend/tools/envtool.sh')
+chk "S56 ★staged の一覧が対照へ渡る" 0 $? "SAW:[rc-backend/tools/envtool.sh]" "SAW:[未設定]" "$out"
+
+# ── S57 ★陰性対照: 渡す1行を消すと S56 が赤くなる(= S56 に歯が在る)──────────
+MUT5="$SB/gate-no-export.sh"
+/usr/bin/sed '/^export RC_STAGED_FILES=/d' "$GATE" > "$MUT5"
+if /usr/bin/cmp -s "$GATE" "$MUT5"; then
+  echo "NG  S57-prep ★変異が当たっていない(S56 の緑は測られていない)"
+  fail=$((fail+1))
+else
+  mut_out=$(RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' 'rc-backend/tools/envtool.sh'" \
+            bash "$MUT5" 2>&1)
+  chk "S57 ★渡す1行を消すと未設定が届く" 0 $? "SAW:[未設定]" "" "$mut_out"
+fi
 
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]

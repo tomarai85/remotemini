@@ -526,6 +526,31 @@ fi
 
 [ "$MODE" = "install" ] || exit 0
 
+# ★変異の走行の腐りを言う(#66、2026-08-12)。**門ではない、警告だけ。**
+#
+# 経緯: 同日、commit では変異20本(725秒)を繰り延べて基準だけ回す様にした。
+# 繰り延べた分は「回していない」であって緑ではないが、**出荷の前に全部回す事を
+# 機械が誰も強制しない**穴が空く。禁止/繰り延べを1本置いたら、同じ変更の中で
+# 代わりの経路を引く —— 引かないと穴埋めは黙って人の記憶に落ちる。
+# 止めないのは裁定「門をもう増やさない」(2026-08-11)に従う為。読んで決めるのは人。
+# ★digest も印の場所も**持っている側に訊く**(`--sweep-digest`)。此処で同じ式を
+#   書き写すと実装が2本になり、食い違った時に出るのは**嘘の「古い」警告** ——
+#   本物の腐りと見分けが付かなくなる。一覧は向こうの `TARGETS` 1本のまま。
+_sweep_ans="$(bash "$IOS/tools/signout-notice-control.sh" --sweep-digest 2>/dev/null)"
+_sweep_now="$(printf '%s' "$_sweep_ans" | sed -n '1p')"
+_sweep_stamp="$(printf '%s' "$_sweep_ans" | sed -n '2p')"
+if [ -z "$_sweep_now" ] || [ -z "$_sweep_stamp" ]; then
+  echo "    ⚠ 変異の走行の記録を問い合わせられなかった = 腐りは**未測定**" >&2
+elif [ ! -r "$_sweep_stamp" ]; then
+  echo "    ⚠ 変異20本を全部回した記録が無い。錨に歯が在るかは**未測定**のまま出荷する" >&2
+  echo "      閉じる手: bash ios/tools/signout-notice-control.sh(約12分)" >&2
+elif [ "$(cat "$_sweep_stamp" 2>/dev/null)" != "$_sweep_now" ]; then
+  echo "    ⚠ 変異を全部回した後に、其れが読む file が動いている = 記録は**古い**" >&2
+  echo "      閉じる手: bash ios/tools/signout-notice-control.sh(約12分)" >&2
+else
+  echo "    変異20本の全走行: 記録と現在のバイトが一致"
+fi
+
 step "6. install"
 DEV=$(resolve_device) || exit $?
 

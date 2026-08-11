@@ -125,6 +125,88 @@ RV="$IOS/Sources/RootView.swift"
 PR="$IOS/Sources/Core/Provisioning.swift"
 TARGETS=("$AS" "$KV" "$KM" "$SN" "$RV" "$PR")
 
+# 全部回して緑だった事の**印**(#66、2026-08-12)。commit で変異を繰り延べる様にした
+# 以上、「出荷の前に全部回す」を人の記憶に懸けると、記憶に懸けた守りは1日で戻る
+# (此の repo が 2026-08-06 に実測した)。だから機械が言える形にする。
+# ★門ではない。`ios/tools/build.sh` が電話へ入れる直前に**警告を出すだけ**
+#   (裁定「門をもう増やさない」2026-08-11)。止めるかは人が決める。
+# ★印の中身は「其の時に測ったバイト」。commit の sha ではない —— 汚れた木で回した
+#   走行を「其の commit で緑だった」と読ませない為。
+STAMP="$IOS/build/.mutation-sweep-stamp"   # ios/.gitignore:6 で build/ ごと追跡外
+sweep_digest() { # 変異が読む file 群のバイト。1本でも動けば前の全走行は効力を失う
+    ( for _t in "${TARGETS[@]}"; do shasum "$_t" 2>/dev/null; done
+      /usr/bin/find "$IOS/Tests" "$IOS/UITests" -name '*.swift' -print0 2>/dev/null \
+        | LC_ALL=C sort -z | /usr/bin/xargs -0 shasum 2>/dev/null
+    ) | shasum | awk '{print $1}'
+}
+# ★出荷の口(`ios/tools/build.sh`)は此処に**訊く**。向こうで同じ式を書くと、
+#   digest の実装が2本になって黙って食い違う —— 食い違った時に出るのは「印が古い」
+#   という**嘘の警告**で、本物の腐りと見分けが付かなくなる。
+#   一覧は此の file の `TARGETS` 1本のまま(`staged-controls-gate.sh --would-select` と同じ手)。
+if [ "${1:-}" = "--sweep-digest" ]; then
+    printf '%s\n' "$(sweep_digest)"
+    printf '%s\n' "$STAMP"
+    exit 0
+fi
+
+# ---- commit では変異を繰り延べる(#66、2026-08-12)-----------------------------
+# 何故: `ios/` を触る commit 1本が 20〜25分で、其の殆どが此の対照(実測 725秒)。
+# 中身は**別物が2つ**束ねてあり、要る頻度が違う:
+#
+#   基準(ビルド1回、約35秒) …… ios の検査一式が緑 + 錨22本が実在して緑。
+#                                 **commit 毎に要る**(ios の commit 時検証は此れだけ)
+#   変異20本(約690秒)       …… 錨に**歯が在る**か = 計器そのものの証明。
+#                                 鈍るのは検査を書き換えた時なので、頻度は commit ではなく**出荷**
+#
+# ★最初は「変わった面の変異だけ回す」形で書いた。**Codex に否定されて捨てた**(2026-08-12)。
+#   変異の sed 対象は**欠陥を注入する点**であって、同じ欠陥が**発生し得る file の集合**では
+#   ない。実例: `ios/Sources/Core/Provisioning.swift` には `SeedDigest` /
+#   `UserDefaultsSeedLedger` / `BundleProvisioning` が同居していて、其処の1行が
+#   M13-M16/M20 の測る欠陥(= #64 そのもの)を混入できるのに、file で選ぶと M18/M19 しか
+#   選ばれない。健全にするには継ぎ目を変異ごとに宣言する事になり、其れは黙って古くなる
+#   **2本目の一覧** —— 作らないと決めた物。だから狭めずに**繰り延べる**。
+#
+# ★繰り延べは「回さなかった」であって「緑」ではない。毎回名前で言う。
+#   同じ形が既に此の repo に在る(`staged-controls-gate.sh` の edith 側の対照)。
+# ★計器そのもの / ビルドの土台が staged の時は繰り延べない —— 其の commit の目的が
+#   計器の証明なので、繰り延べたら証明が消える。
+DRY=0
+[ "${1:-}" = "--which" ] && DRY=1
+
+SELF_REL="ios/tools/signout-notice-control.sh"
+DEFER=0
+STAGED_IOS=""
+DEFERRED=""
+DEFERRED_N=0
+RAN_N=0
+
+_rel() { printf '%s' "${1#"$ROOT/"}"; }
+_has_line() { # $1=改行区切りの一覧 $2=探す行
+    case "
+$1
+" in *"
+$2
+"*) return 0 ;; esac
+    return 1
+}
+
+# 繰り延べの結果を言う口は**1つだけ**。本番と `--which` で別々に書くと、片方だけを
+# 測った対照が「印字している」と言い、もう片方が黙って分母を痩せさせる。
+# ★0 本繰り延べた時も言う —— 「繰り延べが効いていない」と「繰り延べた結果0本」は
+#   別の話で、後者を黙ると前者と見分けが付かない。
+defer_summary() { # $1=回した変異の本数 $2=繰り延べた本数
+    if [ "$DEFER" -eq 1 ]; then
+        printf -- '--- 変異: 回す %s 本 / 繰り延べ %s 本(commit では繰り延べる) ---\n' "$1" "$2"
+        echo "  繰り延べた変異:${DEFERRED:- なし}"
+        echo "  ★繰り延べた分は**緑ではない**(回していない)。基準(検査一式 + 錨の実在)は上で回した。"
+        echo "  出荷の前に全部回す事:"
+        echo "    bash ios/tools/signout-notice-control.sh      # 単体、20本"
+        echo "    bash rc-backend/tools/run-controls.sh --all   # 全掃き"
+    else
+        printf -- '--- 変異: 回す %s 本 / 繰り延べ %s 本(繰り延べなし = 全部回す) ---\n' "$1" "$2"
+    fi
+}
+
 # 基準で緑である事を確かめる的。**件数ではなく実名**で錨を打つ(数を発明しない)。
 WANT_LEFT=testA401LeavesAReasonBehindRatherThanJustDroppingTheKey
 WANT_ORDER=testTheNoticeIsWrittenBeforeTheKeychainIsCleared
@@ -151,6 +233,30 @@ WANT_FIRSTRUN=testAProvisionedPhoneReachesTheListWithoutBeingAskedToTypeAnything
 # 刻印の**形**を落とす側(M18/M19)。整った刻印は種になる、を同じ検査の中で錨にしてある。
 WANT_TEMPLATE=testAnUnresolvedTemplateIsNotASeed
 WANT_PLAINTEXT=testAPlaintextURLIsNotASeed
+
+# 錨の一覧。**本数を手で書かない**(2026-08-11、#64)。前の版は下の報告文に `21本` と
+# 直書きしていて、此処へ1本足した人が報告文を知らない = 数が黙って嘘になる形だった。
+# 同じ日に `extract()` の class 一覧でも踏んだ、写しが2つ在る型。
+# ★2026-08-12(#66): 基準の確認と**面の絞り込みの両方**が此の一覧を読む。定義を
+#   走行の途中(基準の中)から此処へ上げたのは、絞りの判定が基準より先に要る為。
+WANTS="$WANT_LEFT $WANT_ORDER $WANT_SWEEP $WANT_CARRIED $WANT_SENTENCE
+       $WANT_TWO $WANT_DISK $WANT_NOKEY $WANT_SCREEN
+       $WANT_STAGES $WANT_TIMEOUT $WANT_INFLIGHT $WANT_LOCKED $WANT_LOCKED_UNIT
+       $WANT_SEEDED $WANT_ONCE $WANT_UNREADABLE $WANT_SEED_ORDER $WANT_SEED_FAIL $WANT_FIRSTRUN
+       $WANT_TEMPLATE $WANT_PLAINTEXT"
+WANT_N="$(printf '%s' "$WANTS" | wc -w | tr -d ' ')"
+
+# ---- 繰り延べるか否か(#66)---------------------------------------------------
+# 判定は3つだけ。**staged の中身で変異を選り分けない**(選り分けが不健全な理由は上）。
+if [ -n "${RC_STAGED_FILES:-}" ]; then
+    STAGED_IOS="$(printf '%s\n' "$RC_STAGED_FILES" | grep -E '^ios/')" || STAGED_IOS=""
+    DEFER=1
+    # ★計器そのもの = 此の commit の目的が計器の証明。繰り延べたら証明が消える。
+    _has_line "$STAGED_IOS" "$SELF_REL"           && DEFER=0
+    # ★ビルドの土台。全変異のビルドに効くので、壊れたら変異の走行自体が意味を失う。
+    _has_line "$STAGED_IOS" "ios/project.yml"     && DEFER=0
+    _has_line "$STAGED_IOS" "ios/tools/build.sh"  && DEFER=0
+fi
 
 ORIG="$WORK/orig"
 mkdir -p "$ORIG"
@@ -370,40 +476,45 @@ has() { # $1 = 空白区切りの一覧, $2 = 名前
     case " $1 " in *" $2 "*) return 0 ;; *) return 1 ;; esac
 }
 
-echo "=== 基準(変異なし)"
-BASE_LOG="$LOGDIR/signout-notice-base.log"
-rc=$(run_base "$BASE_LOG")
-if [ "$(ran_count "$BASE_LOG")" -eq 0 ]; then
-    un "基準で検査が一度も走っていない(2度試して 0 本)= 機械の側が動いていない。実装については何も測っていない。全文: $BASE_LOG"
-    echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
-    exit 2
-fi
-if [ "$rc" -ne 0 ]; then
-    un "基準が緑でない(rc=$rc)。以降は測れない。全文: $BASE_LOG"
-    echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
-    exit 2
-fi
-BASE_PASSED="$(passed_tests "$BASE_LOG")"
+# ★`--which`(#66、2026-08-12)= **選択だけ**見せて1本も回さない口。
+#   何故要るか: 選択が正しいかを測るのに本番を回すと xcodebuild が21回(基準+変異20)で
+#   12分待つ事になり、**測る事自体をやめる**。狭める変更を入れる以上、其の当たり外れを
+#   安く何度でも測れる口が同じ commit に要る。
+#   ★判定の道は本番と完全に共有する —— 繰り延べの可否は probe() の中の同じ `$DEFER` 1箇所
+#     だけで、此の口は「回すか」を差し替えない。別実装を持たない事が此の口の条件
+#     (`staged-controls-gate.sh` の `--would-select` / `--list` と同じ規律)。
+#   ★基準の走行も飛ばす。基準は「錨が今も緑か」を測る物で、選択とは無関係。
+if [ "$DRY" -eq 0 ]; then
+    echo "=== 基準(変異なし)"
+    BASE_LOG="$LOGDIR/signout-notice-base.log"
+    rc=$(run_base "$BASE_LOG")
+    if [ "$(ran_count "$BASE_LOG")" -eq 0 ]; then
+        un "基準で検査が一度も走っていない(2度試して 0 本)= 機械の側が動いていない。実装については何も測っていない。全文: $BASE_LOG"
+        echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
+        exit 2
+    fi
+    if [ "$rc" -ne 0 ]; then
+        un "基準が緑でない(rc=$rc)。以降は測れない。全文: $BASE_LOG"
+        echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
+        exit 2
+    fi
+    BASE_PASSED="$(passed_tests "$BASE_LOG")"
 
 # 錨の一覧。**本数を手で書かない**(2026-08-11、#64)。前の版は下の報告文に `21本` と
 # 直書きしていて、此処へ1本足した人が報告文を知らない = 数が黙って嘘になる形だった。
 # 同じ日に `extract()` の class 一覧でも踏んだ、写しが2つ在る型。
-WANTS="$WANT_LEFT $WANT_ORDER $WANT_SWEEP $WANT_CARRIED $WANT_SENTENCE
-       $WANT_TWO $WANT_DISK $WANT_NOKEY $WANT_SCREEN
-       $WANT_STAGES $WANT_TIMEOUT $WANT_INFLIGHT $WANT_LOCKED $WANT_LOCKED_UNIT
-       $WANT_SEEDED $WANT_ONCE $WANT_UNREADABLE $WANT_SEED_ORDER $WANT_SEED_FAIL $WANT_FIRSTRUN
-       $WANT_TEMPLATE $WANT_PLAINTEXT"
-WANT_N="$(printf '%s' "$WANTS" | wc -w | tr -d ' ')"
-
-for w in $WANTS; do
-    if ! has "$BASE_PASSED" "$w"; then
-        un "基準で的の検査が緑になっていない: $w"
-        echo "    (基準の緑は $(printf '%s' "$BASE_PASSED" | wc -w | tr -d ' ') 本。全文: $BASE_LOG)"
-        echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
-        exit 2
-    fi
-done
-ok "基準: 的の検査が ${WANT_N} 本とも緑(この走行の緑は全部で $(printf '%s' "$BASE_PASSED" | wc -w | tr -d ' ') 本)"
+    # ★狭めても此処は**全部**確かめる。基準は「錨が今も実在して緑か」を測る物で、
+    #   面で絞るのは「其の錨を壊してみるか」の側。改名・削除・赤は狭めても捕まる。
+    for w in $WANTS; do
+        if ! has "$BASE_PASSED" "$w"; then
+            un "基準で的の検査が緑になっていない: $w"
+            echo "    (基準の緑は $(printf '%s' "$BASE_PASSED" | wc -w | tr -d ' ') 本。全文: $BASE_LOG)"
+            echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
+            exit 2
+        fi
+    done
+    ok "基準: 的の検査が ${WANT_N} 本とも緑(この走行の緑は全部で $(printf '%s' "$BASE_PASSED" | wc -w | tr -d ' ') 本)"
+fi
 
 # ---- 変異 M1: 401 が何も残さない(直す前の姿) ---------------------------------
 # 断りを disk にも memory にも置かない。鍵だけ捨てて白紙の画面に戻る、元の欠陥そのもの。
@@ -525,6 +636,22 @@ mutate_m19() {
 
 probe() { # $1=名前 $2=変異関数 $3=対象file $4=赤くなるべき検査 $5=(任意)緑のままであるべき検査 $6=(任意)走らせ方
     local name="$1" fn="$2" target="$3" want="$4" stays="${5:-}" runner="${6:-run_unit}"
+    # ★繰り延べた物は数えて名前を出す(下の締めで印字)。黙って飛ばすと
+    #   「PASS n / FAIL 0」の分母が痩せた緑になる。
+    if [ "$DEFER" -eq 1 ]; then
+        DEFERRED="$DEFERRED $name"
+        DEFERRED_N=$((DEFERRED_N+1))
+        [ "$DRY" -eq 1 ] && printf '  DEFER %-34s (%s)\n' "$name" "$(_rel "$target")"
+        return
+    fi
+    # ★数えるのは**変異の本数**。本番側で `PASS+FAIL+UNMEASURED` を使っていた時は
+    #   基準の緑まで1本に数えており、同じ口が `--which` では 2、本番では 3 と
+    #   言っていた(2026-08-12 の実測で発覚)。数が黙って嘘になる形。
+    RAN_N=$((RAN_N+1))
+    if [ "$DRY" -eq 1 ]; then
+        printf '  RUN   %-34s (%s)\n' "$name" "$(_rel "$target")"
+        return
+    fi
     restore_all
     local before after
     before=$(shasum "$target" | awk '{print $1}')
@@ -587,6 +714,13 @@ probe M18-clean-rejects-nothing  mutate_m18 "$PR" "$WANT_TEMPLATE"  "$WANT_SEEDE
 probe M19-any-scheme-accepted    mutate_m19 "$PR" "$WANT_PLAINTEXT" "$WANT_SEEDED"
 probe M20-unsaved-seed-recorded  mutate_m20 "$AS" "$WANT_SEED_FAIL" "$WANT_SEED_ORDER"
 
+# ★`--which` は此処で帰る。1本も変異させていないので復元の確認は測る物が無く、
+#   「復元を確認」と言うと**測っていない事を測ったと言う**形になる。
+if [ "$DRY" -eq 1 ]; then
+    defer_summary "$RAN_N" "$DEFERRED_N"
+    exit 0
+fi
+
 # ---- 復元の確認(想定ではなく観測する) ---------------------------------------
 # 此処は trap が走る**前**なので、戻っていなければ此処で言える。
 restore_all
@@ -604,6 +738,17 @@ if [ -n "$not_restored" ]; then
     UNMEASURED=$((UNMEASURED+1))
 else
     echo "復元を確認(対象 ${#TARGETS[@]} file すべて走る前のバイトと一致)"
+fi
+
+# ★繰り延べた事は**必ず**言う(#66)。口は `defer_summary` 1つ = `--which` と同じ文言・同じ数。
+defer_summary "$RAN_N" "$DEFERRED_N"
+
+# 全部回して1本も落ちなかった時だけ印を置く。繰り延べた走行は**置かない**
+# (置くと「回した」と「回していない」が同じ顔になる = 此の変更が作った穴そのもの)。
+if [ "$DEFER" -eq 0 ] && [ "$FAIL" -eq 0 ] && [ "$UNMEASURED" -eq 0 ] && [ "$RAN_N" -gt 0 ]; then
+    /bin/mkdir -p "$(dirname "$STAMP")" 2>/dev/null
+    printf '%s\n' "$(sweep_digest)" > "$STAMP" 2>/dev/null \
+        && echo "変異の全走行を記録した(出荷の口が此の印を読む): ${STAMP#"$ROOT/"}"
 fi
 
 echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
