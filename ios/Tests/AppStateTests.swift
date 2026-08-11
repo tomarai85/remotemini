@@ -72,6 +72,10 @@ final class AppStateTests: XCTestCase {
         /// Keychain が**読めない**時。`nil`(空)と同じ物にしないのが此の旗の全部。
         var loadThrows = false
 
+        /// Keychain へ**書けない**時。種を蒔く側だけが使う —— 書けなかった種に
+        /// 「蒔いた」の記録を付けると、次の起動で欄が出る(`plantSeedIfNeeded` の doc)。
+        var saveThrows = false
+
         init(stored: Credentials? = nil, recorder: Recorder = Recorder()) {
             self.stored = stored
             self.recorder = recorder
@@ -83,6 +87,7 @@ final class AppStateTests: XCTestCase {
         }
 
         func save(_ credentials: Credentials) throws {
+            if saveThrows { throw KeychainError.unexpectedStatus(-25299) }
             stored = credentials
             recorder.events.append("keychain-saved")
         }
@@ -232,6 +237,7 @@ final class AppStateTests: XCTestCase {
     // | Keychain が読めない起動を「空」と読んで手入力の鍵を潰す | ⑫ |
     // | 刻印が無いのに何かを蒔く / 蒔けずに固まる | ⑬ |
     // | 記録を書いてから保存する(書けなかった種を蒔いた事にする) | ⑭ |
+    // | 保存の失敗を握り潰して記録だけ付ける(次の起動で欄が出る) | ⑮ |
 
     /// ★⑧ 鍵の無い電話が、打たずに一覧へ着く。**この直しの本体**。
     func testAnEmptyKeychainIsSeededFromTheStampSoTheFirstScreenIsNotTheForm() async {
@@ -366,5 +372,46 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertEqual(recorder.events, ["keychain-saved", "ledger-written", "notice-cleared"],
                        "★逆順の実装を落とす(書けなかった種を蒔いた事にする)")
+    }
+
+    /// ★⑮ Keychain へ**書けなかった**種には記録を付けない。
+    ///
+    /// ⑭ は「順序」を見ている。此処が見るのは**握り潰し**の方 —— 保存が throw した時、
+    /// 順序が正しくても `try?` で素通りすれば記録は付く。付いた瞬間、次の起動は
+    /// 「もう蒔いた」と読んで種を蒔かず、Keychain は空のままなので**鍵の入力欄が出る**
+    /// (= #64 が直しに来た形が、一度きりの保存失敗で復活する)。
+    ///
+    /// 此の起動を memory の資格情報で通すのは変えない(`KeyEntryViewModel.submit()` が
+    /// Keychain の失敗を握り潰すのと同じ判断)。変えるのは記録の側だけ。
+    func testASeedThatCouldNotBeSavedIsNotRecordedAsPlanted() async {
+        let recorder = Recorder()
+        let store = FakeCredentialStore(stored: nil, recorder: recorder)
+        store.saveThrows = true
+        let ledger = InMemorySeedLedger()
+
+        let state = makeState(store: store,
+                              notices: RecordingNoticeStore(recorder: recorder),
+                              provisioning: FakeProvisioning(seed: Self.creds),
+                              seedLedger: ledger)
+
+        await state.loadStoredCredentials()
+
+        XCTAssertEqual(state.credentials, Self.creds,
+                       "書けない事は使えない事ではない —— 此の起動は通る")
+        XCTAssertNil(ledger.plantedSeedDigest,
+                     "★保存の失敗を握り潰して記録だけ付ける実装を落とす(次の起動で欄が出る)")
+        XCTAssertFalse(recorder.events.contains("keychain-saved"),
+                       "前提: 保存は本当に失敗している(検査が空振りしていない)")
+
+        // 次の起動。記録が付いていないので、同じ種をもう一度蒔ける。
+        store.saveThrows = false
+        let second = makeState(store: store,
+                               notices: RecordingNoticeStore(recorder: recorder),
+                               provisioning: FakeProvisioning(seed: Self.creds),
+                               seedLedger: ledger)
+        await second.loadStoredCredentials()
+
+        XCTAssertEqual(try? store.load(), Self.creds, "2回目で Keychain に載る")
+        XCTAssertEqual(ledger.plantedSeedDigest, SeedDigest.of(Self.creds))
     }
 }
