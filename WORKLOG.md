@@ -12324,3 +12324,251 @@ Tom が実機で RemoteMini を開いた。第一声:
 
 **無い。** ローカルで可逆、私の仕事。#13(電話を1回開いて3点を見る)は
 **この欠陥で入口が塞がっている**ので、直すまで Tom は先へ進めない。
+
+---
+
+## 2026-08-11(続き) — 実装。上の設計から**3点ずらした**ので、ずらした理由を先に置く
+
+上の §「直し方」は設計であって実装ではなかった。実装して、3点ずれた。
+**ずれを書かずに「設計通り実装した」と書くのが一番たちが悪い**ので、先に並べる。
+
+### ずれ① 生成物は「Swift 1枚」ではなく **`ios/Info.plist` に刻む**
+
+設計は「追跡外の Swift を1枚出す」。やめた理由は**他の呼び手**:
+`ios/tools/ui-fixture-absence-control.sh` と `ios/tools/signout-notice-control.sh` は
+build.sh を通さずに自分で `xcodegen generate` + `xcodebuild` を回す。生成した Swift が
+`Sources/` に居ると**コンパイルに必須**になるので、build.sh を1度も通していない木では
+その2本が丸ごと落ちる —— 直した所と関係の無い対照を、直しの副作用で殺す事になる。
+
+代わりに `ios/Info.plist`(**xcodegen が毎回生成する、既に gitignore 済みの成果物**)へ
+`RCBaseURL` / `RCAPIKey` の2鍵を刻む。読み手は `Bundle.main.object(forInfoDictionaryKey:)`
+1本(`ios/Sources/Core/Provisioning.swift`)。追跡には入らない、コンパイルには要らない。
+
+`project.yml` の `${VAR}` 注入(`RCBuildRev` が使っている形)は**使わなかった**。
+実測(xcodegen 2.45.3): 未定義の `${VAR}` はビルドを落とさず、**文字列 `${VAR}` が
+そのまま Info.plist に書かれる**。つまり注入の失敗が「もっともらしい文字列」として届く。
+だから `Provisioning.clean()` は `${` を含む値を**種として拒む**。空・非 https・host 無しも
+同じ扱い —— 拒む3形は全部「読めてしまう文字列」で来る。
+
+### ずれ② 「1回だけ蒔く」の門は**断りではなく種の指紋**(Codex の指摘で設計を捨てた)
+
+最初に commit した設計は「Keychain が空 **かつ** 断り(`SignOutNotice`)が無い時に蒔く」。
+Codex に否定されて捨てた。理由は2つとも**渡米中に効く**:
+
+- 断りは**画面の状態**であって認証の状態ではない。401 で1度落ちると断りが残るので、
+  机で鍵を回して**焼き直した新しい種**が蒔けなくなる —— それが渡米中の唯一の復旧路。
+- Keychain の一時的な読み取り失敗を「空」と読むと、種が **Tom が手で入れた鍵を上書き**する。
+
+置き換えた形: `SeedLedgerStoring` が最後に蒔いた種の指紋(SHA256 の先頭16桁)を持ち、
+**指紋が違う種だけ**蒔く。同じ種は二度蒔かない(401 で捨てた鍵で回らない)、
+違う種は蒔く(鍵の回転が通る)。旗1本の「もう蒔いた」だと後者が塞がる。
+
+### ずれ③ `loadStoredCredentials()` が **throw と nil を分ける**(同じく Codex)
+
+元は `try? store.load()` で、「読めなかった」が `nil` に潰れていた。潰れたまま種を蒔くと
+ずれ②の2点目がそのまま起きる。今は `do/catch` で分け、**読めた上で空**の時だけ蒔く。
+読めなかった起動は何もしない —— 次に読めれば元に戻る。
+
+### 何を足したか(file)
+
+| file | 役 |
+|---|---|
+| `ios/Sources/Core/Provisioning.swift` | 刻印を読む / 3形を拒む / 指紋を作る / 台帳(`UserDefaults`) |
+| `ios/Sources/Core/ProvisioningFixture.swift` | `#if DEBUG`。UI 検査に**偽の種**を握らせる面 |
+| `ios/Sources/AppState.swift` | throw と nil を分け、空の時だけ `plantSeedIfNeeded()` |
+| `ios/Tests/Core/ProvisioningTests.swift` | 10本(拒む3形 / 半分だけ刻まれた / 指紋の性質 / 台帳の永続) |
+| `ios/Tests/AppStateTests.swift` | ⑧-⑭ の7本(蒔く / 上書きしない / 二度蒔かない / 回転は蒔く / 読めない時は触らない / 刻印無しは無変化 / 順序) |
+| `ios/UITests/FirstRunUITests.swift` | **抜けていた計器**。鍵の無い電話が打たずに一覧へ着く事を画素で見る + 錨 |
+| `ios/tools/build.sh` | 焼く時に edith から2値を貰って刻む + **焼き上がった `.app` を読み戻す** |
+
+★`build.sh` の verify が2箇所在るのは、刻む側の読み戻しは xcodebuild の**入力**しか
+見ていないから。入力を確かめて「焼けた」と言うのは、取っていない測定を主張する事になる。
+
+### 代償(隠さない)
+
+鍵が**アプリの束の中**に平文で入る。取った理由は上の §5 と同じ(tailnet の中だけ /
+届く先は1台 / 回転が1手 / 完全に可逆)。`RC_NO_SEED=1` で焼けば刻まない道も在り、
+その時は焼き上がりに**残っていない事**を機械が確かめる。
+
+### 実測
+
+- `./tools/build.sh --sim`: **546件 実行 / 失敗 0件**(版 `83eedb6-dirty` / 番号 47)。
+  `FirstRunUITests` の2本が実際に走った事は log の `Test Case … passed` 行で確認。
+- 途中で1件落ちた(`testTheLedgerIsWrittenAfterTheKeychain` が
+  `["keychain-saved", "ledger-written"]` を期待していた)。**製品ではなく期待が狭かった** ——
+  種が蒔けた起動は `credentials` が埋まるので `notices.save(nil)` まで走るのが正しい。
+  3手全部を順序ごと固定する形に直した(4手目が増えた日にも赤くなる)。
+
+### 負の対照(緑だけの計器にしない側)
+
+`ios/tools/signout-notice-control.sh` に **M13-M17** を足した。守る物が2つから**3つ**になり、
+変異は12本から**17本**になった。**実測 2026-08-11: PASS 18 / FAIL 0 / UNMEASURED 0、
+real 676.7 秒(11分17秒)**、xcodebuild 18回(基準1 + 変異17、うち6回は UI 検査込み)。
+走り終わりに「対象 5 file すべて走る前のバイトと一致」= 復元も観測で確かめている。
+
+| 変異 | 何を壊すか | 赤くなった検査 |
+|---|---|---|
+| M13 | 種を蒔かない(**Tom が実機で見た画面そのもの**) | `testAnEmptyKeychainIsSeededFromTheStampSoTheFirstScreenIsNotTheForm` 他3本 |
+| M14 | 指紋の門を外して毎回蒔く | `testARejectedSeedIsNotPlantedAgainOnTheNextLaunch` |
+| M15 | 「読めなかった」を「空」に潰す | `testAnUnreadableKeychainIsNotTreatedAsEmpty` |
+| M16 | 台帳を Keychain より**先**に書く | `testTheLedgerIsWrittenAfterTheKeychain` |
+| M17 | 鍵を持っていても鍵入力画面を出す | `testAProvisionedPhoneReachesTheListWithoutBeingAskedToTypeAnything` |
+
+★**M14-M17 は「片側だけでは通る」を毎回の走行で実演する**。4本とも、赤が1本出ている間
+`testAnEmptyKeychainIsSeededFromTheStampSoTheFirstScreenIsNotTheForm`(= 幸せな筋道)は
+**緑のまま**。つまり幸せな筋道だけを検査していたら、鍵の回転が塞がる版も・打った鍵を
+上書きする版も・途中で殺された電話が白紙に落ちる版も・**鍵が在るのに入力欄を出す版**も、
+全部そのまま出荷できた。M17 は単体が1本も落ちない = 出荷した欠陥と同じ形。
+
+★基準の走行では **UI class を2つとも**(`KeyEntryUITests` + `FirstRunUITests`)撃つ。
+錨は19本在り、`WANT_FIRSTRUN` は後者にしか居ない —— 基準で緑を見ていない名前を
+変異の側で「赤くなった」と読むと、元から赤かった物を成果に数える事になる。
+
+### 焼く前に、机が答える事だけ先に測った(焼いてはいない)
+
+`build.sh` の 1b は `--sim` の分岐より後に在るので、**simulator を何回回しても一度も走らない**。
+そこで 1b の取得と形の検査だけを撃つ使い捨ての台本を回した(刻まない)。結果:
+机の鍵は読めた(64文字)/ 机は tailnet の名前を名乗れた(形も領域も通る)/
+焼いたら指紋は `a4d822cf...` になる。**値は一つも印字していない。**
+
+### commit が止まった —— 否定だけの検査6本に錨が無かった(`vacuous-gate`)
+
+`#64` を commit しようとして門に止められた。`ios/Tests/Core/ProvisioningTests.swift` の
+①〜⑥が `XCTAssertNil` **しか**持っていない、という指摘。読み直すと正しい:
+`Provisioning.seed` が丸ごと `nil` を返す実装になっても、①〜⑥は**6本とも緑のまま**通る。
+赤くなるのは⑦(整った刻印は種になる)1本だけで、6本は追認機だった。
+
+兄弟の⑦が在るから錨は在る、とは言えない。**錨が1本なら落ちるのも1本**で、
+「此の形**だけ**が落ちる」は同じ検査の中で両側を見せて初めて主張になる。
+なので `assertOnlyTheMalformedShapeIsRejected` を置き、否定の隣で毎回
+「整った刻印は種になる」を主張する形にした。
+
+★**錨を足した事は、錨が働く証拠ではない。** 変異を2本足して測った:
+
+| 変異 | 赤くなるべき | 緑のままであるべき |
+|---|---|---|
+| M18 `clean` が何も落とさない(`${…}`・空を素通し) | ①`testAnUnresolvedTemplateIsNotASeed` | 「空の Keychain が種で埋まる」 |
+| M19 宛先の門(https + host)を外す | ④`testAPlaintextURLIsNotASeed` | 同上 |
+
+両方とも幸せな道を緑のまま残すので、**片側だけでは通る**の実演にもなっている。
+
+### 対照の基準チェックが、対照自身の欠陥を捕まえた
+
+M18/M19 を足す為に `ProvisioningTests` を `UNIT_ONLY` へ加えたら、基準が
+`UNMEASURED  基準で的の検査が緑になっていない: testAnUnresolvedTemplateIsNotASeed`
+で止まった。log を見ると其の検査は**現に緑で走っている**(`ProvisioningTests` 10本、
+`Test Suite 'ProvisioningTests' passed`)。
+
+原因は `extract()` が class 名の一覧を**2つ目の写し**として字面で持っていた事:
+
+    grep -oE "…(AppStateTests|SignOutNoticeStoreTests|KeyEntryViewTests|KeyEntryViewModelTests|KeyEntryUITests|FirstRunUITests)…"
+
+`UNIT_ONLY` に足しても此方は古いままなので、10本の緑が scanner から見えない。
+**写しを2つ持つと、片方を直した人がもう片方の存在を知らない。** 直し方は3つ目の
+字面を足す事ではなく、走らせている引数から導出する事:
+
+    CLASS_ALT="$( { printf '%s\n' $UNIT_ONLY | sed -n 's|^-only-testing:RemoteMini\(UI\)\{0,1\}Tests/||p'
+                    printf '%s\n' "$UI_KEYENTRY" "$UI_FIRSTRUN" | sed 's|^RemoteMini\(UI\)\{0,1\}Tests/||'
+                  } | sort -u | paste -sd'|' - )"
+
+UI class も runner の字面から変数へ寄せた(`UI_KEYENTRY` / `UI_FIRSTRUN`)。
+
+★**此処は道具が正しく働いた側**として記録する。錨を**実名**で確かめる設計
+(件数ではなく名前)だった為、見えない緑が「緑になっていない」として止まった。
+件数だけを見る基準だったら、46 が 56 にならない事を誰も咎めなかった。
+
+### 「机の版が古い」は**私の誤読**だった(measured、2026-08-11)
+
+`/healthz` が `version:"c952745"` を返し、此の木の HEAD は先へ進んでいる。
+`#32` `#56` で2回とも本物の配備遅れだったので、3回目だと読んだ。**違った。**
+
+    diff <(ローカル rc-backend/src の shasum) <(机の ~/rc-backend/src の shasum)
+      -> 差分なし(23 file、1バイト違わない)
+
+間の2 commit(`a24646c` `0e79130`)が触ったのは `tools/` `test/` `evidence/` だけ。
+**版の文字列は「配備した時に checkout されていた commit」であって「今走っているバイト」
+ではない。** 渡米前検査は此の文字列を門にしていない(`departure-survivability-check.sh`
+に `version` の照合は無い)ので、騙されるのは人と AI だけ。
+
+★先に測るのは版ではなく**バイト**。`HANDOFF-NEXT-SESSION.md` の「掘り直すな」表に
+1行足した —— 次のセッションが同じ ssh 往復を繰り返さない為。
+
+### 焼く時に出す「種の指紋」は、焼いた物の指紋ではなかった(実測、2026-08-11)
+
+`build.sh` は刻印の後に1行出す —— `種: 刻んだ(指紋 xxxxxxxxxxxxxxxx)`。
+其の値は shell 変数 `$SEED_KEY` から計算していた。**だが plist へ入るのは
+python 側の `key.strip()` の方**。鍵の前後に空白が1つ在るだけで、印字した指紋と
+焼いた物の指紋が食い違う:
+
+| 鍵 | 旧(shell 変数から) | 新(plist を読み戻して) | 電話が計算する値 |
+|---|---|---|---|
+| `seed-key` | `687101842a796d8d` | `687101842a796d8d` | `687101842a796d8d` |
+| `seed-key␠` | **`8be84b744ac16e48`** | `687101842a796d8d` | `687101842a796d8d` |
+
+★指紋は「入れようとした値」ではなく**読み戻した値**から取る。計算を python の中へ
+移し、`back["RCBaseURL"]` と `back["RCAPIKey"]`(= 現に plist に在るバイト)から出す。
+
+**突き合わせる検査も同時に据えた** —— `rc-backend/test/seed-digest-recipe.test.mjs`。
+build.sh の python 断片を**そのもののバイトのまま**切り出して走らせ、Swift 側の
+契約値と一致するかを見る。値の正本は Swift の検査⑪だけが持ち、node 側は其れを
+**読む**(写しを2つ持たない)。錨は4本:
+
+- 切り出しが現に当たっている(`hashlib` と `RCAPIKey` が断片に居る)= 空振りを緑にしない
+- 鍵を回した / 宛先を変えた時に指紋が動く = 定数を返す実装を落とす
+- 刻んだ値が現に plist へ入っている = 印字だけして書かない実装を落とす
+- 完全な木で「部分木だから測らない」を通っていない
+
+★副次的に**もっと重要な事**が起きている: `--sim` は block 1b の手前で抜けるので、
+刻印の python は此れまで**一度も走っていなかった**。此の検査が走らせる。
+残る未測定は其の外側(ssh で鍵を取る / `$SEED_URL` を組む / 焼いた `.app` から読み返す)。
+
+### 契約に**赤を出させた**(手で植えた変異3種、2026-08-11)
+
+据えただけでは計器ではない。契約の両側を1つずつ壊して、現に赤が出る事を見た
+(走行後は3回ともバイト一致で復元):
+
+| 植えた変異 | 出た色 |
+|---|---|
+| Swift の期待値を1文字動かす(`…8d` → `…8e`) | 突き合わせ2本が赤。**plist へ書く検査は緑のまま** |
+| 契約行の材料(鍵)を `other-key` へ動かす | 同上 |
+| 契約行(`SEED-DIGEST-CONTRACT` の行)を丸ごと消す | **錨が赤** = 切り出しの空振りを緑にしない |
+
+★1つ目・2つ目で「plist へ書く検査が緑のまま」なのは正しい片側性 ——
+其の検査は書き込みだけを見ていて、指紋の一致は見ていない。両方が同時に赤くなる
+計器だったら、どちらが壊れたか走行からは判らない。
+
+### 対照自身の2つ目の写しを潰した —— 錨の本数が**手で書いてあった**
+
+`ios/tools/signout-notice-control.sh` の基準の報告文が `21本` と直書きしていた:
+
+```
+ok "基準: 的の検査が21本とも緑(この走行の緑は全部で … 本)"
+```
+
+錨を足す人は上の `for w in "$WANT_LEFT" …` を編集するので、此の文を知らない。
+つまり**数が黙って嘘になる**形で、同じ日に `extract()` の class 一覧で踏んだ型と同じ。
+一覧を `WANTS` に束ねて `wc -w` で数える形へ変えた。定義 22 個のうち `WANTS` に
+居ないのは新設の `WANT_N` だけである事を機械で確かめた(= 錨は 21 本で全部)。
+
+### 強めた計器で負の対照を回し直した(2026-08-11、実測)
+
+錨の本数を導出に変えた版と、変異19本(M18/M19 追加)で通し:
+
+```
+基準: 的の検査が 21 本とも緑(この走行の緑は全部で 57 本)
+--- 合計: PASS 20 / FAIL 0 / UNMEASURED 0 ---
+74.63s user 88.72s system 23% cpu 11:40.46 total
+```
+
+- 導出が効いている: `21 本` は数えた値で、基準の緑 57 本のうち的が 21 本。
+- M18(前後を削って空・空白・未解決の `${...}` を素通し)→
+  `testAnEmptyValueIsNotASeed` / `testAWhitespaceOnlyValueIsNotASeed` /
+  `testAnUnresolvedTemplateIsNotASeed` が赤。
+- M19(scheme と host の門を外す)→ `testAPlaintextURLIsNotASeed` /
+  `testAHostlessStringIsNotASeed` が赤。
+- 2本とも実演の相方は `testAnEmptyKeychainIsSeededFromTheStampSoTheFirstScreenIsNotTheForm`
+  で、**緑のまま**。種を蒔く筋道の検査は「認めない形」を1つも見ていない、が
+  主張でなく走行の実測として出る。
+- 走行後 `復元を確認(対象 6 file すべて走る前のバイトと一致)`。
+- 値段: 変異17本の時が 676.7 秒、19本で 700.5 秒 = 足した2本で 24 秒。
+  M18/M19 は単体で赤くなるので UI 検査の回数(6回)は増えていない。

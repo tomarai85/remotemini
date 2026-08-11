@@ -13,11 +13,17 @@ final class AppState: ObservableObject {
 
     private let store: CredentialStore
     private let notices: SignOutNoticeStoring
+    private let provisioning: ProvisioningSource
+    private let seedLedger: SeedLedgerStoring
 
     init(store: CredentialStore = KeychainCredentialStore(),
-         notices: SignOutNoticeStoring = UserDefaultsSignOutNoticeStore()) {
+         notices: SignOutNoticeStoring = UserDefaultsSignOutNoticeStore(),
+         provisioning: ProvisioningSource = BundleProvisioning(),
+         seedLedger: SeedLedgerStoring = UserDefaultsSeedLedger()) {
         self.store = store
         self.notices = notices
+        self.provisioning = provisioning
+        self.seedLedger = seedLedger
     }
 
     /// `RootView` が起動時に組む1体。既定は本物(Keychain + `UserDefaults`)で、
@@ -29,9 +35,19 @@ final class AppState: ObservableObject {
     /// 測れるのは view だけで、断りが disk から画面まで**通る**事は測れないままになる。
     static func forLaunch() -> AppState {
         #if DEBUG
+        // 焼いた種を**握らせる**面。初回起動が一覧に着く事を測る唯一の口で、
+        // 本物の刻印は使わない(`ios/Sources/Core/ProvisioningFixture.swift`)。
+        if let fixture = ProvisioningFixture.fromEnvironment() {
+            return AppState(store: InMemoryCredentialStore(),
+                            notices: InMemorySignOutNoticeStore(),
+                            provisioning: fixture,
+                            seedLedger: InMemorySeedLedger())
+        }
         if let fixture = SignOutNoticeFixture.fromEnvironment() {
             return AppState(store: NoStoredCredentials(),
-                            notices: InMemorySignOutNoticeStore(notice: fixture.notice))
+                            notices: InMemorySignOutNoticeStore(notice: fixture.notice),
+                            provisioning: NoProvisioning(),
+                            seedLedger: InMemorySeedLedger())
         }
         // 断りは付かない面(初回の顔)だが、鍵を持たない金庫を渡すのは同じ。
         // 本物の `KeychainCredentialStore` のままだと、開発機に資格情報が残っている日は
@@ -40,14 +56,38 @@ final class AppState: ObservableObject {
         // `ios/Sources/Core/KeyEntryProbeFixture.swift`。
         if KeyEntryProbeFixture.fromEnvironment() != nil {
             return AppState(store: NoStoredCredentials(),
-                            notices: InMemorySignOutNoticeStore())
+                            notices: InMemorySignOutNoticeStore(),
+                            provisioning: NoProvisioning(),
+                            seedLedger: InMemorySeedLedger())
         }
         #endif
         return AppState()
     }
 
+    /// ★鍵入力画面を経由せずに資格情報が入る唯一の筋道が此処(2026-08-11)。
+    ///
+    /// 順序に意味が在る:
+    /// 1. Keychain を読む。**読めなかった**(throw)と**空だった**(nil)を分ける。
+    /// 2. 空だった時にだけ、焼き込まれた種を蒔く。
+    ///
+    /// ★1 を分けるのが此の直しで一番危ない所。元は `try? store.load()` で、
+    /// 「読めなかった」も `nil` に潰れていた。潰したまま種を蒔く実装にすると、
+    /// Keychain が一時的に読めない起動で **Tom が手で入れた鍵を焼き込みの種が
+    /// 上書きする**。読めない時は何もしないのが正しい —— 次の起動で読めれば元に戻る。
     func loadStoredCredentials() async {
-        credentials = try? store.load()
+        var stored: Credentials?
+        var storeIsReadable = true
+        do {
+            stored = try store.load()
+        } catch {
+            storeIsReadable = false
+        }
+
+        if stored == nil && storeIsReadable {
+            stored = plantSeedIfNeeded()
+        }
+
+        credentials = stored
         if credentials == nil {
             signOutNotice = notices.load()
         } else {
@@ -58,6 +98,28 @@ final class AppState: ObservableObject {
             signOutNotice = nil
         }
         isLoadingCredentials = false
+    }
+
+    /// 焼き込まれた種を1回だけ蒔く。蒔いたら `credentials` に載せて返す。
+    ///
+    /// ★「1回だけ」の判定は**種の指紋**で行う(`SeedLedgerStoring` の doc に、
+    /// 断りを門にした最初の設計を捨てた理由が在る)。同じ種は二度蒔かない ——
+    /// 401 で落とした鍵をまた蒔けば、電話は拒まれる鍵と断りの間で回り続ける。
+    /// 逆に、机で鍵を回して焼き直した**別の**種は蒔ける。それが渡米中に鍵が変わった
+    /// 時の唯一の復旧路で、旗1本の「もう蒔いた」だと此処が塞がる。
+    ///
+    /// ★記録は Keychain へ書いた**後**に付ける。間で殺されても次の起動で同じ値を
+    /// もう一度書くだけ(冪等)。逆順にすると、書けなかった種を「蒔いた」と記録して
+    /// 二度と蒔かなくなる。
+    private func plantSeedIfNeeded() -> Credentials? {
+        guard let seed = provisioning.seed else { return nil }
+        let digest = SeedDigest.of(seed)
+        guard seedLedger.plantedSeedDigest != digest else { return nil }
+        // 書けなくても此の起動は memory の資格情報で通す。`KeyEntryViewModel.submit()` が
+        // Keychain の失敗を握り潰すのと同じ判断 —— 保存できない事は使えない事ではない。
+        try? store.save(seed)
+        seedLedger.plantedSeedDigest = digest
+        return seed
     }
 
     func setCredentials(_ credentials: Credentials) {

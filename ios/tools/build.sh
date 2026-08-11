@@ -277,6 +277,133 @@ if [ "$MODE" = "sim" ]; then
   exit "$sum_rc"
 fi
 
+# ── 1b. 既定の接続先を机から貰って焼き込む(2026-08-11 / #64)────────────────────
+#
+# ★何を直しに来たか。此処が空だった間、電話に資格情報が入る経路は鍵入力画面ただ一つで、
+#   新品の Keychain は空だから **初回起動は必ず「Base URL と API Key を打て」から始まって
+#   いた**。REQUIREMENTS.md の合格条件は「開くとセッション一覧が出る」で、人が打つとは
+#   何処にも書いていない。禁止(機械名を追跡ファイルに残さない)だけを置いて、其れで
+#   塞いだ供給経路を引き直していなかった。引くのが此の段。
+#
+# ★値は repo の何処にも書かない。焼く瞬間に**机自身へ訊く**:
+#     鍵  = edith の ~/.rc-backend/api.key(ios/tools/live-send-check.sh と
+#           rc-backend/tools/verify-phone-window.sh が既に読んでいる**同じ正本**。
+#           2つ目の写しを作らない)
+#     URL = 机が名乗る tailnet の名前(tailscale status --json の Self.DNSName)
+#   刻む先は xcodegen の生成物 ios/Info.plist(ios/.gitignore 済)= 追跡ファイルは
+#   一文字も増えない。読む側は ios/Sources/Core/Provisioning.swift。
+#
+# ★simulator では走らない —— 此の段は `--sim` の分岐より**後**に在る。単体も UI 検査も
+#   本物の鍵を一度も見ない。規則ではなく置き場所で保証してある。加えて `--sim` は毎回
+#   `xcodegen generate` から始まるので、直前の実機焼きが刻んだ値は消えてから走る。
+#
+# ★鍵の扱い(ios/tools/live-send-check.sh の doc と同じ約束):
+#   - argv に置かない。**PlistBuddy は値を argv で受けるので此処では使えない**(`ps` に出る)。
+#     代わりに plistlib へ**標準入力**から渡す。`printf` は bash の組込みなのでプロセスに
+#     ならず、`ps` にも出ない。
+#   - export しない(子プロセスの環境に漏れない)
+#   - 印字しない。此の script は `set -x` を使わない。python 側の例外本文も握り潰す
+#     (plistlib の例外は値を含み得る)。
+#
+# ★届かない時は**焼かない**。種の無い app は「打て」と言う画面から始まる = 直す前と
+#   同じ姿に、しかも黙って戻る。意図して種無しを焼く時だけ `RC_NO_SEED=1`。
+if [ "${RC_NO_SEED:-0}" = "1" ]; then
+  step "1b. 既定の接続先は焼かない(RC_NO_SEED=1)"
+  echo "    ★此の app は初回起動で Base URL と API Key を打たせる。意図した時だけ此の道を通る事" >&2
+else
+  step "1b. 机から既定の接続先を貰って刻む"
+  SEED_SSH="${RC_EDITH_HOST:-edith@10.0.0.0}"
+  # BatchMode = 鍵が無い時に**問い合わせずに落ちる**(焼きが人の入力待ちで止まらない)。
+  # StrictHostKeyChecking=yes = known_hosts に無い / 変わった相手には繋がない。焼き込む物が
+  # 鍵である以上、相手の取り違えは「届かない」より悪い。
+  SEED_SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes)
+
+  seed_rc=0
+  SEED_KEY="$(ssh "${SEED_SSH_OPTS[@]}" "$SEED_SSH" 'cat ~/.rc-backend/api.key' 2>/dev/null)" || seed_rc=$?
+  [ "$seed_rc" -eq 0 ] && [ -n "$SEED_KEY" ] || {
+    echo "机の鍵(~/.rc-backend/api.key)が読めない(ssh rc=$seed_rc)。" >&2
+    echo "  机が起きているか / tailnet に居るか / ssh の鍵が通るかを確かめる。" >&2
+    echo "  種無しで焼くと決めたなら RC_NO_SEED=1 ./tools/build.sh" >&2
+    exit 1
+  }
+
+  # 名前は Tailscale 自身に名乗らせる。`tailscale` が PATH に無い焼き方でも通る様に
+  # app 内の実体を先に見る(rc-backend/tools/com.edith.rc-backend.plist と同じ path)。
+  seed_rc=0
+  SEED_STATUS="$(ssh "${SEED_SSH_OPTS[@]}" "$SEED_SSH" \
+    'TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale; [ -x "$TS" ] || TS=tailscale; "$TS" status --json' \
+    2>/dev/null)" || seed_rc=$?
+  [ "$seed_rc" -eq 0 ] && [ -n "$SEED_STATUS" ] || {
+    echo "机が tailnet の名前を名乗れない(tailscale status rc=$seed_rc)" >&2; exit 1
+  }
+
+  # DNSName は末尾に `.`(root ラベル)が付いた FQDN で返る。付けたまま URL にすると
+  # host が別物になる = 証明書が合わない。
+  SEED_HOST="$(printf '%s' "$SEED_STATUS" | /usr/bin/python3 -c '
+import json, sys
+try:
+    name = (json.load(sys.stdin).get("Self") or {}).get("DNSName") or ""
+except Exception:
+    sys.stderr.write("tailscale status --json の形が変わった\n"); sys.exit(3)
+print(name.rstrip("."))
+')" || { echo "机の名前を取り出せない" >&2; exit 1; }
+
+  # 形の検査。**焼く前に落とす**為に此処で見る —— 壊れた値は電話の側では
+  # 「サーバに届かない」という、刻印とは無関係な故障を名乗る(Provisioning.swift の doc)。
+  case "$SEED_HOST" in
+    ''|*[!A-Za-z0-9.-]*) echo "机の名前が名前の形をしていない" >&2; exit 1 ;;
+    *.*) ;;
+    *) echo "机の名前に領域が無い(点を含まない)" >&2; exit 1 ;;
+  esac
+  # ★検査用の偽の値が実機の焼き物へ入る道を塞ぐ。`.invalid` は RFC 2606 の予約領域で、
+  #   ios/Sources/Core/ProvisioningFixture.swift と姉家族の fixture が使っている綴り。
+  case "$SEED_HOST" in
+    *.invalid) echo "検査用の名前(.invalid)を実機へ焼こうとしている" >&2; exit 1 ;;
+  esac
+  SEED_URL="https://$SEED_HOST"
+
+  # 刻んで、其の場で**読み戻して**照合する。黙って効かない形(鍵の名前が変わった /
+  # 生成先が動いた)は読み戻さないと焼いて電話に入れた後にしか判らない。
+  # 鍵は標準入力から渡し、比較も python の中で終わらせる(shell へ戻すと `ps` と log に近付く)。
+  #
+  # ★指紋も此処で出す(2026-08-11)。前の版は shell 側で `$SEED_KEY` から別に
+  #   計算していたが、plist へ入るのは `key.strip()` の方なので、鍵の前後に
+  #   空白が1つ在るだけで**印字した指紋と焼いた物の指紋が食い違う**。
+  #   指紋は「入れようとした値」ではなく**読み戻した値**から取る。
+  SEED_FP="$(printf '%s' "$SEED_KEY" | /usr/bin/python3 -c '
+import hashlib, plistlib, sys
+path, url = sys.argv[1], sys.argv[2]
+key = sys.stdin.read().strip()
+if not key:
+    sys.stderr.write("鍵が空\n"); sys.exit(1)
+try:
+    with open(path, "rb") as f:
+        doc = plistlib.load(f)
+    doc["RCBaseURL"] = url
+    doc["RCAPIKey"] = key
+    with open(path, "wb") as f:
+        plistlib.dump(doc, f)
+    with open(path, "rb") as f:
+        back = plistlib.load(f)
+except Exception:
+    # ★例外の本文を出さない。plistlib の例外は書こうとした値を含み得る。
+    sys.stderr.write("Info.plist へ刻めなかった\n"); sys.exit(1)
+if back.get("RCBaseURL") != url:
+    sys.stderr.write("URL の読み戻しが合わない\n"); sys.exit(1)
+if back.get("RCAPIKey") != key:
+    sys.stderr.write("鍵の読み戻しが合わない\n"); sys.exit(1)
+material = "{}\n{}".format(back["RCBaseURL"], back["RCAPIKey"]).encode("utf-8")
+print(hashlib.sha256(material).hexdigest()[:16])
+' "$HERE/Info.plist" "$SEED_URL")" || exit 1
+
+  # 焼いた物同士を人が見分ける為の指紋。**値は出さない**。
+  # 材料と切り方は ios/Sources/Core/Provisioning.swift の `SeedDigest.of` と同じ
+  # (URL + 改行 + 鍵 の sha256 を先頭 8 byte)なので同じ値になる —— 其の「同じ」を
+  # 突き合わせているのは rc-backend/test/seed-digest-recipe.test.mjs(両側が
+  # 同一の既知の値へ落ちる事を、双方の綴りから独立に見る)。
+  echo "    種: 刻んだ(指紋 $SEED_FP)。URL も鍵も此処には出さない"
+fi
+
 step "2. locate the wildcard provisioning profile"
 # Scan every installed profile and take the one whose application-identifier ends
 # in ".*". Picking it by filename would break the day Xcode re-downloads it under
@@ -352,6 +479,50 @@ fi
 codesign --force --timestamp=none --sign "$IDENTITY" --entitlements "$ENT" "$APP"
 codesign --verify --deep --strict "$APP"
 echo "    signed: $APP"
+
+# ★焼き上がった物**其れ自身**を読む(2026-08-11 / #64、Codex 指摘)。
+#
+# 上の 1b が読み戻したのは ios/Info.plist = xcodebuild の**入力**。電話に入るのは
+# 此の `.app` の中の Info.plist で、間に xcodebuild の加工が1段挟まる(変数展開・
+# binary 化・鍵の取捨)。入力を読み戻しただけで「刻めた」と言うのは、**測っていない
+# 物を測ったと言う**事になる。番号(CFBundleVersion)も同じ理由で此処で見る ——
+# 渡米前検査の鎖⑧が電話から読むのは此の値で、ios/Info.plist の値ではない。
+#
+# 鍵は此処でも標準入力から渡し、比較を python の中で終わらせる。合わない時も値は出さない。
+APP_PLIST="$APP/Info.plist"
+[ -f "$APP_PLIST" ] || { echo "焼き上がった $APPNAME に Info.plist が無い" >&2; exit 1; }
+
+_app_num="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PLIST" 2>/dev/null || true)"
+[ "$_app_num" = "$RC_BUILD_NUM" ] || {
+  echo "焼き上がった app の番号が違う(app=[$_app_num] 期待=[$RC_BUILD_NUM])" >&2; exit 1
+}
+
+if [ "${RC_NO_SEED:-0}" = "1" ]; then
+  # 種無しで焼いたなら、焼き上がった物に種が**無い**事まで見る。残っていたら
+  # 前回の焼きの鍵を持ったまま出荷する事になる(build/ は消さずに再利用する)。
+  /usr/bin/python3 -c '
+import plistlib, sys
+with open(sys.argv[1], "rb") as f: doc = plistlib.load(f)
+if doc.get("RCBaseURL") or doc.get("RCAPIKey"):
+    sys.stderr.write("RC_NO_SEED で焼いたのに app に種が残っている\n"); sys.exit(1)
+' "$APP_PLIST" || exit 1
+  echo "    種: 無し(RC_NO_SEED=1。焼き上がりにも残っていない)"
+else
+  printf '%s' "$SEED_KEY" | /usr/bin/python3 -c '
+import plistlib, sys
+path, url = sys.argv[1], sys.argv[2]
+key = sys.stdin.read().strip()
+try:
+    with open(path, "rb") as f: doc = plistlib.load(f)
+except Exception:
+    sys.stderr.write("焼き上がった app の Info.plist が読めない\n"); sys.exit(1)
+if doc.get("RCBaseURL") != url:
+    sys.stderr.write("焼き上がった app の URL が刻んだ物と違う\n"); sys.exit(1)
+if doc.get("RCAPIKey") != key:
+    sys.stderr.write("焼き上がった app の鍵が刻んだ物と違う\n"); sys.exit(1)
+' "$APP_PLIST" "$SEED_URL" || exit 1
+  echo "    種: 焼き上がった app にも同じ物が入っている(指紋 $SEED_FP)"
+fi
 
 [ "$MODE" = "install" ] || exit 0
 
