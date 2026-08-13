@@ -33,6 +33,7 @@ struct ConversationClients {
     let send: MessageSending
     let interrupt: Interrupting
     let choice: ChoiceSending
+    let clearQueue: QueueClearing
 
     /// 本番。`ListView` の行から会話画面を作る経路だけが使う。
     ///
@@ -45,7 +46,8 @@ struct ConversationClients {
             poll: PollClient(),
             send: SendClient(),
             interrupt: InterruptClient(),
-            choice: ChoiceClient()
+            choice: ChoiceClient(),
+            clearQueue: ClearQueueClient()
         )
     }
 }
@@ -68,7 +70,8 @@ extension ConversationClients {
             poll: PollFetchingFixture(historyState: state),
             send: MessageSendingFixture(),
             interrupt: InterruptingFixture(),
-            choice: ChoiceSendingFixture()
+            choice: ChoiceSendingFixture(),
+            clearQueue: QueueClearingFixture()
         )
     }
 }

@@ -62,6 +62,18 @@ struct InterruptingFixture: Interrupting {
     }
 }
 
+/// 取り消し(queue)も同じ理由で**返らない**(頭の3つの規約ごと)。挙動は
+/// `holdThenGiveUp()` と同じ持ち方だが、返す型が `ClearQueueOutcome` なので
+/// 対応する2枝(取消し / 届かない)へ写して返す。
+struct QueueClearingFixture: QueueClearing {
+    func clearQueue(baseURL: URL, apiKey: String, sessionID: String) async -> ClearQueueOutcome {
+        switch await WriteFixture.holdThenGiveUp() {
+        case .cancelled: return .error("取り消されました")
+        default: return .error("机に届きません")
+        }
+    }
+}
+
 struct ChoiceSendingFixture: ChoiceSending {
     /// `serverDigest` は `nil`。「サーバは今の指紋について何も言っていない」の意で、
     /// `ChoiceAttempt` 自身が「不在を『変わっていない』と読むな」と書いている通り、

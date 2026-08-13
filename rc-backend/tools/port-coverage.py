@@ -79,6 +79,11 @@ DEFAULT_PORTS = {
     "relTime":          ["ios/Tests/Core/RelTimeTests.swift"],
     "readablePoll":     ["ios/Tests/Core/ReadablePollTests.swift"],
     "nextAttempt":      ["ios/Tests/Core/BackoffTests.swift"],
+    # 2026-08-14(v2 キュー)。queueView と clearQueueResult は Swift 側で
+    # QueueViewState / ClearQueueOutcome へ**判断ごと**移した。検査は1 file に同居
+    # (面が同じ「送信待ち」で、分けると nil/0 の区別の註釈が二重になる)。
+    "queueView":        ["ios/Tests/Core/QueueViewStateTests.swift"],
+    "clearQueueResult": ["ios/Tests/Core/QueueViewStateTests.swift"],
 }
 
 

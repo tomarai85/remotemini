@@ -221,6 +221,21 @@ struct ConversationView: View {
                 )
             }
 
+            // Queue(v2、2026-08-14)。送信待ち = **まだ Claude に渡していない**番の面。
+            // `queueView(nowMs:)` を描画の度に呼ぶ(一覧の freshnessLine と同じ型 ——
+            // timer を持たない。古さは poll が止まった時こそ出る必要が在る)。
+            queueStrip(viewModel.queueView(nowMs: Date().timeIntervalSince1970 * 1000))
+
+            if let banner = viewModel.queueBanner {
+                // 専用の band(sendBanner / interruptBanner と同じ理由 —— 主語を混ぜない)。
+                Text(banner.text)
+                    .font(.caption)
+                    .foregroundStyle(Self.color(forQueue: banner))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.queueBanner")
+            }
+
             if let banner = viewModel.sendBanner {
                 Text(banner.text)
                     .font(.caption)
@@ -399,6 +414,47 @@ struct ConversationView: View {
         case .warn: return .orange
         case .refused: return .orange
         case .error: return .red
+        }
+    }
+
+    /// queue の band の色。上と同じ「検査から届く場所に置く」規約。対応は
+    /// `clearQueueResult`(src/view.mjs)の kind と1対1。
+    static func color(forQueue outcome: ClearQueueOutcome) -> Color {
+        switch outcome {
+        case .ok: return .secondary
+        case .warn, .refused: return .orange
+        case .error: return .red
+        }
+    }
+
+    /// 送信待ちの面。`show` が偽なら何も描かない(空の帯を出すと「0件」という
+    /// 観測の主張に見える —— `QueueViewState` の頭の nil/0 の区別ごと守る)。
+    @ViewBuilder
+    private func queueStrip(_ q: QueueViewState) -> some View {
+        if q.show {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(q.text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("conversation.queueText")
+                    // 古さは値の一部(poll が止まった時こそ「2分前の値」が要る)。
+                    Text(q.ageText)
+                        .font(.caption2)
+                        .foregroundStyle(q.stale ? Color.orange : Color.secondary)
+                        .accessibilityIdentifier("conversation.queueAge")
+                }
+                Spacer(minLength: 8)
+                Button(q.clearLabel) {
+                    Task { await viewModel.clearQueue() }
+                }
+                .font(.caption)
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isClearingQueue)
+                .accessibilityIdentifier("conversation.queueClear")
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("conversation.queueStrip")
         }
     }
 

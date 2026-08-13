@@ -151,6 +151,35 @@ final class ConversationViewModel: ObservableObject {
     /// shows up as one user-visible sentence is one nobody can count.
     @Published private(set) var lastContractViolation: ResponseContractViolation?
 
+    // MARK: - Queue (v2, 2026-08-14 — spec §7 の表の1行目を実装)
+
+    /// 送信待ちの数の生値。`nil` = 観測していない(tmux 経路 / 古いサーバ)。
+    /// §2-c の null-hold は screen / choice の規約であって此処には適用しない ——
+    /// `queued` の null は「据え置き」ではなく**「観測できない」という値**なので、
+    /// poll ごとに其のまま上書きする(`src/view.mjs` の `queueView` の註釈が正本)。
+    private(set) var queuedCount: Int?
+    /// 上の数が**取れた**時刻。面の古さは描画時に `Freshness` で測る(境目は一覧と共有)。
+    private(set) var queuedFetchedAtMs: Double = 0
+    /// 描画の度に呼ぶ(一覧の `freshnessLine()` と同じ型 —— timer を持たない)。
+    func queueView(nowMs: Double) -> QueueViewState {
+        QueueViewState.make(queued: queuedCount, fetchedAtMs: queuedFetchedAtMs, nowMs: nowMs)
+    }
+    /// 取り消しの結果の band。sendBanner / interruptBanner と同じ理由で**専用の枠**
+    /// (共有すると答えの主語が混ざる)。数が**変わった** poll で流す —— choiceBanner が
+    /// digest の変化で流れるのと同じ「答えの相手が動いたら残さない」規約。
+    @Published private(set) var queueBanner: ClearQueueOutcome?
+    @Published private(set) var isClearingQueue = false
+
+    /// 取り消しを撃つ。走っている番は止まらない(サーバの route 註釈)。
+    func clearQueue() async {
+        guard !isClearingQueue else { return }
+        isClearingQueue = true
+        defer { isClearingQueue = false }
+        let outcome = await clearQueueClient.clearQueue(
+            baseURL: baseURL, apiKey: apiKey, sessionID: sessionID)
+        queueBanner = outcome
+    }
+
     // MARK: - Interrupt (Sprint 6, brief §2-b)
 
     /// True from the moment the interrupt button is pressed until its response has
@@ -451,6 +480,7 @@ final class ConversationViewModel: ObservableObject {
     private let sendClient: MessageSending
     private let interruptClient: Interrupting
     private let choiceClient: ChoiceSending
+    private let clearQueueClient: QueueClearing
     /// 打ちかけの置き場(DESIGN §2.53)。**既定値を持たせていない** —— 既定を本物に
     /// すると、`RootView` の UI 検査用の面が黙って実機の `UserDefaults` を触る。
     /// 本番は `ListView` だけが `UserDefaultsDraftStore` を渡す。
@@ -500,6 +530,7 @@ final class ConversationViewModel: ObservableObject {
         self.sendClient = clients.send
         self.interruptClient = clients.interrupt
         self.choiceClient = clients.choice
+        self.clearQueueClient = clients.clearQueue
         self.draftStore = draftStore
         self.baseURL = baseURL
         self.apiKey = apiKey
@@ -1340,6 +1371,17 @@ final class ConversationViewModel: ObservableObject {
         unreadableMeter?.markReadable(now: Date())
         publishUnreadableState()
         resyncEpisodeUsed = false // streak back to 0 ends the episode (§3-c)
+
+        // Queue(v2): `queued` は null-hold の**対象外** —— null は「据え置き」ではなく
+        // 「観測できない」という値なので、poll ごとに其のまま上書きする(§2-c の規約が
+        // screen / choice に限る理由ごと `QueueViewState` の頭に書いてある)。
+        // band は数が**変わった**時に流す(choiceBanner が digest の変化で流れるのと
+        // 同じ「答えの相手が動いたら残さない」)。
+        if response.queued != queuedCount {
+            queueBanner = nil
+        }
+        queuedCount = response.queued
+        queuedFetchedAtMs = Date().timeIntervalSince1970 * 1000
 
         // §2-c: null = hold the previous value, for `screen` and `display.choice`
         // alike, applied here in the one shared spot the brief asks for.

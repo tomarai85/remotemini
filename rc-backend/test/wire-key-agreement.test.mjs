@@ -515,6 +515,11 @@ const UNPAIRED = {
   "KeychainCredentialStore.Wire": "電話の中の保存形式(keychain)。線には出ない",
   "UserDefaultsDraftStore.StoredDraft": "電話の中の保存形式(打ちかけ)。線には出ない",
   SignOutNotice: "鍵切れの報せを画面間で渡す入れ物。電話の中で完結し、線には出ない",
+  "ClearQueueClient.Wire": "取り消しの応答(`{dropped}` / 409 の `{error}`)。`dropped` を組むのは "
+    + "`src/server.mjs` の DELETE queue 分岐(`json(res, 200, { dropped: ... })` を直に書く)で、"
+    + "系統Bの builder ではない。★片側が動いた時に赤を出すのは `test/view.test.mjs` の "
+    + "`clearQueueResult` の的(200 に `dropped` が必ず載る事)と、Swift 側の "
+    + "`QueueViewStateTests`(載っていない 200 を『0件』でなく『不明』と読む事)の対",
   "AccountClient.Wire": "口座の応答(`{account}` / `{error}`)。**builder が組んでいない**のが此処に居る理由 —— "
     + "`/api/account` と `/api/account/next` は `src/server.mjs` の中で `json(res, 200, { account })` を"
     + "直に組んでおり、`src/view.mjs` の系統B(`speaks()` が `display` を載せる道)に乗っていないので"

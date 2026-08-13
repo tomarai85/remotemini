@@ -249,4 +249,37 @@ final class ConversationUITests: XCTestCase {
     // 4行しか無いので溢れない。両方を満たす状態を作ると、今度は「行が届いた時刻」
     // と「指がスクロールを終えた時刻」の競争になる。
     // 決定的に測るには fixture 側に「合図を受けてから1行足す」口が要る。Sprint 9。
+
+    // MARK: - Queue(v2、2026-08-14)— 帯が**画面に**在る事(単体では永久に届かない一歩)
+
+    /// `.busy` の fixture は送信待ち2件を持つ(`PollFixture` の註釈)。此処で測るのは
+    /// 3つ: 帯が出る / 件数と「まだ渡していない」の断りが出る / 取り消しの button が
+    /// 押せる形で居る。押した後の挙動は fixture が「返らない」規約なので、
+    /// isClearingQueue の間 button が死ぬ事(二度押しの口が無い事)まで。
+    func testBusyShowsTheQueueStripWithCountAndCancelButton() {
+        let app = launch(fixture: "conversation-busy")
+
+        let strip = element(app, "conversation.queueStrip")
+        XCTAssertTrue(strip.waitForExistence(timeout: 10), "送信待ちの帯が画面に無い")
+        let text = element(app, "conversation.queueText")
+        XCTAssertTrue(text.label.contains("2 件"), "件数が出ていない: \(text.label)")
+        XCTAssertTrue(text.label.contains("まだ Claude に渡していません"),
+                      "「走っている番は別」の断りの前半が落ちた: \(text.label)")
+
+        let clear = element(app, "conversation.queueClear")
+        XCTAssertTrue(clear.exists, "取り消しの button が居ない")
+        clear.tap()
+        // fixture は返らないので、押した直後から button は死んでいる = 二度押しの口が無い。
+        XCTAssertFalse(clear.isEnabled, "取り消しが飛んでいる間も押せる = 二度撃ちの口")
+    }
+
+    /// 負の対照: queue を観測していない状態(`.threeRoles` は queued: nil)では
+    /// 帯が**出ない**。出ると「0件」という観測の主張に見える。
+    func testAStateWithoutAQueueObservationDrawsNoStrip() {
+        let app = launch(fixture: "conversation-3roles")
+
+        XCTAssertTrue(element(app, "conversation.composerField").waitForExistence(timeout: 10))
+        XCTAssertFalse(element(app, "conversation.queueStrip").exists,
+                       "観測していないのに帯が出ている")
+    }
 }
