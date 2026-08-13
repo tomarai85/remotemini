@@ -551,7 +551,10 @@ fi
 # ★digest も印の場所も**持っている側に訊く**(`--sweep-digest`)。此処で同じ式を
 #   書き写すと実装が2本になり、食い違った時に出るのは**嘘の「古い」警告** ——
 #   本物の腐りと見分けが付かなくなる。一覧は向こうの `TARGETS` 1本のまま。
-_sweep_ans="$(bash "$IOS/tools/signout-notice-control.sh" --sweep-digest 2>/dev/null)"
+# ★`$HERE`(= ios/)。初版は `$IOS` と書いて `set -u` で死に、**install の段まで
+#   到達しない**まま exit 0 に見えた(pipe の後段が 0 を返す)。sim 走行が捕まえ
+#   なかったのは、此のブロックが install 経路にしか居ないから —— 2026-08-13 実測。
+_sweep_ans="$(bash "$HERE/tools/signout-notice-control.sh" --sweep-digest 2>/dev/null)"
 _sweep_now="$(printf '%s' "$_sweep_ans" | sed -n '1p')"
 _sweep_stamp="$(printf '%s' "$_sweep_ans" | sed -n '2p')"
 if [ -z "$_sweep_now" ] || [ -z "$_sweep_stamp" ]; then
