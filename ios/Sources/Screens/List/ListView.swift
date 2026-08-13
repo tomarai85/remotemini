@@ -225,23 +225,27 @@ struct ListView: View {
     /// `scanLine == nil` = 机側の走査行をまだ一度も受け取っていない相。行ごと出さない
     /// (空文字を出すと「走査が空だった」に読めるので、無い物は無いままにする)。
     /// 版の行はその場合も出る —— 取得が失敗している時こそ「電話が古いのでは」を疑う。
+    /// 2026-08-14 の作り直し: 計器(走査行・版)は**消さずに沈める**。要素と識別子は
+    /// そのまま(検査の錨 + 壊れた日に読む物)だが、普段の目には入らない大きさ・色へ。
+    /// 鮮度だけは古い時に色が立つ(古さは使う人への警告なので)。
     private func footer(scanLine: String?) -> some View {
-        VStack(spacing: 2) {
+        VStack(alignment: .leading, spacing: 1) {
             freshnessLine()
             if let scanLine {
                 Text(scanLine) // brief §3-b: rendered verbatim, never reassembled client-side
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.quaternary)
+                    .lineLimit(1)
                     .accessibilityIdentifier("list.scanLine")
             }
             Text(BuildInfo.line)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.quaternary)
                 .accessibilityIdentifier("list.buildInfo")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal)
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
         .background(.bar)
     }
 
@@ -252,8 +256,8 @@ struct ListView: View {
         if viewModel.lastFetchedAtMs > 0 {
             let freshness = Freshness.freshness(viewModel.lastFetchedAtMs, nowMs: Date().timeIntervalSince1970 * 1000)
             Text(freshness.text)
-                .font(.caption)
-                .foregroundStyle(freshness.stale ? .orange : .secondary)
+                .font(freshness.stale ? .caption : .system(size: 9))
+                .foregroundStyle(freshness.stale ? AnyShapeStyle(.orange) : AnyShapeStyle(.quaternary))
                 .accessibilityIdentifier("list.freshness")
         }
     }
@@ -320,45 +324,79 @@ private struct SessionRowView: View {
     let row: SessionRow
     let nowMs: Double
 
+    /// 2026-08-14 の UI 作り直し(Tom「UIも論外」)。北極星 = Claude の公式アプリの
+    /// 会話一覧: **状態の点 + 題名 + 一行の内容 + 相対時刻**だけが前に出て、
+    /// 計器類は後ろへ下がる。
+    ///
+    /// ★変えたのは**見た目の層だけ**。サーバの文(`route.text` / `subtitle`)は今も
+    ///   逐語で描く(「壊れた時の診断を電話側で言い換えない」契約は生きている)——
+    ///   demote したのは**視覚の序列**であって、内容ではない。
+    /// ★状態の言葉は `kind` の **enum** から引く(下の `statusWord`)。線の文字列を
+    ///   再組成しているのではなく、既に型で届いた分類に表示名を与えている —— 
+    ///   「文字列を読み直して判断しない」規約と両立する。
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 9, height: 9)
+                    .padding(.top, 1)
                 Text(row.displayTitle)
-                    .font(row.display.route.kind == .choice ? .headline.bold() : .headline)
-                Spacer()
+                    .font(.body.weight(.semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 8)
                 Text(RelTime.relTime(row.updatedAt, nowMs: nowMs))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.tertiary)
             }
             Text(row.display.subtitle) // server-computed (brief §3-a) -- rendered as-is, never reassembled
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-            HStack(alignment: .top, spacing: 6) {
-                Text(row.display.route.short)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(routeColor)
+                .lineLimit(2)
+                .padding(.leading, 17)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if let word = statusWord {
+                    Text(word)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(statusColor)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(statusColor.opacity(0.12), in: Capsule())
+                }
+                // 診断の原文。序列は最下段・最小 —— 消してはいない(壊れた日に此処を読む)。
                 Text(row.display.route.text)
-                    // Never truncated to one line -- brief §3-a: up to 92 characters.
-                    .font(.caption)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .foregroundStyle(.secondary)
+                    .font(.caption2)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(.tertiary)
             }
+            .padding(.leading, 17)
         }
-        .padding(.vertical, 4)
-        .listRowBackground(row.display.route.kind == .choice ? Color.red.opacity(0.08) : nil)
+        .padding(.vertical, 6)
+        .listRowBackground(row.display.route.kind == .choice ? Color.orange.opacity(0.10) : nil)
     }
 
     /// Brief §3-a: distinct visual treatment per `kind`, `choice` carrying the
     /// strongest emphasis (the only state where Enter on the desk side becomes an
     /// approval/charge).
-    private var routeColor: Color {
+    private var statusColor: Color {
         switch row.display.route.kind {
-        case .choice: return .red
-        case .tmux: return .primary
+        case .choice: return .orange
+        case .tmux: return .green
         case .worker: return .blue
-        case .blocked: return .orange
-        case .unknown: return .gray
+        case .blocked: return .secondary
+        case .unknown: return .secondary
+        }
+    }
+
+    /// 人の言葉。`nil` = 静かな状態(章を付けるほどの事ではない)。
+    private var statusWord: String? {
+        switch row.display.route.kind {
+        case .choice: return "返事待ち"
+        case .tmux: return "机で作業中"
+        case .worker: return nil
+        case .blocked: return "操作できません"
+        case .unknown: return nil
         }
     }
 }

@@ -837,38 +837,36 @@ private struct EntryBubble: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
+        // 2026-08-14 の UI 作り直し。北極星 = Claude の公式アプリ:
+        //   **自分の発言だけがバブル**(右寄せ・柔らかい灰)、Claude の応答は
+        //   バブル無しの素のテキスト(左・全幅)。灰色の枠線バブルの応酬は
+        //   「開発ツールの見た目」の主因だったので落とした。
+        //   `display.who` の逐語描画(§0-a-3)はどちらの枝でも生きている。
         case .user:
             HStack {
-                Spacer(minLength: 40)
-                bubble(filled: true)
+                Spacer(minLength: 48)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(entry.text)
+                        .font(.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 18))
+                }
             }
 
         case .assistant, .unknown:
-            HStack {
-                bubble(filled: false)
-                Spacer(minLength: 40)
+            VStack(alignment: .leading, spacing: 3) {
+                // Brief §0-a-3: `display.who` verbatim -- never reconstructed from `role`.
+                Text(entry.display.who)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                Text(entry.text)
+                    .font(.body)
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-        }
-    }
-
-    private func bubble(filled: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            // Brief §0-a-3: `display.who` verbatim -- never reconstructed from `role`.
-            Text(entry.display.who)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(filled ? Color.white.opacity(0.85) : Color.secondary)
-            Text(entry.text)
-                .font(.body)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(10)
-        .background(filled ? Color.accentColor.opacity(0.85) : Color.gray.opacity(0.12))
-        .foregroundStyle(filled ? Color.white : Color.primary)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay {
-            if !filled {
-                RoundedRectangle(cornerRadius: 14).stroke(Color.secondary.opacity(0.3))
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
