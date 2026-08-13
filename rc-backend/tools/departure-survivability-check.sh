@@ -546,6 +546,34 @@ EOF_INV
     rm -f "$_dj" "$_aj"
 fi
 
+# --- 電話の道(tailnet)-----------------------------------------------------------
+# ★2026-08-14 追加。前夜、Tom の iPhone の Tailscale が **1日落ちたまま**誰も気付かず、
+#   Remote Mini も Blink も「未完成品」に見えた(Tom 逐語「何もかも全くなにもUiとかも
+#   簡潔していない」)。アプリ側は全部生きていて、**道が無かった**。
+#   上の在否・版・在庫は「電話に何が載っているか」で、**電話が何処かに届くか**は
+#   誰も見ていなかった —— 鎖の各段は見ていたのに、鎖の**反対側の端**が抜けていた。
+#   出さない物: 機器名・IP(此の file の規律)。見るのは observer 自身の tailscale status。
+echo
+echo "電話の道(iPhone が tailnet に居るか。切れていると全アプリが空っぽに見える)"
+PHONE_TS="${RC_PHONE_TS:-/Applications/Tailscale.app/Contents/MacOS/Tailscale}"
+[ -x "$PHONE_TS" ] || PHONE_TS=tailscale
+if ! command -v "$PHONE_TS" >/dev/null 2>&1; then
+    say_unm "tailscale が無い —— 電話の道は測れていない"
+else
+    _ts_line="$("$PHONE_TS" status 2>/dev/null | grep -i "iphone" | head -1)"
+    if [ -z "$_ts_line" ]; then
+        say_unm "tailnet の一覧に iPhone が居ない —— 道の生死は測れていない(machines 一覧を見る)"
+    else
+        case "$_ts_line" in
+            *offline*)
+                say_bad "iPhone が tailnet から落ちている —— 電話の Tailscale アプリを開いてスイッチを ON"
+                say_note "この赤の間、Remote Mini も Blink も**実装と無関係に**全部死んで見える" ;;
+            *)
+                say_ok "iPhone が tailnet に居る" ;;
+        esac
+    fi
+fi
+
 # --- 見張りの側 --------------------------------------------------------------
 # ★2026-08-09 追加(Codex 指摘③「載る先を全部数えたか」の残り1台)。
 #   旅程中に edith が落ちた事を Tom へ知らせるのは athenas の監視だけで、
