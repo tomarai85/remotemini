@@ -23,6 +23,6 @@
 com.tomarai.remotemini   req  # Remote Mini。旅程の本体。無ければ `bash ios/tools/build.sh`
 com.tomarai.blink        req  # Blink Dev(自作版)。電話から ssh する側。無ければ ~/Infra/blink-selfbuild
 com.tomarai.deskguard    opt  # Desk Guard。旅程では使わない
-com.tomiees.utsurundesu  opt  # ★Tom の物ではない。TestFlight 経由 / 持ち主不明 /
-                              #   2026-05-26 頃に上げられた物で **2026-08-24 頃に自動で失効**する。
-                              #   消えていても正常(表から消すのは失効を見届けてから)。
+# com.tomiees.utsurundesu — 2026-08-13 に消えたのを見届けたので行を落とした(予測は 8/24 頃、
+#   早めに消えた。失効か手動削除かは電話の画面でしか判らないが、どちらでも表の役目は終わり)。
+#   経緯(Tom の物ではない TestFlight アプリが2ヶ月無検査で載っていた件)は git の履歴に在る。
