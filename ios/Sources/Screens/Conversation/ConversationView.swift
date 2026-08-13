@@ -150,7 +150,7 @@ struct ConversationView: View {
                 } else {
                     ScrollViewReader { proxy in
                         ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 10) {
+                            LazyVStack(alignment: .leading, spacing: 16) {
                                 // No wire-provided id (brief §1-a: history entries carry
                                 // none) -- position is stable for a screen that never
                                 // reorders or removes rendered entries in place.
@@ -826,7 +826,8 @@ private struct EntryBubble: View {
             // Bash"), and a real fraction of a conversation can be `tool` rows
             // (13/25 in one observed transcript), so this must stay visually
             // lightweight or it would dominate the screen.
-            HStack(spacing: 6) {
+            // 2026-08-14: 公式アプリの「活動チップ」の型(丸めた薄い背景の1行)。
+            HStack(spacing: 5) {
                 Text(entry.display.who)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -834,7 +835,11 @@ private struct EntryBubble: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Color(.systemGray6), in: Capsule())
             .frame(maxWidth: .infinity, alignment: .leading)
 
         // 2026-08-14 の UI 作り直し。北極星 = Claude の公式アプリ:
