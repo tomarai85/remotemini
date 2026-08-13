@@ -104,6 +104,13 @@ final class ConversationViewModelTests: XCTestCase {
     /// quietly returning something: a history/poll test that reaches the send path has
     /// a wiring bug, and the useful report for that is a named failure, not a plausible
     /// `.unreachable`.
+    private struct UnusedClearQueueClient: QueueClearing {
+        func clearQueue(baseURL: URL, apiKey: String, sessionID: String) async -> ClearQueueOutcome {
+            XCTFail("this test's view model was not expected to clear the queue")
+            return .error("unused")
+        }
+    }
+
     private struct UnusedSendClient: MessageSending {
         func send(baseURL: URL, apiKey: String, sessionID: String, text: String) async -> SendOutcome {
             XCTFail("this test's view model was not expected to send anything")
@@ -236,6 +243,7 @@ final class ConversationViewModelTests: XCTestCase {
         sendClient: MessageSending = UnusedSendClient(),
         interruptClient: Interrupting = UnusedInterruptClient(),
         choiceClient: ChoiceSending = UnusedChoiceClient(),
+        clearQueueClient: QueueClearing = UnusedClearQueueClient(),
         pollClient: PollFetching = SilentPollFetching(),
         draftStore: DraftStoring = InMemoryDraftStore(),
         initialLimit: Int = ConversationViewModel.initialLimit
@@ -249,7 +257,8 @@ final class ConversationViewModelTests: XCTestCase {
                 poll: pollClient,
                 send: sendClient,
                 interrupt: interruptClient,
-                choice: choiceClient
+                choice: choiceClient,
+                clearQueue: clearQueueClient
             ),
             // 既定は覚えない実装。本番の `UserDefaults` を検査が触ると、検査どうしが
             // 互いの打ちかけを見る上に開発機に残留物が残る(DESIGN §2.53)。
@@ -843,6 +852,7 @@ final class ConversationViewModelTests: XCTestCase {
         sendClient: MessageSending = UnusedSendClient(),
         interruptClient: Interrupting = UnusedInterruptClient(),
         choiceClient: ChoiceSending = UnusedChoiceClient(),
+        clearQueueClient: QueueClearing = UnusedClearQueueClient(),
         choiceJSON: String? = nil,
         initialHistory: [HistoryEntry] = [],
         thenHistory: [Result<HistoryResponse, SessionsFetchError>] = [],
@@ -2881,5 +2891,74 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertEqual(derivedWhileInFlight, true, "`isChoosing` は同じ一つの真実の読み方")
         XCTAssertNil(vm.inFlightChoiceKey, "答えが出たら忘れる")
         XCTAssertFalse(vm.isChoosing, "★導出なので、二重に倒す必要が無い = 食い違えない")
+    }
+
+    // MARK: - Queue(v2、2026-08-14)
+
+    private final class CountingClearQueueClient: QueueClearing {
+        var outcome: ClearQueueOutcome = .ok("2 件の送信を取り消しました(いま動いている番は止まりません)。")
+        private(set) var calls = 0
+        func clearQueue(baseURL: URL, apiKey: String, sessionID: String) async -> ClearQueueOutcome {
+            calls += 1
+            return outcome
+        }
+    }
+
+    /// 既存の poll 検査と同じ持ち方: JSON を decode して `applyPollStep` から入れる
+    /// (`PollResponse` は custom Decodable なので memberwise init に頼らない)。
+    private func queuedStep(_ queued: String) throws -> PollLoop.StepResult {
+        try readableStep("""
+        { "items": [], "route": "worker", "queued": \(queued), "cursor": "t.a.1.0", "more": false }
+        """)
+    }
+
+    /// `queued` は null-hold の対象外 —— null は「据え置き」ではなく「観測できない」。
+    /// screen / choice の据え置き(§2-c)の**反対側**を固定する負の対照。
+    func testQueuedNilOverwritesInsteadOfHolding() async throws {
+        let client = RecordingClient()
+        client.resultQueue = [.success(HistoryResponse(history: [], truncated: false))]
+        let vm = makeViewModel(client: client)
+        await vm.load()
+
+        vm.applyPollStep(try queuedStep("2"))
+        XCTAssertEqual(vm.queueView(nowMs: Date().timeIntervalSince1970 * 1000).count, 2)
+
+        vm.applyPollStep(try queuedStep("null"))
+        let v = vm.queueView(nowMs: Date().timeIntervalSince1970 * 1000)
+        XCTAssertFalse(v.show, "観測できなくなったのに前の数を出し続けている")
+        XCTAssertFalse(v.known)
+    }
+
+    /// band は数が**変わった** poll で流れる(choiceBanner の digest 失効と同じ規約)。
+    func testTheQueueBannerExpiresWhenTheCountChanges() async throws {
+        let counting = CountingClearQueueClient()
+        let client = RecordingClient()
+        client.resultQueue = [.success(HistoryResponse(history: [], truncated: false))]
+        let vm = makeViewModel(client: client, clearQueueClient: counting)
+        await vm.load()
+        vm.applyPollStep(try queuedStep("2"))
+
+        await vm.clearQueue()
+        XCTAssertNotNil(vm.queueBanner)
+
+        // 同じ数の poll では残る(答えの相手は動いていない)
+        vm.applyPollStep(try queuedStep("2"))
+        XCTAssertNotNil(vm.queueBanner)
+
+        // 数が動いたら流す
+        vm.applyPollStep(try queuedStep("0"))
+        XCTAssertNil(vm.queueBanner, "答えの相手(数)が動いたのに band が残っている")
+    }
+
+    func testClearQueueFiresTheClientOnce() async {
+        let counting = CountingClearQueueClient()
+        // `client:` は既定値の無い第一引数(履歴は全検査で必須)。取り消しは履歴を
+        // 読まないので、呼ばれない事を主張する二重をそのまま渡す。
+        let vm = makeViewModel(client: RecordingClient(), clearQueueClient: counting)
+
+        await vm.clearQueue()
+
+        XCTAssertEqual(counting.calls, 1)
+        XCTAssertEqual(vm.queueBanner, counting.outcome)
     }
 }

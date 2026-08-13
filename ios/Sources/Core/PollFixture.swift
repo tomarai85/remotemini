@@ -144,7 +144,10 @@ final class PollFetchingFixture: PollFetching {
             ],
             screen: ScreenBody(classification: classification),
             display: choiceDisplay(for: state),
-            queued: nil,
+            // Queue(v2、2026-08-14): `.busy` だけ送信待ち2件を持つ。作業中の会話に
+            // 送信を積む、が此の面の実在する使い方そのもの。他の状態は nil のまま
+            // (= 観測していない側の枝も fixture に残る —— 帯が**出ない**事も面)。
+            queued: classification == .busy ? 2 : nil,
             cursor: PollCursor.empty,
             more: false
         )
