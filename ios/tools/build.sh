@@ -497,6 +497,21 @@ _app_num="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PLIST" 2>/
   echo "焼き上がった app の番号が違う(app=[$_app_num] 期待=[$RC_BUILD_NUM])" >&2; exit 1
 }
 
+# ★通知をタップした時の行き先が**焼き上がった物に入っている**事(2026-08-12、
+#   REQUIREMENTS §5-4)。此処で見る理由は上の番号と同じ —— 単体検査は plist を
+#   選べないので、`project.yml` に書いた事は「焼けた事」の証拠にならない。
+#
+# ★壊れ方が静かな側なので機械で押さえる: scheme が消えても edith の通知は届き続け、
+#   **押した時に何も起きないだけ**になる。届いている通知を見ている人は
+#   「アプリが開かない」を通知の不具合と読む。だから通知の側ではなく此処で測る。
+_app_scheme="$(/usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes:0:CFBundleURLSchemes:0" "$APP_PLIST" 2>/dev/null || true)"
+[ "$_app_scheme" = "remotemini" ] || {
+  echo "焼き上がった app に通知の行き先(URL scheme)が無い(app=[$_app_scheme] 期待=[remotemini])" >&2
+  echo "  正本 = ios/project.yml の CFBundleURLTypes。送る側は edith の ~/fleet-tools/ntfy-notify.sh" >&2
+  exit 1
+}
+echo "    通知の行き先: remotemini:// (焼き上がった app に在る)"
+
 if [ "${RC_NO_SEED:-0}" = "1" ]; then
   # 種無しで焼いたなら、焼き上がった物に種が**無い**事まで見る。残っていたら
   # 前回の焼きの鍵を持ったまま出荷する事になる(build/ は消さずに再利用する)。

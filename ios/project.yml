@@ -62,6 +62,21 @@ targets:
         # 解釈されず literal になる。だから「差し込み損ね」は例外ではなく**もっともらしい
         # 文字列**として画面に届く。それを版と読ませない分岐は `BuildInfo.displayRev` に在る。
         RCBuildRev: "${RC_BUILD_REV}"
+        # ★通知をタップして**アプリが開く**為の口(2026-08-12、REQUIREMENTS §5-4)。
+        #
+        # 合格条件は「入力待ちで電話に通知が来て、**開いてその場で返せる**」。
+        # 通知そのものは edith の `~/fleet-tools/ntfy-notify.sh`(Claude Code の
+        # Notification hook)が ntfy 経由で既に送っている —— 欠けていたのは
+        # **タップの行き先**で、ntfy の通知を押しても ntfy のアプリが開くだけだった。
+        #
+        # ★APNs は使えない(wildcard provisioning profile は push entitlement を運べない
+        #   = spec §1-a の構造的制約)。此の scheme は其の迂回ではなく**別の経路**:
+        #   通知の配送は ntfy のアプリが行い、此処は「押された時に何を開くか」だけを担う。
+        #   entitlement は一切要らない。
+        CFBundleURLTypes:
+          - CFBundleURLName: com.tomarai.remotemini
+            CFBundleURLSchemes:
+              - remotemini
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
