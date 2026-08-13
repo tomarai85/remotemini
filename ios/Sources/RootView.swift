@@ -21,6 +21,10 @@ struct RootView: View {
                             apiKey: "ui-fixture-key",
                             onUnauthorized: {}
                         ),
+                        // ★fixture の面に本物の口を1つも残さない。`RC_UI_FIXTURE` が
+                        //   口座の状態を名乗っていなければ、**回る fixture** に落とす
+                        //   (本物の `AccountClient` には落とさない = 3回再発した形)。
+                        accountViewModel: Self.fixtureAccountViewModel(),
                         baseURL: Self.fixtureBaseURL,
                         apiKey: "ui-fixture-key",
                         onUnauthorized: {}
@@ -93,6 +97,13 @@ struct RootView: View {
                     apiKey: credentials.apiKey,
                     onUnauthorized: { appState.clearCredentials() }
                 ),
+                accountViewModel: AccountViewModel(
+                    reader: AccountClient(),
+                    advancer: AccountClient(),
+                    baseURL: credentials.baseURL,
+                    apiKey: credentials.apiKey,
+                    onUnauthorized: { appState.clearCredentials() }
+                ),
                 baseURL: credentials.baseURL,
                 apiKey: credentials.apiKey,
                 onUnauthorized: { appState.clearCredentials() }
@@ -132,5 +143,25 @@ struct RootView: View {
     /// could not reach a live host even by accident. Not a hardcoded *server* host:
     /// this is inert filler for a parameter the fixture ignores.
     private static let fixtureBaseURL = URL(string: "https://ui-fixture.invalid")!
+
+    /// 口座の口の fixture(2026-08-12)。
+    ///
+    /// ★**既定で本物へ落ちない**事が此の関数の全部。`RC_UI_FIXTURE` が口座の状態を
+    ///   名乗っていない fixture 走行(例: 一覧だけを見る `.threeRoles`)でも、
+    ///   `AccountFixture(state: .rotating)` に落とす —— 本物の `AccountClient` を
+    ///   既定にすると、一覧の fixture を撮っているだけの走行が
+    ///   `https://ui-fixture.invalid/api/account` へ本当に飛ぶ。
+    ///   Sprint 4/5/6/7 が同じ形で4回踏んだ穴なので、此処は「名乗らなければ本物」に
+    ///   しない事を構造で守る。
+    private static func fixtureAccountViewModel() -> AccountViewModel {
+        let fixture = AccountFixture.fromEnvironment() ?? AccountFixture(state: .rotating)
+        return AccountViewModel(
+            reader: fixture,
+            advancer: fixture,
+            baseURL: fixtureBaseURL,
+            apiKey: "ui-fixture-key",
+            onUnauthorized: {}
+        )
+    }
     #endif
 }

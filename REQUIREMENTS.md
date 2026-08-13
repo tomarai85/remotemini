@@ -166,6 +166,32 @@ UI を要求しており、生ターミナル固定説とは両立しないた�
 3. 「対話しながらその場で直す」が成立(見るだけ・投げるだけではない)— §1 の目的、
    Tom 2026-07-28(`user_work_pattern_mobile.md`)
 4. Claude が入力待ちで**電話に通知**、開いてその場で返せる — measured-plan §4-3 継承
+
+   **2026-08-12 に通した。** `.harness/spec-native-shell-2026-08-05.md` は此れを
+   「wildcard provisioning profile は push entitlement を運べない」を理由に v2 候補へ
+   落としていたが、**其の理由は今も真のまま、要件は満たせる** —— 此の条件は APNs を
+   名指ししていない。
+
+   実測(2026-08-12、edith): 通知の鎖は**既に全部繋がっていた**。`~/.ntfy-topic` が在り、
+   `Notification` hook が `~/fleet-tools/ntfy-notify.sh` を指し、dry-run が通る。
+   欠けていたのは「開いてその場で返せる」の**開いて**の部分だけで、通知を押しても
+   ntfy のアプリが開くだけだった。
+
+   足したのは2つ: 通知に `Click: remotemini://`(edith 側、`ntfy-notify.sh`)と、
+   アプリ側の URL scheme(`ios/project.yml` の `CFBundleURLTypes`)。**APNs の
+   entitlement は1つも要らない** —— 配送は ntfy のアプリが行い、電話側の scheme は
+   「押された時に何を開くか」だけを担う。
+
+   ★CONTENT-FREE は破っていない: 行き先は会話 id も path も持たず、アプリを開くだけ。
+   ntfy の無料枠では topic が事実上パスワードなので、URL に何かを載せた瞬間
+   「topic を当てた者が Tom の作業対象を知る」に変わる。
+
+   ★焼き上がった `.app` に scheme が在る事は `ios/tools/build.sh` が実機ビルドの度に
+   確かめる(単体検査は plist を選べないので、`project.yml` に書いた事は「焼けた事」の
+   証拠にならない —— `CFBundleVersion` と同じ理由の同じ場所)。
+
+   ★**残る Tom ゲート**: iPhone に ntfy を入れて topic を1回購読する事。物理デバイスの
+   操作なので私からは動かせない。購読までは通知が届かない(鎖の最後の1段)。
 5. 移動中の切断(Wi-Fi↔セルラー・ロック)を跨いで会話が失われない — measured-plan §4-4/6 継承
 6. **Loading で待たされない**(RC 却下理由 1: 「connecting」で作業が止まる、Tom 2026-06-13)。
    数値目標は実装時に実測で置く(起草時の実測: `-p --resume` TTFT 2.3〜3.2秒 = 対策必須)
@@ -202,6 +228,24 @@ UI を要求しており、生ターミナル固定説とは両立しないた�
 7. **所有して拡張できる**(RC 却下理由 2: vendor-closed、Tom 2026-06-13)— 全構成要素が
    Tom の機体上・コード改変可能
 8. アカウント切替が UI からスムーズにできる — §4-5(Tom 2026-07-28 逐語)
+
+   **2026-08-12 に出荷した。** サーバ側(`GET /api/account` / `POST /api/account/next`)は
+   前から在ったが、電話から**一度も呼ばれていなかった**(`src/server.mjs` が自ら
+   「native app から1回も呼ばれていない」と書いていた)。足したのは電話側:
+   `ios/Sources/Core/AccountClient.swift` / `Screens/Shared/AccountViewModel.swift` /
+   `Screens/Shared/AccountBar.swift` / `Core/AccountFixture.swift`。
+
+   ★**「スムーズに」を2タップにした理由**: 切替は艦隊全体の状態を変え、電話は歩きながら
+   親指で触る器。確認を挟まないと、ポケットの中の接触で口座が動く。同じ場所で2タップは
+   スムーズだが、誤って動く口座はスムーズではない。
+
+   ★**設計上の非対称(サーバの注釈が根拠)**: `fleet-account --next` は時間切れになる
+   **前に**口座を進め終えているので、500 は「口座が動かなかった」を意味しない。だから
+   失敗しても**撃ち直さず、現在地を読み直す**。撃ち直す実装は二段進めて一段失敗したと
+   報告する。検査 = `ios/Tests/Core/AccountClientTests.swift` の
+   `testAFailedSwitchIsNotRetried`、`ios/Tests/Screens/Shared/AccountViewModelTests.swift` の
+   `testAFailedSwitchRereadsTheAccountRatherThanAssumingItDidNotMove`、
+   サーバ側の契約 = `rc-backend/test/account-routes.test.mjs`(陰性対照3本)。
 9. 期限性: 渡米 2026-08-20 は「物理アクセスの最終日」であって機能納期ではない
    (UI は Tailscale 越しの純ソフト = 渡米後も作れる)— REQUIREMENTS §2
 

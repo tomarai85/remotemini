@@ -515,6 +515,14 @@ const UNPAIRED = {
   "KeychainCredentialStore.Wire": "電話の中の保存形式(keychain)。線には出ない",
   "UserDefaultsDraftStore.StoredDraft": "電話の中の保存形式(打ちかけ)。線には出ない",
   SignOutNotice: "鍵切れの報せを画面間で渡す入れ物。電話の中で完結し、線には出ない",
+  "AccountClient.Wire": "口座の応答(`{account}` / `{error}`)。**builder が組んでいない**のが此処に居る理由 —— "
+    + "`/api/account` と `/api/account/next` は `src/server.mjs` の中で `json(res, 200, { account })` を"
+    + "直に組んでおり、`src/view.mjs` の系統B(`speaks()` が `display` を載せる道)に乗っていないので"
+    + "突き合わせる相手の関数が存在しない。"
+    + "★測っているのは `test/e2e-local.mjs` の `account` 節(生きたサーバの `GET /api/account` を叩き、"
+    + "`account` 鍵の**値**まで見る)+ `test/account-routes.test.mjs`(`/next` と誤り応答の `error` 鍵)。"
+    + "★2026-08-12 の注意: 此処に最初「e2e が2つの道を鍵名ごと突き合わせている」と書いたが**偽**だった —— "
+    + "e2e が見ていたのは `GET` の1鍵だけで `/next` も `error` も見ていない。書く前に読むこと",
 };
 
 /**

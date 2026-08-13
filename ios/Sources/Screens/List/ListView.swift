@@ -4,6 +4,12 @@ import SwiftUI
 /// see that type for the full state-machine rationale; this file is display only.
 struct ListView: View {
     @StateObject private var viewModel: ListViewModel
+    /// REQUIREMENTS §4-5/§5-8 の口。**既定値を持たせない**(呼ぶ側が必ず渡す)——
+    /// Sprint 8 が同じ形で3回再発させた欠陥がこれで、fixture の画面が既定の本物の
+    /// クライアントを握ったまま `ui-fixture.invalid` へ本当に飛んでいた
+    /// (`RootView.swift` の `ConversationClients` の注釈が経緯)。既定値が無ければ、
+    /// 口を1つ足した時に検査側を書き忘れるとコンパイルが通らない。
+    @StateObject private var accountViewModel: AccountViewModel
     @Environment(\.scenePhase) private var scenePhase
     /// 引き金 #3 の器。`@State` なのは、判定が**1辺では決まらない**から ——
     /// `.onChange` の呼び出しを跨いで「背面を通ったか」を憶える必要が在る。
@@ -21,11 +27,13 @@ struct ListView: View {
 
     init(
         viewModel: @autoclosure @escaping () -> ListViewModel,
+        accountViewModel: @autoclosure @escaping () -> AccountViewModel,
         baseURL: URL,
         apiKey: String,
         onUnauthorized: @escaping () -> Void
     ) {
         _viewModel = StateObject(wrappedValue: viewModel())
+        _accountViewModel = StateObject(wrappedValue: accountViewModel())
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.onUnauthorized = onUnauthorized
@@ -51,6 +59,15 @@ struct ListView: View {
         // switch なので、新しい相はそれを答えずには足せない)。
         .safeAreaInset(edge: .bottom) { footer(scanLine: viewModel.phase.scanLine) }
         .navigationTitle("セッション")
+        // 口座は**脚ではなく上**に置く(2026-08-12、REQUIREMENTS §4-5/§5-8)。脚は既に
+        // 鮮度 / 走査行 / 版の3行を載せていて、其処に4行目を足すと**版の名乗りが押し出される** ——
+        // 版は「古いビルドで動いていないか」を最も疑う場面で見える必要が在り、
+        // 監査 X2-7 が同じ向きの欠け方を1度直している。口座は其の面を踏まない。
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                AccountBar(viewModel: accountViewModel)
+            }
+        }
         .refreshable { await viewModel.refresh() } // pull-to-refresh (brief §3-d trigger #2)
         .task { await viewModel.refresh() } // initial display (brief §3-d trigger #1)
         // Foreground-resume (brief §3-d trigger #3). No timer anywhere in this screen
