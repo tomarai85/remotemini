@@ -96,7 +96,11 @@ run "$TOOL" down "rc-e2e-20260805110403" "$SID" >/dev/null
 chk "⑨ 使い捨ての名前なら自分の登録だけ消す"                "$([ -f "$SB/rc/panes/$SID.json" ] && echo 在 || echo 無)" "無"
 chk "⑩ heads も消す"                                        "$([ -f "$SB/rc/heads/$SID.json" ] && echo 在 || echo 無)" "無"
 chk "⑪ ★他人の登録は完全一致でないので残る"                "$([ -f "$SB/rc/panes/$DECOY_SID.json" ] && echo 在 || echo 無)" "在"
-chk "⑫ 既定では転写を消さない(転んだ走行の唯一の読み物)"  "$([ -f "$SB/projects/slug-x/$SID.jsonl" ] && echo 在 || echo 無)" "在"
+# ★2026-08-14 に主張を入れ替えた。旧: 「既定では転写を**消さない**」——
+#   其の守り方が製品の一覧を私の残骸で埋めた(実測 43 件、Tom の仕事は0件)。
+#   新: 「転んだ走行の読み物は守るが、**製品の一覧からは必ず退かす**」= 退避先へ移す。
+chk "⑫ 既定では転写を製品の一覧から退かす"                  "$([ -f "$SB/projects/slug-x/$SID.jsonl" ] && echo 在 || echo 無)" "無"
+chk "⑫-b ★退かした物は読める場所に在る(消してはいない)"    "$([ -f "$SB/projects-attic/rc-e2e/$SID.jsonl" ] && echo 在 || echo 無)" "在"
 /bin/rm -rf "$SB"
 
 mk_sandbox

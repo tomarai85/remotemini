@@ -26,9 +26,9 @@
  *   **その path と state だけ**を stderr に出す。
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   TmuxInjector,
   makeTmuxRunner,
@@ -364,15 +364,25 @@ function cmdDown(session, sessionId, purgeTranscript = false) {
     }
   }
 
-  // 転写(jsonl)の後始末。**既定では消さない** —— 走行が転んだ時に人が読む唯一の物だから。
-  // 呼ぶ側が「測り終えて緑だった」と分かっている時にだけ `--purge-transcript` を付ける。
-  // ★2026-08-05: 付ける前の2走行が edith の projects 配下に転写を2本置き去りにした
-  //   (この機械に恒久物を残さない、という線を私自身が破っていた)。
-  if (purgeTranscript && /^[0-9a-f-]{8,64}$/i.test(sessionId)) {
+  // 転写(jsonl)の後始末。
+  //
+  // ★2026-08-14 に**守り方を変えた**(消すか残すか、ではなく**何処に残すか**)。
+  //   旧: 緑の時だけ消す / 転んだら `~/.claude/projects/` に置いたまま
+  //       (理由「走行が転んだ時に人が読む唯一の物だから」= 此の理由は今も正しい)
+  //   実測(2026-08-14): 2週間の試行錯誤で **43 件**が溜まり、Tom が電話で一覧を開いた時
+  //       **1件残らず私の検証残骸**だった。彼の仕事は0件。
+  //       「転んだ時に読む物」を**製品の一覧に置いたまま**守っていたのが誤り —— 守る対象は
+  //       読む可能性であって、置き場所ではない。
+  //   新: **どちらの場合も `~/.claude/projects/` からは必ず退かす**。
+  //       緑 = 消す / 赤 = `~/.claude/projects-attic/rc-e2e/` へ**移す**(読める・製品には出ない)。
+  //
+  // ★之は規律ではなく構造。呼ぶ側が旗を渡し忘れても、退かす事だけは起きる ——
+  //   旧設計は「呼ぶ側が緑を判定して旗を付ける」に懸かっており、失敗の道が必ず漏れた。
+  if (/^[0-9a-f-]{8,64}$/i.test(sessionId)) {
     const t = transcriptPath(sessionId);
     if (!t) {
       say("転写: 元から無い");
-    } else {
+    } else if (purgeTranscript) {
       try {
         unlinkSync(t);
       } catch (e) {
@@ -381,6 +391,24 @@ function cmdDown(session, sessionId, purgeTranscript = false) {
       }
       say(`転写: ${existsSync(t) ? "★まだ在る" : "不在を確認"}`);
       if (existsSync(t)) bad = true;
+    } else {
+      // ★退避先は `PROJECTS_DIR` の**隣**(= 同じ継ぎ目から導く)。`HOME` から作ると
+      //   `RC_PROJECTS_DIR` を差し替えた砂場でも本物のホームへ書き込み、対照が
+      //   自分の走行で本番を汚す(2026-08-14、書いた直後に気付いた)。
+      const attic = join(dirname(PROJECTS_DIR), "projects-attic", "rc-e2e");
+      try {
+        mkdirSync(attic, { recursive: true });
+        const dest = join(attic, `${sessionId}.jsonl`);
+        renameSync(t, dest);
+        say(`転写: 退避した(${dest.replace(HOME, "~")})—— 読めるが製品の一覧には出ない`);
+      } catch (e) {
+        say(`★転写を退避できない(${String(e?.message || e)})`);
+        bad = true;
+      }
+      if (existsSync(t)) {
+        say("★退避したのに元の場所に残っている");
+        bad = true;
+      }
     }
   }
   return bad ? 1 : 0;
