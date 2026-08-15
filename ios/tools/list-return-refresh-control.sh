@@ -113,7 +113,12 @@ cleanup() {
     find "$WORK" -type f -print0 2>/dev/null | xargs -0 /bin/rm -f 2>/dev/null
     find "$WORK" -type d -depth -exec /bin/rmdir {} + 2>/dev/null
 }
-trap cleanup EXIT
+# ★生成物(ios/Info.plist / RemoteMini.xcodeproj)を触る走行を **1 本に絞る**。
+# 2026-08-15、此れが無くて `build.sh --sim` と此の台本が `RC_BUILD_REV` の刻印を
+# 潰し合い、**偽の赤が 9 本**出た(製品の欠陥と見分けが付かない赤)。
+# 取れなければ此処で非零終了する = 生成物に触らないまま止まる。
+. "$IOS/tools/xcode-tree-guard.sh"
+trap 'cleanup; xtl_release' EXIT
 
 # ---- 前回の走行が殺されていたら、その取り残しを先に戻す(ここから)-------------
 # ★この位置でなければならない: 下の複製 loop より**前**。後に置くと、変異したバイトを

@@ -90,7 +90,19 @@ final class AccountViewModel: ObservableObject {
     /// 背面から戻った時にも呼ぶ(`AccountBar` の `.onChange(of: scenePhase)`)。
     /// 呼ばないと、他所で口座を変えて戻って来た時に**画面だけが古い**まま残る
     /// —— 一覧が同じ理由で `ForegroundResume` を持っているのと同じ穴。
+    ///
+    /// ★切替が飛んでいる間は読み取りを**発行しない**。世代(`generation`)は
+    ///   *発行の順序*しか記録しないので、「切替の最中に発行された読み取り」を
+    ///   表現できない —— 切替(世代 n)→ 読み取り(世代 n+1)の順で発行されると、
+    ///   切替が先に着地して新しい名前を書いた後に、**古い机の値を読んだ読み取りが
+    ///   自分を最新だと思って上書きする**。画面は切替前へ戻り、机とは食い違う。
+    ///   世代の門を厳しくしても直らない(読み取りの方が本当に新しい)ので、
+    ///   直せるのは**発行を止める**此処だけ。
+    ///   捨てても情報は落ちない: 切替の応答自体が着地点を持って来る。
+    ///   永久に閉じる心配も無い —— `select`/`advance` の往復は
+    ///   `BackendSession.writeTimeout` を持つので `isBusy` は必ず落ちる。
     func load() async {
+        guard !isBusy else { return }
         generation += 1
         let mine = generation
         if case .loaded = phase {} else { phase = .loading }

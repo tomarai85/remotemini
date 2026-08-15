@@ -40,6 +40,14 @@ cd "$ROOT" || exit 1
 ALL=0
 [ "${1:-}" = "--all" ] && ALL=1
 
+# ★束ねて回す側だけが「空くまで待つ」を立てる(既定は 0 = 即断る)。
+# 掛け場所は `xcodegen generate` を撃つ台本 1 本ずつなので、待つ相手の最長は
+# `ios/tools/signout-notice-control.sh` の実測 734 秒。1800 秒はその倍以上。
+# 手で 1 本叩いた時は既定のまま = 「今 build.sh が握っている」と名指しで断られる。
+# 何故待たせるか: 40 分走った掃きが、途中で誰かが build を始めただけで赤くなるのは
+# **偽の赤**の作り直しでしかない(2026-08-15 に 9 本作った)。
+export RC_XCODE_TREE_LOCK_WAIT_S="${RC_XCODE_TREE_LOCK_WAIT_S:-1800}"
+
 LOCAL_CTLS=(
     test/design-supersede-world-controls.sh   # ★2026-08-04 に此処へ入れた。世界の見分け
                                               # (designOrSkip)の対照。差し替え口だけ在って

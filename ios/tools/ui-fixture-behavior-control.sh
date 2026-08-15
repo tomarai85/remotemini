@@ -28,6 +28,12 @@ mkdir -p "$DERIVED"
 SIM_NAME="${SIM_NAME:-iPhone-dogfood}"
 BUNDLE="com.tomarai.remotemini"
 
+# ★生成物(ios/Info.plist / RemoteMini.xcodeproj)を触る走行を **1 本に絞る**。
+# 2026-08-15、此れが無くて `build.sh --sim` と対照台本が `RC_BUILD_REV` の刻印を
+# 潰し合い、**偽の赤が 9 本**出た(製品の欠陥と見分けが付かない赤)。
+. "$HERE/tools/xcode-tree-guard.sh"
+trap 'xtl_release' EXIT
+
 xcodegen generate >"$DERIVED/xcodegen-fixture-behavior.log" 2>&1
 if [ $? -ne 0 ]; then
     echo "UNMEASURED: xcodegen generate に失敗"
