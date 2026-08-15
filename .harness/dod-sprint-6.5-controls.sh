@@ -35,9 +35,41 @@ ROOT="$(cd "$HARNESS/.." && pwd)"
 DOD="$HARNESS/dod-sprint-6.5.sh"
 PASS=0; FAIL=0; SKIP=0
 WT="$(mktemp -d "${TMPDIR:-/tmp}/dod65-controls.XXXXXX")"
-trap 'rm -rf "$WT"' EXIT
 
-[ -f "$DOD" ] || { echo "測れない: $DOD が無い"; exit 2; }
+# ★`rm -rf` は使わない(この環境の禁止事項)。`dod-sprint-4-controls.sh` の `cleanup()` と同じ形で、
+#   file を消してから dir を深い順に畳む。此処は 2026-08-15 まで `rm -rf "$WT"` だった。
+cleanup() {
+    [ -n "${WT:-}" ] && [ -d "$WT" ] || return 0
+    # ★`-type f` ではなく `! -type d`。symlink や特殊 file が1つでも残ると `rmdir` が
+    #   全部落ちて砂場が黙って残る(4 側は `-type f`。此処だけ広い方に寄せてある)。
+    find "$WT" ! -type d -print0 2>/dev/null | xargs -0 /bin/rm -f 2>/dev/null
+    find "$WT" -depth -type d -exec /bin/rmdir {} + 2>/dev/null
+    return 0
+}
+trap cleanup EXIT
+
+[ -f "$DOD" ] || { echo "測れない: $DOD が無い"; exit 2; }   # 片付けは上の trap が撃つ
+
+# ★下の複製は**生成木の産物**を持ち込む(`ios/build/xcodebuild-sim.log` と
+#   `.sources.sha`)。`build.sh --sim` が其れを書いている最中に複製すると、log と
+#   指紋が食い違って 0 行目が未測定になり、以降の判定が全部崩れる —— 22-26 行目に
+#   「2026-08-07 に踏んだ」と書いてある事故が正に此れ。**註釈は強制しない**ので、
+#   複製の間だけ生成木の錠を取る(2026-08-15)。
+#   ★錠は複製の間だけ握って、下で外す。以降は写した木しか触らないので、40 分走る
+#     対照の間ずっと生成木を塞ぐ理由が無い。
+#   ★取れなかった時は 2(測れなかった)。1(壊れるべき対照が壊れない)と混ぜない。
+#   ★待つ / 待たないは**此処では決めない**。待つと決めてよいのは束ねて回す側
+#     (`run-controls.sh` が `RC_XCODE_TREE_LOCK_WAIT_S=1800` を立てる)だけで、
+#     葉の台本が自分で待ちを既定にすると、手で 1 本叩いた時に理由が見えないまま
+#     30 分黙る。既定 0 = 持ち主を名指しして即座に降りる。
+RC_XTL_FAIL_CODE=2
+export RC_XTL_FAIL_CODE
+. "$ROOT/ios/tools/xcode-tree-guard.sh"
+# ★`trap ... EXIT` は**加算されない**(後から掛けた方が前のを置き換える)。上の
+#   `trap cleanup EXIT` は此の行で消えるので、片付けを此処へ**書き直して**いる。
+#   2026-08-15 まで上下 2 本が並んでいて、上は**読めるのに走らない死んだ行**だった ——
+#   C3 で塞いだ「配線されて見えるのに走らない」と同じ形が、同じ日の自分の差分に居た。
+trap 'xtl_release 2>/dev/null; cleanup' EXIT
 
 # --- 照合表が読む物だけを複製する ---------------------------------------------
 mkdir -p "$WT/.harness" "$WT/ios/build" "$WT/rc-backend/test" "$WT/rc-backend/tools"
@@ -49,6 +81,9 @@ cp "$ROOT/ios/build/xcodebuild-sim.sources.sha" "$WT/ios/build/" 2>/dev/null
 cp "$ROOT/DESIGN.md" "$ROOT/HANDOFF-NEXT-SESSION.md" "$WT/" 2>/dev/null
 cp "$ROOT/rc-backend/test/restart-epoch-controls.sh" "$WT/rc-backend/test/" 2>/dev/null
 cp "$ROOT/rc-backend/tools/tailnet-key-expiry.sh" "$WT/rc-backend/tools/" 2>/dev/null
+
+# 生成木からの持ち出しは此処まで。以降は写した木しか触らないので錠を返す。
+xtl_release
 
 # 複製は元の木と同じ指紋になっていなければならない。ここがズレていると 0 行目が
 # 最初から未測定で、以降の対照は「壊したから未測定」を区別できない。

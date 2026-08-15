@@ -69,8 +69,16 @@ private final class GatedAccountAPI: AccountReading, AccountAdvancing, AccountSe
     private var reads: [PendingRead] = []
     private var gateIsOpen = false
     private var gatedReadIsRunning = false
+    private var selectIsGated = false
+    private var selectGateIsOpen = false
+    private var gatedSelectIsRunning = false
     var nextResult: Result<AccountState, AccountError> = .failure(.unreachable)
     var selectResult: Result<AccountState, AccountError> = .failure(.unreachable)
+
+    /// `current` が呼ばれた回数。**発行そのもの**を測る為に持つ ——
+    /// 「切替中は読み取りを発行しない」は結果の値では確かめられない
+    /// (机が同じ名前を返す木でも通ってしまう)。
+    private(set) var currentCalls = 0
 
     func enqueueRead(_ result: Result<AccountState, AccountError>, gated: Bool) {
         reads.append(PendingRead(result: result, gated: gated))
@@ -101,7 +109,44 @@ private final class GatedAccountAPI: AccountReading, AccountAdvancing, AccountSe
         gateIsOpen = true
     }
 
+    /// 門付きの読み取りが**今走っているか**。
+    ///
+    /// ★之が要るのは、「切替中は読み取りを発行しない」を測る検体が
+    /// **直っている木と壊れている木の両方で終わる待ち**を組まねばならないから。
+    /// 直っている木では読み取りは発行されず(`waitUntilGatedReadStarted` は永久に来ない)、
+    /// 壊れている木では発行されて門で止まる(`load()` の方が帰って来ない)。
+    /// 片方でしか真にならない条件で待つと、もう片方は**赤ではなく停止**する ——
+    /// 停止した検査は「まだ判らない」であって「合格」ではないのに、緑の顔で待ち続ける。
+    var isRunningAGatedRead: Bool { gatedReadIsRunning }
+
+    /// 切替(名指し)を門で止める。読み取り側と同じ理由で旗で持つ。
+    func gateSelect() {
+        selectIsGated = true
+    }
+
+    func waitUntilGatedSelectStarted(
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let started = await waitUntilTrue { self.gatedSelectIsRunning }
+        if !started {
+            XCTFail(
+                "門付きの切替が期限内に始まらなかった(此の待ちは「切替が飛んでいる間」を"
+                    + "作る為の物で、始まらない木では測りたい窓自体が存在しない)。",
+                file: file,
+                line: line
+            )
+        }
+    }
+
+    func releaseGatedSelect() {
+        selectGateIsOpen = true
+    }
+
     func current(baseURL: URL, apiKey: String) async -> Result<AccountState, AccountError> {
+        // ★門より**前**で数える。測りたいのは結果ではなく**発行**そのもの
+        //   (机が同じ名前を返す木では、値だけ見ても発行の有無が判らない)。
+        currentCalls += 1
         guard !reads.isEmpty else { return .failure(.unreachable) }
         let pending = reads.removeFirst()
         if pending.gated {
@@ -121,7 +166,14 @@ private final class GatedAccountAPI: AccountReading, AccountAdvancing, AccountSe
     }
 
     func select(name: String, baseURL: URL, apiKey: String) async -> Result<AccountState, AccountError> {
-        selectResult
+        if selectIsGated {
+            gatedSelectIsRunning = true
+            let opened = await waitUntilTrue { self.selectGateIsOpen }
+            if !opened {
+                XCTFail("門付きの切替が期限内に解放されなかった(releaseGatedSelect の呼び忘れ)。")
+            }
+        }
+        return selectResult
     }
 }
 
@@ -490,6 +542,63 @@ final class AccountViewModelTests: XCTestCase {
 
         XCTAssertEqual(viewModel.currentName, "B",
                        "名指しの切替が、遅れて着いた古い読み取りに上書きされた")
+    }
+
+    /// ★上の2本の**逆順**。上は「切替より前に発行された読み取りが後に着く」で、
+    /// 世代(`generation`)が捨ててくれる。此処は「切替の**最中に**発行された読み取り」——
+    /// 世代は*発行の順序*しか記録しないので、此の読み取りは切替より**新しい**世代を持つ。
+    /// 机は切替が終わる前に問われるので古い名前(A)を答え、切替が着地して B を書いた後に、
+    /// 其の A が「自分が最新だ」と言って上書きする。画面は A、机は B。
+    ///
+    /// ★世代の門を厳しくしても直らない(読み取りの方が本当に後に発行されている)。
+    /// 直せるのは**発行を止める**側だけ = `load()` 冒頭の `guard !isBusy`。
+    ///
+    /// 現実の引き金は「切替を押した直後にアプリを背面へ回して戻る」——
+    /// `SettingsView` / `AccountBar` の `.task` と `scenePhase` が読み直しを撃つ。
+    func testAForegroundRefreshDuringASwitchDoesNotResurrectTheOldAccount() async {
+        let api = GatedAccountAPI()
+        let viewModel = makeViewModel(api)
+
+        // ① A に着いている。
+        api.enqueueRead(.success(listing(current: "A", names: ["A", "B"])), gated: false)
+        await viewModel.load()
+        XCTAssertEqual(viewModel.currentName, "A")
+        let readsBeforeTheSwitch = api.currentCalls
+
+        // ② 名指しの切替を宙に浮かせる(机はまだ答えていない = 机の口座も未確定)。
+        api.gateSelect()
+        api.selectResult = .success(listing(current: "B", names: ["A", "B"]))
+        let switching = Task { await viewModel.select("B") }
+        await api.waitUntilGatedSelectStarted()
+
+        // ③ 其の最中に前面へ戻る。此の読み取りが机に届くのは切替の**前**なので、
+        //    机は古い名前(A)を答える。着地は切替の後になる様に門で止めておく。
+        api.enqueueRead(.success(listing(current: "A", names: ["A", "B"])), gated: true)
+        var refreshFinished = false
+        let refresh = Task { await viewModel.load(); refreshFinished = true }
+
+        // ★直っている木では「発行されずに帰る」、壊れている木では「発行されて門で止まる」。
+        //   どちらでも解ける条件で待つ(片方でしか真にならない条件だと、もう片方は
+        //   赤ではなく**停止**する = 緑の顔で待ち続ける検査になる)。
+        let settled = await waitUntilTrue { api.isRunningAGatedRead || refreshFinished }
+        XCTAssertTrue(settled, "読み直しが発行も帰還もしないまま期限が来た(検体が窓を作れていない)")
+
+        XCTAssertEqual(api.currentCalls, readsBeforeTheSwitch,
+                       "切替が飛んでいる最中に読み取りを発行した = 机の古い答えが"
+                           + "新しい世代を持って着地しうる。世代では止められない")
+
+        // ④ 切替が着地する。
+        api.releaseGatedSelect()
+        await switching.value
+        XCTAssertEqual(viewModel.currentName, "B", "切替そのものが着地していない")
+
+        // ⑤ 止めていた読み取りを放つ。発行していなければ空振りで終わる。
+        api.releaseGatedRead()
+        await refresh.value
+
+        XCTAssertEqual(viewModel.currentName, "B",
+                       "切替の最中に発行された読み取りが、着地済みの切替を巻き戻した")
+        XCTAssertFalse(viewModel.isBusy, "切替が終わったのに塞がったまま")
     }
 
     // MARK: - 文言

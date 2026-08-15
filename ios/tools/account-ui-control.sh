@@ -74,7 +74,12 @@ require_clean_tree
 restore_all() {
     ( cd "$ROOT" && git checkout -- $REL_TARGETS ) 2>/dev/null
 }
-trap 'restore_all' EXIT INT TERM HUP
+# ★生成物(ios/Info.plist / RemoteMini.xcodeproj)を触る走行を **1 本に絞る**。
+# 2026-08-15、此れが無くて `build.sh --sim` と此の台本が `RC_BUILD_REV` の刻印を
+# 潰し合い、**偽の赤が 9 本**出た(製品の欠陥と見分けが付かない赤)。
+# 取れなければ此処で非零終了する = 生成物に触らないまま止まる。
+. "$IOS/tools/xcode-tree-guard.sh"
+trap 'restore_all; xtl_release' EXIT INT TERM HUP
 
 ok() { echo "  OK   $1"; PASS=$((PASS+1)); }
 ng() { echo "  NG   $1"; FAIL=$((FAIL+1)); }
@@ -162,7 +167,12 @@ WANT_VM_NORETRY=testAdvanceIsNotFiredTwiceForOneTap
 WANT_CLIENT_NORETRY=testAFailedSwitchIsNotRetried
 WANT_ONSCREEN=testTheAccountIsActuallyOnTheScreen
 WANT_BLOCKED_ROW=testARowThatCannotBeSelectedStaysVisibleAndDisabledWithItsReason
-WANTS="$WANT_RACE $WANT_REREAD $WANT_VM_NORETRY $WANT_CLIENT_NORETRY $WANT_ONSCREEN $WANT_BLOCKED_ROW"
+# ★A1 と対を成すが、守っている物は別。A1/WANT_RACE = 「切替**より前に**発行された
+#   読み取りが後に着く」= 世代が捨てる。此処 = 「切替の**最中に**発行された読み取り」で、
+#   其れは切替より新しい世代を持つので世代では捨てられない。錠を分けるのは、
+#   片方の守り(世代)を消しても もう片方(発行を止める)が残る事を別々に測る為。
+WANT_SWITCH_WINDOW=testAForegroundRefreshDuringASwitchDoesNotResurrectTheOldAccount
+WANTS="$WANT_RACE $WANT_SWITCH_WINDOW $WANT_REREAD $WANT_VM_NORETRY $WANT_CLIENT_NORETRY $WANT_ONSCREEN $WANT_BLOCKED_ROW"
 
 echo "=== 基準(変異なし)"
 BASE_LOG="$LOGDIR/account-ui-base.log"
@@ -253,6 +263,15 @@ mutate_a5() {
 mutate_a7() {
     /usr/bin/sed -i '' 's|^        ForEach(state.accounts) { row in$|        ForEach(state.accounts.filter { $0.selectable }) { row in|' "$SV"
 }
+# A8 切替中でも読み取りを発行する = 机が切替の**前**の状態で答えた古い名前が、
+#    切替より新しい世代を持って着地し、着地済みの切替を巻き戻す。
+#    ★A1(世代を捨てる)とは別の道。世代を残したまま此処だけ壊すと A1 の的は緑のまま
+#      なので、2本立てている事に意味が在る事も同時に測れる。
+#    ★探し文は `load()` の冒頭にしか無い形で撃つ。`select()`/`advance()` の
+#      `guard case ... , !isBusy else` とは行の形が違うので、此の1本だけに当たる。
+mutate_a8() {
+    /usr/bin/sed -i '' '/^        guard !isBusy else { return }$/d' "$VM"
+}
 
 probe() { # $1=名前 $2=変異関数 $3=対象file $4=赤くなるべき検査 $5=(任意)走らせ方
     local name="$1" fn="$2" target="$3" want="$4" ui="${5:-}"
@@ -302,6 +321,7 @@ probe() { # $1=名前 $2=変異関数 $3=対象file $4=赤くなるべき検査 
 }
 
 probe A1-generation-guard-removed  mutate_a1 "$VM"  "$WANT_RACE"
+probe A8-read-issued-during-switch mutate_a8 "$VM"  "$WANT_SWITCH_WINDOW"
 probe A3-no-reread-after-failure   mutate_a3 "$VM"  "$WANT_REREAD"
 probe A4-viewmodel-retries-switch  mutate_a4 "$VM"  "$WANT_VM_NORETRY"
 probe A6-client-retries-switch     mutate_a6 "$CL"  "$WANT_CLIENT_NORETRY"

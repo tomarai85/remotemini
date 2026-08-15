@@ -198,6 +198,12 @@ if [ "$MODE" = "device" ]; then
   exit 0
 fi
 
+# ★生成物(ios/Info.plist / RemoteMini.xcodeproj)を触る走行を **1 本に絞る**。
+# 2026-08-15、此れが無くて `build.sh --sim` と対照台本が `RC_BUILD_REV` の刻印を
+# 潰し合い、**偽の赤が 9 本**出た(製品の欠陥と見分けが付かない赤)。
+. "$HERE/tools/xcode-tree-guard.sh"
+trap 'xtl_release' EXIT
+
 step "1. generate project"
 # xcodegen が project.yml の `RCBuildRev: "${RC_BUILD_REV}"` へ差し込む。**generate の前**に
 # export する事。未定義でも xcodegen は落ちず、`${RC_BUILD_REV}` という文字列をそのまま
@@ -548,7 +554,7 @@ cp "$PROFILE" "$APP/embedded.mobileprovision"
 # rejects the app with 0xe8008015 and the message blames the profile rather than
 # the extra key. The wildcard profile grants exactly these four.
 ENT=$(mktemp -t remotemini-entitlements)
-trap 'rm -f "$ENT"' EXIT
+trap 'rm -f "$ENT"; xtl_release' EXIT
 cat > "$ENT" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

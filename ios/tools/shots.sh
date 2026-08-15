@@ -1,5 +1,9 @@
 #!/bin/bash
 # no-control: 計器。simulator と build 済みの app が要り、commit 時には回せない
+# no-operator: DoD の画を撮りたい時に人が撃つ。simulator を起こして app を焼く物なので
+#   門から 1 commit ごとに回すと数分 x 毎回の費用になる(2026-08-15、錠の対照が
+#   `controls-for:` で此の file を名指しした事で「対照は在るが走らせる物が無い」と挙がった。
+#   宣言を狭めて逃げると C1-C4 が此の file の取っ手の外れを見なくなるので、印の側で言う)
 # Sprint 2 DoD screenshots (brief §5-c) -- entirely headless via `xcrun simctl`.
 # `open -a Simulator` is never used here or anywhere in this project: Tom's
 # machine only ever runs a GUI Simulator window if he opens one himself.
@@ -27,6 +31,12 @@ STATES=("$@")
 # 計算は build.sh にしか無い(`--print-rev`)。写しを持つと片方だけ腐る。
 RC_BUILD_REV="$("$HERE/tools/build.sh" --print-rev)"
 export RC_BUILD_REV
+
+# ★生成物(ios/Info.plist / RemoteMini.xcodeproj)を触る走行を **1 本に絞る**。
+# 2026-08-15、此れが無くて `build.sh --sim` と対照台本が `RC_BUILD_REV` の刻印を
+# 潰し合い、**偽の赤が 9 本**出た(製品の欠陥と見分けが付かない赤)。
+. "$HERE/tools/xcode-tree-guard.sh"
+trap 'xtl_release' EXIT
 
 xcodegen generate >"$DERIVED/xcodegen-shots.log" 2>&1
 if [ $? -ne 0 ]; then
