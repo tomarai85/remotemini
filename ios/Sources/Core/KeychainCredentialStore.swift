@@ -9,8 +9,28 @@ import Security
 /// threat). `ThisDeviceOnly` is the mechanism that enforces "no sync" -- it is not
 /// merely a stricter unlock requirement.
 final class KeychainCredentialStore: CredentialStore {
-    private let service = "com.tomarai.remotemini.credentials"
-    private let account = "rc-backend"
+    /// 電話に実際に入っている項目の座標。**製品側は誰も引数を渡さない** ——
+    /// 注入口を開けたのは検査の為だけで、理由は観測値:
+    /// `KeychainCredentialStoreTests` は `setUp`/`tearDown` で `clear()` を呼ぶので、
+    /// 座標を製品と共有していた間、単体検査を1回回すと**電話の本物の資格情報が消えた**
+    /// (2026-08-15 実測。app は次の起動で鍵入力欄を出した = DESIGN §2.94 の引き金)。
+    ///
+    /// 此の2つの値を変えるのは**移行案件**。既に入っている電話の項目は旧座標に残り、
+    /// 新しい binary からは見えないので、人が鍵を打ち直すまで戻らない
+    /// (`provisioning.rejected-seed.v1` へ鍵名を新設したのと同じ形の危険)。
+    static let productionService = "com.tomarai.remotemini.credentials"
+    static let productionAccount = "rc-backend"
+
+    let service: String
+    let account: String
+
+    init(
+        service: String = KeychainCredentialStore.productionService,
+        account: String = KeychainCredentialStore.productionAccount
+    ) {
+        self.service = service
+        self.account = account
+    }
 
     func load() throws -> Credentials? {
         var query = baseQuery()

@@ -83,9 +83,31 @@ final class AppState: ObservableObject {
             storeIsReadable = false
         }
 
+        // ★拒まれた鍵が金庫に残っている電話を掃く。`clearCredentials(rejected:)` は
+        //   台帳へ書いた**後**に金庫を消すので、間で殺されると此の形で残る。掃かずに
+        //   使うと、起動する度に 401 を貰って断りが出る電話になる(拒否は覚えているのに
+        //   拒まれた鍵で繋ぎに行く、という一番説明の付かない状態)。
+        if let value = stored, SeedDigest.of(value) == seedLedger.rejectedSeedDigest {
+            try? store.clear()
+            stored = nil
+        }
+
         if stored == nil && storeIsReadable {
             stored = plantSeedIfNeeded()
         }
+
+        // ★何故此処に計器が要るか(2026-08-15)。此の関数が鍵入力画面を出すに至る道は
+        //   4本在って(金庫が読めない / 種が無い / 台帳が同じ種を止めた / 蒔いたが載らない)、
+        //   **画面はどの道を通ったかを一文字も名乗らない**。2026-08-15 に Tom が撮った
+        //   欄はまさに此れで、束の中に種が在る事を確かめた後でも、外から見て道が絞れず
+        //   台帳を手で消して起動し直す所まで行った。値は出さない —— 出すのは
+        //   「在ったか/読めたか」の真偽だけで、鍵も URL も此処には現れない。
+        #if DEBUG
+        print("seed path: bundled=\(provisioning.seed != nil)"
+            + " storeReadable=\(storeIsReadable)"
+            + " rejected=\(seedLedger.rejectedSeedDigest == nil ? "empty" : "set")"
+            + " resolved=\(stored != nil)")
+        #endif
 
         credentials = stored
         if credentials == nil {
@@ -100,48 +122,53 @@ final class AppState: ObservableObject {
         isLoadingCredentials = false
     }
 
-    /// 焼き込まれた種を1回だけ蒔く。蒔いたら `credentials` に載せて返す。
+    /// 焼き込まれた種を蒔く。蒔いたら `credentials` に載せて返す。
     ///
-    /// ★「1回だけ」の判定は**種の指紋**で行う(`SeedLedgerStoring` の doc に、
-    /// 断りを門にした最初の設計を捨てた理由が在る)。同じ種は二度蒔かない ——
-    /// 401 で落とした鍵をまた蒔けば、電話は拒まれる鍵と断りの間で回り続ける。
-    /// 逆に、机で鍵を回して焼き直した**別の**種は蒔ける。それが渡米中に鍵が変わった
-    /// 時の唯一の復旧路で、旗1本の「もう蒔いた」だと此処が塞がる。
+    /// ★止めるのは「一度蒔いた種」ではなく**「机が拒んだ種」**(2026-08-15 に反転させた。
+    /// 理由の観測値は `SeedLedgerStoring` の doc)。401 で落とした鍵をまた蒔けば電話は
+    /// 拒まれる鍵と断りの間で回り続けるが、其の輪は拒否そのもので塞げる。「蒔いた」で
+    /// 塞ぐと、金庫だけが独りで空になった電話(検査の後始末・端末の復元)が
+    /// **鍵を打つまで戻れない**所に落ちる。
     ///
-    /// ★記録は Keychain へ書いた**後**に付ける。間で殺されても次の起動で同じ値を
-    /// もう一度書くだけ(冪等)。逆順にすると、書けなかった種を「蒔いた」と記録して
-    /// 二度と蒔かなくなる。
+    /// ★判定を指紋で行うのは前と同じ。机で鍵を回して焼き直した**別の**種は蒔ける ——
+    /// それが渡米中に鍵が変わった時の唯一の復旧路で、旗1本だと此処が塞がる。
+    ///
+    /// ★蒔いた事は**何処にも記録しない**。冪等なので記録が要らない(次の起動でも
+    /// 金庫が空なら同じ値をもう一度書くだけ)。記録が無い = 台帳と金庫がずれる余地が無い。
     private func plantSeedIfNeeded() -> Credentials? {
         guard let seed = provisioning.seed else { return nil }
-        let digest = SeedDigest.of(seed)
-        guard seedLedger.plantedSeedDigest != digest else { return nil }
+        guard seedLedger.rejectedSeedDigest != SeedDigest.of(seed) else { return nil }
         do {
             try store.save(seed)
         } catch {
             // 書けなくても此の起動は memory の資格情報で通す。`KeyEntryViewModel.submit()` が
             // Keychain の失敗を握り潰すのと同じ判断 —— 保存できない事は使えない事ではない。
-            // ★但し記録は付けない。上の doc が言っている通り、書けなかった種を「蒔いた」と
-            //   記録すると次の起動で二度と蒔かず、**欄が出る**(= 此の #64 が直しに来た形)。
-            //   `try?` で握り潰していた頃は此処を素通りして記録が付いていた(2026-08-11 に是正)。
             //
-            // ★払った代償を隠さない: Keychain が**恒久的に**書けない上に鍵が 401 で拒まれる、
-            //   の両方が同時に起きた電話は、起動の度に種を蒔き直す(記録が付かないので)。
-            //   断りは其の起動の中では画面に出るが、次の起動で掃かれて残らない。
+            // ★払った代償を隠さない: Keychain が**恒久的に**書けない電話は、起動の度に
+            //   種を蒔き直す。鍵が 401 で拒まれていれば台帳が止めるので輪にはならないが、
+            //   401 を貰う前の状態(= 断りも無い)では毎回書きに行って毎回失敗する。
             //   それでも此方を取るのは、恒久的に書けない電話では**手で打った鍵も保存できず**
-            //   (`KeyEntryViewModel.submit()` も同じ握り潰し)、旧実装が代わりに見せるのは
+            //   (`KeyEntryViewModel.submit()` も同じ握り潰し)、代わりに見せられるのは
             //   「打っても翌起動で消える欄」だから —— 直る見込みの無い欄より、毎回繋がる方が良い。
-            //   一過性の失敗(此方が普通)では、次の起動で書けて記録も付き、輪は1回で閉じる。
             return seed
         }
-        seedLedger.plantedSeedDigest = digest
         return seed
     }
 
+    /// 鍵入力画面が**繋がる事を確かめた後**にだけ呼ばれる(`KeyEntryViewModel.submit()` は
+    /// `healthz` と `/api/sessions` の2段を通してから `onSaved` を呼ぶ)。
+    /// = 此処に来た資格情報は「机が受け入れた」の観測値。
     func setCredentials(_ credentials: Credentials) {
         // 断りを消す条件は**接続の成功ただ一つ**。画面を見た事では消さない
         // (`SignOutNoticeStoring.save` の doc)。
         notices.save(nil)
         signOutNotice = nil
+        // ★拒否の記録も同じ観測で降ろす。同じ値が今**通った**なら、拒否は過去の事実で
+        //   あって今の状態ではない —— 残すと、机側で鍵を戻した日に種の道だけが
+        //   塞がったままになる(打てば動くので、塞がっている事に気付く機会も無い)。
+        if SeedDigest.of(credentials) == seedLedger.rejectedSeedDigest {
+            seedLedger.rejectedSeedDigest = nil
+        }
         self.credentials = credentials
     }
 
@@ -160,10 +187,23 @@ final class AppState: ObservableObject {
     /// ★断りを書くのが Keychain を消すより**先**である事に意味が在る。逆にすると、
     /// 間で殺された電話は「鍵が無い + 断りも無い」= 直す前と同じ白紙に戻る。
     /// この順なら最悪でも「鍵が在る + 断りが残る」に落ち、それは上の
-    /// `loadStoredCredentials()` が掃く。
-    func clearCredentials() {
-        let notice = SignOutNotice(reason: .keyRejected, baseURL: credentials?.baseURL)
+    /// `loadStoredCredentials()` が掃く。拒否の記録も同じ理由で金庫より先に書く。
+    ///
+    /// ★**何が拒まれたかを引数で受ける**(2026-08-15)。`self.credentials` を見て
+    /// 書くと、既に別の鍵へ入れ替えた後に届いた**古い要求の 401** が、今使っている
+    /// 鍵を拒否として記録する。要求は非同期に返るので、此れは有り得る順序であって
+    /// 想像上の話ではない。今の鍵と一致しない 401 は**捨てる**のが正しい。
+    ///
+    /// ★記録するのは拒まれた鍵が**束の種と同じ**時だけ。手で打った鍵の拒否を
+    /// 覚えても止める先が無く(蒔く経路は種しか通らない)、無関係な指紋が
+    /// `UserDefaults` に残るだけになる。
+    func clearCredentials(rejected: Credentials) {
+        guard credentials == rejected else { return }
+        let notice = SignOutNotice(reason: .keyRejected, baseURL: rejected.baseURL)
         notices.save(notice)
+        if provisioning.seed == rejected {
+            seedLedger.rejectedSeedDigest = SeedDigest.of(rejected)
+        }
         signOutNotice = notice
         try? store.clear()
         credentials = nil

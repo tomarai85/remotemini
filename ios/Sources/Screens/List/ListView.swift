@@ -63,9 +63,13 @@ struct ListView: View {
         // 鮮度 / 走査行 / 版の3行を載せていて、其処に4行目を足すと**版の名乗りが押し出される** ——
         // 版は「古いビルドで動いていないか」を最も疑う場面で見える必要が在り、
         // 監査 X2-7 が同じ向きの欠け方を1度直している。口座は其の面を踏まない。
+        //
+        // ★2026-08-14(§9-4): 此のマスは**名乗りと入口だけ**になった。切替の操作一式
+        //   (候補4本 + 各行の断り理由 + 退避路)は設定画面へ移した ——
+        //   工具帯の1マスに入る量ではなく、押し込めば此処もまた「1画面に全部」になる。
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                AccountBar(viewModel: accountViewModel)
+                AccountBar(viewModel: accountViewModel, baseURL: baseURL)
             }
         }
         .refreshable { await viewModel.refresh() } // pull-to-refresh (brief §3-d trigger #2)

@@ -16,6 +16,7 @@
 #   ./tools/build.sh                 -- build + sign + install on the phone
 #   ./tools/build.sh --no-install    -- build + sign only (verifies the signature)
 #   ./tools/build.sh --sim           -- simulator build + test, no signing at all
+#   ./tools/build.sh --sim-app       -- 検査を回さず、**種を刻んだ**app を simulator へ入れて開く
 #   ./tools/build.sh --print-device  -- どの電話へ入れるつもりかだけを出す(焼かない)
 #   ./tools/build.sh --print-build-num -- 今焼くなら何番になるかだけを出す(焼かない)
 set -euo pipefail
@@ -33,11 +34,12 @@ MODE="install"
 case "${1:-}" in
   --no-install) MODE="sign" ;;
   --sim) MODE="sim" ;;
+  --sim-app) MODE="simapp" ;;
   --print-rev) MODE="rev" ;;
   --print-device) MODE="device" ;;
   --print-build-num) MODE="num" ;;
   "") ;;
-  *) echo "usage: $0 [--no-install|--sim|--print-rev|--print-device|--print-build-num]" >&2; exit 2 ;;
+  *) echo "usage: $0 [--no-install|--sim|--sim-app|--print-rev|--print-device|--print-build-num]" >&2; exit 2 ;;
 esac
 
 step() { echo "==> $*"; }
@@ -404,6 +406,100 @@ print(hashlib.sha256(material).hexdigest()[:16])
   echo "    種: 刻んだ(指紋 $SEED_FP)。URL も鍵も此処には出さない"
 fi
 
+# ── 1c. simulator へ「開いたら一覧」の app を入れる(2026-08-15 / Tom の「論外」)──
+#
+# ★何を直しに来たか。1b(種を刻む)は `--sim` の分岐より**後ろ**に在る。置き場所で
+#   「検査は本物の鍵を一度も見ない」を保証する為で、其れ自体は今も正しい。ただし
+#   其の置き方の帰結として、**simulator に入る束だけが永久に種を貰えなかった**。
+#   Tom が製品を見るのは simulator なので、彼の席からはアプリの玄関がずっと
+#   「Base URL と API Key を打て」の欄だった —— 2026-08-15 01:43 の画面。実測:
+#   入っていた束の Info.plist に `RCBaseURL` が無い。
+#
+#   これは 2026-08-11 に自分で書いた教訓の再発でもある(禁止を1本置いたら、其れが
+#   塞いだ供給経路を同じ変更の中で引き直す)。あの日引いたのは実機の道だけで、
+#   私自身が毎日焼いている道は引かないまま「直した」と言っていた。
+#
+# ★検査が鍵を見ない保証は落とさない。落とさない為に**検査を回さない**別の道にした:
+#   `--sim` は `test` を回して此処へ来ない。`--sim-app` は此処に居るので種を持つが、
+#   `build` しかせず検査束を一度も走らせない。次に `--sim` を回すと先頭の
+#   `xcodegen generate` が Info.plist を作り直すので、刻印は検査の前に消える。
+#   規則ではなく順序で分けてある = 1b と同じ守り方。
+if [ "$MODE" = "simapp" ]; then
+  step "2. simulator 用に焼く(検査は回さない)"
+  mkdir -p "$DERIVED"
+  SIMAPP_LOG="$DERIVED/xcodebuild-simapp.log"
+  rc=0
+  xcodebuild -project "$SCHEME.xcodeproj" -scheme "$SCHEME" -configuration Debug \
+    -sdk iphonesimulator -destination "platform=iOS Simulator,name=$SIM_NAME" \
+    -derivedDataPath "$DERIVED" build >"$SIMAPP_LOG" 2>&1 || rc=$?
+  [ "$rc" -eq 0 ] || { echo "simulator 用の焼きが失敗(rc=$rc)。全文: $SIMAPP_LOG" >&2; exit "$rc"; }
+
+  SIM_APP="$DERIVED/Build/Products/Debug-iphonesimulator/$APPNAME"
+  [ -d "$SIM_APP" ] || { echo "焼けた筈の app が無い: $SIM_APP" >&2; exit 1; }
+
+  step "3. 焼き上がった束の種を読み戻す"
+  # ★此処を省くと、刻印が黙って効かなかった時に**電話を開くまで**判らない。
+  #   今回 Tom が踏んだのが正に其の形なので、同じ道は機械で塞ぐ。
+  if [ "${RC_NO_SEED:-0}" = "1" ]; then
+    /usr/bin/python3 "$HERE/tools/seed-verify.py" absent "$SIM_APP/Info.plist" || exit 1
+    echo "    種: 無し(RC_NO_SEED=1)。此の app は鍵入力画面から始まる"
+  else
+    printf '%s' "$SEED_KEY" | /usr/bin/python3 "$HERE/tools/seed-verify.py" present "$SIM_APP/Info.plist" "$SEED_URL" || exit 1
+    echo "    種: 焼き上がった app に入っている(指紋 $SEED_FP)"
+  fi
+
+  step "4. simulator へ入れて開く"
+  # 名前 → UDID。`simctl list --json` に訊く(名前で `install` は通らない)。
+  SIM_UDID="$(xcrun simctl list devices --json | /usr/bin/python3 -c '
+import json, sys
+name = sys.argv[1]
+data = json.load(sys.stdin).get("devices") or {}
+best = None
+for runtime, devices in data.items():
+    for d in devices:
+        if d.get("name") != name or not d.get("isAvailable", True):
+            continue
+        # 起きている物を優先する。同じ名前の器が版違いで並ぶ事が在り、
+        # 寝ている方へ入れると「入れたのに画面が変わらない」になる。
+        if d.get("state") == "Booted":
+            best = d
+            break
+        best = best or d
+    if best and best.get("state") == "Booted":
+        break
+print((best or {}).get("udid", ""))
+print((best or {}).get("state", ""))
+' "$SIM_NAME")" || { echo "simulator の一覧が読めない" >&2; exit 1; }
+
+  SIM_STATE="$(printf '%s' "$SIM_UDID" | sed -n '2p')"
+  SIM_UDID="$(printf '%s' "$SIM_UDID" | sed -n '1p')"
+  [ -n "$SIM_UDID" ] || { echo "simulator '$SIM_NAME' が無い(SIM_NAME= で名前を渡す)" >&2; exit 1; }
+
+  if [ "$SIM_STATE" != "Booted" ]; then
+    # ★`open -a Simulator` は使わない —— 画面の主導権を奪わない(机の約束)。
+    #   `simctl boot` は窓を前へ出さずに器だけ起こす。
+    echo "    起こす($SIM_NAME は $SIM_STATE だった)"
+    xcrun simctl boot "$SIM_UDID" || { echo "simulator を起こせない" >&2; exit 1; }
+    xcrun simctl bootstatus "$SIM_UDID" -b >/dev/null 2>&1 || true
+  fi
+
+  xcrun simctl install "$SIM_UDID" "$SIM_APP" || { echo "simulator へ入れられない" >&2; exit 1; }
+
+  # 入れた**後**の束を見る。derivedData の物と simulator の中の物は別の写しで、
+  # 入れ損ねると古い束が残ったまま「入れた」と言える(2026-08-15 に実際に
+  # 古い束を読んで診断した)。
+  INSTALLED="$(xcrun simctl get_app_container "$SIM_UDID" "$BUNDLE" app 2>/dev/null || true)"
+  if [ -n "$INSTALLED" ] && [ "${RC_NO_SEED:-0}" != "1" ]; then
+    printf '%s' "$SEED_KEY" | /usr/bin/python3 "$HERE/tools/seed-verify.py" present "$INSTALLED/Info.plist" "$SEED_URL" || {
+      echo "simulator の中に入った束に種が無い = 入れ替わっていない" >&2; exit 1; }
+    echo "    simulator の中の束にも種が在る"
+  fi
+
+  xcrun simctl launch "$SIM_UDID" "$BUNDLE" >/dev/null || { echo "app を開けない" >&2; exit 1; }
+  echo "==> $SIM_NAME で開いた(番号 $RC_BUILD_NUM / 版 $RC_BUILD_REV)"
+  exit 0
+fi
+
 step "2. locate the wildcard provisioning profile"
 # Scan every installed profile and take the one whose application-identifier ends
 # in ".*". Picking it by filename would break the day Xcode re-downloads it under
@@ -513,29 +609,10 @@ _app_scheme="$(/usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes:0:CFBundleURL
 echo "    通知の行き先: remotemini:// (焼き上がった app に在る)"
 
 if [ "${RC_NO_SEED:-0}" = "1" ]; then
-  # 種無しで焼いたなら、焼き上がった物に種が**無い**事まで見る。残っていたら
-  # 前回の焼きの鍵を持ったまま出荷する事になる(build/ は消さずに再利用する)。
-  /usr/bin/python3 -c '
-import plistlib, sys
-with open(sys.argv[1], "rb") as f: doc = plistlib.load(f)
-if doc.get("RCBaseURL") or doc.get("RCAPIKey"):
-    sys.stderr.write("RC_NO_SEED で焼いたのに app に種が残っている\n"); sys.exit(1)
-' "$APP_PLIST" || exit 1
+  /usr/bin/python3 "$HERE/tools/seed-verify.py" absent "$APP_PLIST" || exit 1
   echo "    種: 無し(RC_NO_SEED=1。焼き上がりにも残っていない)"
 else
-  printf '%s' "$SEED_KEY" | /usr/bin/python3 -c '
-import plistlib, sys
-path, url = sys.argv[1], sys.argv[2]
-key = sys.stdin.read().strip()
-try:
-    with open(path, "rb") as f: doc = plistlib.load(f)
-except Exception:
-    sys.stderr.write("焼き上がった app の Info.plist が読めない\n"); sys.exit(1)
-if doc.get("RCBaseURL") != url:
-    sys.stderr.write("焼き上がった app の URL が刻んだ物と違う\n"); sys.exit(1)
-if doc.get("RCAPIKey") != key:
-    sys.stderr.write("焼き上がった app の鍵が刻んだ物と違う\n"); sys.exit(1)
-' "$APP_PLIST" "$SEED_URL" || exit 1
+  printf '%s' "$SEED_KEY" | /usr/bin/python3 "$HERE/tools/seed-verify.py" present "$APP_PLIST" "$SEED_URL" || exit 1
   echo "    種: 焼き上がった app にも同じ物が入っている(指紋 $SEED_FP)"
 fi
 

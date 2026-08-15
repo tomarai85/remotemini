@@ -1,13 +1,24 @@
 #!/bin/bash
-# controls-for: ios/Sources/AppState.swift ios/Sources/Core/KeyEntryClients.swift ios/Sources/Core/KeyEntryProbeFixture.swift ios/Sources/Core/Provisioning.swift ios/Sources/Core/ProvisioningFixture.swift ios/Sources/Core/SignOutNotice.swift ios/Sources/Core/SignOutNoticeFixture.swift ios/Sources/RootView.swift ios/Sources/Screens/KeyEntry/KeyEntryView.swift ios/Sources/Screens/KeyEntry/KeyEntryViewModel.swift ios/Tests/AppStateTests.swift ios/Tests/Core/ProvisioningTests.swift ios/Tests/Core/SignOutNoticeStoreTests.swift ios/Tests/Screens/KeyEntryViewTests.swift ios/Tests/Screens/KeyEntryViewModelTests.swift ios/UITests/FirstRunUITests.swift ios/UITests/KeyEntryUITests.swift
+# controls-for: ios/Sources/AppState.swift ios/Sources/Core/KeyEntryClients.swift ios/Sources/Core/KeyEntryProbeFixture.swift ios/Sources/Core/KeychainCredentialStore.swift ios/Sources/Core/Provisioning.swift ios/Sources/Core/ProvisioningFixture.swift ios/Sources/Core/SignOutNotice.swift ios/Sources/Core/SignOutNoticeFixture.swift ios/Sources/RootView.swift ios/Sources/Screens/KeyEntry/KeyEntryView.swift ios/Sources/Screens/KeyEntry/KeyEntryViewModel.swift ios/Tests/AppStateTests.swift ios/Tests/Core/KeychainCredentialStoreTests.swift ios/Tests/Core/ProvisioningTests.swift ios/Tests/Core/SignOutNoticeStoreTests.swift ios/Tests/Screens/KeyEntryViewTests.swift ios/Tests/Screens/KeyEntryViewModelTests.swift ios/UITests/FirstRunUITests.swift ios/UITests/KeyEntryUITests.swift
 #
 # 鍵入力画面の負の対照。守っている物は3つ在り、**同じ file 群**の上に載っている:
 #   (a) 401 で戻された時の断り(DESIGN §2.65 / 監査 X2-6) …… M1-M9
 #   (b) 接続を押した後の「確かめています」(DESIGN §2.68 / 監査 X2-8) …… M10-M12
-#   (c) 焼き込んだ種で初回起動が一覧に着く事(2026-08-11 の欠陥) …… M13-M20
+#   (c) 焼き込んだ種で初回起動が一覧に着く事(2026-08-11 の欠陥) …… M13-M24
 #       M13-M17 = 蒔く側(AppState / RootView)。M18-M19 = **刻印の形を落とす門**
 #       (`Provisioning.clean` と scheme+host)。後者は `vacuous-gate` が
 #       「否定だけで錨なし」と挙げた6本の錨が本当に効くかを測る為に足した。
+#       M20-M24 = 台帳の反転(2026-08-15 / DESIGN §2.94)。台帳が覚えるのが
+#       「蒔いた種」から**「机が拒んだ種」**へ変わり、守る枝が増えた ——
+#       保存に失敗した種を拒否として記録しない(M20)・拒まれた鍵を起動時に
+#       金庫から掃く(M21)・鍵を入れ替えた後に届いた古い 401 で今の鍵を
+#       落とさない(M22)・同じ値が通ったら拒否を降ろす(M23)・
+#       束の種でない鍵の 401 を台帳へ書かない(M24)。
+#   (d) 単体検査が**電話の本物の Keychain 項目**に触らない事 …… M25-M26
+#       此れが 2026-08-15 の引き金そのもの。`KeychainCredentialStoreTests` が
+#       `setUp`/`tearDown` で `clear()` を呼び、座標が製品と同じだったので
+#       検査を1回回すと資格情報が消えた。往復の検査はどんな座標でも緑になるので、
+#       座標の話は座標を見る検査でしか捕まらない(M26 が其れを実演する)。
 #
 # ★1本に束ねてあるのは、`staged-controls-gate.sh` が path で対照を選ぶから。別 file に
 #   割ると `KeyEntryViewModel.swift` を1行触るだけで xcodebuild が**2組**走る ——
@@ -123,7 +134,11 @@ KM="$IOS/Sources/Screens/KeyEntry/KeyEntryViewModel.swift"
 SN="$IOS/Sources/Core/SignOutNotice.swift"
 RV="$IOS/Sources/RootView.swift"
 PR="$IOS/Sources/Core/Provisioning.swift"
-TARGETS=("$AS" "$KV" "$KM" "$SN" "$RV" "$PR")
+KC="$IOS/Sources/Core/KeychainCredentialStore.swift"
+KCT="$IOS/Tests/Core/KeychainCredentialStoreTests.swift"
+# ★KCT だけ `Tests/` 側。変異が製品の中にしか植えられないと思い込むと、
+#   「検査が製品の項目を消す」型の欠陥は**測る手が無い**(2026-08-15 に実際に起きた)。
+TARGETS=("$AS" "$KV" "$KM" "$SN" "$RV" "$PR" "$KC" "$KCT")
 
 # 全部回して緑だった事の**印**(#66、2026-08-12)。commit で変異を繰り延べる様にした
 # 以上、「出荷の前に全部回す」を人の記憶に懸けると、記憶に懸けた守りは1日で戻る
@@ -200,7 +215,7 @@ defer_summary() { # $1=回した変異の本数 $2=繰り延べた本数
         echo "  繰り延べた変異:${DEFERRED:- なし}"
         echo "  ★繰り延べた分は**緑ではない**(回していない)。基準(検査一式 + 錨の実在)は上で回した。"
         echo "  出荷の前に全部回す事:"
-        echo "    bash ios/tools/signout-notice-control.sh      # 単体、20本"
+        echo "    bash ios/tools/signout-notice-control.sh      # 単体(本数は --which で出る)"
         echo "    bash rc-backend/tools/run-controls.sh --all   # 全掃き"
     else
         printf -- '--- 変異: 回す %s 本 / 繰り延べ %s 本(繰り延べなし = 全部回す) ---\n' "$1" "$2"
@@ -227,10 +242,21 @@ WANT_LOCKED_UNIT=testTheFieldsStayLockedAcrossBothStages
 WANT_SEEDED=testAnEmptyKeychainIsSeededFromTheStampSoTheFirstScreenIsNotTheForm
 WANT_ONCE=testARejectedSeedIsNotPlantedAgainOnTheNextLaunch
 WANT_UNREADABLE=testAnUnreadableKeychainIsNotTreatedAsEmpty
-WANT_SEED_ORDER=testTheLedgerIsWrittenAfterTheKeychain
-WANT_SEED_FAIL=testASeedThatCouldNotBeSavedIsNotRecordedAsPlanted
+WANT_SEED_ORDER=testTheRejectionIsRecordedBeforeTheKeychainIsCleared
+WANT_SEED_FAIL=testASeedThatCouldNotBeSavedIsPlantedAgainOnTheNextLaunch
 WANT_FIRSTRUN=testAProvisionedPhoneReachesTheListWithoutBeingAskedToTypeAnything
+# ★2026-08-15 の反転(台帳が覚える物を「蒔いた種」→「拒まれた種」)で生えた枝4本。
+#   枝を足して変異を足さないと、`orphan-instrument-scan` の言う「対照の無い分岐」が
+#   増える —— 単体は緑でも、其の枝を消した実装が此の計器に映らなくなる。
+WANT_SEED_SWEEP=testARejectedKeyLeftInTheKeychainIsSweptOnLaunch
+WANT_STALE_401=testA401ForAKeyThatIsNoLongerInUseIsIgnored
+WANT_SEED_UNBLOCK=testAKeyThatWorksAgainClearsTheRejection
+WANT_SEED_ONLY=testARejectedHandTypedKeyIsNotRecordedInTheLedger
 # 刻印の**形**を落とす側(M18/M19)。整った刻印は種になる、を同じ検査の中で錨にしてある。
+WANT_ISOLATED=testTheseTestsAddressADifferentKeychainItemThanTheProduct
+WANT_PINNED=testTheProductionItemKeepsTheCoordinatesAlreadyInstalledOnThePhone
+WANT_ROUNDTRIP=testSaveThenLoadRoundTrips
+
 WANT_TEMPLATE=testAnUnresolvedTemplateIsNotASeed
 WANT_PLAINTEXT=testAPlaintextURLIsNotASeed
 
@@ -243,6 +269,8 @@ WANTS="$WANT_LEFT $WANT_ORDER $WANT_SWEEP $WANT_CARRIED $WANT_SENTENCE
        $WANT_TWO $WANT_DISK $WANT_NOKEY $WANT_SCREEN
        $WANT_STAGES $WANT_TIMEOUT $WANT_INFLIGHT $WANT_LOCKED $WANT_LOCKED_UNIT
        $WANT_SEEDED $WANT_ONCE $WANT_UNREADABLE $WANT_SEED_ORDER $WANT_SEED_FAIL $WANT_FIRSTRUN
+       $WANT_SEED_SWEEP $WANT_STALE_401 $WANT_SEED_UNBLOCK $WANT_SEED_ONLY
+       $WANT_ISOLATED $WANT_PINNED $WANT_ROUNDTRIP
        $WANT_TEMPLATE $WANT_PLAINTEXT"
 WANT_N="$(printf '%s' "$WANTS" | wc -w | tr -d ' ')"
 
@@ -369,28 +397,53 @@ settle_sim() {
     xcrun simctl terminate "$SIM_UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
 }
 
-# 単体5 class。UI 検査は含めない(速い方)。
+# 単体の class 群。UI 検査は含めない(速い方)。**本数を書かない** —— 下の
+# `CLASS_ALT` は此の一覧から導出しており、数は `--which` と基準の印字が言う。
 # ★ProvisioningTests を 2026-08-11 に足した。足す前は17本の変異が**一度も**此の class を
 #   走らせておらず、刻印の形を落とす門(`clean` / scheme+host)を壊す変異は
 #   どの probe にも映らなかった。「対照が在る」と「その対照を走らせている」は別。
+# ★KeychainCredentialStoreTests を 2026-08-15 に足した。**足せる様になったのが先**で、
+#   其れまで此の class は `setUp`/`tearDown` の `clear()` が製品の項目を消していたので、
+#   変異の度に走らせる = simulator の資格情報を毎回消す事だった。座標を分けた今は
+#   別の項目しか触らない。
 UNIT_ONLY="-only-testing:RemoteMiniTests/AppStateTests \
 -only-testing:RemoteMiniTests/SignOutNoticeStoreTests \
 -only-testing:RemoteMiniTests/KeyEntryViewTests \
 -only-testing:RemoteMiniTests/KeyEntryViewModelTests \
--only-testing:RemoteMiniTests/ProvisioningTests"
+-only-testing:RemoteMiniTests/ProvisioningTests \
+-only-testing:RemoteMiniTests/KeychainCredentialStoreTests"
 
 # UI の class も**変数で一度だけ**名乗る。runner が字面で書くと、下の extract() が
 # 持つ一覧と2つ目の写しになる。
 UI_KEYENTRY="RemoteMiniUITests/KeyEntryUITests"
 UI_FIRSTRUN="RemoteMiniUITests/FirstRunUITests"
 
+# 1回の走行に掛ける上限(秒)と、上限で殺された時の終了コード(= 128 + SIGALRM(14))。
+#
+# ★上限が要る理由(2026-08-15、実測、DESIGN §2.96)。変異は「其の振る舞いを消す」物なので、
+#   検査の側が**其の振る舞いの発生を期限なしに待って**いると、変異を植てた木で
+#   誰も起こさない事象を永久に待つ。`account-ui-control.sh` の A3 で実際に起き、
+#   `xcodebuild` が 16分26秒 生きたまま log に赤も出さなかった。
+#   此の台本も pre-commit の門の中で回るので、吊れば commit が永久に返らない。
+#   上限を置くと其れが `UNMEASURED`(= commit を止める)に変わる。緑には決してならない。
+#   値: 変異1本あたりの実測は約29秒。冷えた最初のビルドが数分掛かるので 20 分。
+CONTROL_RUN_LIMIT_S="${CONTROL_RUN_LIMIT_S:-1200}"
+LIMIT_RC=142
+
 xcb() { # $1 = log, 残り = -only-testing 群
     local log="$1" rc=0
     shift
+    # macOS に GNU timeout は無いので `perl -e alarm` + `exec`。診断は log にだけ書く
+    # (stdout は rc 専用 —— 下の ★ を参照)。
     ( cd "$IOS" && xcodegen generate >/dev/null 2>&1 && \
-      xcodebuild -project RemoteMini.xcodeproj -scheme RemoteMini -configuration Debug \
+      /usr/bin/perl -e 'alarm shift; exec @ARGV or exit 127' "$CONTROL_RUN_LIMIT_S" \
+        xcodebuild -project RemoteMini.xcodeproj -scheme RemoteMini -configuration Debug \
         -sdk iphonesimulator -destination "platform=iOS Simulator,name=$SIM_NAME" \
         -derivedDataPath "$IOS/build" "$@" test ) >"$log" 2>&1 || rc=$?
+    if [ "$rc" = "$LIMIT_RC" ]; then
+        printf '\n[control] 上限 %s 秒で打ち切った(= 走行が返らなかった。期限の無い待ちを疑う)\n' \
+            "$CONTROL_RUN_LIMIT_S" >>"$log"
+    fi
     printf '%s' "$rc"
 }
 
@@ -435,7 +488,7 @@ run_firstrun() { # $1 = log path -> rc を印字
     printf '%s' "$rc"
 }
 
-# 基準だけは**両方**の UI class を走らせる。錨(WANT_*)は21本在り、其のうち
+# 基準だけは**両方**の UI class を走らせる。錨(WANT_*)は `$WANT_N` 本在り、其のうち
 # WANT_FIRSTRUN は FirstRunUITests にしか居ない —— 基準で緑を見ていない名前を
 # 変異の側で「赤くなった」と読むと、元から赤かった物を成果に数える事になる。
 run_base() { # $1 = log path -> rc を印字
@@ -490,6 +543,11 @@ if [ "$DRY" -eq 0 ]; then
     rc=$(run_base "$BASE_LOG")
     if [ "$(ran_count "$BASE_LOG")" -eq 0 ]; then
         un "基準で検査が一度も走っていない(2度試して 0 本)= 機械の側が動いていない。実装については何も測っていない。全文: $BASE_LOG"
+        echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
+        exit 2
+    fi
+    if [ "$rc" = "$LIMIT_RC" ]; then
+        un "基準が上限 ${CONTROL_RUN_LIMIT_S} 秒で打ち切られた(= 走行が返らなかった)。全文: $BASE_LOG"
         echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
         exit 2
     fi
@@ -590,7 +648,7 @@ mutate_m13() {
 # 幸せな道(空の Keychain が埋まる)は緑のまま。401 で捨てた鍵を次の起動で蒔き直し、
 # 電話が「拒まれる鍵 -> 断り -> 同じ鍵」で回り続ける形だけが壊れる。
 mutate_m14() {
-    /usr/bin/sed -i '' '/^        guard seedLedger.plantedSeedDigest != digest else { return nil }$/d' "$AS"
+    /usr/bin/sed -i '' '/^        guard seedLedger.rejectedSeedDigest != SeedDigest.of(seed) else { return nil }$/d' "$AS"
 }
 # ---- 変異 M15: 「読めなかった」を「空」に潰す ---------------------------------
 # `try? store.load()` へ戻すのと同じ意味。Keychain が一時的に読めない起動で、
@@ -598,19 +656,47 @@ mutate_m14() {
 mutate_m15() {
     /usr/bin/sed -i '' 's|^        if stored == nil \&\& storeIsReadable {$|        if stored == nil {|' "$AS"
 }
-# ---- 変異 M16: 記録を Keychain へ書く**前**に付ける ---------------------------
-# 蒔けた時の結果は同じなので、順序を見る検査にしか映らない。間で殺されると
-# 「書けなかった種を蒔いたと記録して二度と蒔かない」= 電話が永久に空のまま。
+# ---- 変異 M16: 拒否の記録を Keychain を消した**後**に回す ---------------------
+# 落ち着いた時の結果は同じなので、順序を見る検査にしか映らない。間で殺されると
+# 「金庫は空 + 拒否の記録は無い」に落ち、次の起動が**拒まれたばかりの種を蒔き直す**
+# = M14 が塞いだ輪が、殺され方1つで復活する。
+#
+# ★2026-08-15 に向きが変わった。#56 までの M16 は「蒔いた記録を保存より先に付ける」で、
+#   台帳が「蒔いた種」を覚えていた頃の形。反転で其の手その物が消えた(⑭が
+#   「台帳を一文字も触らない」を固定している)ので、順序の欠陥は拒否側にだけ在る。
 mutate_m16() {
-    /usr/bin/sed -i '' 's|^            try store.save(seed)$|            seedLedger.plantedSeedDigest = digest; try store.save(seed)|' "$AS"
-    /usr/bin/sed -i '' '/^        seedLedger.plantedSeedDigest = digest$/d' "$AS"
+    /usr/bin/sed -i '' 's|^        notices.save(notice)$|        notices.save(notice); try? store.clear()|' "$AS"
+    /usr/bin/sed -i '' '/^        try? store.clear()$/d' "$AS"
 }
-# ---- 変異 M20: 保存の失敗を握り潰して記録だけ付ける ---------------------------
-# catch の `return seed` を消すと、書けなかった種が下の記録行まで落ちる = 2026-08-11
-# の commit 直後まで実際に出荷していた `try?` の姿。順序(M16)は正しいまま壊れるので、
-# 見えるのは⑮だけ —— 一度きりの保存失敗で、次の起動が**鍵の入力欄**に戻る。
+# ---- 変異 M20: 保存の失敗を拒否として記録する ---------------------------------
+# 401 は起きていないのに、書けなかった種の指紋を台帳へ書く。幸せな道(空の Keychain が
+# 埋まる)は緑のまま —— catch を通らないから。壊れるのは⑮だけで、一度きりの保存失敗が
+# 次の起動から種の道を**恒久的に**塞ぐ = 電話が鍵の入力欄に戻って二度と出られない。
 mutate_m20() {
-    /usr/bin/sed -i '' '/^            return seed$/d' "$AS"
+    /usr/bin/sed -i '' 's|^            return seed$|            seedLedger.rejectedSeedDigest = SeedDigest.of(seed); return seed|' "$AS"
+}
+# ---- 変異 M21: 拒まれた鍵の掃除を外す -----------------------------------------
+# `clearCredentials(rejected:)` の途中(台帳へ書いた後、金庫を消す前)で殺された電話が
+# 起動する度に 401 を貰う。拒否を覚えているのに拒まれた鍵で繋ぎに行く形。
+mutate_m21() {
+    /usr/bin/sed -i '' 's|^        if let value = stored, SeedDigest.of(value) == seedLedger.rejectedSeedDigest {$|        if stored == nil, stored != nil {|' "$AS"
+}
+# ---- 変異 M22: 古い要求の 401 で今の鍵を落とす --------------------------------
+# 引数を見ずに `self.credentials` を落とす版と同じ意味。鍵を打ち直した直後に前の鍵の
+# 401 が届くと、使えている鍵が捨てられ、束の種まで「拒まれた」と記録される。
+mutate_m22() {
+    /usr/bin/sed -i '' '/^        guard credentials == rejected else { return }$/d' "$AS"
+}
+# ---- 変異 M23: 通った鍵の拒否を降ろさない -------------------------------------
+# 机側で鍵を戻しても、種の道だけが塞がったまま残る。**打てば動く**ので、
+# 塞がっている事に気付く機会が無いのが此の欠陥の質。
+mutate_m23() {
+    /usr/bin/sed -i '' 's|^        if SeedDigest.of(credentials) == seedLedger.rejectedSeedDigest {$|        if false {|' "$AS"
+}
+# ---- 変異 M24: 種かどうか見ずに拒否を記録する ---------------------------------
+# 手で打った鍵の拒否まで台帳に載る。止める先が無い指紋が `UserDefaults` に残るだけ。
+mutate_m24() {
+    /usr/bin/sed -i '' 's|^        if provisioning.seed == rejected {$|        if true {|' "$AS"
 }
 # ---- 変異 M17: 鍵を持っていても鍵入力画面を出す -------------------------------
 # `isLoadingCredentials` は此処では必ず false なので、資格情報が在っても else に落ちる。
@@ -632,6 +718,24 @@ mutate_m18() {
 # `http://` も `desk.invalid`(scheme 無し)も通る。此方も整った刻印は種のまま。
 mutate_m19() {
     /usr/bin/sed -i '' 's|^        guard let parsed = URL(string: url), parsed.scheme == "https", parsed.host != nil else { return nil }$|        guard let parsed = URL(string: url) else { return nil }|' "$PR"
+}
+
+# ---- 変異 M25: 検査の座標を製品と同じに戻す -----------------------------------
+# 2026-08-15 の欠陥そのもの。此の class は `setUp`/`tearDown` で `clear()` を呼ぶので、
+# 座標を共有した瞬間から「検査を走らせる事」が電話の資格情報を消す操作になる。
+# ★此の変異が植わっている間だけ simulator の製品側の項目が消える。反転後の app は
+#   次の起動で束の刻印から蒔き直すので自分で戻る —— 戻らない形だったのが #64 の姿。
+mutate_m25() {
+    /usr/bin/sed -i '' 's|^    private static let testService = "com.tomarai.remotemini.tests.credentials"$|    private static let testService = "com.tomarai.remotemini.credentials"|' "$KCT"
+    /usr/bin/sed -i '' 's|^    private static let testAccount = "rc-backend-unit-tests"$|    private static let testAccount = "rc-backend"|' "$KCT"
+}
+# ---- 変異 M26: 製品側の座標を改名する -----------------------------------------
+# 既に入っている電話の項目は旧座標に残り、新しい binary からは見えない = 人が鍵を
+# 打ち直すまで戻らない(`provisioning.rejected-seed.v1` を新設した理由と同じ形)。
+# ★往復の検査は**どんな座標でも緑**。だから「保存して読めた」を幾ら積んでも
+#   此の欠陥は通る —— 其れを $WANT_ROUNDTRIP が緑のままである事で実演する。
+mutate_m26() {
+    /usr/bin/sed -i '' 's|^    static let productionService = "com.tomarai.remotemini.credentials"$|    static let productionService = "com.tomarai.remotemini.credentials.v2"|' "$KC"
 }
 
 probe() { # $1=名前 $2=変異関数 $3=対象file $4=赤くなるべき検査 $5=(任意)緑のままであるべき検査 $6=(任意)走らせ方
@@ -672,6 +776,14 @@ probe() { # $1=名前 $2=変異関数 $3=対象file $4=赤くなるべき検査 
         restore_all
         return
     fi
+    # ★上限で打ち切られた走行は、赤の名前が合っていても `OK` にしない。打ち切りより
+    #   前に的が赤くなっていれば `has` は真になるが、其の走行は**途中で止まっている**ので
+    #   「変異を植えたら此の検査だけが赤くなる」を測れていない。
+    if [ "$rc" = "$LIMIT_RC" ]; then
+        un "$name: 上限 ${CONTROL_RUN_LIMIT_S} 秒で打ち切った(= 走行が返らなかった。期限の無い待ちを疑う)。全文: $log"
+        restore_all
+        return
+    fi
     local reds greens
     reds="$(failed_tests "$log")"
     greens="$(passed_tests "$log")"
@@ -708,11 +820,17 @@ probe M12-fields-stay-editable mutate_m12 "$KV" "$WANT_LOCKED" "$WANT_LOCKED_UNI
 probe M13-seed-never-planted   mutate_m13 "$AS" "$WANT_SEEDED"
 probe M14-seed-planted-always  mutate_m14 "$AS" "$WANT_ONCE"      "$WANT_SEEDED"
 probe M15-unreadable-as-empty  mutate_m15 "$AS" "$WANT_UNREADABLE" "$WANT_SEEDED"
-probe M16-ledger-before-keychain mutate_m16 "$AS" "$WANT_SEED_ORDER" "$WANT_SEEDED"
+probe M16-reject-after-keychain  mutate_m16 "$AS" "$WANT_SEED_ORDER" "$WANT_ORDER"
 probe M17-key-but-still-the-form mutate_m17 "$RV" "$WANT_FIRSTRUN" "$WANT_SEEDED" run_firstrun
 probe M18-clean-rejects-nothing  mutate_m18 "$PR" "$WANT_TEMPLATE"  "$WANT_SEEDED"
 probe M19-any-scheme-accepted    mutate_m19 "$PR" "$WANT_PLAINTEXT" "$WANT_SEEDED"
-probe M20-unsaved-seed-recorded  mutate_m20 "$AS" "$WANT_SEED_FAIL" "$WANT_SEED_ORDER"
+probe M20-unsaved-seed-rejected  mutate_m20 "$AS" "$WANT_SEED_FAIL" "$WANT_SEEDED"
+probe M21-rejected-key-not-swept mutate_m21 "$AS" "$WANT_SEED_SWEEP" "$WANT_SEEDED"
+probe M22-stale-401-drops-current mutate_m22 "$AS" "$WANT_STALE_401" "$WANT_LEFT"
+probe M23-rejection-never-lifted mutate_m23 "$AS" "$WANT_SEED_UNBLOCK" "$WANT_ONCE"
+probe M24-any-rejection-recorded mutate_m24 "$AS" "$WANT_SEED_ONLY" "$WANT_ONCE"
+probe M25-tests-share-the-item   mutate_m25 "$KCT" "$WANT_ISOLATED" "$WANT_ROUNDTRIP"
+probe M26-production-item-renamed mutate_m26 "$KC" "$WANT_PINNED"  "$WANT_ROUNDTRIP"
 
 # ★`--which` は此処で帰る。1本も変異させていないので復元の確認は測る物が無く、
 #   「復元を確認」と言うと**測っていない事を測ったと言う**形になる。

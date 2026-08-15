@@ -95,18 +95,19 @@ struct RootView: View {
                     client: SessionsClient(),
                     baseURL: credentials.baseURL,
                     apiKey: credentials.apiKey,
-                    onUnauthorized: { appState.clearCredentials() }
+                    onUnauthorized: { appState.clearCredentials(rejected: credentials) }
                 ),
                 accountViewModel: AccountViewModel(
                     reader: AccountClient(),
                     advancer: AccountClient(),
+                    selector: AccountClient(),
                     baseURL: credentials.baseURL,
                     apiKey: credentials.apiKey,
-                    onUnauthorized: { appState.clearCredentials() }
+                    onUnauthorized: { appState.clearCredentials(rejected: credentials) }
                 ),
                 baseURL: credentials.baseURL,
                 apiKey: credentials.apiKey,
-                onUnauthorized: { appState.clearCredentials() }
+                onUnauthorized: { appState.clearCredentials(rejected: credentials) }
             )
         } else {
             KeyEntryView(clients: keyEntryClients, notice: appState.signOutNotice, onSaved: appState.setCredentials)
@@ -158,6 +159,7 @@ struct RootView: View {
         return AccountViewModel(
             reader: fixture,
             advancer: fixture,
+            selector: fixture,
             baseURL: fixtureBaseURL,
             apiKey: "ui-fixture-key",
             onUnauthorized: {}
