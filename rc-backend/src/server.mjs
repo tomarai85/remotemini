@@ -14,7 +14,8 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync } from "node:child_process";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow } from "./sessions.mjs";
-import { gapItem, healthzBody, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho } from "./wire.mjs";
+import { accountBody, gapItem, healthzBody, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho } from "./wire.mjs";
+import { parseFleetAccount, selectionMessage, selectionProblem } from "./account.mjs";
 import { JsonlTail, formatPollCursor, pollDecision, resumeDecision } from "./tail.mjs";
 import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
@@ -990,6 +991,29 @@ function json(res, code, obj) {
   res.end(body);
 }
 
+/// 本文が上限を超えた事だけを名乗る誤り。`JSON.parse` の失敗と**別の型**にしてあるのは、
+/// 返す番号が違うから(400 = 送った物が壊れている / 413 = 大きすぎる)。文面で見分けると、
+/// 次に文面を直した人が黙って番号を潰す。
+class BodyTooLarge extends Error {
+  constructor(limit) {
+    super(`body larger than ${limit} bytes`);
+    this.name = "BodyTooLarge";
+    this.limit = limit;
+  }
+}
+
+/// 上限を超えた時の唯一の返し方。**応答を書き切ってからソケットを閉じる**。
+///
+/// ★2026-08-15(Codex 指摘)。元は `readBody` の中で `req.destroy()` を呼んでいた。
+///   `IncomingMessage.destroy()` は受信ソケットごと壊すので、その後に書く応答は電話へ
+///   届かない —— 電話から見えるのは「接続が切れた」だけで、上限に当たった事も、
+///   本文が大きすぎた事も名乗れないまま終わる。静的な検査(A10)は道の形しか見ないので
+///   此の欠陥を掴めない。
+function tooLarge(req, res, e) {
+  res.on("finish", () => req.destroy());
+  return json(res, 413, { error: `要求の本文が大きすぎます(上限 ${e.limit} bytes)` });
+}
+
 async function readBody(req, limit = 64 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -997,8 +1021,9 @@ async function readBody(req, limit = 64 * 1024) {
     req.on("data", (c) => {
       size += c.length;
       if (size > limit) {
-        reject(new Error("body too large"));
-        req.destroy();
+        // 読むのを止めるだけ。閉じるのは応答が出てから(`tooLarge`)。
+        req.pause();
+        reject(new BodyTooLarge(limit));
         return;
       }
       chunks.push(c);
@@ -1006,6 +1031,20 @@ async function readBody(req, limit = 64 * 1024) {
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
+}
+
+/**
+ * `fleet-account` を引数なしで叩いて、**今の**口座の状態を観測する。
+ *
+ * ★切替の道はどれも、副作用を起こした後で此れを呼ぶ。台本の「切替: team」という
+ *   自己申告ではなく、symlink を読み直した結果を電話へ返す為 —— exit 0 は
+ *   「命令が通った」であって「今この口座に成っている」ではない(Codex 指摘 2026-08-14)。
+ */
+function readFleetAccount() {
+  const raw = execFileSync(FLEET_ACCOUNT, [], {
+    encoding: "utf8", timeout: FLEET_ACCOUNT_TIMEOUT_MS, killSignal: "SIGKILL",
+  });
+  return { raw, parsed: parseFleetAccount(raw) };
 }
 
 const server = createServer(async (req, res) => {
@@ -1104,12 +1143,42 @@ const server = createServer(async (req, res) => {
 
     if (path === "/api/account" && req.method === "GET") {
       try {
-        const out = execFileSync(FLEET_ACCOUNT, [], {
-          encoding: "utf8", timeout: FLEET_ACCOUNT_TIMEOUT_MS, killSignal: "SIGKILL",
-        }).trim();
-        return json(res, 200, { account: out });
+        const { raw, parsed } = readFleetAccount();
+        return json(res, 200, accountBody(parsed, { raw }));
       } catch (e) {
         return json(res, 500, { error: `fleet-account failed: ${e.message}` });
+      }
+    }
+    if (path === "/api/account/select" && req.method === "POST") {
+      // ★本文の解釈は台本の try の**外**。中に置くと、本文が JSON として読めなかっただけの
+      //   要求に `fleet-account <name> failed: ...` の 500 が返る —— 台本を一度も呼んで
+      //   いないのに edith 側が壊れたと名指しする応答で、読んだ人を机へ走らせる。
+      //   64KB 超で `readBody` が落ちる道も同じ所へ流れ込んでいた。
+      let want;
+      try {
+        want = JSON.parse((await readBody(req)) || "{}")?.name;
+      } catch (e) {
+        if (e instanceof BodyTooLarge) return tooLarge(req, res, e);
+        return json(res, 400, { error: `要求の本文が読めません: ${e.message}` });
+      }
+      try {
+        // ★白名簿(今の一覧に在る)と**名前の不変条件**の両方を通す。片方では足りない ——
+        //   `--next` という名の口座が `.order` に在れば、白名簿だけでは
+        //   「切替」ではなく「次へ送る」が走る(台本の `case "$1"`、Codex 指摘)。
+        const before = readFleetAccount();
+        const problem = selectionProblem(before.parsed, want);
+        // ★`code` は**使わない**。あれは電話が画面を移す為の凍らせた語彙で
+        //   (`test/recovery-codes.test.mjs`)、断り理由を同じ鍵で流すと遷移の判断が壊れる。
+        if (problem) return json(res, 400, { error: selectionMessage(problem), reason: problem });
+        // 副作用。出力は読み捨てる —— 「切替: team」は台本の自己申告で、観測値ではない。
+        execFileSync(FLEET_ACCOUNT, [want], {
+          encoding: "utf8", timeout: FLEET_ACCOUNT_TIMEOUT_MS, killSignal: "SIGKILL",
+        });
+        // 観測し直して返す。頼んだ名前を返すと、切替が効かなかった日に画面だけが嘘を吐く。
+        const after = readFleetAccount();
+        return json(res, 200, accountBody(after.parsed, { raw: after.raw }));
+      } catch (e) {
+        return json(res, 500, { error: `fleet-account <name> failed: ${e.message}` });
       }
     }
     if (path === "/api/account/next" && req.method === "POST") {
@@ -1117,10 +1186,11 @@ const server = createServer(async (req, res) => {
         // ★此処だけ副作用が在る(口座を進める)。時間切れは**取り消しではない** ——
         //   台本が進めた後で固まった場合、上限で殺しても口座は進んでいる。
         //   だから 500 を見て自動で撃ち直す物を作らない(今は誰も撃ち直していない)。
-        const out = execFileSync(FLEET_ACCOUNT, ["--next"], {
+        execFileSync(FLEET_ACCOUNT, ["--next"], {
           encoding: "utf8", timeout: FLEET_ACCOUNT_TIMEOUT_MS, killSignal: "SIGKILL",
-        }).trim();
-        return json(res, 200, { account: out });
+        });
+        const after = readFleetAccount();
+        return json(res, 200, accountBody(after.parsed, { raw: after.raw }));
       } catch (e) {
         return json(res, 500, { error: `fleet-account --next failed: ${e.message}` });
       }
@@ -1191,6 +1261,7 @@ const server = createServer(async (req, res) => {
         // ★ログの理由は定数で名乗る。`e.message` は構文解析器が**受け取った本文の断片**を
         //   引用する事があるので、語彙に流すと本文がログへ漏れる経路になる。
         markResult(res, { reason: "bad-body" });
+        if (e instanceof BodyTooLarge) return tooLarge(req, res, e);
         return json(res, 400, { error: `bad body: ${e.message}` });
       }
       const text = typeof body.text === "string" ? body.text.trim() : "";
@@ -1367,6 +1438,7 @@ const server = createServer(async (req, res) => {
         body = JSON.parse(await readBody(req));
       } catch (e) {
         markResult(res, { reason: "bad-body" }); // 語彙は定数で(本文の断片をログに流さない)
+        if (e instanceof BodyTooLarge) return tooLarge(req, res, e);
         return json(res, 400, { error: `bad body: ${e.message}` });
       }
       const key = typeof body.key === "string" ? body.key.trim().toLowerCase() : "";
@@ -1796,6 +1868,7 @@ const LOG_PATHS = new Set([
   "/healthz",
   "/api/sessions",
   "/api/account",
+  "/api/account/select",
   "/api/account/next",
 ]);
 

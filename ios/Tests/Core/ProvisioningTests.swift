@@ -16,6 +16,16 @@ import XCTest
 /// | `http` や scheme 無しを通す | ④ ⑤ |
 /// | 片方だけ埋まっていれば蒔く | ⑥ |
 /// | 前後の空白を落とさない | ⑦ |
+///
+/// 種の指紋と台帳(`SeedDigest` / `SeedLedgerStoring`)も此処:
+///
+/// | 誤実装 | 落とす対照 |
+/// |---|---|
+/// | 鍵を回した種を「同じ」と読む | ⑧ |
+/// | 指紋に鍵の平文を混ぜる | ⑨ |
+/// | 台帳を memory にだけ持つ(再起動で拒否を忘れて輪に戻る) | ⑩ |
+/// | 焼く側(build.sh)と指紋の計算がずれる | ⑪ |
+/// | #56 が書いた古い鍵を「拒まれた種」として読む | ⑫ |
 final class ProvisioningTests: XCTestCase {
     private static let url = "https://desk.invalid"
     private static let key = "seed-key"
@@ -82,7 +92,7 @@ final class ProvisioningTests: XCTestCase {
         XCTAssertEqual(seed.apiKey, Self.key)
     }
 
-    /// ⑧ 指紋は値が違えば違う。**同じ種を二度蒔かない**判定の全体が此処に乗る。
+    /// ⑧ 指紋は値が違えば違う。**拒まれた種を蒔き直さない**判定の全体が此処に乗る。
     func testTheDigestSeparatesDifferentSeeds() {
         let a = Credentials(baseURL: URL(string: Self.url)!, apiKey: "k1")
         let b = Credentials(baseURL: URL(string: Self.url)!, apiKey: "k2")
@@ -127,13 +137,36 @@ final class ProvisioningTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let ledger = UserDefaultsSeedLedger(defaults: defaults)
-        XCTAssertNil(ledger.plantedSeedDigest)
+        XCTAssertNil(ledger.rejectedSeedDigest)
 
-        ledger.plantedSeedDigest = "abcdef0123456789"
-        XCTAssertEqual(UserDefaultsSeedLedger(defaults: defaults).plantedSeedDigest, "abcdef0123456789",
-                       "★memory にだけ持つ実装を落とす(再起動で蒔き直す)")
+        ledger.rejectedSeedDigest = "abcdef0123456789"
+        XCTAssertEqual(UserDefaultsSeedLedger(defaults: defaults).rejectedSeedDigest, "abcdef0123456789",
+                       "★memory にだけ持つ実装を落とす(再起動で拒否を忘れて輪に戻る)")
 
-        ledger.plantedSeedDigest = nil
-        XCTAssertNil(UserDefaultsSeedLedger(defaults: defaults).plantedSeedDigest)
+        ledger.rejectedSeedDigest = nil
+        XCTAssertNil(UserDefaultsSeedLedger(defaults: defaults).rejectedSeedDigest)
+    }
+
+    /// ★⑫ #56 が書いた**古い鍵を読まない**。
+    ///
+    /// 反転(蒔いた種 → 拒まれた種)で意味が逆になったので、同じ `UserDefaults` の鍵を
+    /// 使い回すと、#56 を入れてある電話の「蒔いた種の指紋」が更新後は**そのまま
+    /// 「拒まれた種」として効く** —— 一度も 401 を貰っていない電話が、更新した瞬間に
+    /// 種を蒔けなくなる。直しに来た欠陥(初回起動が鍵の入力欄)を更新で恒久化する形。
+    ///
+    /// 消しに行かないのも意図的(消す事自体が移行の手順で、得る物は平文 plist の
+    /// 16 桁ぶんの掃除しか無い)。**残っていても読まない**を此処で固定する。
+    func testTheLegacyPlantedKeyIsNeverReadAsARejection() throws {
+        let suiteName = "provisioning-tests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        // #56 を入れてある電話の姿。「蒔いた種」だけが書かれている。
+        defaults.set("abcdef0123456789", forKey: UserDefaultsSeedLedger.legacyPlantedKey)
+
+        XCTAssertNil(UserDefaultsSeedLedger(defaults: defaults).rejectedSeedDigest,
+                     "★古い鍵を新しい意味で読む実装を落とす(更新した電話が種を蒔けなくなる)")
+        XCTAssertNotEqual(UserDefaultsSeedLedger.legacyPlantedKey, UserDefaultsSeedLedger.storageKey,
+                          "前提: 鍵を使い回していない(検査が空振りしていない)")
     }
 }

@@ -10,7 +10,9 @@
 //   **一度も呼べない**。S8-24 で電話の Decodable 28本のうち突き合わせられたのが6本止まり
 //   だった原因がこれ。封筒を純関数にすると、鍵名の照合(test/wire-key-agreement.test.mjs)が
 //   実際に**実行して**鍵を採れる — 写しを目で比べるのではなく。
+import { anomalyMessage, parseStatusMessage, selectionMessage, selectionProblem } from "./account.mjs";
 import { paneFaultView } from "./blocked.mjs";
+import { redact } from "./redact.mjs";
 import { choiceView, gapNotice, routeLabel, scanLine, subtitleOf, whoOf } from "./view.mjs";
 
 /**
@@ -165,4 +167,81 @@ export function historyBody({ entries, truncated }) {
  */
 export function healthzBody({ pid, uptime, version }) {
   return { ok: true, pid, uptime, version };
+}
+
+/** 台本の生出力を線に載せる時の上限。診断の材料であって、全文を運ぶ道ではない。 */
+export const ACCOUNT_RAW_MAX = 2000;
+
+/**
+ * `GET /api/account` と `POST /api/account/select|next` の封筒(REQUIREMENTS §9-3)。
+ *
+ * ★`account`(単数・人語1行)を**残す**理由:
+ *   出荷済みの電話(`AccountState { let account: String }`)が此の鍵を読む。消すと、
+ *   更新していない手元の版が黙って失敗表示になる。しかも中身は今まで
+ *   **6行の人向け出力そのもの**が入っていて、それが §9-3 の苦情の機械的な正体だった。
+ *   現用名だけを入れれば、古い版は**直る側**に転ぶ(壊れない、かつ良くなる)。
+ *
+ * ★`raw` は `ok` でない時だけ生やす:
+ *   読めた時に生出力を運ぶ理由が無い(電話は構造しか使わない)。読めなかった時だけは
+ *   「何が来たのか」を人が見られないと、edith に入らないと直せなくなる。
+ *
+ * ★`ok: false` と `accounts: []` を**別物として**運ぶ。混ぜると、台本の出力形式が
+ *   変わった日に電話が「候補が1つも無い」という、もっともらしい嘘を描く(account.mjs 冒頭)。
+ *
+ * ★`display` に人語を畳む(S8-22 の再演を塞ぐ):
+ *   `parseStatus: "no-order-header"` / `anomalies: ["active-count-0"]` は内部の英語トークン。
+ *   `paneFault` の時は電話がこれを**そのまま帯に描いていた**。観測値は残し、描く物は
+ *   `display` に置く —— 電話側で日本語を組み立て直すと、語彙が2箇所に分かれて必ずズレる。
+ *   `display.status` は正常時 `null`(= 出す物が無い。空文字にすると空の帯が出る)。
+ */
+export function accountBody(parsed, { raw = "" } = {}) {
+  const ok = parsed.parseStatus === "ok";
+  return {
+    account: parsed.current ?? "（未設定）", // 出荷済みの版が読む1行。中身は現用名だけ
+    current: parsed.current,
+    accounts: parsed.accounts.map((a) => accountRow(parsed, a)),
+    ok,
+    parseStatus: parsed.parseStatus,
+    anomalies: parsed.anomalies,
+    display: {
+      status: parseStatusMessage(parsed.parseStatus),
+      anomalies: parsed.anomalies.map(anomalyMessage),
+    },
+    ...(ok ? {} : accountRaw(raw)),
+  };
+}
+
+/**
+ * 読めなかった時だけ載せる生出力。**伏せてから切る**(順序に意味が在る)。
+ *
+ * ★2026-08-15(Codex 指摘)。切ってから伏せると、境目を跨いだ形が網に掛からない ——
+ *   `worker.mjs` の stderr が既に同じ順序を取っている(`redact` は冪等なので二度掛けても
+ *   `<mail>` が壊れない)。台本の出力が**想定外の形になった時こそ**、後から足された
+ *   連絡先や token 表記が raw へ混ざり得るので、ここが最後の網になる。
+ *
+ * ★切った事は必ず名乗る。黙って切ると、途中で終わっている出力を全文だと読んだ人が
+ *   「ここまでしか出ていない」を台本の症状として診断する事になる。
+ */
+function accountRaw(raw) {
+  const red = redact(String(raw));
+  const truncated = red.length > ACCOUNT_RAW_MAX;
+  return { raw: truncated ? red.slice(0, ACCOUNT_RAW_MAX) : red, rawTruncated: truncated };
+}
+
+/**
+ * 一覧の1行。**選べない行も出す**(消さない)。
+ *
+ * ★これは 2026-08-14 に取り消した `cwdIsGone` と同じ判断の再演: 行を消すと
+ *   「そのアカウントが無い」に見え、本当の理由(トークンが欠けている / 名前が引数に使えない)が
+ *   画面から消える。出して、押せなくして、理由を日本語で置く(DESIGN §2.88)。
+ */
+export function accountRow(parsed, a) {
+  const problem = selectionProblem(parsed, a.name);
+  return {
+    name: a.name,
+    hasToken: a.hasToken,
+    active: a.active,
+    selectable: problem === null,
+    display: { blocked: problem === null ? null : selectionMessage(problem) },
+  };
 }

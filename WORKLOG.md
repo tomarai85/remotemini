@@ -12363,6 +12363,12 @@ Codex に否定されて捨てた。理由は2つとも**渡米中に効く**:
 **指紋が違う種だけ**蒔く。同じ種は二度蒔かない(401 で捨てた鍵で回らない)、
 違う種は蒔く(鍵の回転が通る)。旗1本の「もう蒔いた」だと後者が塞がる。
 
+> ★2026-08-15 追記: 此の「最後に蒔いた種を覚える」形も捨てた。金庫と台帳が**一緒に死ぬ**
+> という前提が偽で(検査の後始末・端末の復元で金庫だけが空になる)、壊れた側に復帰路が無い。
+> 今は**机が拒んだ種**を覚える。観測値と移行の手当ては DESIGN §2.94 / 下の 2026-08-15 の項。
+> 以下の 08-11 の測定表に出てくる `provisioning.planted-seed.v1` は、其の日の binary に
+> 実際に居た文字列の記録なので**そのまま残す**(今の鍵名は `provisioning.rejected-seed.v1`)。
+
 ### ずれ③ `loadStoredCredentials()` が **throw と nil を分ける**(同じく Codex)
 
 元は `try? store.load()` で、「読めなかった」が `nil` に潰れていた。潰れたまま種を蒔くと
@@ -13093,3 +13099,146 @@ teardown 通りに実装済みだった —— 電話の画面だけが仕様の
 - 鮮度: 古い時だけ立つ
 
 v55(第1波)は電話に入居済み。第2波はこの走行の緑を待って v56。
+
+## 2026-08-15 — 種の台帳を反転させた: 覚えるのは「蒔いた種」ではなく**机が拒んだ種**
+
+Tom が simulator の画面を撮って「これが君の言っているAppの完成系？論外だけど」。
+写っていたのは Base URL と API Key の入力欄 —— #64 で直したはずの、開いた最初の画面。
+
+### 道を名乗らせた(推測で潰さなかった)
+
+`loadStoredCredentials()` が鍵入力欄に至る道は4本在って(金庫が読めない / 種が無い /
+台帳が止めた / 蒔いたが載らない)、**画面はどの道を通ったかを一文字も名乗らない**。
+`#if DEBUG` の1行を足して真偽だけ吐かせた(値は出さない):
+
+```
+seed path: bundled=true storeReadable=true ledger=set resolved=false
+```
+
+台帳が「蒔いた」を持ち、金庫だけが空。犯人は `KeychainCredentialStoreTests` の後始末で、
+**製品の金庫の項目を拭いていた**(検査の隔離が壊れている = 別件として残す)。
+だが同じ形は**端末の復元**でも起きる —— `UserDefaults` は新しい iPhone へ移り、
+`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` の項目は移らない。
+
+### 直した形
+
+「蒔いた」を覚える設計は、金庫と台帳が**必ず一緒に死ぬ**事を前提にしていた。前提は偽で、
+しかも壊れた側に復帰路が無い(人が鍵を打つまで戻れない)。塞ぎたかった輪(401 の鍵を
+蒔き直す)は、**拒まれた事実そのもの**で塞ぐ方が近い。設計の全文は DESIGN §2.94。
+
+- `SeedLedgerStoring.rejectedSeedDigest` —— 持つのは 401 を貰った種1本だけ
+- 蒔いた事は**何処にも記録しない**(冪等なので要らない = 台帳と金庫がずれる余地が無い)
+- 鍵は `provisioning.rejected-seed.v1` へ**新設**。旧 `provisioning.planted-seed.v1` は
+  `legacyPlantedKey` として残すが読まない —— 使い回すと #56 を入れてある電話の
+  「蒔いた指紋」が更新後そのまま「拒否」として効き、**直しに来た欠陥を更新で恒久化**する
+- `clearCredentials(rejected:)` が**何が拒まれたか**を引数で受ける(既に別の鍵へ
+  入れ替えた後に届いた古い要求の 401 が、今の鍵を拒否として記録するのを止める)
+- 記録するのは拒まれた鍵が**束の種と同じ**時だけ / 起動時に拒まれた鍵を金庫から掃く /
+  同じ値が通ったら拒否を降ろす
+
+### 計器も同じ変更の中で引き直した
+
+`plantedSeedDigest` が消えたので M14 / M16 / M20 の探し文は当たらなくなり、
+放置すれば **UNMEASURED(赤ではなく「測っていない」)** へ静かに落ちる —— §2.91 と同じ形。
+的を引き直し、新しい4枝へ M21〜M24 を足した。対照 script が抱えていた手書きの本数
+(「単体、20本」「錨は21本在り」)も潰して `--which` と `$WANT_N` の印字を正本にした。
+
+### 実測
+
+| 何を見たか | 出た値 |
+|---|---|
+| 単体 | **633件 実行 / 失敗 0件**(版 `e5e15a3-dirty` / 番号 56) |
+| 増分 | 627 → 633 = 足した6本(⑭-b ⑰ ⑱ ⑲ ⑳ + `ProvisioningTests` ⑫)と一致 |
+| ⑯ `testAKeychainThatLostItsItemWithoutARejectionIsSeededAgain` | 反転を動機付けた「設計上の赤」→ **緑** |
+| 変異の的 | `--which` が「回す 24 本 / 繰り延べ 0 本」 |
+
+### 同じ日、其の症状を**起こしていた側**も直した(DESIGN §2.95)
+
+反転を決めた時に見ていた `resolved=false` の出所が `KeychainCredentialStoreTests` だった。
+本物の Security framework を叩くのは意図通りで、混ぜていたのは其の先 —— **座標**まで
+製品と同じで、`setUp`/`tearDown` の `clear()` が電話の項目そのものを消していた。
+
+- `KeychainCredentialStore` に `init(service:account:)`。既定値は
+  `productionService` / `productionAccount`。製品の経路に引数は1つも現れない。
+- 検査だけ別の座標へ。生の `SecItemDelete` を使う負の対照も向け直した。
+- 足した検査2本 = 「検査の後始末が製品に届かない」+「製品の座標を動かさない」。
+  後者が要るのは**座標の変更が移行案件**だから(鍵の改名と同じ形)。
+- 対照へ M25 / M26。`# controls-for:` と `UNIT_ONLY` を広げた —— ★入れられる様に
+  なったのが先で、座標を分けるまでは変異の度に simulator の資格情報を消す事だった。
+
+此れを入れた後の実測: **635件 実行 / 失敗 0件**(版 `e5e15a3-dirty` / 番号 56)。
+上の表の 633 は反転だけを入れた時点の値で、差の2本は此処で足した検査と一致する。
+変異は `--which` が「回す 26 本 / 繰り延べ 0 本」。
+
+### 対照の全走行(出す直前に実際に回した値)
+
+`ios/tools/signout-notice-control.sh` = **PASS 27 / FAIL 0 / UNMEASURED 0**(基準1 + 変異26)。
+基準の行は「的の検査が 29 本とも緑(この走行の緑は全部で 73 本)」—— 29 は
+`KeychainCredentialStoreTests` が `UNIT_ONLY` に加わった後の本数で、加わる前より2本多い。
+走行後に「復元を確認(対象 8 file すべて走る前のバイトと一致)」。
+
+反転の4枝と座標の2本は全部当たった:
+
+| 変異 | 赤くなった検査 | 同じ走行で**緑のまま**だった兄弟 |
+|---|---|---|
+| M21-rejected-key-not-swept | `testARejectedKeyLeftInTheKeychainIsSweptOnLaunch` | — |
+| M22-stale-401-drops-current | `testA401ForAKeyThatIsNoLongerInUseIsIgnored` | — |
+| M23-rejection-never-lifted | `testAKeyThatWorksAgainClearsTheRejection` | `testARejectedSeedIsNotPlantedAgainOnTheNextLaunch` |
+| M24-any-rejection-recorded | `testARejectedHandTypedKeyIsNotRecordedInTheLedger` | `testARejectedSeedIsNotPlantedAgainOnTheNextLaunch` |
+| M25-tests-share-the-item | `testTheseTestsAddressADifferentKeychainItemThanTheProduct` | `testSaveThenLoadRoundTrips` |
+| M26-production-item-renamed | `testTheProductionItemKeepsTheCoordinatesAlreadyInstalledOnThePhone` | `testSaveThenLoadRoundTrips` |
+
+★右列が此の変更の要点そのもの: **往復の検査(`testSaveThenLoadRoundTrips`)は
+どんな座標でも緑**なので、M25 でも M26 でも緑のまま通る。「保存して読み戻せた」を
+何本積んでも、座標を取り違えた欠陥は1本も掴めない。
+
+★`account-ui-control.sh` は最初の起動を **UNMEASURED で拒否**した ——
+「測る対象が既に汚れている」。此の台本は復元の正本を git の**索引**に置いているので
+(2026-08-12 に SIGKILL で変異が残った事故の後にそう書き直した)、
+未 stage の変更が的の上に在ると走れない。順序は「stage → 対照 → commit」が正しく、
+拒否は欠陥ではなく設計通りの入口の門。stage 後に回した値が下。
+
+#### 其の stage 後の走行で、対照が**返らなくなった**(16分26秒)
+
+`account-ui-control.sh` を stage 後に回したら A3 の所で止まった。観測値:
+
+- 単体の `xcodebuild` が 10:58:17 開始で **16分26秒 生きたまま**(兄弟の検査は 0.001 秒台)
+- log に赤は一行も無い。画面は「対照を回している」としか出ない
+
+原因は変異ではなく**検査の二重**の側。A3 は `select()` の失敗経路から `await load()` を
+削る変異で、消すと門付きの読み取りが始まらない。二重が其の開始を
+`withCheckedContinuation` で**期限なし**に待っていたので、誰も resume せず永久に待った。
+
+`account-ui-control.sh` は pre-commit の門の中でも回る。直さずに commit すると
+**commit 自体が永久に返らない**ので、此処で止めて直した(設計 DESIGN §2.96):
+
+- 二重の待ちを旗 + 期限付き `waitUntilTrue`(5秒)に置換。期限切れは `XCTFail` =
+  **停止ではなく赤**。吊っていたのは1箇所だが、`current()` 側の門の解放待ちにも同じ期限を置いた
+- 期限そのものを固定する検査を3本追加(諦める / 既に真なら即返す / 後から真になった条件を拾う)
+
+#### 同じ走行で計器の欠陥がもう1本(`ran_count`)
+
+`grep -c` は一件も無い時 `0` を出力**した上で**終了コード 1 を返すので、
+`|| printf '0'` の右も走り戻り値が `0\n0` になっていた。実測 `ran_count の戻り値 = [0\n0]`
+/ `門が発火しない`。「検査が一本も走っていない」を掴む門が、`[: 0\n0: integer expression
+expected` で評価に失敗して次の枝へ落ちる —— commit message に書いた `$rc` 空の件
+(DESIGN §2.93-b)と一字一句同じ流れ方。`signout-notice-control.sh` は最初から
+正しい形だったので、`account-ui-control.sh` を其れに揃えた(DESIGN §2.93-c)。
+直した後の実測: 空の log で `[0]` / 門が発火、一件在る log で `[1]`。
+
+★私が SIGTERM/SIGKILL で止めた後に出た `UNMEASURED A4 (rc='')` と
+`UNMEASURED A6 (rc=143)` は**私が殺した痕**で、計器の所見ではない。
+殺す前に自力で報告していたのは A1 と A3 の OK まで。
+
+#### 直したのは1箇所、塞いだのは型 —— 対照の台本に上限を置いた
+
+二重の待ちを直しても、期限の無い待ちを次に誰かが書けば同じ事が起きる。出口も同じ
+(pre-commit が永久に返り、画面には何も出ない)。両方の対照台本に
+`CONTROL_RUN_LIMIT_S`(既定 1200 秒)を置いた。
+
+- macOS に GNU `timeout` は無いので `perl -e 'alarm shift; exec @ARGV'`。
+  実測: 吊る場合 `rc=142` / 正常 `0` / `exit 65` はそのまま `65` で素通り
+- 判定の各所に `rc = 142` の枝を置き **必ず UNMEASURED**。置かないと、上限より前に
+  的が赤くなっていた走行が `OK` を出す(§2.93-b と同じ落ち方)
+- 上限は根本の直しの代わりではない。変えるのは**次に同じ型が生まれた時に何が起きるか**
+  だけ: 永久に黙って止まる → 20分で「測れなかった」と言って commit を止める

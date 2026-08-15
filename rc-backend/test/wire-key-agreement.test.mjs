@@ -41,6 +41,7 @@ import * as blocked from "../src/blocked.mjs";
 import * as wire from "../src/wire.mjs";
 import * as sessions from "../src/sessions.mjs";
 import * as registry from "../src/registry.mjs";
+import { parseFleetAccount } from "../src/account.mjs";
 import { buildListing, unreadableRow } from "../src/sessions.mjs";
 import { registryOnlySessions } from "../src/registry.mjs";
 import { sessionRow } from "../src/wire.mjs";
@@ -112,6 +113,25 @@ const ENTRIES = [
   { role: "assistant", text: "a" },
 ];
 
+// 口座の入力は **`parseFleetAccount` に実際に食わせて作る**。手で `{current, accounts, …}` を
+// 書くと、台本の出力形式が変わって parser の返り値の形が変われば入力だけが古いまま残り、
+// 「実行して出た鍵」という側Aの前提が静かに崩れる(此の file の冒頭の主張そのもの)。
+// 綴りの正本は `src/account.mjs` の定数(`現用:` / `優先順 (.order):` / `トークン:有|欠`)。
+const ACCOUNT_STDOUT = {
+  // 選べる行と**選べない行**(トークン欠け)が両方要る = `display.blocked` が出る枝。
+  ok: "現用: team\n優先順 (.order):\n->  1. team     トークン:有\n    2. biz      トークン:有\n    3. sdgs     トークン:欠\n",
+  // 現用の印が1つも無い = `anomalies: ["active-count-0"]` が出る枝(`display.anomalies` の中身)。
+  anomaly: "現用: team\n優先順 (.order):\n    1. team     トークン:有\n    2. biz      トークン:有\n",
+  // 1行目が「現用:」でない = `parseStatus !== "ok"` で **`raw` が生える枝**。
+  // 此処を通さないと `raw` が「誰も吐かない鍵」として静かに落ちる。
+  unreadable: "garbage line\nmore\n",
+};
+const ACCOUNT_PARSED = {
+  ok: parseFleetAccount(ACCOUNT_STDOUT.ok),
+  anomaly: parseFleetAccount(ACCOUNT_STDOUT.anomaly),
+  unreadable: parseFleetAccount(ACCOUNT_STDOUT.unreadable),
+};
+
 /** 枝を割る為の入力。**返り値ではなく枝の数で選ぶ** —— 1本しか通さない表は側Aを痩せさせる。 */
 const CASES = {
   routeLabel: [
@@ -171,6 +191,21 @@ const CASES = {
   // 枝が1本しか無い唯一の builder。分岐が無い(`ok` は定数、残り3つは受けた値をそのまま)
   // ので、枝を増やしても出る鍵は1組しか無い —— ②が「原文に在るのに出ない鍵」で裏を取る。
   healthzBody: [[{ pid: 4242, uptime: 61, version: "abc1234" }]],
+  // 口座(2026-08-15)。3枝の**和**が要る:
+  //   ok        -> `accounts[]` と `display.blocked`(選べない行)
+  //   anomaly   -> `display.anomalies` の中身
+  //   unreadable-> `raw`(`ok` でない時だけ生える鍵)
+  // `raw` を第2引数で渡すのは本番と同じ形(`server.mjs` は台本の生出力を其処へ入れる)。
+  accountBody: [
+    [ACCOUNT_PARSED.ok, { raw: ACCOUNT_STDOUT.ok }],
+    [ACCOUNT_PARSED.anomaly, { raw: ACCOUNT_STDOUT.anomaly }],
+    [ACCOUNT_PARSED.unreadable, { raw: ACCOUNT_STDOUT.unreadable }],
+  ],
+  // 行は**行の生産者を直に呼ぶ**。`accountBody` の返り値の `accounts[].display` を辿る道を
+  // 選ばなかったのは、`pluck` の `at` が1段しか降りられないから —— 2段の道を足すのは
+  // 「測る為に測る道具を太らせる」側で、`sessionRow` が既に「行の生産者を直に呼ぶ」形を
+  // 取っている(`src/wire.mjs` の `accountBody` は `accounts` に此の関数の返り値をそのまま入れる)。
+  accountRow: ACCOUNT_PARSED.ok.accounts.map((a) => [ACCOUNT_PARSED.ok, a]),
 };
 
 /**
@@ -203,6 +238,11 @@ const MODULE_OF = {
   pollBodyWorker: ["wire", "src/wire.mjs", "export function pollBodyWorker({ items, queued, cursor, more }) {"],
   historyBody: ["wire", "src/wire.mjs", "export function historyBody({ entries, truncated }) {"],
   healthzBody: ["wire", "src/wire.mjs", "export function healthzBody({ pid, uptime, version }) {"],
+  // 第2引数を分解するので目印を明示する(既定の目印だと `{ raw = "" }` = **引数の分解**を
+  // 本文と読んで、鍵が0件になる。②が其れを赤で捕まえるが、先に正しく書く)。
+  accountBody: ["wire", "src/wire.mjs", "export function accountBody(parsed, { raw = \"\" } = {}) {"],
+  // 行の方は分解しないので既定の目印で本文に届く(`accountRow(parsed, a)`)。
+  accountRow: ["wire", "src/wire.mjs"],
 };
 const MODULES = { view, blocked, wire, sessions, registry };
 
@@ -467,6 +507,25 @@ const PAIRS = [
   // サーバ側に生える事を許さない —— `serverOnly` を1つでも認めた瞬間、
   // 「電話は読まないから」で秘密を足せる形になる。増えたら赤、が此処では正しい既定。
   { swift: "HealthzClient.Wire", builders: ["healthzBody"], at: "" },
+  // ---- 口座(2026-08-15。§9-3 で応答を文字列1本から構造へ変えた分)
+  {
+    // ★此の4本は**入る前に1つ直す事が在った**: 電話側の `AccountClient` は
+    //   `decodeAccount` と `decodeError` の中に `struct Wire` を1つずつ持っていて、
+    //   走査は修飾名で Map へ入れる = 後勝ちで潰れ、`AccountClient.Wire` は
+    //   `{ error }` の1鍵の型を指していた。誤りの側を `Envelope` に改名して分けてある。
+    //   同じ名前の型が同じ親の下に2つ在ると、此の検査は**片方しか測らないのに緑**になる。
+    swift: "AccountClient.Wire", builders: ["accountBody"], at: "",
+    mode: "phone-subset",
+    // `account` = 現用名だけを入れた**出荷済みの版**(#56)向けの1鍵。新しい電話は
+    //   `current` を読むので二重に読まない(`src/wire.mjs` の accountBody の註が経緯)。
+    // `parseStatus` / `anomalies` = 内部の英語トークン。電話は `display` に畳まれた
+    //   日本語しか読まない —— 型から外してあるのは、読める形にすると
+    //   「英語のまま画面に出す」道が生えるから(`AccountClient.decodeAccount` の註)。
+    serverOnly: ["account", "anomalies", "parseStatus"],
+  },
+  { swift: "AccountClient.Wire.Row", builders: ["accountRow"], at: "" },
+  { swift: "AccountClient.Wire.Row.RowDisplay", builders: ["accountRow"], at: "display" },
+  { swift: "AccountClient.Wire.Display", builders: ["accountBody"], at: "display" },
 ];
 
 const IGNORED = {};
@@ -520,14 +579,16 @@ const UNPAIRED = {
     + "系統Bの builder ではない。★片側が動いた時に赤を出すのは `test/view.test.mjs` の "
     + "`clearQueueResult` の的(200 に `dropped` が必ず載る事)と、Swift 側の "
     + "`QueueViewStateTests`(載っていない 200 を『0件』でなく『不明』と読む事)の対",
-  "AccountClient.Wire": "口座の応答(`{account}` / `{error}`)。**builder が組んでいない**のが此処に居る理由 —— "
-    + "`/api/account` と `/api/account/next` は `src/server.mjs` の中で `json(res, 200, { account })` を"
-    + "直に組んでおり、`src/view.mjs` の系統B(`speaks()` が `display` を載せる道)に乗っていないので"
-    + "突き合わせる相手の関数が存在しない。"
-    + "★測っているのは `test/e2e-local.mjs` の `account` 節(生きたサーバの `GET /api/account` を叩き、"
-    + "`account` 鍵の**値**まで見る)+ `test/account-routes.test.mjs`(`/next` と誤り応答の `error` 鍵)。"
-    + "★2026-08-12 の注意: 此処に最初「e2e が2つの道を鍵名ごと突き合わせている」と書いたが**偽**だった —— "
-    + "e2e が見ていたのは `GET` の1鍵だけで `/next` も `error` も見ていない。書く前に読むこと",
+  "AccountClient.Envelope": "口座の**誤り応答**の封筒(`error` の1鍵)。3つの口の 400/500 が "
+    + "`json(res, N, { error: ... })` を `src/server.mjs` の中で直に組む(builder では無い)。"
+    + "★400 の側は `reason`(`no-token` 等の機械語)も載せるが、電話は**わざと読まない** —— "
+    + "文面を電話で組み立てない為で、`AccountRow.blocked` の註と同じ判断。"
+    + "★2026-08-15 に `Wire` から改名した。同じ親の下に `Wire` が2つ在った間、上の走査は "
+    + "修飾名 `AccountClient.Wire` を後勝ちで潰し、**200 の応答の型を1つも測らないまま緑**だった。"
+    + "★測っているのは `test/account-routes.test.mjs` の A5(3つの口の 500 が `error` 鍵で理由を載せる)と "
+    + "A9(選ぶ道の 400 が `error` で、`code` では**ない**)。どちらも原文を書き換える負の対照付き。"
+    + "文面の**値**を両側で突き合わせる者は此処には居ないが要らない —— 電話は文面をサーバから"
+    + "受け取ってそのまま描き、自前の語彙を1つも持たないので、ズレる2つ目の写しが存在しない",
 };
 
 /**
@@ -596,7 +657,7 @@ test("側B: Swift の走査が Decodable 型を取りこぼしていない", { s
 
 // --- ④ 本体: 鍵名が一致する ---------------------------------------------------
 
-test("20組の鍵名が、サーバの実出力と一字一句一致する", { skip }, () => {
+test("24組の鍵名が、サーバの実出力と一字一句一致する", { skip }, () => {
   const t = phoneTypes();
   const drift = {};
   for (const p of PAIRS) {
@@ -613,7 +674,7 @@ test("20組の鍵名が、サーバの実出力と一字一句一致する", { s
       ? { got: extra, declared: allowed }
       : extra;
     const serverDrift = p.mode === "phone-subset"
-      ? extra.join(" ") !== allowed.join(" ")
+      ? extra.join("\u0000") !== allowed.join("\u0000")
       : extra.length > 0;
     if (onlyPhone.length || serverDrift) drift[p.swift] = { onlyPhone, onlyServer };
   }
@@ -661,6 +722,9 @@ test("ハンドラは切り出した builder を通って封筒を組んでい�
     // **束に対して**掛かる為(封筒の引数として渡る形が本番の姿)。
     "historyBody({", "messageItem({", "pollBodyTmux({", "pollBodyWorker({", "gapItem(", ".map(withWho)",
     "healthzBody({",
+    // 口座(2026-08-15)。3つの口が同じ封筒を通る —— `GET /api/account` / `POST …/select` /
+    // `POST …/next`。此処が直書きへ戻ると、電話が読む鍵の照合が丸ごと飾りになる。
+    "accountBody(",
   ]) {
     assert.ok(src.includes(call), `src/server.mjs が ${call} を通っていない = 封筒が直書きへ戻り、上の照合が飾りになった`);
   }
@@ -669,6 +733,12 @@ test("ハンドラは切り出した builder を通って封筒を組んでい�
   // ★`/healthz` は認証の**外**。ここが直書きへ戻ると、鍵を1本足す改修が
   //   電話側の照合を1つも通らずに認証の外へ出る道になる。
   assert.match(src, /json\(res,\s*200,\s*healthzBody\(/, "`/healthz` の 200 が `healthzBody` を通っていない");
+  // ★口座は**3つ数える**。`assert.match` は1本でも在れば緑になるので、3つの口のうち
+  //   2つが直書きへ戻っても気付けない —— 実際、線に出る形が口ごとに違えば
+  //   「読めた時だけ切替が出る」という電話側の判断が口によって効かなくなる。
+  //   4つ目の口を足す時は此処が赤くなる = その口も封筒を通すか、通さない理由を書く手が要る。
+  assert.equal((src.match(/json\(res,\s*200,\s*accountBody\(/g) ?? []).length, 3,
+    "`/api/account` `/api/account/select` `/api/account/next` の 200 が3本とも `accountBody` を通っていない");
 });
 
 test("`phone-subset` の宣言が、緩める言い訳になっていない", () => {
@@ -685,5 +755,5 @@ test("`phone-subset` の宣言が、緩める言い訳になっていない", ()
   }
   // 部分集合を許した組を**並び順ごと**に固定する。増える時は此処が赤くなり、理由を書く手が要る。
   assert.deepEqual(PAIRS.filter((p) => p.mode === "phone-subset").map((p) => p.swift),
-    ["SessionsResponse", "SessionRow", "PollResponse", "MessageItem", "GapItem"]);
+    ["SessionsResponse", "SessionRow", "PollResponse", "MessageItem", "GapItem", "AccountClient.Wire"]);
 });

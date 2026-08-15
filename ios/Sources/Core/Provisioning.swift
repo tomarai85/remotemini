@@ -82,9 +82,9 @@ struct NoProvisioning: ProvisioningSource {
     var seed: Credentials? { nil }
 }
 
-// MARK: - 蒔いた記録
+// MARK: - 拒まれた種の記録
 
-/// **同じ種を二度蒔かない**為の記録。持つのは種の指紋1本だけ。
+/// **机が拒んだ種を蒔き直さない**為の記録。持つのは種の指紋1本だけ。
 ///
 /// ★何故この器が要るか(2026-08-11、Codex の指摘で設計を差し替えた)。
 /// 最初は「断り(`SignOutNotice`)が残っていない時だけ蒔く」にしていた。断りは 401 で
@@ -93,17 +93,29 @@ struct NoProvisioning: ProvisioningSource {
 ///   - 断りを読んだ後(接続成功で消える設計)に、拒まれた同じ鍵がまた蒔かれる
 ///   - **鍵を回して焼き直した新しい種**まで、古い断りが止める ← 渡米中の唯一の復旧路
 ///   - アプリを入れ直すと断りだけ消えるので、状態の意味が入れ直しで変わる
-/// 記録するのは「何を蒔いたか」であって「何を表示したか」ではない。
 ///
-/// ★指紋にする理由は、比べたいのが**同一性**だから。「一度蒔いた」という旗1本だと、
+/// ★2026-08-15、記録する物を「蒔いた種」から**「拒まれた種」**へ変えた。
+/// 変えた理由は観測値で、推論ではない: `KeychainCredentialStoreTests` を回した直後に
+/// 電話を開き直すと、束に正しい種が刻まれていて金庫が読めるのに**鍵入力欄が出た**。
+/// 計器(`AppState` の `seed path:` の行)が `ledger=set resolved=false` を吐いていた。
+/// 台帳は「蒔いた」と覚えていて、金庫の項目だけが**電話を通さずに**消えていた ——
+/// あの時は検査の後始末が消したが、同じ形は端末の復元でも起きる
+/// (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` は別の端末へ移らない)。
+/// 「蒔いた」を覚える設計は、金庫と台帳が**必ず一緒に死ぬ**事を前提にしていた。
+/// 前提は偽で、しかも壊れた側に復帰路が無い(鍵を打つまで戻れない)。
+///
+/// 拒否を覚える形なら、金庫が独りで空になった電話は次の起動で黙って蒔き直せる。
+/// 塞ぎたかった輪(401 の鍵を蒔き直す)は、**拒まれた事実そのもの**で塞ぐ方が近い。
+///
+/// ★指紋にする理由は、比べたいのが**同一性**だから。「一度拒まれた」という旗1本だと、
 /// 机で鍵を回して焼き直した電話が二度と種を受け取れない —— 渡米先で鍵を回したら
 /// 打ち込む以外に道が無くなる。指紋なら、値が変われば別の種として蒔ける。
 ///
 /// ★入れ直しで消えるのは正しい。入れ直し = 新規インストールで、そこは最初の1回と
 /// 同じ扱いでよい(同じ拒否鍵が刻まれていれば、また 401 と断りが出るだけ。錠は掛からない)。
 protocol SeedLedgerStoring: AnyObject {
-    /// 最後に蒔いた種の指紋。まだ一度も蒔いていなければ `nil`。
-    var plantedSeedDigest: String? { get set }
+    /// 机が拒んだ(401)種の指紋。拒まれていなければ `nil`。
+    var rejectedSeedDigest: String? { get set }
 }
 
 enum SeedDigest {
@@ -123,17 +135,27 @@ enum SeedDigest {
 /// 覚えない実装。検査の既定値。`InMemorySignOutNoticeStore` と同じ理由で、
 /// 既定を本物にすると検査が開発機の `UserDefaults` を触り合う。
 final class InMemorySeedLedger: SeedLedgerStoring {
-    var plantedSeedDigest: String?
+    var rejectedSeedDigest: String?
 
-    init(plantedSeedDigest: String? = nil) {
-        self.plantedSeedDigest = plantedSeedDigest
+    init(rejectedSeedDigest: String? = nil) {
+        self.rejectedSeedDigest = rejectedSeedDigest
     }
 }
 
 /// `UserDefaults` に1本だけ持つ実装。`UserDefaultsSignOutNoticeStore` と同じ置き場・
-/// 同じ流儀(古さで捨てる規則は置かない —— 「何を蒔いたか」は時間で偽にならない)。
+/// 同じ流儀(古さで捨てる規則は置かない —— 「何が拒まれたか」は時間で偽にならない)。
 final class UserDefaultsSeedLedger: SeedLedgerStoring {
-    static let storageKey = "provisioning.planted-seed.v1"
+    static let storageKey = "provisioning.rejected-seed.v1"
+
+    /// #56 までが「蒔いた種」を書いていた鍵。**消さずに、読まない**。
+    ///
+    /// ★鍵を使い回さない事が此の変更の要。#56 を入れてある電話には既に
+    /// 「蒔いた種の指紋」が入っていて、同じ鍵を新しい意味で読むと、其の値が
+    /// **そのまま「拒まれた種」として効く** —— 一度も 401 を貰っていない電話が
+    /// 更新した瞬間に種を蒔けなくなる。直しに来た欠陥を、更新で恒久化する形。
+    /// 消しに行かないのは、消す事自体が移行の手順で、得る物が平文 plist の
+    /// 16 桁ぶんの掃除しか無いから(`method_key_format_change_is_a_data_migration`)。
+    static let legacyPlantedKey = "provisioning.planted-seed.v1"
 
     private let defaults: UserDefaults
 
@@ -141,7 +163,7 @@ final class UserDefaultsSeedLedger: SeedLedgerStoring {
         self.defaults = defaults
     }
 
-    var plantedSeedDigest: String? {
+    var rejectedSeedDigest: String? {
         get { defaults.string(forKey: Self.storageKey) }
         set {
             guard let newValue else {

@@ -45,21 +45,23 @@ final class AppStateTests: XCTestCase {
         var seed: Credentials?
     }
 
-    /// 蒔いた記録。書かれた順を `Recorder` に載せる(順序を見る対照が要る)。
+    /// 拒否の記録。書かれた順を `Recorder` に載せる(順序を見る対照が要る)。
+    /// 消す側も別の名前で積むのは `RecordingNoticeStore` と同じ流儀 —— 「書いた」と
+    /// 「降ろした」が同じ文字列だと、⑳が緑になったまま `nil` 代入を取り違える。
     private final class RecordingSeedLedger: SeedLedgerStoring {
         private var digest: String?
         private let recorder: Recorder
 
-        init(plantedSeedDigest: String? = nil, recorder: Recorder = Recorder()) {
-            self.digest = plantedSeedDigest
+        init(rejectedSeedDigest: String? = nil, recorder: Recorder = Recorder()) {
+            self.digest = rejectedSeedDigest
             self.recorder = recorder
         }
 
-        var plantedSeedDigest: String? {
+        var rejectedSeedDigest: String? {
             get { digest }
             set {
                 digest = newValue
-                recorder.events.append("ledger-written")
+                recorder.events.append(newValue == nil ? "ledger-cleared" : "ledger-written")
             }
         }
     }
@@ -72,8 +74,8 @@ final class AppStateTests: XCTestCase {
         /// Keychain が**読めない**時。`nil`(空)と同じ物にしないのが此の旗の全部。
         var loadThrows = false
 
-        /// Keychain へ**書けない**時。種を蒔く側だけが使う —— 書けなかった種に
-        /// 「蒔いた」の記録を付けると、次の起動で欄が出る(`plantSeedIfNeeded` の doc)。
+        /// Keychain へ**書けない**時。種を蒔く側だけが使う —— 書けなくても此の起動は
+        /// 通り、次の起動でもう一度同じ値を書きに行く(`plantSeedIfNeeded` の doc)。
         var saveThrows = false
 
         init(stored: Credentials? = nil, recorder: Recorder = Recorder()) {
@@ -95,6 +97,19 @@ final class AppStateTests: XCTestCase {
         func clear() throws {
             recorder.events.append("keychain-cleared")
             if clearThrows { throw KeychainError.unexpectedStatus(-1) }
+            stored = nil
+        }
+
+        /// アプリを**通さずに** Keychain の項目が消える。`clear()` と違って
+        /// `recorder` に何も積まないのが此の関数の全部 —— 消えた事をアプリは
+        /// 知らないし、拒否が在った証拠もどこにも残らない。
+        /// 実在する経路2本を模す(⑯):
+        ///   - simulator: `ios/Tests/Core/KeychainCredentialStoreTests.swift` の
+        ///     `tearDownWithError` が**本物の** Keychain を同じ service/account で消す。
+        ///     simulator の Keychain は端末ごとに共有なので、検査を回す度に消える。
+        ///   - 実機: 暗号化なしバックアップからの復元は `UserDefaults` を戻すが
+        ///     Keychain 項目は戻さない。
+        func wipeOutOfBand() {
             stored = nil
         }
     }
@@ -122,7 +137,7 @@ final class AppStateTests: XCTestCase {
         let state = makeState(store:FakeCredentialStore(stored: Self.creds), notices: notices)
         state.setCredentials(Self.creds)
 
-        state.clearCredentials()
+        state.clearCredentials(rejected: Self.creds)
 
         XCTAssertNil(state.credentials, "鍵は落ちる(此処は元からの契約)")
         XCTAssertEqual(state.signOutNotice?.reason, .keyRejected,
@@ -137,7 +152,7 @@ final class AppStateTests: XCTestCase {
                              notices: RecordingNoticeStore())
         state.setCredentials(Self.creds)
 
-        state.clearCredentials()
+        state.clearCredentials(rejected: Self.creds)
 
         XCTAssertEqual(state.signOutNotice?.baseURL, Self.url)
     }
@@ -201,7 +216,7 @@ final class AppStateTests: XCTestCase {
         state.setCredentials(Self.creds)
         recorder.events.removeAll()
 
-        state.clearCredentials()
+        state.clearCredentials(rejected: Self.creds)
 
         XCTAssertEqual(recorder.events, ["notice-saved", "keychain-cleared"],
                        "★逆順の実装を落とす(間で殺されると理由ごと消える)")
@@ -217,7 +232,7 @@ final class AppStateTests: XCTestCase {
         let state = makeState(store:store, notices: RecordingNoticeStore())
         state.setCredentials(Self.creds)
 
-        state.clearCredentials()
+        state.clearCredentials(rejected: Self.creds)
 
         XCTAssertNil(state.credentials)
         XCTAssertEqual(state.signOutNotice?.reason, .keyRejected)
@@ -233,11 +248,21 @@ final class AppStateTests: XCTestCase {
     // | Keychain に保存せず memory にだけ載せる(次の起動でまた打たされる) | ⑧ |
     // | 既に在る鍵を種で上書きする | ⑨ |
     // | 401 で落とした鍵と同じ種を蒔き直す(拒否と断りの間で回る) | ⑩ |
-    // | 「一度蒔いた」旗1本で塞ぐ(鍵を回して焼き直しても二度と入らない) | ⑪ |
+    // | 「一度拒まれた」旗1本で塞ぐ(鍵を回して焼き直しても二度と入らない) | ⑪ |
     // | Keychain が読めない起動を「空」と読んで手入力の鍵を潰す | ⑫ |
     // | 刻印が無いのに何かを蒔く / 蒔けずに固まる | ⑬ |
-    // | 記録を書いてから保存する(書けなかった種を蒔いた事にする) | ⑭ |
-    // | 保存の失敗を握り潰して記録だけ付ける(次の起動で欄が出る) | ⑮ |
+    // | 蒔いた事を台帳へ書く(金庫だけ独りで空になった電話が戻れなくなる) | ⑭ |
+    // | 金庫を消してから拒否を記録する(間で殺されると輪に戻る) | ⑭-b |
+    // | 一度きりの保存失敗を次の起動へ持ち越す | ⑮ |
+    // | 拒否と無関係に金庫だけ消えた電話を、台帳が止め続ける | ⑯ |
+    // | 入れ替えた**後**に届いた古い要求の 401 で、今の鍵を落とす / 記録する | ⑰ |
+    // | 手で打った鍵の拒否まで台帳に書く(束の種と無関係な指紋が残る) | ⑱ |
+    // | 拒まれたと覚えている鍵が金庫に残ったまま、それで繋ぎに行く | ⑲ |
+    // | 同じ鍵が通った後も拒否を持ち続ける(種の道だけ塞がったまま) | ⑳ |
+    //
+    // ★2026-08-15、台帳が覚える物を「蒔いた種」から**「拒まれた種」**へ反転させた
+    // (理由の観測値は `SeedLedgerStoring` の doc)。⑭/⑮ は其の反転で主張が変わった
+    // 2本で、#56 までの主張(順序・記録の有無)は**もう欠陥ではない形**を測っていた。
 
     /// ★⑧ 鍵の無い電話が、打たずに一覧へ着く。**この直しの本体**。
     func testAnEmptyKeychainIsSeededFromTheStampSoTheFirstScreenIsNotTheForm() async {
@@ -284,7 +309,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertNotNil(first.credentials, "前提: 1回目は蒔けている")
 
         // サーバが 401 を返した。
-        first.clearCredentials()
+        first.clearCredentials(rejected: Self.creds)
 
         // 2回目の起動(同じ束・同じ記録)。
         let second = makeState(store: store, notices: notices, provisioning: provisioning, seedLedger: ledger)
@@ -297,10 +322,10 @@ final class AppStateTests: XCTestCase {
 
     /// ★⑪ 机で鍵を回して焼き直した**別の**種は蒔ける。
     ///
-    /// これが渡米中に鍵が変わった時の唯一の復旧路。「一度蒔いた」旗1本で塞ぐ実装だと、
+    /// これが渡米中に鍵が変わった時の唯一の復旧路。「一度拒まれた」旗1本で塞ぐ実装だと、
     /// 焼き直した電話が二度と自動では入れず、手入力しか残らない。
     func testANewStampAfterAKeyRotationIsPlanted() async {
-        let ledger = InMemorySeedLedger(plantedSeedDigest: SeedDigest.of(Self.creds))
+        let ledger = InMemorySeedLedger(rejectedSeedDigest: SeedDigest.of(Self.creds))
         let rotated = Credentials(baseURL: Self.url, apiKey: "rotated")
 
         let state = makeState(store: FakeCredentialStore(stored: nil),
@@ -312,7 +337,8 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertEqual(state.credentials, rotated,
                        "★旗1本で塞ぐ実装を落とす(鍵を回したら渡米先で入れなくなる)")
-        XCTAssertEqual(ledger.plantedSeedDigest, SeedDigest.of(rotated))
+        XCTAssertEqual(ledger.rejectedSeedDigest, SeedDigest.of(Self.creds),
+                       "★蒔いた事を台帳に書き込む実装を落とす(拒否の記録が上書きで消える)")
     }
 
     /// ★⑫ Keychain が**読めない**起動では何も蒔かない。
@@ -321,69 +347,102 @@ final class AppStateTests: XCTestCase {
     /// 種を蒔くと、一時的に読めない1回の起動で **Tom が手で入れた鍵が種に置き換わる**。
     /// 読めない時は何もしないのが正しい(次の起動で読めれば元に戻る)。
     func testAnUnreadableKeychainIsNotTreatedAsEmpty() async {
-        let store = FakeCredentialStore(stored: nil)
+        let recorder = Recorder()
+        let store = FakeCredentialStore(stored: nil, recorder: recorder)
         store.loadThrows = true
-        let ledger = InMemorySeedLedger()
 
         let state = makeState(store: store,
-                              notices: RecordingNoticeStore(),
-                              provisioning: FakeProvisioning(seed: Self.creds),
-                              seedLedger: ledger)
+                              notices: RecordingNoticeStore(recorder: recorder),
+                              provisioning: FakeProvisioning(seed: Self.creds))
 
         await state.loadStoredCredentials()
 
         XCTAssertNil(state.credentials, "★読めない金庫を空と読む実装を落とす")
-        XCTAssertNil(ledger.plantedSeedDigest, "蒔いていないので記録も付かない(次の起動で蒔ける)")
+        // ★台帳を見ても此処は測れない(2026-08-15 に反転させた後)。今の台帳は
+        //   「拒まれた種」しか持たず、蒔いても一文字も動かない —— 蒔いた/蒔かないの
+        //   差が出るのは**金庫への書き込み**だけなので、そこを見る。
+        XCTAssertFalse(recorder.events.contains("keychain-saved"),
+                       "★読めない金庫へ種を書きに行く実装を落とす(手入力の鍵が種に化ける)")
         XCTAssertFalse(state.isLoadingCredentials)
     }
 
     /// ⑬ 刻印が無い焼き方(simulator / 対照)は今まで通り鍵入力画面へ。
     func testWithoutAStampNothingChanges() async {
-        let ledger = InMemorySeedLedger()
-        let state = makeState(store: FakeCredentialStore(stored: nil),
-                              notices: RecordingNoticeStore(),
-                              provisioning: NoProvisioning(),
-                              seedLedger: ledger)
+        let recorder = Recorder()
+        let state = makeState(store: FakeCredentialStore(stored: nil, recorder: recorder),
+                              notices: RecordingNoticeStore(recorder: recorder),
+                              provisioning: NoProvisioning())
 
         await state.loadStoredCredentials()
 
         XCTAssertNil(state.credentials)
-        XCTAssertNil(ledger.plantedSeedDigest)
+        XCTAssertTrue(recorder.events.isEmpty,
+                      "種が無い起動は金庫も台帳も触らない(何かを蒔く/消す実装を落とす)")
     }
 
-    /// ★⑭ 記録を付けるのは Keychain へ書いた**後**。
+    /// ★⑭ 種を蒔く道は、台帳に**一文字も書かない**。
     ///
-    /// 逆順だと、保存に失敗した種を「蒔いた」と記録して二度と蒔かなくなる。
-    /// この順なら、間で殺されても次の起動で同じ値をもう一度書くだけ(冪等)。
+    /// #56 までは此処が「蒔いた種を記録する」検査で、順序(Keychain → 台帳)を固定して
+    /// いた。2026-08-15 に記録する物を「拒まれた種」へ反転させた事で、**書く手その物が
+    /// 消えた** —— 冪等だから記録が要らない(次の起動でも金庫が空なら同じ値を書くだけ)。
     ///
-    /// 3つ目の `notice-cleared` は実測(2026-08-11)で現れた本物の3手目 —— 種が入って
+    /// 消えた手の検査を消すだけにすると、「蒔く時にも台帳を触る」実装へ戻る道が開く。
+    /// 戻ると何が壊れるかは⑯が測っている(金庫だけが独りで空になった電話が、台帳の
+    /// 記録に止められて鍵入力欄から出られない)。だから**触らない事**を此処で固定する。
+    ///
+    /// 2手目の `notice-cleared` は実測(2026-08-11)で現れた本物の手 —— 種が入って
     /// 資格情報が載った起動は、鍵入力画面へ行かないので**出す先の無い断りを掃く**
     /// (`loadStoredCredentials()` の else 側)。鍵を回して焼き直した電話が、消えた鍵に
-    /// ついての古い断りを持ち回らないのが此の1手。列ごと固定するのは、間に4手目が
+    /// ついての古い断りを持ち回らないのが此の1手。列ごと固定するのは、間に3手目が
     /// 生えた日も落とす為。
-    func testTheLedgerIsWrittenAfterTheKeychain() async {
+    func testPlantingASeedDoesNotTouchTheLedger() async {
         let recorder = Recorder()
+        let ledger = RecordingSeedLedger(recorder: recorder)
         let state = makeState(store: FakeCredentialStore(stored: nil, recorder: recorder),
                               notices: RecordingNoticeStore(recorder: recorder),
                               provisioning: FakeProvisioning(seed: Self.creds),
-                              seedLedger: RecordingSeedLedger(recorder: recorder))
+                              seedLedger: ledger)
 
         await state.loadStoredCredentials()
 
-        XCTAssertEqual(recorder.events, ["keychain-saved", "ledger-written", "notice-cleared"],
-                       "★逆順の実装を落とす(書けなかった種を蒔いた事にする)")
+        XCTAssertEqual(recorder.events, ["keychain-saved", "notice-cleared"],
+                       "★蒔いた事を台帳へ書く実装を落とす(金庫だけ消えた電話が二度と戻れない)")
+        XCTAssertNil(ledger.rejectedSeedDigest, "拒否は起きていないので記録も無い")
     }
 
-    /// ★⑮ Keychain へ**書けなかった**種には記録を付けない。
+    /// ★⑭-b 拒否の記録は Keychain を消すより**先**。
     ///
-    /// ⑭ は「順序」を見ている。此処が見るのは**握り潰し**の方 —— 保存が throw した時、
-    /// 順序が正しくても `try?` で素通りすれば記録は付く。付いた瞬間、次の起動は
-    /// 「もう蒔いた」と読んで種を蒔かず、Keychain は空のままなので**鍵の入力欄が出る**
-    /// (= #64 が直しに来た形が、一度きりの保存失敗で復活する)。
+    /// ⑥(断りが先)と同じ型の欠陥。順序が逆でも他は全部緑で、差が出るのは間で
+    /// 殺された時だけ —— 逆順だと「金庫は空 + 拒否の記録は無い」に落ち、次の起動が
+    /// **拒まれたばかりの同じ種を蒔き直す**。⑩が塞いだ輪が、殺され方1つで復活する。
+    /// 今の順なら最悪でも「拒まれた鍵が金庫に残る + 記録は在る」で、それは
+    /// `loadStoredCredentials()` の掃除(⑲)が拾う。
+    func testTheRejectionIsRecordedBeforeTheKeychainIsCleared() {
+        let recorder = Recorder()
+        let state = makeState(store: FakeCredentialStore(stored: Self.creds, recorder: recorder),
+                              notices: RecordingNoticeStore(recorder: recorder),
+                              provisioning: FakeProvisioning(seed: Self.creds),
+                              seedLedger: RecordingSeedLedger(recorder: recorder))
+        state.setCredentials(Self.creds)
+        recorder.events.removeAll()
+
+        state.clearCredentials(rejected: Self.creds)
+
+        XCTAssertEqual(recorder.events, ["notice-saved", "ledger-written", "keychain-cleared"],
+                       "★金庫を消してから記録する実装を落とす(間で殺されると輪に戻る)")
+    }
+
+    /// ★⑮ Keychain へ**書けなかった**種は、次の起動でもう一度蒔かれる。
     ///
-    /// 此の起動を memory の資格情報で通すのは変えない(`KeyEntryViewModel.submit()` が
-    /// Keychain の失敗を握り潰すのと同じ判断)。変えるのは記録の側だけ。
-    func testASeedThatCouldNotBeSavedIsNotRecordedAsPlanted() async {
+    /// ⑭ は「蒔く道が台帳を触らない」を見ている。此処が見るのは其の**帰結** ——
+    /// 触らないから、一度きりの保存失敗が次の起動に持ち越されない。#56 の設計
+    /// (蒔いた事を記録する)では、`try?` が保存の失敗を握り潰した瞬間に記録だけが付き、
+    /// 次の起動は「もう蒔いた」と読んで蒔かず、Keychain は空のままなので**鍵の入力欄が
+    /// 出る** —— 直しに来た形が、一度きりの保存失敗で復活していた。
+    ///
+    /// 此の起動を memory の資格情報で通すのも変えない(`KeyEntryViewModel.submit()` が
+    /// Keychain の失敗を握り潰すのと同じ判断)。書けない事は使えない事ではない。
+    func testASeedThatCouldNotBeSavedIsPlantedAgainOnTheNextLaunch() async {
         let recorder = Recorder()
         let store = FakeCredentialStore(stored: nil, recorder: recorder)
         store.saveThrows = true
@@ -398,10 +457,10 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertEqual(state.credentials, Self.creds,
                        "書けない事は使えない事ではない —— 此の起動は通る")
-        XCTAssertNil(ledger.plantedSeedDigest,
-                     "★保存の失敗を握り潰して記録だけ付ける実装を落とす(次の起動で欄が出る)")
         XCTAssertFalse(recorder.events.contains("keychain-saved"),
                        "前提: 保存は本当に失敗している(検査が空振りしていない)")
+        XCTAssertNil(ledger.rejectedSeedDigest,
+                     "保存の失敗は拒否ではない(401 でもないのに種の道を塞ぐ実装を落とす)")
 
         // 次の起動。記録が付いていないので、同じ種をもう一度蒔ける。
         store.saveThrows = false
@@ -411,7 +470,145 @@ final class AppStateTests: XCTestCase {
                                seedLedger: ledger)
         await second.loadStoredCredentials()
 
-        XCTAssertEqual(try? store.load(), Self.creds, "2回目で Keychain に載る")
-        XCTAssertEqual(ledger.plantedSeedDigest, SeedDigest.of(Self.creds))
+        XCTAssertEqual(try? store.load(), Self.creds,
+                       "★一度の保存失敗を持ち越す実装を落とす(2回目で Keychain に載る)")
+        XCTAssertEqual(second.credentials, Self.creds)
+    }
+
+    /// ★⑯ 拒否と**無関係に** Keychain だけ消えた電話は、種を蒔き直して復帰する。
+    ///
+    /// ⑩ と対の検査。⑩ は「拒まれた種を蒔き直さない」、此処は「拒まれていない種は
+    /// 蒔き直す」。2本一緒でないと、台帳が**何を根拠に**止めているかが固定されない ——
+    /// ⑩ だけだと「Keychain が空 + 台帳に何か在る」で止める実装が緑になり、
+    /// 其れが 2026-08-15 に観測した錠そのもの。
+    ///
+    /// ★何故此れが空想でないか。台帳の doc は「台帳と Keychain は入れ直しで一緒に
+    /// 消える」を前提に置いていたが、偽だった。実在する2本は `wipeOutOfBand()` の doc。
+    /// 実測(2026-08-15): 束の中に種が在り `storeReadable=true` で、台帳だけが `set` の
+    /// 電話が、鍵入力画面から永久に出られなかった。回転以外に復帰路が無い。
+    func testAKeychainThatLostItsItemWithoutARejectionIsSeededAgain() async {
+        let ledger = InMemorySeedLedger()
+        let provisioning = FakeProvisioning(seed: Self.creds)
+        let store = FakeCredentialStore(stored: nil)
+        let notices = RecordingNoticeStore()
+
+        // 1回目の起動 → 蒔かれる。
+        let first = makeState(store: store, notices: notices, provisioning: provisioning, seedLedger: ledger)
+        await first.loadStoredCredentials()
+        XCTAssertEqual(first.credentials, Self.creds, "前提: 1回目は蒔けている")
+
+        // 401 は**起きていない**。アプリを通さずに Keychain の項目だけが消える。
+        store.wipeOutOfBand()
+
+        // 2回目の起動(同じ束・同じ台帳)。
+        let second = makeState(store: store, notices: notices, provisioning: provisioning, seedLedger: ledger)
+        await second.loadStoredCredentials()
+
+        XCTAssertEqual(second.credentials, Self.creds,
+                       "★種が束に在るのに欄を出す実装を落とす(鍵を回すまで復帰路が無い)")
+        XCTAssertNil(second.signOutNotice, "拒否は起きていないので断りも出ない")
+    }
+
+    /// ★⑰ 入れ替えた**後**に届いた古い 401 は捨てる。
+    ///
+    /// 要求は非同期に返るので、此の順序は空想ではない —— 鍵を打ち直した直後、
+    /// 前の鍵で出していた要求の 401 が後から届く。`self.credentials` を見て記録する
+    /// 実装だと、其の 401 が**今使っている鍵**を落とし、更に束の種を「拒まれた」と
+    /// 覚える。使えている鍵で鍵入力画面へ落ち、種の道まで塞がる形。
+    func testA401ForAKeyThatIsNoLongerInUseIsIgnored() {
+        let old = Self.creds
+        let new = Credentials(baseURL: Self.url, apiKey: "new")
+        let ledger = InMemorySeedLedger()
+        let notices = RecordingNoticeStore()
+        let state = makeState(store: FakeCredentialStore(stored: new),
+                              notices: notices,
+                              provisioning: FakeProvisioning(seed: old),
+                              seedLedger: ledger)
+        state.setCredentials(new)
+
+        state.clearCredentials(rejected: old)
+
+        XCTAssertEqual(state.credentials, new, "★今の鍵まで落とす実装を落とす")
+        XCTAssertNil(state.signOutNotice, "使えている鍵に断りは付かない")
+        XCTAssertNil(notices.load(), "ディスクにも書かない(次の起動で理由だけ生き残る)")
+        XCTAssertNil(ledger.rejectedSeedDigest,
+                     "★古い 401 で種の道を塞ぐ実装を落とす(束の種が二度と蒔けなくなる)")
+    }
+
+    /// ⑱ 手で打った鍵の拒否は台帳に書かない。
+    ///
+    /// 蒔く経路は種しか通らないので、手入力の鍵の拒否を覚えても止める先が無い ——
+    /// 束の種と無関係な指紋が `UserDefaults` に残るだけになる。
+    func testARejectedHandTypedKeyIsNotRecordedInTheLedger() {
+        let typed = Credentials(baseURL: Self.url, apiKey: "typed")
+        let ledger = InMemorySeedLedger()
+        let state = makeState(store: FakeCredentialStore(stored: typed),
+                              notices: RecordingNoticeStore(),
+                              provisioning: FakeProvisioning(seed: Self.creds),
+                              seedLedger: ledger)
+        state.setCredentials(typed)
+
+        state.clearCredentials(rejected: typed)
+
+        XCTAssertEqual(state.signOutNotice?.reason, .keyRejected, "前提: 拒否は本当に起きている")
+        XCTAssertNil(ledger.rejectedSeedDigest,
+                     "★拒まれた鍵を種かどうか見ずに書く実装を落とす")
+    }
+
+    /// ★⑲ 拒まれたと覚えている鍵が金庫に残っていたら、起動時に掃く。
+    ///
+    /// `clearCredentials(rejected:)` は台帳へ書いた**後**に金庫を消すので(⑭-b)、
+    /// 間で殺されると此の形で残る。掃かずに使うと、起動する度に 401 を貰って断りが
+    /// 出る電話になる —— 拒否を覚えているのに拒まれた鍵で繋ぎに行く、という
+    /// 一番説明の付かない状態。
+    func testARejectedKeyLeftInTheKeychainIsSweptOnLaunch() async {
+        let recorder = Recorder()
+        let store = FakeCredentialStore(stored: Self.creds, recorder: recorder)
+        let ledger = InMemorySeedLedger(rejectedSeedDigest: SeedDigest.of(Self.creds))
+        let notices = RecordingNoticeStore(notice: SignOutNotice(reason: .keyRejected, baseURL: Self.url),
+                                           recorder: recorder)
+
+        let state = makeState(store: store,
+                              notices: notices,
+                              provisioning: FakeProvisioning(seed: Self.creds),
+                              seedLedger: ledger)
+
+        await state.loadStoredCredentials()
+
+        XCTAssertNil(state.credentials,
+                     "★拒まれたと覚えている鍵で繋ぎに行く実装を落とす")
+        XCTAssertTrue(recorder.events.contains("keychain-cleared"),
+                      "★画面から外すだけの実装を落とす(次の起動でまた同じ所に戻る)")
+        XCTAssertEqual(state.signOutNotice?.reason, .keyRejected,
+                       "鍵入力画面は理由を持って出る")
+    }
+
+    /// ★⑳ 同じ鍵が**通った**ら、拒否の記録は降ろす。
+    ///
+    /// 拒否は過去の事実であって今の状態ではない。残したままだと、机側で鍵を戻した日に
+    /// **種の道だけが塞がったまま**になる —— 打てば動くので、塞がっている事に気付く
+    /// 機会も無い(次に金庫が独りで空になるまで表に出ない)。
+    func testAKeyThatWorksAgainClearsTheRejection() async {
+        let ledger = InMemorySeedLedger(rejectedSeedDigest: SeedDigest.of(Self.creds))
+        let state = makeState(store: FakeCredentialStore(stored: nil),
+                              notices: RecordingNoticeStore(),
+                              provisioning: FakeProvisioning(seed: Self.creds),
+                              seedLedger: ledger)
+
+        // 机側で鍵を戻した後、同じ値が `healthz` と `/api/sessions` の2段を通った。
+        state.setCredentials(Self.creds)
+
+        XCTAssertNil(ledger.rejectedSeedDigest,
+                     "★通った鍵の拒否を持ち続ける実装を落とす")
+
+        // 種の道も同時に開く。此処まで見ないと、記録を消しただけで
+        // 別の所(蒔く側)に旗が残っている実装が緑になる。
+        let second = makeState(store: FakeCredentialStore(stored: nil),
+                               notices: RecordingNoticeStore(),
+                               provisioning: FakeProvisioning(seed: Self.creds),
+                               seedLedger: ledger)
+        await second.loadStoredCredentials()
+
+        XCTAssertEqual(second.credentials, Self.creds, "次の起動で同じ種が蒔ける")
     }
 }
