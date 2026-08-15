@@ -104,6 +104,16 @@ chk "E8 ★dry-run の脱出は本番の木に触る前に在る" "yes" \
 chk "E9 ★戻しの rsync が終了状態を取る" 2 \
     "$(ncode 'rsync .*"\$snapshot"/ "\$live"/ || back_rc=\$?')"
 
+# E14: 手元の e2e は**何かを送る前**に走る。2026-08-15 に足した段で、守りではなく
+#      「知るまでの時間」を縮める物(理由は台本の 0-pre 節)。後ろへ動くと 86 秒を払って
+#      得る物が無くなる —— 落ちるのは遠隔で 12 分後のままなのに、値段だけ残る。
+#      ★この対照の限界: 測るのは**行の前後**であって、その行が実際に走る事ではない。
+#        `if false` で囲われても E14 は緑のままになる。挙動側は配備を実走させないと測れない。
+pre_e2e=$(/usr/bin/grep -n 'cd "\$SRC" && "\$NODE" test/e2e-local.mjs' "$DEPLOY" | /usr/bin/cut -d: -f1 | /usr/bin/head -1)
+first_send=$(/usr/bin/grep -n '"\$SRC"/ "\$EDITH:\$STAGE"/' "$DEPLOY" | /usr/bin/cut -d: -f1 | /usr/bin/head -1)
+chk "E14 ★手元の e2e は仮置きへ送る前に在る" "yes" \
+    "$([ -n "$pre_e2e" ] && [ -n "$first_send" ] && [ "$pre_e2e" -lt "$first_send" ] && echo yes || echo no)"
+
 # ── E10-E13 ★陰性対照 ─────────────────────────────────────────────────────
 # 上が緑なのは、見分けているからか **どの綴りにも当たる書き方**をしているからか。
 # 台本を壊した複製を作って、狙った項だけが落ちる事を見せる。
@@ -137,6 +147,14 @@ if [ "${RC_DEPLOY_CTL_NEG:-1}" = "1" ]; then
   # 札を生の hostname に戻す -> E5 と E6 の両方(digest が消え、生値が現れる)
   got=$(RC_DEPLOY_CTL_NEG=0 mutate_run 's|^OWNER=.*|OWNER="deploy-$(hostname -s)-$$"|')
   chk "E13 ★陰性: 札を生の hostname に戻すと E5/E6 が落ちる" "E5 E6 " "$got"
+
+  # 手元の e2e を**送った後ろへ移す**(消すのでなく移す = E14 が測っているのが
+  # 「在るか」ではなく「前後」だと示す為。消す変異だと存在検査でも同じ赤が出る)。
+  got=$(RC_DEPLOY_CTL_NEG=0 mutate_run '/cd "\$SRC" && "\$NODE" test\/e2e-local.mjs/d
+/"\$SRC"\/ "\$EDITH:\$STAGE"\//a\
+    if ! ( cd "$SRC" \&\& "$NODE" test/e2e-local.mjs ); then exit 1; fi
+')
+  chk "E15 ★陰性: 手元の e2e を送信の後ろへ移すと E14 だけが落ちる" "E14 " "$got"
 fi
 
 echo "--- 合計: PASS $pass / FAIL $fail ---"

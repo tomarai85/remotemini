@@ -513,7 +513,48 @@ for line in sys.stdin:
 `);
 chmodSync(fakeWork, 0o755);
 const fakeAcct = join(SB, "fake-fleet-account");
-writeFileSync(fakeAcct, "#!/bin/sh\necho account=testacct\n");
+const acctState = join(SB, "fleet-account.current");
+// ★偽の `fleet-account`。**本物の出力の形**(`src/account.mjs` 冒頭が写した printf)を出す。
+//
+//   旧版は `echo account=testacct` の1行だった。それで通っていたのは、机が
+//   台本の標準出力を**そのまま素通し**していた頃の話 —— 今は `parseFleetAccount` を
+//   通すので、この1行は「読めない出力」に化けて `parseStatus: "no-current-line"` に
+//   落ちる。**検査が測っていたのは机の素通しであって、電話が読む形ではなかった**。
+//
+//   状態を file に持つのは、`/api/account/select` が**観測し直して**返す事
+//   (`server.mjs` の `/select` は `execFileSync` の後にもう一度読む)を、
+//   e2e から確かめられる様にする為。返り値だけを差し替える stub では、
+//   「頼んだ名前をそのまま返しているだけ」の木と見分けが付かない。
+writeFileSync(fakeAcct, `#!/bin/sh
+STATE=${JSON.stringify(acctState)}
+[ -f "$STATE" ] || printf 'team' > "$STATE"
+cur=$(cat "$STATE")
+case "\${1:-}" in
+  "")
+    ;;
+  --next)
+    case "$cur" in
+      team) cur=biz ;;
+      biz)  cur=sdgs ;;
+      *)    cur=team ;;
+    esac
+    printf '%s' "$cur" > "$STATE"
+    ;;
+  *)
+    cur="$1"
+    printf '%s' "$cur" > "$STATE"
+    ;;
+esac
+echo "現用: $cur"
+echo "優先順 (.order):"
+i=1
+for a in team biz sdgs; do
+  if [ "$a" = "$cur" ]; then mark="->"; else mark="  "; fi
+  if [ "$a" = "sdgs" ]; then have=欠; else have=有; fi
+  printf "  %s %d. %-8s トークン:%s\\n" "$mark" "$i" "$a" "$have"
+  i=$((i+1))
+done
+`);
 chmodSync(fakeAcct, 0o755);
 
 // ★port は**カーネルに決めさせる**(2026-08-02 に変更)。旧: `8790 + random(0..99)`。
@@ -767,9 +808,60 @@ try {
       { role: "tool", text: "⚙ Bash" },
     ]), JSON.stringify(hist.history));
 
-  // 4. account
+  // 4. account —— **電話が読む封筒**(`wire.mjs` の `accountBody`)が端から端まで組める事。
+  //    旧版は台本の標準出力の素通し1本しか見ておらず、机が解析を挟んだ日に
+  //    「読めない出力」へ落ちたまま素通しの期待値だけが残った(2026-08-15 に配布で捕まえた)。
   const acct = await (await fetch(`${B}/api/account`, { headers: H })).json();
-  check("account passthrough", acct.account === "account=testacct");
+  check("account: 台本の出力を読み切ったと名乗る", acct.ok === true && acct.parseStatus === "ok",
+    JSON.stringify(acct));
+  check("account: 現用は1行目から取る", acct.current === "team", JSON.stringify(acct.current));
+  check("account: 出荷済みの版が読む `account` にも現用名が入る", acct.account === "team");
+  check("account: 一覧は .order の並びのまま届く",
+    JSON.stringify((acct.accounts || []).map((a) => a.name)) === JSON.stringify(["team", "biz", "sdgs"]),
+    JSON.stringify(acct.accounts));
+  check("account: 現用の行にだけ印が付く",
+    (acct.accounts || []).filter((a) => a.active).map((a) => a.name).join(",") === "team");
+  // 断り文は `display.blocked` の下に在る(電話も `$0.display.blocked` から読む)。
+  // 平らな `blocked` を期待すると、机が正しくても検査だけが赤くなる。
+  check("★account: トークンの無い行は**選べない行**として届く(理由の文付き)",
+    acct.accounts.find((a) => a.name === "sdgs")?.selectable === false
+    && typeof acct.accounts.find((a) => a.name === "sdgs")?.display?.blocked === "string",
+    JSON.stringify(acct.accounts?.find((a) => a.name === "sdgs")));
+  check("★account: 選べる行の断り文は空(理由が出っ放しにならない)",
+    acct.accounts.find((a) => a.name === "team")?.display?.blocked === null);
+  check("★account: 読めた時は生出力を載せない(読めなかった時だけの欄)", acct.raw === undefined);
+
+  // 4-b. 名指しの切替(§9-3)。**観測し直した**結果が返る事まで見る ——
+  //      頼んだ名前を echo するだけの木とは、状態を持つ台本でなければ見分けが付かない。
+  const HJ = { ...H, "content-type": "application/json" };
+  const selRes = await fetch(`${B}/api/account/select`, {
+    method: "POST", headers: HJ, body: JSON.stringify({ name: "biz" }),
+  });
+  const sel = await selRes.json();
+  check("select: 200 で返る", selRes.status === 200, `status=${selRes.status} ${JSON.stringify(sel)}`);
+  check("★select: 台本を動かした**後に読み直した**現用が返る", sel.current === "biz", JSON.stringify(sel.current));
+  check("★select: 印も biz の行へ移っている(一覧ごと取り直している)",
+    (sel.accounts || []).filter((a) => a.active).map((a) => a.name).join(",") === "biz");
+
+  // 4-c. 選べない行は**台本を叩かずに**断る。断りに理由コードが付く事まで見る ——
+  //      電話は文面ではなく `reason` で分岐しない(画面遷移は `code` の担当)が、
+  //      理由が空の拒否が1本でも在ると机の側の診断が出来なくなる。
+  const refusedRes = await fetch(`${B}/api/account/select`, {
+    method: "POST", headers: HJ, body: JSON.stringify({ name: "sdgs" }),
+  });
+  const refused = await refusedRes.json();
+  check("★select: トークンの無い名前は 400 で断る", refusedRes.status === 400, `status=${refusedRes.status}`);
+  check("★select: 断りに機械可読の理由が付く", refused.reason === "no-token", JSON.stringify(refused));
+  check("★select: 断りに人の読む1文が付く", typeof refused.error === "string" && refused.error.length > 0);
+  const afterRefused = await (await fetch(`${B}/api/account`, { headers: H })).json();
+  check("★select: 断った後、机の口座は動いていない", afterRefused.current === "biz", JSON.stringify(afterRefused.current));
+
+  // 4-d. 一覧に無い名前も同じ形で断る(白名簿が効いている陽性対照)。
+  const unknownRes = await fetch(`${B}/api/account/select`, {
+    method: "POST", headers: HJ, body: JSON.stringify({ name: "nosuch" }),
+  });
+  check("★select: 一覧に無い名前は 400", unknownRes.status === 400);
+  check("★select: その理由は unknown-account", (await unknownRes.json()).reason === "unknown-account");
 
   // 5. SSE 購読(fetch ストリーム)
   const sseCtl = new AbortController();
