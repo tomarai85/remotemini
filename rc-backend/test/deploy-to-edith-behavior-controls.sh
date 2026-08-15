@@ -59,6 +59,17 @@ trap cleanup EXIT
 exit 1
 MUT
 
+# 手元の e2e (step 0-pre) も差し替える。**node は差し替えない** —— 台本は
+# `/opt/homebrew/bin/node` と絶対 path で呼ぶので PATH の偽物では捕まらないし、
+# 捕まえるべきでもない(偽の ssh/rsync と同じで、差し替えるのは**実行される台本の方**)。
+# 本物を回すと 86 秒 × 走行回数 = この計器が 10 分級になり、誰も回さなくなる。
+# 既定は緑。`RC_FAKE_LOCAL_E2E_FAIL=1` で赤に倒す。
+/bin/cat > "$SB/test/e2e-local.mjs" <<'LOCALE2E'
+import { appendFileSync } from "node:fs";
+appendFileSync(process.env.RC_FAKE_LOG, "TAG local-e2e\n");
+process.exit(process.env.RC_FAKE_LOCAL_E2E_FAIL === "1" ? 1 : 0);
+LOCALE2E
+
 # ── 偽の ssh ──────────────────────────────────────────────────────────────
 # 引数を全部 log に残し、筋書き(`RC_FAKE_FAIL` に含まれる文字列)に当たったら非零。
 # 返す出力は**本物と同じ形**だけを真似る(刻印の読み戻し / SNAPSHOT= の行 / 錠の札)。
@@ -143,6 +154,9 @@ chk "B0b 最後に「完了」を出す"            1 "$(/usr/bin/grep -c '=== �
 # ★これが **B1-B4 の空振り防止**。log がいつも空なら「触っていない」は自明に緑になる。
 chk "B0c ★陽性: 通れば本番の木に触っている" 1 "$(tags swap-live)"
 chk "B0d 錠を取って、外して終わる"        "1 1" "$(tags acquire-lock) $(tags release-lock)"
+# ★B10 の空振り防止。手元の e2e が**一度も走っていない**なら、B10 の「赤なら止まる」は
+#   自明に緑になる(走らない物は落ちようがない)。陽性の側で 1 回を釘付けにする。
+chk "B0e ★陽性: 通れば手元の e2e が 1 回走っている" 1 "$(tags local-e2e)"
 
 # ── B1-B3 ★赤い検査は本番の木に到達させない ──────────────────────────────
 #   3 段それぞれで測る。1 段だけ見ると「たまたまその段の後ろに exit が在る」でも通る。
@@ -154,12 +168,27 @@ for spec in "npm test:B1:単体" "e2e-local.mjs:B2:e2e" "rc-backend-launch-check
   chk "${id}c $label が赤 -> それでも錠は外す"             1 "$(tags release-lock)"
 done
 
+# ── B10 ★手元の e2e が赤い時、遠くへは何も出て行かない ────────────────────
+# 第1弾の E14 は**行の前後**しか測れない(`if false` で囲われても緑になる)。
+# 此処は実走なので「本当に先に走り、赤なら本当に止まる」を測る。番号が後ろなのは
+# id が名前であって順序ではないから —— 走る位置は B1-B3 より**前**。
+RC_FAKE_LOCAL_E2E_FAIL=1 run
+chk "B10a 手元の e2e が赤 -> 非零で終わる"          1 "$([ "$DEP_RC" -ne 0 ] && echo 1 || echo 0)"
+chk "B10b ★赤 -> ssh を 1 本も撃たない(遠くへ出ない)" 0 "$(/usr/bin/grep -c '^SSH ' "$LOG")"
+chk "B10c ★赤 -> rsync を 1 本も撃たない"             0 "$(/usr/bin/grep -c '^RSYNC ' "$LOG")"
+# ★錠より前で止まる事も測る。86 秒の検査を**錠を握ったまま**回すと、その間ずっと
+#   他の配備が塞がる(錠の TTL は 2 時間)。順序が入れ替わったら此処が落ちる。
+chk "B10d ★赤 -> 錠を取ってすらいない(握ったまま 86 秒回さない)" 0 "$(tags acquire-lock)"
+
 # ── B4 --dry-run は仮置きまで ─────────────────────────────────────────────
 run --dry-run
 chk "B4a dry-run は 0 で終わる"                   0 "$DEP_RC"
 chk "B4b dry-run でも本番の木には触らない"        0 "$(touched_live)"
 chk "B4c dry-run の rsync は --dry-run を持つ"    1 "$(/usr/bin/grep -c '^RSYNC .*--dry-run' "$LOG")"
 chk "B4d dry-run では刻印すら書かない"            0 "$(tags stamp-stage)"
+# ★dry-run は「見るだけ」なので 86 秒を払わせない。旗の意味が「速く見る」である以上、
+#   此処が 1 になったら旗の意味の方が壊れている。
+chk "B4e dry-run では手元の e2e を回さない"      0 "$(tags local-e2e)"
 
 # ── B5 錠が取れなければ何も始めない ───────────────────────────────────────
 RC_FAKE_FAIL="/fake/lock" run
@@ -237,6 +266,18 @@ if [ "${RC_DEPLOY_BEH_NEG:-1}" = "1" ]; then
   # N4: 刻印の一致を門でなくする。「rsync が黙って何もしていない」を通してしまう。
   chk "N4 ★陰性: 刻印の門を潰すと B7a/B7b が落ちる" "B7a B7b " \
       "$(mutate_run '/LIVE_REV" = "\$SRC_REV/s/exit 1/:/')"
+
+  # N6: 手元の e2e を門でなくする(`exit 1` を潰す)。赤いまま遠くへ出て行く型。
+  chk "N6 ★陰性: 手元の e2e の門を潰すと B10 の 4 本だけが落ちる" "B10a B10b B10c B10d " \
+      "$(mutate_run '/★手元の e2e が赤い。ここで止める/{n;s/exit 1/:/;}')"
+
+  # N7: 手元の e2e を dry-run の側だけで回す様に反転する。
+  #     → 本走で一度も走らない = B0e(陽性の錨)が落ち、B10 の 4 本も一斉に落ちる。
+  #     これが「B0e は空振り防止として本当に効いているか」の証明。
+  #     ★B4e も落ちる。反転は「本走で回さない」と同時に「dry-run では回す」でも在るから。
+  #       最初 B4e を期待から落として書き、この対照に訂正させられた(= 予測でなく実測を書く)。
+  chk "N7 ★陰性: 手元の e2e を本走で回さなくすると B0e/B4e ごと落ちる" "B0e B10a B10b B10c B10d B4e " \
+      "$(mutate_run 's/^if \[ -z "\$DRY" \]; then$/if [ -n "$DRY" ]; then/')"
 
   # N5: B9 だけは**式を単体で当てる**。理由 = 絶対 path 版の台本を suite で実走させると、
   #     偽物を迂回した本物の ssh が起動して**外へ名前解決を試みる**。この計器の売りは
