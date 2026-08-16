@@ -1468,7 +1468,8 @@ try {
   const fresh = list4.sessions.find((s) => s.id === SID_FRESH);
   check("★未発言の会話が一覧に出る", !!fresh, JSON.stringify(list4.sessions.map((s) => s.id)));
   check("★未発言: 中身が無いことを名乗る(捏造しない)",
-    fresh?.title === "(未発言)" && fresh?.turns === 0 && fresh?.lastPrompt === "" && fresh?.fromRegistryOnly === true,
+    // 2026-08-16(spec-audit A2): 「(未発言)」は機械の内部語だったので人の言葉に変えた。
+    fresh?.title === "新しいセッション" && fresh?.turns === 0 && fresh?.lastPrompt === "" && fresh?.fromRegistryOnly === true,
     JSON.stringify(fresh));
   check("★未発言: cwd はペインの現在地", fresh?.cwd === CWD_FRESH, JSON.stringify(fresh));
   check("★未発言: 一覧の live は tmux/%23", fresh?.live?.route === "tmux" && fresh?.live?.pane === "%23",
