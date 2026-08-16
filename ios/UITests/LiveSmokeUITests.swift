@@ -45,13 +45,19 @@ final class LiveSmokeUITests: XCTestCase {
         // simulator の Keychain は再インストールを跨いで生きるので、前の走行が蒔いた種で
         // **一覧へ直行**する事がある —— 其れは #64 の直し(種で入力欄を飛ばす)が働いた形で、
         // 検査が落ちる理由にならない。鍵入力が出た時だけ、手動経路(打って繋ぐ)を通す。
-        let urlField = element(app, "keyEntry.baseURL")
+        // 2026-08-16(DESIGN §2.100)。鍵の無い起動の1枚目は**名乗る面**になったので、
+        // 待つ物も其方へ移した。打つ欄は退避路の奥に在り、此の検査だけが其処を通る
+        // (人は机で焼き直せば通らない道)。
+        let manualEntry = element(app, "disconnected.manualEntry")
         let scanLine = element(app, "list.scanLine")
         let deadline = Date().addingTimeInterval(15)
-        while Date() < deadline && !urlField.exists && !scanLine.exists {
+        while Date() < deadline && !manualEntry.exists && !scanLine.exists {
             usleep(300_000)
         }
-        if urlField.exists {
+        if manualEntry.exists {
+            manualEntry.tap()
+            let urlField = element(app, "keyEntry.baseURL")
+            XCTAssertTrue(urlField.waitForExistence(timeout: 10), "退避路の奥に欄が無い")
             urlField.tap()
             urlField.typeText(url)
             let keyField = element(app, "keyEntry.apiKey")

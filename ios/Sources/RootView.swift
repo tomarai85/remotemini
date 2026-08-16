@@ -110,7 +110,24 @@ struct RootView: View {
                 onUnauthorized: { appState.clearCredentials(rejected: credentials) }
             )
         } else {
-            KeyEntryView(clients: keyEntryClients, notice: appState.signOutNotice, onSaved: appState.setCredentials)
+            // 2026-08-16(DESIGN §2.100)。ここは以前 `KeyEntryView` を直に出していて、
+            // 資格情報が無い起動は**理由に関わらず**「Base URL と API Key を打て」の
+            // 白紙で始まっていた。名乗る面を先に置き、欄はその奥へ退避させた。
+            DisconnectedView(
+                // 迷子の `nil` は作らない。`disconnected` は資格情報が無い時に必ず入るが、
+                // 万一入っていなければ**説明が付かない**と名乗るのが正しい(嘘の理由を
+                // 選ばない)。
+                reason: appState.disconnected ?? .unexplained,
+                notice: appState.signOutNotice,
+                clients: keyEntryClients,
+                onPrimaryAction: { action in
+                    switch action {
+                    case .retryWithBundledSeed: await appState.retryWithBundledSeed()
+                    case .reloadStore: await appState.reloadStoredCredentials()
+                    }
+                },
+                onSaved: appState.setCredentials
+            )
         }
     }
 

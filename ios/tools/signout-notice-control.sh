@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: ios/Sources/AppState.swift ios/Sources/Core/KeyEntryClients.swift ios/Sources/Core/KeyEntryProbeFixture.swift ios/Sources/Core/KeychainCredentialStore.swift ios/Sources/Core/Provisioning.swift ios/Sources/Core/ProvisioningFixture.swift ios/Sources/Core/SignOutNotice.swift ios/Sources/Core/SignOutNoticeFixture.swift ios/Sources/RootView.swift ios/Sources/Screens/KeyEntry/KeyEntryView.swift ios/Sources/Screens/KeyEntry/KeyEntryViewModel.swift ios/Tests/AppStateTests.swift ios/Tests/Core/KeychainCredentialStoreTests.swift ios/Tests/Core/ProvisioningTests.swift ios/Tests/Core/SignOutNoticeStoreTests.swift ios/Tests/Screens/KeyEntryViewTests.swift ios/Tests/Screens/KeyEntryViewModelTests.swift ios/UITests/FirstRunUITests.swift ios/UITests/KeyEntryUITests.swift
+# controls-for: ios/Sources/AppState.swift ios/Sources/Core/KeyEntryClients.swift ios/Sources/Core/KeyEntryProbeFixture.swift ios/Sources/Core/KeychainCredentialStore.swift ios/Sources/Core/Provisioning.swift ios/Sources/Core/ProvisioningFixture.swift ios/Sources/Core/SignOutNotice.swift ios/Sources/Core/SignOutNoticeFixture.swift ios/Sources/RootView.swift ios/Sources/Screens/KeyEntry/DisconnectedView.swift ios/Sources/Screens/KeyEntry/KeyEntryView.swift ios/Sources/Screens/KeyEntry/KeyEntryViewModel.swift ios/Tests/AppStateTests.swift ios/Tests/Core/KeychainCredentialStoreTests.swift ios/Tests/Core/ProvisioningTests.swift ios/Tests/Core/SignOutNoticeStoreTests.swift ios/Tests/Screens/DisconnectedViewTests.swift ios/Tests/Screens/KeyEntryViewTests.swift ios/Tests/Screens/KeyEntryViewModelTests.swift ios/UITests/FirstRunUITests.swift ios/UITests/KeyEntryUITests.swift
 #
 # 鍵入力画面の負の対照。守っている物は3つ在り、**同じ file 群**の上に載っている:
 #   (a) 401 で戻された時の断り(DESIGN §2.65 / 監査 X2-6) …… M1-M9
@@ -103,8 +103,15 @@
 #       ★同時に**順序の検査(M16 の的)は緑のまま**。順序を見る対照だけでは、
 #         `try?` で握り潰す実装が通る —— 一度きりの保存失敗で、次の起動が入力欄に戻る。
 #         此の変異は commit 26d4566 直後まで実際に出荷していた姿そのもの。
+#   M27 1枚目を「名乗る面」から**打つ欄**へ戻す -> 「1枚目で値を訊かない」が赤
+#       ★2026-08-16(DESIGN §2.100 / REQUIREMENTS §9-5)。Tom が2回「論外」と言った
+#         姿そのものを機械で植える。同時に**種が在る電話は一覧に着いたまま**(M17 の的は
+#         緑)= 此の変異が入口の面だけを壊している事の証拠。
+#         規則ではなく**面**を測る唯一の変異なので、単体は1本も落ちない。
 #
-# 費用(隠さない): xcodebuild を21回(基準1 + 変異20)。うち6回は UI 検査を含むので重い。
+# 費用(隠さない): xcodebuild を28回(基準1 + 変異27)。うち7回は UI 検査を含むので重い。
+#   ★2026-08-16 に数え直した。「21回(基準1 + 変異20)」と書いてあったが、其の時点で
+#     既に probe は26本 —— **費用の見積りが嘘になっていた**(足す度に此処を直していない)。
 #   実測値は rc-backend/tools/run-controls.sh の登録行に書く。
 #
 # ★目印(INFLIGHT)は ios の変異対照で**共有**する。分けると片方の取り残しを
@@ -245,6 +252,8 @@ WANT_UNREADABLE=testAnUnreadableKeychainIsNotTreatedAsEmpty
 WANT_SEED_ORDER=testTheRejectionIsRecordedBeforeTheKeychainIsCleared
 WANT_SEED_FAIL=testASeedThatCouldNotBeSavedIsPlantedAgainOnTheNextLaunch
 WANT_FIRSTRUN=testAProvisionedPhoneReachesTheListWithoutBeingAskedToTypeAnything
+# 2026-08-16(§9-5)。**1枚目で値を訊かない**を測る側。M27 の的。
+WANT_NO_FORM=testTheFirstScreenNeverAsksForAValueEvenWithoutASeed
 # ★2026-08-15 の反転(台帳が覚える物を「蒔いた種」→「拒まれた種」)で生えた枝4本。
 #   枝を足して変異を足さないと、`orphan-instrument-scan` の言う「対照の無い分岐」が
 #   増える —— 単体は緑でも、其の枝を消した実装が此の計器に映らなくなる。
@@ -416,7 +425,8 @@ UNIT_ONLY="-only-testing:RemoteMiniTests/AppStateTests \
 -only-testing:RemoteMiniTests/KeyEntryViewTests \
 -only-testing:RemoteMiniTests/KeyEntryViewModelTests \
 -only-testing:RemoteMiniTests/ProvisioningTests \
--only-testing:RemoteMiniTests/KeychainCredentialStoreTests"
+-only-testing:RemoteMiniTests/KeychainCredentialStoreTests \
+-only-testing:RemoteMiniTests/DisconnectedViewTests"
 
 # UI の class も**変数で一度だけ**名乗る。runner が字面で書くと、下の extract() が
 # 持つ一覧と2つ目の写しになる。
@@ -622,8 +632,12 @@ mutate_m8() {
 # ★探し文は 2026-08-08(監査 X2-8)に付け直した。同じ行に `clients:` が入った日、
 #   古い探し文は静かに当たらなくなる —— それは probe の shasum 検査が UNMEASURED で
 #   捕まえる形なので、赤を緑と読む事にはならない。
+# ★2026-08-16(DESIGN §2.100)に付け直した2度目。鍵の無い起動の1枚目が
+#   `KeyEntryView` から `DisconnectedView` に変わり、`notice:` は引数の1行になった。
+#   断りは今も **1枚目の文**と、退避路の奥の**節**の両方に効くので、落とせば
+#   `KeyEntryUITests` が赤になる(奥の節が消える)。
 mutate_m9() {
-    /usr/bin/sed -i '' 's|^            KeyEntryView(clients: keyEntryClients, notice: appState.signOutNotice, onSaved: appState.setCredentials)$|            KeyEntryView(clients: keyEntryClients, onSaved: appState.setCredentials)|' "$RV"
+    /usr/bin/sed -i '' 's|^                notice: appState.signOutNotice,$|                notice: nil,|' "$RV"
 }
 # ---- 変異 M10: 2段目の文を1段目の文に差し替える -------------------------------
 # 文そのものは2つとも正しいまま。**段との結び**だけを壊す。畳んだ実装
@@ -708,6 +722,15 @@ mutate_m24() {
 # 種の側は単体で全部緑のまま —— **画面まで繋がっている事**だけが壊れる。
 mutate_m17() {
     /usr/bin/sed -i '' 's|^        } else if let credentials = appState.credentials {$|        } else if let credentials = appState.credentials, appState.isLoadingCredentials {|' "$RV"
+}
+# ---- 変異 M27: 1枚目を打つ欄へ戻す --------------------------------------------
+# 2026-08-16。`DisconnectedView`(名乗る面)を消して、鍵の無い起動が**いきなり
+# Base URL と API Key の欄**から始まる姿へ戻す = Tom が2回「論外」と言った形。
+# 単体は1本も落ちない —— 落ちるのは画素を見る `FirstRunUITests` だけ。
+mutate_m27() {
+    /usr/bin/sed -i '' '/^            DisconnectedView($/,/^            )$/c\
+            KeyEntryView(clients: keyEntryClients, notice: appState.signOutNotice, onSaved: appState.setCredentials)
+' "$RV"
 }
 
 # ---- 変異 M18: `clean` が何も落とさない(もっともらしい文字列を種にする)-------
@@ -836,6 +859,7 @@ probe M23-rejection-never-lifted mutate_m23 "$AS" "$WANT_SEED_UNBLOCK" "$WANT_ON
 probe M24-any-rejection-recorded mutate_m24 "$AS" "$WANT_SEED_ONLY" "$WANT_ONCE"
 probe M25-tests-share-the-item   mutate_m25 "$KCT" "$WANT_ISOLATED" "$WANT_ROUNDTRIP"
 probe M26-production-item-renamed mutate_m26 "$KC" "$WANT_PINNED"  "$WANT_ROUNDTRIP"
+probe M27-first-screen-asks-again mutate_m27 "$RV" "$WANT_NO_FORM" "$WANT_FIRSTRUN" run_firstrun
 
 # ★`--which` は此処で帰る。1本も変異させていないので復元の確認は測る物が無く、
 #   「復元を確認」と言うと**測っていない事を測ったと言う**形になる。
