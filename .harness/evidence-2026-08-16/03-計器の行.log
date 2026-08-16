@@ -1,0 +1,2 @@
+root flow:normal
+seed path: bundled=true storeReadable=true rejected=empty resolved=true

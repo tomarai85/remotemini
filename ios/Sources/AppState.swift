@@ -11,6 +11,41 @@ final class AppState: ObservableObject {
     /// (`SignOutNotice` / DESIGN §2.65)。
     @Published private(set) var signOutNotice: SignOutNotice?
 
+    /// 資格情報が**無い**時、なぜ無いか。在る間は `nil`(DESIGN §2.100)。
+    ///
+    /// ★`SignOutNotice` を置き換える物ではない。あちらは 401 を**跨いで disk に残る**
+    /// 事実(理由 + URL)で、此方は**今回の起動の観測**を4通りに畳んだ物。断りだけでは
+    /// 「束に種が無い」「金庫が読めない」の2つが名乗れず、其の2つが正に 2026-08-15 に
+    /// Tom が白紙のフォームとして読んだ状態だった。
+    @Published private(set) var disconnected: DisconnectedReason?
+
+    /// 鍵入力画面へ落ちる道は4本在って、**次の一手が全部違う**(DESIGN §2.100)。
+    /// 器は意味だけを運び、文言は持たない —— 文を決めるのは画面
+    /// (`SignOutNotice.Reason` と同じ役割分担)。
+    enum DisconnectedReason: Equatable {
+        /// 束が接続先を持たずに焼かれている。`RC_NO_SEED=1` の焼き方と、
+        /// `shots.sh` の様に `build.sh` の刻む段を通らない焼き方が此処へ来る。
+        /// **2026-08-15 に Tom が見た白紙のフォームは此れだった**(束の `Info.plist` に
+        /// `RCBaseURL` が無い事を実測)。名乗っていれば其の場で「焼き方が違う」と判った。
+        case seedAbsent
+
+        /// 焼き込まれた種を机が 401 で拒んだ。台帳(`SeedLedgerStoring`)が同じ種を
+        /// 蒔き直さない様に止めている状態。
+        case seedRejected
+
+        /// Keychain が読めない起動。**種も蒔いていない**(読めない時に蒔くと、手で
+        /// 入れた鍵を種が上書きする)。次の起動で読めれば黙って戻る。
+        case storeUnreadable
+
+        /// 通っていた鍵が拒まれた(`SignOutNotice`)。手で入れ直すのが唯一の道。
+        case keyRejected
+
+        /// 説明が付かない組み合わせ。**到達しない筈**だが、到達した時に嘘の理由を
+        /// 名乗らない為に置く —— `build.sh` の `build_rev` が「判らなかった事を
+        /// 『汚れている』と言い換えない」為に持っている枠と同じ趣旨。
+        case unexplained
+    }
+
     private let store: CredentialStore
     private let notices: SignOutNoticeStoring
     private let provisioning: ProvisioningSource
@@ -112,7 +147,12 @@ final class AppState: ObservableObject {
         credentials = stored
         if credentials == nil {
             signOutNotice = notices.load()
+            disconnected = Self.disconnectedReason(storeIsReadable: storeIsReadable,
+                                                   seed: provisioning.seed,
+                                                   rejectedSeedDigest: seedLedger.rejectedSeedDigest,
+                                                   notice: signOutNotice)
         } else {
+            disconnected = nil
             // ★鍵が在るのに断りが残っているのは、`clearCredentials()` の途中で殺された痕
             //   (断りを書いた直後、Keychain を消す前)。この電話は鍵入力画面へ行かないので
             //   出す先が無く、放っておくと**次に本当に落ちた時の断り**と見分けが付かなくなる。
@@ -120,6 +160,51 @@ final class AppState: ObservableObject {
             signOutNotice = nil
         }
         isLoadingCredentials = false
+    }
+
+    /// なぜ鍵が無いかを4通りに畳む。**純関数**にしてあるのは `KeyEntryView.sentence(for:)` と
+    /// 同じ理由で、`loadStoredCredentials()` の中に書くと判定の規則なのに検査から触れず、
+    /// 「画面に出た文」からしか確かめられなくなるから。
+    ///
+    /// ★順番に意味が在る。上から順に**具体的な方**が勝つ:
+    /// 1. 金庫が読めない起動は他の全部の判定が当てにならない(種も蒔いていない)。
+    /// 2. 束の種が拒まれている形は、断りより具体的(次の一手が「机で鍵を戻す」になる)。
+    /// 3. 断りは「通っていた鍵が通らなくなった」= 直近に起きた事実。
+    /// 4. 残るのは「そもそも接続先を持たずに焼かれた束」。
+    ///
+    /// ★最後の `.unexplained` は**到達しない筈**の枠。種が在り、拒まれておらず、金庫が
+    /// 読める起動は `plantSeedIfNeeded()` が必ず値を返すので此処へは来ない。それでも
+    /// 置くのは、来た時に「接続先を持たずに焼かれた」と**嘘を名乗らせない**為。
+    static func disconnectedReason(storeIsReadable: Bool,
+                                   seed: Credentials?,
+                                   rejectedSeedDigest: String?,
+                                   notice: SignOutNotice?) -> DisconnectedReason {
+        if !storeIsReadable { return .storeUnreadable }
+        if let seed, rejectedSeedDigest == SeedDigest.of(seed) { return .seedRejected }
+        if notice != nil { return .keyRejected }
+        if seed == nil { return .seedAbsent }
+        return .unexplained
+    }
+
+    /// 「机で鍵を戻した」時の再試行。**拒否の記録だけ**を降ろして読み直す。
+    ///
+    /// ★何を消して、何を消さないか。消すのは台帳の指紋1本で、金庫は触らない ——
+    /// 金庫はこの時点で既に空(`clearCredentials` が消した)なので、消す物が無い。
+    /// 断り(`SignOutNotice`)も消さない: 断りが消えるのは**接続が成功した時だけ**という
+    /// 規則(`SignOutNoticeStoring.save` の doc)を、押した事で破らない。
+    ///
+    /// ★輪にならないのは、押すのが人だから。同じ拒否鍵のまま押せば 401 をもう一度貰って
+    /// 台帳が書き直されるだけで、機械が勝手に回り続ける形にはならない。
+    func retryWithBundledSeed() async {
+        seedLedger.rejectedSeedDigest = nil
+        isLoadingCredentials = true
+        await loadStoredCredentials()
+    }
+
+    /// 金庫が読めなかった起動の再試行。観測をやり直すだけで、状態は一つも変えない。
+    func reloadStoredCredentials() async {
+        isLoadingCredentials = true
+        await loadStoredCredentials()
     }
 
     /// 焼き込まれた種を蒔く。蒔いたら `credentials` に載せて返す。

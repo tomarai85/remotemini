@@ -611,4 +611,84 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertEqual(second.credentials, Self.creds, "次の起動で同じ種が蒔ける")
     }
+
+    // MARK: - なぜ鍵が無いか(2026-08-16、DESIGN §2.100)
+
+    /// ★㉑ 4本の道が**別々の理由**として出る。
+    ///
+    /// 想定している誤実装は1つで、直す前の姿そのもの: **どの道も同じ白紙**。
+    /// 白紙は「打て」としか読めないので、束が種を持たずに焼かれた電話(= 2026-08-15 に
+    /// Tom が見た物)も、金庫が読めないだけの電話も、人には同じ故障に見える。
+    func testEachRouteToTheKeyScreenNamesItsOwnReason() {
+        XCTAssertEqual(AppState.disconnectedReason(storeIsReadable: false,
+                                                   seed: Self.creds,
+                                                   rejectedSeedDigest: nil,
+                                                   notice: nil),
+                       .storeUnreadable,
+                       "金庫が読めない起動は、他の判定より先に名乗る(種も蒔いていない)")
+
+        XCTAssertEqual(AppState.disconnectedReason(storeIsReadable: true,
+                                                   seed: Self.creds,
+                                                   rejectedSeedDigest: SeedDigest.of(Self.creds),
+                                                   notice: SignOutNotice(reason: .keyRejected, baseURL: Self.url)),
+                       .seedRejected,
+                       "★断りが同時に在っても、種が拒まれている形の方が具体的(次の一手が違う)")
+
+        XCTAssertEqual(AppState.disconnectedReason(storeIsReadable: true,
+                                                   seed: nil,
+                                                   rejectedSeedDigest: nil,
+                                                   notice: SignOutNotice(reason: .keyRejected, baseURL: Self.url)),
+                       .keyRejected)
+
+        XCTAssertEqual(AppState.disconnectedReason(storeIsReadable: true,
+                                                   seed: nil,
+                                                   rejectedSeedDigest: nil,
+                                                   notice: nil),
+                       .seedAbsent,
+                       "★2026-08-15 に Tom が見た面。名乗っていれば『焼き方が違う』と其の場で判った")
+    }
+
+    /// ★㉒ 経路で1本。純関数が正しくても、`loadStoredCredentials()` が**呼ばない**
+    /// 実装は緑のまま通る(S8-5 と同じ形の欠陥)。
+    func testTheReasonIsActuallyPublishedByALaunchWithoutASeed() async {
+        let state = makeState(store: FakeCredentialStore(stored: nil),
+                              notices: RecordingNoticeStore(),
+                              provisioning: NoProvisioning())
+        await state.loadStoredCredentials()
+
+        XCTAssertNil(state.credentials, "前提: 鍵は無い")
+        XCTAssertEqual(state.disconnected, .seedAbsent)
+    }
+
+    /// ★㉓ 鍵が在る起動では理由を持たない。残ると、繋がっている電話が
+    /// 「繋がっていない」と名乗る面を1枚抱えたままになる。
+    func testAConnectedPhoneHasNoReasonAtAll() async {
+        let state = makeState(store: FakeCredentialStore(stored: Self.creds),
+                              notices: RecordingNoticeStore())
+        await state.loadStoredCredentials()
+
+        XCTAssertEqual(state.credentials, Self.creds, "前提: 鍵は在る")
+        XCTAssertNil(state.disconnected)
+    }
+
+    /// ★㉔ 「机で鍵を戻した」の再試行 = 台帳の拒否**だけ**を降ろして蒔き直す。
+    ///
+    /// ★同時に測るのは「断りを消さない」事。断りが消えるのは接続の成功だけという規則を
+    /// 押した事で破ると、`SignOutNoticeStoring.save` の doc が守っている物
+    /// (読んだ直後に殺された電話が白紙に戻らない)が静かに壊れる。
+    func testTheRetryButtonClearsOnlyTheRejectionAndReplantsTheSeed() async {
+        let ledger = InMemorySeedLedger(rejectedSeedDigest: SeedDigest.of(Self.creds))
+        let notices = RecordingNoticeStore(notice: SignOutNotice(reason: .keyRejected, baseURL: Self.url))
+        let state = makeState(store: FakeCredentialStore(stored: nil),
+                              notices: notices,
+                              provisioning: FakeProvisioning(seed: Self.creds),
+                              seedLedger: ledger)
+        await state.loadStoredCredentials()
+        XCTAssertEqual(state.disconnected, .seedRejected, "前提: 台帳が種を止めている")
+
+        await state.retryWithBundledSeed()
+
+        XCTAssertEqual(state.credentials, Self.creds, "★拒否を降ろしても蒔き直さない実装を落とす")
+        XCTAssertNil(state.disconnected)
+    }
 }

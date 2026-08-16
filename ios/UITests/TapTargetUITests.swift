@@ -248,6 +248,16 @@ final class TapTargetUITests: XCTestCase {
     /// 赤くなったら直すのは `KeyEntryView` の側。
     func testTheKeyEntrySubmitRowIsAlreadyThumbSized() {
         let app = launch(fixture: "keyentry-rejected")
+
+        // 2026-08-16(DESIGN §2.100)。鍵の無い起動の1枚目は**名乗る面**になり、打つ欄と
+        // 「接続」は退避路の奥へ移った。此の検査が見たい数(`Form` の行が親指に足りるか)は
+        // 奥の面に在るので、一段降りてから測る。
+        let link = element(app, "disconnected.manualEntry")
+        XCTAssertTrue(link.waitForExistence(timeout: 10), "錨: 1枚目に手入力への退避路が在る")
+        // 退避路の行も同じ下限で測る。**押せない退避路は退避路ではない**。
+        assertThumbSized(app, "disconnected.manualEntry")
+        link.tap()
+
         XCTAssertTrue(
             element(app, "keyEntry.signOutNotice").waitForExistence(timeout: 10),
             "錨: 断り付きの鍵入力画面に着いていない"

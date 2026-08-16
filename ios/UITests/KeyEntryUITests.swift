@@ -31,7 +31,21 @@ final class KeyEntryUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["RC_UI_FIXTURE"] = "keyentry-rejected"
         app.launch()
+        openManualEntry(app)
         return app
+    }
+
+    /// 2026-08-16(DESIGN §2.100)。鍵入力の欄は**1枚目から退避した**ので、此処の検査は
+    /// 一段降りてから始まる。この関数を launch 側に埋めてあるのは、各検査が
+    /// 「降りる」事を覚えていなくても済ませる為 —— 覚えさせると、書き忘れた1本が
+    /// 「欄が無い」と言って落ち、製品の欠陥に見える。
+    private func openManualEntry(_ app: XCUIApplication) {
+        let link = element(app, "disconnected.manualEntry")
+        XCTAssertTrue(link.waitForExistence(timeout: 20),
+                      "1枚目に手入力への退避路が無い(§9-5 は欄を消すのではなく畳む)")
+        link.tap()
+        XCTAssertTrue(element(app, "keyEntry.baseURL").waitForExistence(timeout: 20),
+                      "退避路を押しても欄に着かない")
     }
 
     private func element(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
@@ -103,6 +117,7 @@ final class KeyEntryUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["RC_UI_FIXTURE"] = "keyentry-slow-key"
         app.launch()
+        openManualEntry(app)
         return app
     }
 

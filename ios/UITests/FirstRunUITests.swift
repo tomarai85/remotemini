@@ -56,18 +56,44 @@ final class FirstRunUITests: XCTestCase {
                       "★種を蒔かない実装を落とす(初回起動が Base URL と API Key の入力欄になる)")
         XCTAssertFalse(element(app, "keyEntry.baseURL").exists,
                        "★入口に打つ欄が出る実装を落とす(下の錨が、此の行が測れる事を保証する)")
+        XCTAssertFalse(element(app, "disconnected.reason").exists,
+                       "★種が効いているのに『繋がっていない』面を出す実装を落とす")
 
         photograph(app, "firstrun-provisioned")
     }
 
-    /// ★錨(anchor)。刻印が**無い**面では、同じ探し方で打つ欄が現に見付かる。
+    /// ★§9-5 の合格条件そのもの(2026-08-16、DESIGN §2.100)。
+    /// **種の無い電話の1枚目にも、打つ欄は出ない。** 出るのは「なぜ繋がっていないか」と、
+    /// 手入力への退避路だけ。
     ///
-    /// 此れが無いと上の `XCTAssertFalse` は永久に緑になり得る —— 識別子の綴りが変わった
-    /// 日も、探し方そのものが壊れて何も見付けられなくなった日も、「打つ欄は無い」と
-    /// 答える。**常に真の検査は無価値**で、実在する欠陥を否定する分たちが悪い。
-    /// 面は `keyentry-slow-key`(`KeyEntryProbeFixture`)= 種も断りも持たない起動。
-    func testWithoutAStampTheKeyEntryFormIsWhereTheAppStarts() {
+    /// 逐語(Tom、2回言われている): 「なんで俺が、値を埋めないといけない形になってるの？」
+    /// / 「そもそも最初にこういう画面なのが論外」。**欄が出ない事**が合格で、欄が
+    /// 「奥に在る」事は合格を壊さない —— 机が鍵を回した時の唯一の復旧路なので消せない。
+    func testTheFirstScreenNeverAsksForAValueEvenWithoutASeed() {
         let app = launch("keyentry-slow-key")
+
+        XCTAssertTrue(element(app, "disconnected.reason").waitForExistence(timeout: 20),
+                      "★1枚目が理由を名乗らない実装を落とす(白紙のフォームに戻る形)")
+        XCTAssertFalse(element(app, "keyEntry.baseURL").exists,
+                       "★1枚目に URL 欄が出る実装を落とす(§9-5 の逐語)")
+        XCTAssertFalse(element(app, "keyEntry.apiKey").exists,
+                       "★1枚目に鍵欄が出る実装を落とす(§9-5 の逐語)")
+
+        photograph(app, "firstrun-no-seed")
+    }
+
+    /// ★錨(anchor)。打つ欄は**退避路の奥に現に在る**。
+    ///
+    /// 此れが無いと上の2本の `XCTAssertFalse` は永久に緑になり得る —— 識別子の綴りが
+    /// 変わった日も、探し方そのものが壊れて何も見付けられなくなった日も、「打つ欄は
+    /// 無い」と答える。**常に真の検査は無価値**で、実在する欠陥を否定する分たちが悪い。
+    /// 併せて「畳んだのであって消していない」も此処で測っている。
+    func testTheManualFormIsStillReachableOneStepIn() {
+        let app = launch("keyentry-slow-key")
+
+        let link = element(app, "disconnected.manualEntry")
+        XCTAssertTrue(link.waitForExistence(timeout: 20), "退避路が1枚目に無い")
+        link.tap()
 
         XCTAssertTrue(element(app, "keyEntry.baseURL").waitForExistence(timeout: 20),
                       "錨: 打つ欄は此の探し方で見付かる(上の否定が測定である事の根拠)")

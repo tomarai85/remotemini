@@ -124,9 +124,21 @@ final class BuildIdentityUITests: XCTestCase {
     /// どの検査からも見えていなかった。「出ている」を主張していたのは人の記憶だけ。
     func testTheVersionIsOnTheKeyEntryScreenAndCanBeSeenByATest() {
         let app = launch(fixture: "keyentry-rejected")
+
+        // 2026-08-16(DESIGN §2.100)。鍵の無い起動の1枚目は**名乗る面**になり、
+        // 打つ欄は其の奥へ退避した。版は両方の面に出る必要が在る —— 手前で止まった
+        // 人も、奥まで降りた人も、同じ問い(この電話は何版か)を持つ。
+        let onDisconnected = assertNamesARealBuild(app, "disconnected.buildInfo", "名乗る面")
+        photograph(app, "buildinfo-disconnected")
+
+        let link = element(app, "disconnected.manualEntry")
+        XCTAssertTrue(link.waitForExistence(timeout: 10), "錨: 手入力への退避路が在る")
+        link.tap()
+
         XCTAssertTrue(element(app, "keyEntry.submit").waitForExistence(timeout: 10),
                       "錨: 鍵入力画面に居る")
-        _ = assertNamesARealBuild(app, "keyEntry.buildInfo", "鍵入力")
+        let onKeyEntry = assertNamesARealBuild(app, "keyEntry.buildInfo", "鍵入力")
+        XCTAssertEqual(onDisconnected, onKeyEntry, "手前と奥で違う版を名乗っている")
         photograph(app, "buildinfo-keyentry")
     }
 
@@ -138,9 +150,11 @@ final class BuildIdentityUITests: XCTestCase {
         let onList = assertNamesARealBuild(listApp, "list.buildInfo", "一覧")
         listApp.terminate()
 
+        // 2026-08-16。鍵の無い側の代表を「名乗る面」へ移した —— 人が実際に landing する
+        // のは此方で、鍵入力画面は退避路の奥に在る(奥の版は上の検査が手前と突き合わせる)。
         let keyApp = launch(fixture: "keyentry-rejected")
-        let onKeyEntry = assertNamesARealBuild(keyApp, "keyEntry.buildInfo", "鍵入力")
+        let onKeyEntry = assertNamesARealBuild(keyApp, "disconnected.buildInfo", "名乗る面")
 
-        XCTAssertEqual(onList, onKeyEntry, "一覧と鍵入力が違う版を名乗っている")
+        XCTAssertEqual(onList, onKeyEntry, "一覧と名乗る面が違う版を名乗っている")
     }
 }
