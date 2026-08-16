@@ -49,7 +49,7 @@ final class ClearQueueClientTests: XCTestCase {
 
         let outcome = await client.clearQueue(baseURL: baseURL, apiKey: "k", sessionID: "s")
 
-        XCTAssertEqual(outcome, .ok("2 件の送信を取り消しました(いま動いている番は止まりません)。"))
+        XCTAssertEqual(outcome, .ok("Cancelled 2 queued sends (the one already running is not stopped)."))
     }
 
     /// 409 = 設計された断り。サーバの人向けの文がそのまま渡る(丸めない)。
@@ -69,6 +69,6 @@ final class ClearQueueClientTests: XCTestCase {
 
         let outcome = await client.clearQueue(baseURL: baseURL, apiKey: "k", sessionID: "s")
 
-        XCTAssertEqual(outcome, .error("机に届きません"))
+        XCTAssertEqual(outcome, .error("Can't reach the desk"))
     }
 }

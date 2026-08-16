@@ -121,20 +121,20 @@ probe "期限切れを verified と読む" "src/worker.mjs" \
 
 # ④ 押していない操作を報告する。ワーカー経路に Escape は無い。
 probe "ワーカー経路で Escape を名乗る" "src/view.mjs" \
-    'b.route === "worker" ? "停止の信号は送りました"' \
-    'b.route === "worker" ? "Escape は押しました"'
+    'b.route === "worker" ? "A stop signal was sent"' \
+    'b.route === "worker" ? "Escape was sent"'
 
 # ⑤ 経路が読めない時に動作を創作する。両方を Escape と書くのが元の嘘なら、
 #    片方に寄せるのも同じ誤り。
 probe "経路不明でも Escape と書く" "src/view.mjs" \
-    ': "止める操作は届きました";' \
-    ': "Escape は押しました";'
+    ': "The stop request was delivered";' \
+    ': "Escape was sent";'
 
 # ⑥ 古いサーバへの道を、元の嘘に戻す。ここが緑で通ると、嘘は
 #    「古い版が繋がった時だけ」復活する。
 probe "古いサーバの応答を『止めました』に戻す" "src/view.mjs" \
-    '{ kind: "warn", text: "止める操作は届きましたが、止まったかどうかは分かりません。画面を見て確かめてください。" }' \
-    '{ kind: "ok", text: "止めました(Escape)。" }'
+    '{ kind: "warn", text: "The stop request was delivered, but whether it stopped is unknown. Check the screen." }' \
+    '{ kind: "ok", text: "Stopped it (Escape)." }'
 
 # ---- ここから R2-2(上限)。同じ4 file を測るので同じ対照に置く ----
 #
@@ -173,13 +173,13 @@ probe "観測していない時に印の欄ごと落とす" "src/worker.mjs" \
 
 # ⑪ 会話画面にだけ出して一覧の札から落とす。起票時の実態がこれ —— 開くまで分からない。
 probe "上限を一覧の札から落とす(開かないと分からない)" "src/view.mjs" \
-    'short: "ワーカー・★上限"' \
+    'short: "Worker · usage limit"' \
     'short: w'
 
 # ⑫ 上限と名指せない異常を、上限だと創作する。分からない事を分かった風に書く形。
 probe "名指せない異常を上限だと創作する" "src/view.mjs" \
-    'short: "ワーカー・★答えなし", text: `${w}(★直前の答えは返りませんでした。理由は名指せません)`' \
-    'short: "★利用上限", text: `${w}(★利用上限)`'
+    'short: "Worker · no reply", text: `${w} (the last reply never arrived; cause unknown)`' \
+    'short: "Usage limit", text: `${w} (usage limit)`'
 
 # ---- ここから S8-19(一覧の札の言葉)。見張る file が同じなので同じ対照に置く ----
 #
@@ -190,15 +190,15 @@ probe "名指せない異常を上限だと創作する" "src/view.mjs" \
 # ⑬ 内部のトークンを生で出す形に戻す。起票時の実物 —— 一覧に `ワーカー・busy` と
 #    出ていた。tmux 枝は全部日本語なので、片方の経路にだけ残っていた古い形。
 probe "内部トークンを生で出す(起票時の実物)" "src/view.mjs" \
-    'if (state === "busy") return "答え待ち";' \
+    'if (state === "busy") return "Waiting for reply";' \
     'if (state === "busy") return state;'
 
 # ⑭ 観測していない事を書く。`busy` は「送ってから result がまだ返っていない」という
 #    事実で、Claude の中で何が起きているかではない。tmux 側が窓の無い時に「静か」と
 #    書かない(= 打って良いと読める)のと同じ線引きを、worker 側でも守らせる。
 probe "Claude の内心を書く(観測していない事を言う)" "src/view.mjs" \
-    'if (state === "busy") return "答え待ち";' \
-    'if (state === "busy") return "考え中";'
+    'if (state === "busy") return "Waiting for reply";' \
+    'if (state === "busy") return "Thinking";'
 
 # ⑮ 知らない state を既存の言葉へ丸める。**増えた事が誰にも見えないまま**別の状態に
 #    化ける形。`errored` 枝で理由を創作しないのと同じ方針で、読めない物を読めた事に

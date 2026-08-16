@@ -64,40 +64,40 @@ export function sendResult(status, body) {
     if (body == null) {
       return {
         kind: "warn",
-        text: "送りましたが、サーバの返事を読めませんでした。本文は残してあります。送り直すと二重に入ることがあります。",
+        text: "Sent, but the server's reply could not be read. Your text is kept — resending may duplicate it.",
         keepText: true,
       };
     }
     if (b.delivered === "unverified") {
-      const note = b.note || "送りましたが、取り込まれた事を確認できませんでした。";
+      const note = b.note || "Sent, but delivery could not be confirmed.";
       return {
         kind: "warn",
         // ★この一文だけは client が足す。入力欄の状態はサーバが知らないので、
         //   「残してある」と書けるのはここだけ(文面の出所を1つに保つ原則の例外理由)。
-        text: `${note}本文は残してあります。送り直すと二重に入ることがあります。`,
+        text: `${note} Your text is kept — resending may duplicate it.`,
         keepText: true,
       };
     }
     return {
       kind: "ok",
-      text: b.route === "worker" ? "送った(ワーカー)" : "送った",
+      text: b.route === "worker" ? "Sent (worker)" : "Sent",
       keepText: false,
     };
   }
   if (status === 409) {
-    return { kind: "refused", text: b.error || "送信を断られました。", keepText: true };
+    return { kind: "refused", text: b.error || "The server declined to send.", keepText: true };
   }
   if (status === 400) {
-    return { kind: "error", text: b.error || "送れない形でした。", keepText: true };
+    return { kind: "error", text: b.error || "The request was malformed.", keepText: true };
   }
   if (status === 401) {
-    return { kind: "error", text: "鍵が通りませんでした。", keepText: true };
+    return { kind: "error", text: "The key was rejected.", keepText: true };
   }
   if (status >= 500) {
     // 「応答しませんでした(HTTP 500)」は自己矛盾。応答は来ている。
-    return { kind: "error", text: `サーバ側で失敗しました(HTTP ${status})。`, keepText: true };
+    return { kind: "error", text: `Server-side failure (HTTP ${status}).`, keepText: true };
   }
-  return { kind: "error", text: `想定していない応答でした(HTTP ${status})。`, keepText: true };
+  return { kind: "error", text: `Unexpected response (HTTP ${status}).`, keepText: true };
 }
 
 /**
@@ -119,7 +119,7 @@ export function interruptResult(status, body) {
     //   のは「無かった」ではなく「分からない」。下の workPhrase の注記(観測できなかったを
     //   静かと書かない)と同じ誤りを、こちらは `|| {}` の1行でやっていた。
     if (body == null) {
-      return { kind: "warn", text: "止めたかどうか確認できませんでした。画面を見て確かめてください。" };
+      return { kind: "warn", text: "Could not confirm the stop. Check the screen." };
     }
     // ★2026-08-03、tmux 経路は3通りに分かれるようになった(`server.mjs` の interrupt 参照)。
     //   それまでは Escape を送れた事が必ず「止めました(Escape)。」になっていて、
@@ -130,37 +130,37 @@ export function interruptResult(status, body) {
     //   画素から推し量る tmux より強い観測ができる。撮れないのは画面であって、死は分かる。
     //   下の二択が残っているのは worker の為ではなく、**`stopped` を載せない古いサーバ**の為。
     if (Object.prototype.hasOwnProperty.call(b, "stopped")) {
-      if (b.stopped === "verified") return { kind: "ok", text: "止めました(生成が止まったのを確認)。" };
+      if (b.stopped === "verified") return { kind: "ok", text: "Stopped (generation confirmed stopped)." };
       // ★2026-08-03 追加。Escape を押した時には番が自力で終わっていた場合。
       //   画面の見え方は「止まった」と同じ(スピナーが消える)ので、これを verified に
       //   混ぜると**止めていないのに止めたと言う**。完了行が増えた事で区別が付く。
       //   ★この値は tmux 経路にしか出ない(worker の interrupt docstring 参照)。
       if (b.stopped === "already-done") {
-        return { kind: "ok", text: "押した時には終わっていました(止めるものは残っていません)。" };
+        return { kind: "ok", text: "It had already finished (nothing left to stop)." };
       }
       // ★何を撃ったかは経路で違う。tmux は Escape、worker は子への停止信号。
       //   両方を「Escape」と書くと、**やっていない操作を報告する**事になる。
       //   経路が読めない時は動作を名指しせず「止める操作」に畳む(創作しない)。
-      const pressed = b.route === "tmux" ? "Escape は押しました"
-        : b.route === "worker" ? "停止の信号は送りました"
-          : "止める操作は届きました";
+      const pressed = b.route === "tmux" ? "Escape was sent"
+        : b.route === "worker" ? "A stop signal was sent"
+          : "The stop request was delivered";
       if (b.stopped === "unverified") {
-        return { kind: "warn", text: `${pressed}が、まだ止まっていません。画面を見て確かめてください。` };
+        return { kind: "warn", text: `${pressed}, but it has not stopped yet. Check the screen.` };
       }
       // stopped == null = 押す前から生成の印が無かった。押した事だけが確かなので、そう書く。
-      return { kind: "warn", text: `止める対象が見当たりませんでした(${pressed})。` };
+      return { kind: "warn", text: `Nothing was running to stop (${pressed}).` };
     }
     // ★`stopped` が無い = **`stopped` を載せない古いサーバ**。2026-08-08 より前の版で、
     //   `interrupted` は「止める対象が居たか」しか意味していない。だから居た場合でも
     //   「止めました」とは書けない —— それがこの節を書き直す原因になった嘘そのもの。
     return b.interrupted
-      ? { kind: "warn", text: "止める操作は届きましたが、止まったかどうかは分かりません。画面を見て確かめてください。" }
-      : { kind: "warn", text: "止める対象がありませんでした。" };
+      ? { kind: "warn", text: "The stop request was delivered, but whether it stopped is unknown. Check the screen." }
+      : { kind: "warn", text: "Nothing was running to stop." };
   }
-  if (status === 409) return { kind: "refused", text: b.error || "止められませんでした。" };
-  if (status === 401) return { kind: "error", text: "鍵が通りませんでした。" };
-  if (status >= 500) return { kind: "error", text: `サーバ側で失敗しました(HTTP ${status})。` };
-  return { kind: "error", text: `想定していない応答でした(HTTP ${status})。` };
+  if (status === 409) return { kind: "refused", text: b.error || "Could not stop it." };
+  if (status === 401) return { kind: "error", text: "The key was rejected." };
+  if (status >= 500) return { kind: "error", text: `Server-side failure (HTTP ${status}).` };
+  return { kind: "error", text: `Unexpected response (HTTP ${status}).` };
 }
 
 /** 一覧・会話の見出しに出す経路の印。 */
@@ -185,12 +185,12 @@ export function interruptResult(status, body) {
  * `activity` しか無い一覧は窓が無いので「様子を読めていません」。
  */
 function workPhrase(v) {
-  if (v.work === "observed" || v.activity === "observed") return "動いている";
+  if (v.work === "observed" || v.activity === "observed") return "Active";
   if (v.work === "quiet") {
     const sec = Math.round((v.windowMs || 0) / 1000);
-    return sec > 0 ? `${sec}秒 動く印なし` : "動く印なし";
+    return sec > 0 ? `No activity for ${sec}s` : "No activity";
   }
-  return "様子を読めていません";
+  return "Status unknown";
 }
 
 /**
@@ -214,9 +214,9 @@ function workPhrase(v) {
  *   `errored` 枝(理由を創作しない)と同じ方針。
  */
 function workerStatePhrase(state) {
-  if (state === "busy") return "答え待ち";
-  if (state === "ready") return "待機";
-  if (state === "idle") return "未起動";
+  if (state === "busy") return "Waiting for reply";
+  if (state === "ready") return "Idle";
+  if (state === "idle") return "Not started";
   return String(state);
 }
 
@@ -228,11 +228,11 @@ export function routeLabel(live) {
     //   **一覧から見えなかった**(2026-08-02 発見)。帯だけが screen を読む = 開くまで分からない
     //   = 順序が逆。送信は `SEND_REFUSAL.choice` が既に拒むが、**拒む事と見える事は別**。
     if (v.screen === "CHOICE") {
-      const lim = v.limited ? " / 利用上限の告知も出ています" : ""; // 事実をどちらも消さない
+      const lim = v.limited ? " · a usage limit notice is also on screen" : ""; // 事実をどちらも消さない
       return {
         kind: "choice",
-        short: "★選択待ち",
-        text: `机で開いている・★選択待ち(Enter が承認や課金になります)${lim}`,
+        short: "Needs input",
+        text: `Open on desktop · needs input (Enter may approve or spend)${lim}`,
         screen: v.screen,
       };
     }
@@ -252,14 +252,14 @@ export function routeLabel(live) {
     //   ★未観測: その並びの画面を edith で撮ってはいない(実物19枚では同時に立つのは0枚)。
     //     推論の根拠は「履歴は回転子より上に残る」という TUI の構造。撮れたら fixture にする。
     if (v.limited) {
-      return work === "動いている"
-        ? { kind: "tmux", short: "動いている・★上限", text: "机で開いている・動いている(★画面に利用上限の告知が残っている)", screen: v.screen || "" }
-        : { kind: "tmux", short: "★利用上限", text: "机で開いている・★利用上限(答えは返りません)", screen: v.screen || "" };
+      return work === "Active"
+        ? { kind: "tmux", short: "Active · limit", text: "Open on desktop · Active (a usage limit notice remains on screen)", screen: v.screen || "" }
+        : { kind: "tmux", short: "Usage limit", text: "Open on desktop · usage limit (no reply will come)", screen: v.screen || "" };
     }
-    return { kind: "tmux", short: `机・${work}`, text: `机で開いている・${work}`, screen: v.screen || "" };
+    return { kind: "tmux", short: `Desktop · ${work}`, text: `Open on desktop · ${work}`, screen: v.screen || "" };
   }
   if (v.route === "worker") {
-    const w = v.state ? `ワーカー・${workerStatePhrase(v.state)}` : "ワーカー";
+    const w = v.state ? `Worker · ${workerStatePhrase(v.state)}` : "Worker";
     // ★上の tmux 枝と**同じ骨格**。監査 R2-2 まで、ここには状態しか無く、上限に当たった
     //   会話と正常に答え終わった会話が同じ札で並んでいた(2026-08-08 実測、どちらも
     //   `ワーカー・busy` でバイト単位に一致)。tmux 側は 2026-08-02 に直っていたので、
@@ -270,14 +270,14 @@ export function routeLabel(live) {
     //   見出しは現在形、告知は但し書きに落とす。
     if (v.limited) {
       return v.state === "busy"
-        ? { kind: "worker", short: "ワーカー・★上限", text: `${w}(★直前の答えは利用上限で返っていません)`, screen: "" }
-        : { kind: "worker", short: "★利用上限", text: `${w}(★利用上限。直前の答えは返っていません)`, screen: "" };
+        ? { kind: "worker", short: "Worker · usage limit", text: `${w} (the last reply hit the usage limit)`, screen: "" }
+        : { kind: "worker", short: "Usage limit", text: `${w} (usage limit — the last reply never arrived)`, screen: "" };
     }
     // ★上限と名指せない異常。**理由を創作しない**のがここの仕事 —— `is_error` は確かだが
     //   何が起きたかは分からないので、分かる事(答えが返らなかった)だけを言う。
     //   この枝が在るから、上限の文面が未知の形に変わった日も無音にはならない。
     if (v.errored) {
-      return { kind: "worker", short: "ワーカー・★答えなし", text: `${w}(★直前の答えは返りませんでした。理由は名指せません)`, screen: "" };
+      return { kind: "worker", short: "Worker · no reply", text: `${w} (the last reply never arrived; cause unknown)`, screen: "" };
     }
     return { kind: "worker", short: w, text: w, screen: "" };
   }
@@ -291,12 +291,12 @@ export function routeLabel(live) {
     //   同じ文を2箇所に書くのではなく、一覧=要約 / 会話画面=サーバの文、と役割を分ける。
     return {
       kind: "blocked",
-      short: BLOCKED_TAG[v.reason] || "送れない",
-      text: v.message || BLOCKED_SHORT[v.reason] || "宛先を確定できません。",
+      short: BLOCKED_TAG[v.reason] || "Can't send",
+      text: v.message || BLOCKED_SHORT[v.reason] || "Can't determine the target.",
       screen: "",
     };
   }
-  return { kind: "unknown", short: "様子を読めていません", text: "様子を読めていません", screen: "" };
+  return { kind: "unknown", short: "Status unknown", text: "Status unknown", screen: "" };
 }
 
 /**
@@ -308,29 +308,29 @@ export function routeLabel(live) {
  *   `test/view.test.mjs` が `WIRE_REASONS` を回して両方の表を突く。
  */
 const BLOCKED_TAG = {
-  ambiguous: "送れない(複数該当)",
-  unregistered: "送れない(未登録)",
-  stale: "送れない(登録ずれ)",
-  "cwd-mismatch": "送れない(現在地ずれ)",
-  "pane-gone": "送れない(画面消失)",
-  "not-claude": "送れない(別プログラム)",
-  "panes-unreadable": "送れない(tmux 故障)",
-  "tmux-unavailable": "送れない(tmux 不達)",
+  ambiguous: "Can't send (multiple matches)",
+  unregistered: "Can't send (not registered)",
+  stale: "Can't send (old registration)",
+  "cwd-mismatch": "Can't send (folder mismatch)",
+  "pane-gone": "Can't send (pane gone)",
+  "not-claude": "Can't send (not Claude)",
+  "panes-unreadable": "Can't send (tmux broken)",
+  "tmux-unavailable": "Can't send (tmux unreachable)",
 };
 
 const BLOCKED_SHORT = {
-  ambiguous: "同じフォルダで複数開いているため、宛先を確定できません。",
-  unregistered: "ペイン登録が無いため、宛先を確定できません。",
-  stale: "登録したペインを今は別の会話が使っています。",
-  "cwd-mismatch": "登録ペインの現在地が一致しません。",
-  "pane-gone": "開いていたペインが見つかりません。",
+  ambiguous: "Multiple sessions are open in the same folder; the target can't be determined.",
+  unregistered: "No pane registration; the target can't be determined.",
+  stale: "The registered pane is now used by another session.",
+  "cwd-mismatch": "The registered pane's folder doesn't match.",
+  "pane-gone": "The pane that was open can no longer be found.",
   // ★2026-08-02 追加。この3つが**抜けていた**ので、サーバの文が届かなかった時だけ
   //   「宛先を確定できません。」という**故障だと分からない文**に落ちていた。
   //   前2つは `BLOCKED_TAG` を作った時に鍵の集合を突き合わせて発見、`not-claude` は
   //   同日夕方に `WIRE_REASONS` を回す検査を書いて発見 = **目で突き合わせても1つ残った**。
-  "not-claude": "その画面は今は Claude ではありません(シェルに戻っています)。",
-  "panes-unreadable": "サーバが tmux の画面一覧を読めていません(故障)。",
-  "tmux-unavailable": "サーバが tmux に届いていません(故障)。",
+  "not-claude": "That pane is no longer Claude (it returned to a shell).",
+  "panes-unreadable": "The server can't read the tmux pane list (broken).",
+  "tmux-unavailable": "The server can't reach tmux (broken).",
 };
 
 /**
@@ -341,11 +341,11 @@ export function relTime(iso, nowMs) {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return "";
   const d = Math.floor((nowMs - t) / 1000);
-  if (d < 0) return "たった今";
-  if (d < 60) return "たった今";
-  if (d < 3600) return `${Math.floor(d / 60)}分前`;
-  if (d < 86400) return `${Math.floor(d / 3600)}時間前`;
-  if (d < 86400 * 7) return `${Math.floor(d / 86400)}日前`;
+  if (d < 0) return "now";
+  if (d < 60) return "now";
+  if (d < 3600) return `${Math.floor(d / 60)}m ago`;
+  if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
+  if (d < 86400 * 7) return `${Math.floor(d / 86400)}d ago`;
   const dt = new Date(t);
   return `${dt.getMonth() + 1}/${dt.getDate()}`;
 }
@@ -378,7 +378,7 @@ const HEALTHY_MS = 5000;
  */
 export function gapNotice(why) {
   if (!why || why === "tail-attached") return null;
-  return `流れに切れ目がありました(${why})。履歴を読み直しました。`;
+  return `There was a gap in the stream (${why}). History was re-read.`;
 }
 
 /**
@@ -395,7 +395,7 @@ export function nextHistoryLimit(current) {
 export function whoOf(role) {
   if (role === "user") return "Tom";
   if (role === "assistant") return "Claude";
-  return "道具";
+  return "Tool";
 }
 
 /**
@@ -404,7 +404,7 @@ export function whoOf(role) {
  */
 export function scanLine(scan) {
   if (!scan) return "";
-  return `${scan.files ?? "?"}本のうち ${scan.read ?? "?"}本を読み、${scan.cached ?? 0}本は前の結果を使いました。`;
+  return `Read ${scan.read ?? "?"} of ${scan.files ?? "?"} files; ${scan.cached ?? 0} reused cached results.`;
 }
 
 /**
@@ -431,22 +431,22 @@ export function freshness(fetchedAtMs, nowMs) {
   //   ここを `{text:"", stale:false}` にすると、時刻を取り損ねた時に**何も言わない綺麗な
   //   一覧**が出る = 古さの警告が消えるだけで、値は古いまま。fail-closed に倒す。
   if (!fetchedAtMs || !Number.isFinite(fetchedAtMs)) {
-    return { text: "いつ測った値か不明", stale: true };
+    return { text: "Measured at an unknown time", stale: true };
   }
   const d = Math.floor((nowMs - fetchedAtMs) / 1000);
-  if (d < 0) return { text: "たった今の値", stale: false }; // 時計のずれ。relTime と同じ扱い
-  if (d < 60) return { text: `${d}秒前の値`, stale: false };
-  if (d < 3600) return { text: `${Math.floor(d / 60)}分前の値(更新してください)`, stale: true };
-  if (d < 86400) return { text: `${Math.floor(d / 3600)}時間前の値(更新してください)`, stale: true };
-  return { text: `${Math.floor(d / 86400)}日前の値(更新してください)`, stale: true };
+  if (d < 0) return { text: "Just now", stale: false }; // 時計のずれ。relTime と同じ扱い
+  if (d < 60) return { text: `As of ${d}s ago`, stale: false };
+  if (d < 3600) return { text: `As of ${Math.floor(d / 60)}m ago — pull to refresh`, stale: true };
+  if (d < 86400) return { text: `As of ${Math.floor(d / 3600)}h ago — pull to refresh`, stale: true };
+  return { text: `As of ${Math.floor(d / 86400)}d ago — pull to refresh`, stale: true };
 }
 
 /** 一覧の1行に出す副題。★読み切れていない時は「無い」と書かない(§2.12)。 */
 export function subtitleOf(row) {
   const r = row || {};
   if (r.lastPrompt) return r.lastPrompt;
-  if (r.metadataIncomplete) return "(直近の発言は読み取り範囲の外)";
-  return "まだやり取りはありません";
+  if (r.metadataIncomplete) return "(latest message is beyond the read range)";
+  return "No messages yet";
 }
 
 /**
@@ -506,11 +506,11 @@ function isPlainEvent(v) {
  */
 const CHOICE_BLOCKED = {
   "hard-stop":
-    "これは許可・信頼の確認画面です。電話からは操作を出しません(自動化に安全確認を押させない、という決め事)。机で確認してください。",
+    "This is a permission/trust confirmation. The phone offers no controls for it (a standing rule: automation does not press safety prompts). Handle it on the desk.",
   "unrecognized":
-    "見覚えのない選択画面です。安全と確認できた画面にしか打鍵しないので、操作は出しません。",
+    "Unrecognized choice screen. Keys are only sent to screens verified safe, so no controls are offered.",
   "not-menu":
-    "選択待ちですが、メニューの形を読み取れませんでした。操作は出しません。画面を確認してください。",
+    "Waiting on a choice, but the menu shape could not be read. No controls are offered. Check the screen.",
 };
 
 /** 打鍵 -> ボタンに出す鍵の名。数字は選択肢の本文が付くのでここには無い。 */
@@ -530,7 +530,7 @@ const CHOICE_KEY_LABEL = { enter: "Enter", escape: "Escape" };
  *   「画面を見て」直した割り込みの注意文(「中止するなら下の選択肢から選んでください」)は
  *   その実在しないボタンを指していた。今この表が在るので、その文の指す先が実在する。
  */
-const CHOICE_KEY_ACTION = { escape: "中止" };
+const CHOICE_KEY_ACTION = { escape: "Cancel" };
 
 /**
  * poll が運んでくる画面状態 -> 選択の操作面。**純関数**。
@@ -589,7 +589,7 @@ export function choiceView(state) {
     // 括弧の中身は、その場で読めた物(Enter)が先、読めなくても言える物(Escape の
     // `中止`)が後。**両方無い時だけ鍵名だけで出す** —— カーソルの読めない Enter が
     // 其れで、「Escape だから中止」の様な当て推量を Enter 側へ持ち込まない。
-    const action = at ? `${at.n}. ${at.label} で決定` : CHOICE_KEY_ACTION[k];
+    const action = at ? `Confirm ${at.n}. ${at.label}` : CHOICE_KEY_ACTION[k];
     buttons.push({
       key: k,
       label: action ? `${CHOICE_KEY_LABEL[k]}(${action})` : CHOICE_KEY_LABEL[k],
@@ -612,30 +612,30 @@ export function choiceResult(status, body) {
   if (status === 200) {
     // 本文が読めない 200 を「押せた」と名乗らない(sendResult / interruptResult と同じ)。
     if (body == null) {
-      return { kind: "warn", text: "打鍵しましたが、サーバの返事を読めませんでした。画面を見て確かめてください。" };
+      return { kind: "warn", text: "The key was sent, but the server's reply could not be read. Check the screen." };
     }
     // `applied` の値域は "verified" | "unverified" | "moved-to-hard-stop" | null
     // (`inject.mjs` の choice docstring)。**真偽値ではない** —— 初版で `=== false` と
     // 書いて、`"unverified"` が全部「押しました」へ落ちていた(自分の diff を読み直して発見)。
-    if (b.applied === "verified") return { kind: "ok", text: "押しました(画面が変わったのを確認)。" };
+    if (b.applied === "verified") return { kind: "ok", text: "Pressed (screen change confirmed)." };
     // ★打鍵の後に許可・信頼の確認へ変わった時。**押した事は確か**なので `refused` にはしない
     //   (refused は「何も送っていない」の語)。だが机で見る必要がある事は文で立てる。
     //   文面はサーバの `note` が正(★付きで来る)。
     if (b.applied === "moved-to-hard-stop") {
-      return { kind: "warn", text: b.note || "打鍵の後、許可・信頼の確認画面に変わりました。机で確認してください。" };
+      return { kind: "warn", text: b.note || "After the key, the screen changed to a permission/trust confirmation. Handle it on the desk." };
     }
     if (b.applied === "unverified") {
-      return { kind: "warn", text: b.note || "打鍵は送りましたが、画面が変わったのは確認できていません。画面を取り直してください。" };
+      return { kind: "warn", text: b.note || "The key was sent, but a screen change was not confirmed. Re-read the screen." };
     }
     // ここへ来るのは `sent:true` なのに `applied` が読めない形。分からない事を成功に丸めない。
-    return { kind: "warn", text: "打鍵しましたが、画面が変わったかを確認できませんでした。画面を見て確かめてください。" };
+    return { kind: "warn", text: "The key was sent, but whether the screen changed could not be confirmed. Check the screen." };
   }
   // 409 = サーバが打鍵を断った(指紋の食い違い・許可一覧に無い・二度打ち等)。文面はサーバの物。
-  if (status === 409) return { kind: "refused", text: b.error || "打鍵を断られました。" };
-  if (status === 400) return { kind: "error", text: b.error || "受け付けられない打鍵でした。" };
-  if (status === 401) return { kind: "error", text: "鍵が通りませんでした。" };
-  if (status >= 500) return { kind: "error", text: `サーバ側で失敗しました(HTTP ${status})。` };
-  return { kind: "error", text: `想定していない応答でした(HTTP ${status})。` };
+  if (status === 409) return { kind: "refused", text: b.error || "The key was refused." };
+  if (status === 400) return { kind: "error", text: b.error || "That key was not accepted." };
+  if (status === 401) return { kind: "error", text: "The key was rejected." };
+  if (status >= 500) return { kind: "error", text: `Server-side failure (HTTP ${status}).` };
+  return { kind: "error", text: `Unexpected response (HTTP ${status}).` };
 }
 
 /**
@@ -680,8 +680,8 @@ export function queueView(d, fetchedAtMs, nowMs) {
     known: true,
     count: q,
     // ★「送信待ち」= まだ Claude へ**渡していない**。渡した番は取り消せない(止めるのは別の口)。
-    text: `送信待ち ${q} 件(まだ Claude に渡していません)`,
-    clearLabel: `${q} 件を取り消す`,
+    text: `${q} queued (not yet handed to Claude)`,
+    clearLabel: `Cancel ${q} queued`,
     // ★文面も一覧と揃える。同じ「古さ」に画面ごとの言い回しを与えると、人は二つの規約を
     //   覚える羽目になる。「更新してください」は此処でも実行できる(会話を開き直す /
     //   前面へ戻る、どちらも張り直しの口になっている)。
@@ -700,19 +700,19 @@ export function clearQueueResult(status, body) {
   const b = body || {};
   if (status === 200) {
     if (body == null) {
-      return { kind: "warn", text: "取り消せたかどうか確認できませんでした。画面を見て確かめてください。" };
+      return { kind: "warn", text: "Whether the cancel worked could not be confirmed. Check the screen." };
     }
     const n = b.dropped;
     // 200 は必ず `dropped` を載せる(`server.mjs`)。載っていないのは「0件」ではなく「不明」。
     if (typeof n !== "number" || !Number.isFinite(n)) {
-      return { kind: "warn", text: "取り消せたかどうか確認できませんでした。画面を見て確かめてください。" };
+      return { kind: "warn", text: "Whether the cancel worked could not be confirmed. Check the screen." };
     }
-    if (n <= 0) return { kind: "ok", text: "取り消す送信は残っていませんでした。" };
+    if (n <= 0) return { kind: "ok", text: "There was nothing queued to cancel." };
     // ★走っている番は止まらない事を必ず書く。ここを省くと「取り消した = 全部止まった」と読める。
-    return { kind: "ok", text: `${n} 件の送信を取り消しました(いま動いている番は止まりません)。` };
+    return { kind: "ok", text: `Cancelled ${n} queued sends (the one already running is not stopped).` };
   }
-  if (status === 409) return { kind: "refused", text: b.error || "取り消せませんでした。" };
-  if (status === 401) return { kind: "error", text: "鍵が通りませんでした。" };
-  if (status >= 500) return { kind: "error", text: `サーバ側で失敗しました(HTTP ${status})。` };
-  return { kind: "error", text: `想定していない応答でした(HTTP ${status})。` };
+  if (status === 409) return { kind: "refused", text: b.error || "Could not cancel." };
+  if (status === 401) return { kind: "error", text: "The key was rejected." };
+  if (status >= 500) return { kind: "error", text: `Server-side failure (HTTP ${status}).` };
+  return { kind: "error", text: `Unexpected response (HTTP ${status}).` };
 }

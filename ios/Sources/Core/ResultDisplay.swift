@@ -154,6 +154,6 @@ struct ResponseContractViolation: Equatable {
     /// 出口は `NavigationStack` の戻るが元から在る(`RootView`)。
     var displayText: String {
         let diagnostic = code.map { "HTTP \(status) / \($0)" } ?? "HTTP \(status)"
-        return "サーバの応答に、画面へ出すべき内容が入っていませんでした(\(diagnostic))。"
+        return "The server's response carried nothing to display (\(diagnostic))."
     }
 }

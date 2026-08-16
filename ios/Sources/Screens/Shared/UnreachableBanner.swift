@@ -36,7 +36,7 @@ struct UnreachableBanner: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("バックエンドから応答がありません")
+            Text("Can't reach the desk — check Tailscale on this phone")
                 .font(.subheadline.weight(.semibold))
             Text(detail)
                 .font(.caption)
@@ -65,9 +65,9 @@ struct UnreachableBanner: View {
     static func detailText(failures: Int, context: Context) -> String {
         switch context {
         case .list:
-            return "\(failures)回続けて取得に失敗しました。しばらくしてから再試行してください"
+            return "\(failures) fetches in a row have failed. Make sure Tailscale is connected, then retry"
         case .conversation:
-            return "\(failures)回続けて取得に失敗しました。表示は最後に読めた時点のままです"
+            return "\(failures) fetches in a row have failed. Showing the last data that could be read"
         }
     }
 }

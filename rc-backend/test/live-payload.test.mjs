@@ -39,7 +39,7 @@ test("★実データ: 一覧の札が短い(92文字の札を現物で塞ぐ)",
   // 他の札は9-10文字。`border-radius:999px / font-size:12px` の丸い札に入る長さではない。
   const long = PL.sessions
     .map((s) => ({ id: s.id.slice(0, 8), short: routeLabel(s.live).short }))
-    .filter((r) => r.short.length > 12);
+    .filter((r) => r.short.length > 30); // 英語化(2026-08-17)で 12→30 字
   assert.deepEqual(long, [], `一覧の札が長い行: ${JSON.stringify(long)}`);
   // 陰性対照 — 「札を全部空にする」実装ならこの検査は緑になるので、中身も測る。
   for (const s of PL.sessions) {
@@ -73,17 +73,17 @@ test("★実データ: 観測できなかった事を「静か」と書かない
   // この日の実データに tmux は1行。その行が「観測できていない」と言えている事。
   const t = PL.sessions.filter((s) => (s.live || {}).route === "tmux");
   assert.equal(t.length, 1);
-  assert.match(routeLabel(t[0].live).text, /様子を読めていません|動く印なし|動いている|選択待ち|利用上限/);
+  assert.match(routeLabel(t[0].live).text, /Status unknown|No activity|Active|input|limit/);
 });
 
 test("実データ: 走査の数字を埋めない(668/668 をそのまま出す)", () => {
-  assert.equal(scanLine(PL.scan), "668本のうち 668本を読み、0本は前の結果を使いました。");
+  assert.equal(scanLine(PL.scan), "Read 668 of 668 files; 0 reused cached results.");
 });
 
 test("実データ: 副題は読み残しを「発言なし」と言い換えない", () => {
   for (const s of PL.sessions) {
     const sub = subtitleOf(s);
-    if (s.metadataIncomplete && !s.lastPrompt) assert.match(sub, /読み取り範囲の外/);
-    if (!s.metadataIncomplete && !s.lastPrompt) assert.match(sub, /まだやり取りはありません/);
+    if (s.metadataIncomplete && !s.lastPrompt) assert.match(sub, /beyond the read range/);
+    if (!s.metadataIncomplete && !s.lastPrompt) assert.match(sub, /No messages yet/);
   }
 });

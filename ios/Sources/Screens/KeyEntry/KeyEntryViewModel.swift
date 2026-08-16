@@ -50,7 +50,7 @@ final class KeyEntryViewModel: ObservableObject {
     ///
     /// 続く失敗の文(「サーバに届きません。URL を確認してください」)と語を揃えてある。
     static func urlProbeInFlightText(timeout: TimeInterval) -> String {
-        "サーバに届くか確かめています…(返事を最大\(Int(timeout))秒待ちます)"
+        "Checking the server is reachable… (waiting up to \(Int(timeout))s)"
     }
 
     /// 2段目の文。
@@ -58,7 +58,7 @@ final class KeyEntryViewModel: ObservableObject {
     /// ここへ来た時点で 1段目は**通っている**ので、これは推測ではなく観測の報告。
     /// 「電話は自分が見た物だけを言う」(DESIGN §2.56)がそのまま守れる。
     static func keyProbeInFlightText(timeout: TimeInterval) -> String {
-        "鍵が通るか確かめています…(返事を最大\(Int(timeout))秒待ちます)"
+        "Checking the key works… (waiting up to \(Int(timeout))s)"
     }
 
     private let clients: KeyEntryClients
@@ -89,12 +89,12 @@ final class KeyEntryViewModel: ObservableObject {
     func submit() async {
         errorMessage = nil
         guard let url = Self.normalizeBaseURL(baseURLText) else {
-            errorMessage = "URL の形式が正しくありません(https:// で始まる URL を入力してください)"
+            errorMessage = "The URL is malformed (enter one starting with https://)"
             return
         }
         let apiKey = apiKeyText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !apiKey.isEmpty else {
-            errorMessage = "鍵を入力してください"
+            errorMessage = "Enter the key"
             return
         }
 
@@ -103,7 +103,7 @@ final class KeyEntryViewModel: ObservableObject {
 
         switch await clients.healthz.check(baseURL: url) {
         case .failure:
-            errorMessage = "サーバに届きません。URL を確認してください"
+            errorMessage = "Can't reach the server. Check the URL"
             return
         case .success(let result):
             // Sprint 1 DoD diagnostic line, grepped for via `devicectl --console`.
@@ -115,16 +115,16 @@ final class KeyEntryViewModel: ObservableObject {
 
         switch await clients.sessionsProbe.check(baseURL: url, apiKey: apiKey) {
         case .unreachable:
-            errorMessage = "サーバに届きません。URL を確認してください"
+            errorMessage = "Can't reach the server. Check the URL"
         case .unauthorized:
-            errorMessage = "鍵が違います"
+            errorMessage = "The key is wrong"
         case .authorized:
             let credentials = Credentials(baseURL: url, apiKey: apiKey)
             do {
                 try clients.store.save(credentials)
                 onSaved(credentials)
             } catch {
-                errorMessage = "端末に保存できませんでした"
+                errorMessage = "Could not save on this device"
             }
         }
     }

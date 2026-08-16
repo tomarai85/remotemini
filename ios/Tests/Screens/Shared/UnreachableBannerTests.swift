@@ -24,14 +24,14 @@ final class UnreachableBannerTests: XCTestCase {
     func testListWordingIsExactlyTheSpecSentence() {
         XCTAssertEqual(
             UnreachableBanner.detailText(failures: 3, context: .list),
-            "3回続けて取得に失敗しました。しばらくしてから再試行してください"
+            "3 fetches in a row have failed. Make sure Tailscale is connected, then retry"
         )
     }
 
     func testConversationWordingSaysTheDisplayIsFrozen() {
         XCTAssertEqual(
             UnreachableBanner.detailText(failures: 3, context: .conversation),
-            "3回続けて取得に失敗しました。表示は最後に読めた時点のままです"
+            "3 fetches in a row have failed. Showing the last data that could be read"
         )
     }
 
@@ -45,8 +45,8 @@ final class UnreachableBannerTests: XCTestCase {
         let conversation = UnreachableBanner.detailText(failures: 7, context: .conversation)
 
         XCTAssertNotEqual(list, conversation)
-        XCTAssertTrue(conversation.contains("最後に読めた時点のまま"))
-        XCTAssertFalse(list.contains("最後に読めた時点のまま"))
+        XCTAssertTrue(conversation.contains("last data that could be read"))
+        XCTAssertFalse(list.contains("last data that could be read"))
     }
 
     // MARK: - The count is measured, not a constant
@@ -58,8 +58,8 @@ final class UnreachableBannerTests: XCTestCase {
         for context in [UnreachableBanner.Context.list, .conversation] {
             let text = UnreachableBanner.detailText(failures: 40, context: context)
 
-            XCTAssertTrue(text.hasPrefix("40回続けて"), "got: \(text)")
-            XCTAssertFalse(text.contains("3回"), "threshold leaked as a literal: \(text)")
+            XCTAssertTrue(text.hasPrefix("40 fetches in a row"), "got: \(text)")
+            XCTAssertFalse(text.contains("3 fetches"), "threshold leaked as a literal: \(text)")
         }
     }
 

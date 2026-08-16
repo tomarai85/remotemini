@@ -410,19 +410,19 @@ function screenOf(pane) {
 /** 送信を断った理由 -> 電話に出す文。injector.send() の reason と 1:1。 */
 const SEND_REFUSAL = {
   choice:
-    "画面が選択待ちです。Enter が承認や課金の選択になるため送信しません。画面を確認してください。",
+    "The screen is waiting on a choice. Enter could approve or spend, so nothing was sent. Check the screen.",
   unknown:
-    "入力欄が見つかりません(起動中・別画面・ペイン消滅のいずれか)。安全側に倒して送信しませんでした。",
+    "No composer field found (starting up, a different screen, or the pane is gone). Failed safe — nothing was sent.",
   "modal-appeared":
-    "本文を入れた直後に選択画面が出ました。Enter を押さずに中断しました。画面を確認してください。",
+    "A choice screen appeared right after the text was typed. Enter was not pressed. Check the screen.",
   "composer-mismatch":
-    "本文が入力欄に載りませんでした。Enter は押していません。もう一度お試しください。",
+    "The text did not land in the composer. Enter was not pressed. Try again.",
   // ★鍵が取れなかった時(DESIGN §2.18-1)。どちらも**打鍵を1文字もしていない**。
   //   「混ざった物を送る」より「送らずに断る」が安全側、という決め事の表側。
   "pane-busy":
-    "このペインは今ほかの送信を処理中で、順番待ちも一杯です。**何も送っていません**。少し待ってからお試しください。",
+    "This pane is handling another send and the queue is full. **Nothing was sent.** Wait a moment and try again.",
   "pane-wait-timeout":
-    "順番待ちの間に時間切れになりました。**何も送っていません**。もう一度お試しください。",
+    "Timed out while waiting in the queue. **Nothing was sent.** Try again.",
 };
 
 /**
@@ -435,22 +435,22 @@ const SEND_REFUSAL = {
  *   その画面は後者に落ちる = やはり打たない。
  */
 const CHOICE_REFUSAL = {
-  "not-choice": "この画面は選択待ちではありません。打鍵していません。",
+  "not-choice": "This screen is not waiting on a choice. No key was pressed.",
   "choice-hard-stop":
-    "これは許可・信頼の確認画面です。**電話からは答えません**(自動化に安全確認を押させない、という決め事)。机で確認してください。",
+    "This is a permission/trust confirmation. **The phone never answers it** (a standing rule: automation does not press safety prompts). Handle it on the desk.",
   "choice-unrecognized":
-    "見覚えのない選択画面です。安全と確認できた画面にしか打鍵しないので、何も送っていません。画面を確認してください。",
-  "choice-key-not-allowed": "この画面ではそのキーを受け付けていません。何も送っていません。",
-  "choice-no-such-option": "その番号の選択肢がこの画面にありません。何も送っていません。",
+    "Unrecognized choice screen. Keys are only sent to screens verified safe, so nothing was sent. Check the screen.",
+  "choice-key-not-allowed": "That key is not accepted on this screen. Nothing was sent.",
+  "choice-no-such-option": "There is no option with that number on this screen. Nothing was sent.",
   "choice-already-sent":
-    "この選択画面へは既に一度打鍵しました。画面が動いていないだけで、**届いていない訳ではありません**。撃ち直すと次の画面に流れる恐れがあるので送っていません。画面を取り直してください。",
+    "A key was already sent to this choice screen. The screen not moving does **not** mean it was undelivered. Re-sending could hit the next screen, so nothing was sent. Re-read the screen.",
   "digest-mismatch":
-    "表示していた選択画面と今の画面が違います(別のメニューに変わったか、消えました)。**何も送っていません**。画面を取り直してください。",
+    "The choice screen you saw differs from the current one (it changed or went away). **Nothing was sent.** Re-read the screen.",
   "pane-busy":
-    "このペインは今ほかの操作を処理中で、順番待ちも一杯です。**何も送っていません**。少し待ってからお試しください。",
+    "This pane is handling another operation and the queue is full. **Nothing was sent.** Wait a moment and try again.",
   "pane-wait-timeout":
-    "順番待ちの間に時間切れになりました。**何も送っていません**。もう一度お試しください。",
-  unknown: "選択画面へ打鍵できませんでした。何も送っていません。",
+    "Timed out while waiting in the queue. **Nothing was sent.** Try again.",
+  unknown: "Could not send the key to the choice screen. Nothing was sent.",
 };
 
 /**
@@ -464,9 +464,9 @@ const CHOICE_REFUSAL = {
  */
 const NOTE_AFTER_CHOICE = {
   unverified:
-    "打鍵は送りました。画面が変わったのは確認できていません(**届かなかったとは限りません**)。同じ画面へ撃ち直さないでください。画面が実際に変わるまで、このメニューへは鍵を受け付けません(断られるのが意図した動きです)。画面を取り直して、変わったかどうかを見てください。",
+    "The key was sent. A screen change was not confirmed (**that does not mean it was undelivered**). Do not re-send to the same screen. Until it actually changes, this menu will refuse keys (that refusal is intended). Re-read the screen to see whether it moved.",
   "moved-to-hard-stop":
-    "★打鍵の後、画面が**許可・信頼の確認**に変わりました。電話からは答えません。机で確認してください。",
+    "★After the key, the screen changed to a **permission/trust confirmation**. The phone never answers it. Handle it on the desk.",
 };
 
 /**
@@ -1016,7 +1016,7 @@ class BodyTooLarge extends Error {
 ///   此の欠陥を掴めない。
 function tooLarge(req, res, e) {
   res.on("finish", () => req.destroy());
-  return json(res, 413, { error: `要求の本文が大きすぎます(上限 ${e.limit} bytes)` });
+  return json(res, 413, { error: `Request body too large (limit ${e.limit} bytes)` });
 }
 
 async function readBody(req, limit = 64 * 1024) {
@@ -1188,7 +1188,7 @@ const server = createServer(async (req, res) => {
         want = JSON.parse((await readBody(req)) || "{}")?.name;
       } catch (e) {
         if (e instanceof BodyTooLarge) return tooLarge(req, res, e);
-        return json(res, 400, { error: `要求の本文が読めません: ${e.message}` });
+        return json(res, 400, { error: `Request body unreadable: ${e.message}` });
       }
       try {
         // ★白名簿(今の一覧に在る)と**名前の不変条件**の両方を通す。片方では足りない ——
@@ -1276,14 +1276,14 @@ const server = createServer(async (req, res) => {
       if (!checkoutId) {
         return json(res, 409, {
           error: "not-a-checkout",
-          message: "この会話は持ち出されて来た仕事ではありません。戻す物がありません。",
+          message: "This session is not checked-out work. There is nothing to return.",
         });
       }
       const r = requestReturn(MIRROR_ROOT, checkoutId, sessionId);
       if (r.error) {
         return json(res, 409, {
           error: "checkout-gone",
-          message: "持ち出しの印が見つかりません。机側で既に戻された可能性があります。",
+          message: "The checkout marker is missing. It may already have been returned on the desk side.",
         });
       }
       return json(res, 200, { requestedAt: r.at, already: !!r.already });
@@ -1361,7 +1361,7 @@ const server = createServer(async (req, res) => {
         // 発言も無く、開いていたペインも無い = 掴めるものが何も無い。
         // ワーカー(-p --resume)に落とすと存在しない会話を再開しようとして失敗する。
         return json(res, 409, {
-          error: "この会話はまだ発言が無く、開いていたペインも見つかりません。",
+          error: "This session has no messages yet and its open pane can no longer be found.",
           route: "blocked", reason: "pane-gone", candidates: 0, source: "registry",
         });
       }
@@ -1390,8 +1390,8 @@ const server = createServer(async (req, res) => {
             ...(r.delivered === "unverified"
               ? {
                   note:
-                    "Enter は送りましたが、本文が取り込まれた事を確認できませんでした" +
-                    "(入力欄に残っているか、入力欄自体が見えなくなっています)。画面を確認してください。",
+                    "Enter was sent, but the text was not confirmed as taken " +
+                    "(it may remain in the composer, or the composer is no longer visible). Check the screen.",
                 }
               : {}),
           });
@@ -1501,7 +1501,7 @@ const server = createServer(async (req, res) => {
         //   我々が観測していない事の反対を言う事になる。断る方が正しい。
         markResult(res, { reason: "queue-not-ours" });
         return json(res, 409, {
-          error: "この会話は机で開かれています。待っている送信は Claude Code 自身が持っているので、電話からは取り消せません。",
+          error: "This session is open on the desk. Queued sends are held by Claude Code itself and can't be cancelled from the phone.",
           route: "tmux", reason: "queue-not-ours", pane: r.pane,
         });
       }
@@ -1550,7 +1550,7 @@ const server = createServer(async (req, res) => {
       if (!r.pane) {
         // ワーカー経路(別プロセスの `claude -p`)に選択画面は存在しない。
         return json(res, 409, {
-          error: "この会話は机で開かれていません。選択画面はありません。",
+          error: "This session is not open on the desk. There is no choice screen.",
           route: "worker", reason: "not-tmux",
         });
       }
@@ -1968,17 +1968,17 @@ const LOG_PATHS = new Set([
 // (電話には「繋がらない」として出る。中途半端に応答する物が居るより判りやすい)。
 server.on("error", (e) => {
   const why = e && e.code === "EADDRINUSE"
-    ? `ポート ${PORT} は既に使われています。rc-backend が二重に上がっていないか確認してください`
+    ? `port ${PORT} is already in use. Check for a duplicate rc-backend`
     : e && e.code === "EACCES"
-      ? `ポート ${PORT} を開く権限がありません`
-      : `listen に失敗しました: ${e && e.message}`;
+      ? `no permission to open port ${PORT}`
+      : `listen failed: ${e && e.message}`;
   // ★人が読む散文と**機械が読む code** を同じ行に両方残す(2026-08-02 に外して学んだ)。
   //   最初この行は code を散文に翻訳して捨てていた。その結果 e2e 側の環境死判定
   //   (`/EADDRINUSE|EACCES/` を探す)が**原理的に当たらない**状態になり、本物の
   //   port 衝突を起こしても関門は「環境死ではない」と答えた = 当たらない探し物は
   //   「無い」と報告される、をまた踏んだ。散文だけにすると、翻訳した瞬間に
   //   下流の機械読みが全部黙って外れる。
-  console.error(`[rc-backend] 起動できません — ${why} (${(e && e.code) || "code不明"})`);
+  console.error(`[rc-backend] Cannot start — ${why} (${(e && e.code) || "unknown code"})`);
   process.exit(1);
 });
 

@@ -197,8 +197,8 @@ echo "== 画面検査に焼いた秒数が古くなる =="
 
 # ⑧ 焼いた数だけが動く。UI の束を回す対照は無いので、此処が唯一の見張り。
 probe "画面検査に焼いた秒数だけが動く" "$INFLIGHTU" \
-    'private let sendSentence = "送っています…(机の返事を最大30秒待ちます)"' \
-    'private let sendSentence = "送っています…(机の返事を最大45秒待ちます)"'
+    'private let sendSentence = "Sending… (waiting up to 30s for the desk)"' \
+    'private let sendSentence = "Sending… (waiting up to 45s for the desk)"'
 
 # ⑨ 宣言していない画面検査が秒数を焼き始める。「知っている file だけ見る」形だと
 #    新しい file は黙って検査の外に落ちる —— 落ちた物は永久に見えない。
@@ -206,7 +206,7 @@ NEWUI="ios/UITests/InventedForControlUITests.swift"
 cat >"$WORK/$NEWUI" <<'SWIFTEOF'
 // 対照が植えた作り物。宣言の外で秒数を焼き始めた画面検査の代わり。
 final class InventedForControlUITests {
-    private let sentence = "作り物です(最大99秒待ちます)"
+    private let sentence = "planted (waiting up to 99s)"
 }
 SWIFTEOF
 if run_suite; then
@@ -247,8 +247,8 @@ probe "飛んでいる間の文の呼び出しを1件も拾えなくする" "$TE
     'const m = /Self\.@@@(\w*InFlightText)\(timeout:\s*BackendSession\.(\w+)\)/.exec(line);'
 
 probe "画面検査に焼いた秒数を1件も拾えなくする" "$TESTF" \
-    'const found = [...src.matchAll(/最大(\d+)秒/g)].map((m) => Number(m[1]));' \
-    'const found = [...src.matchAll(/最大@@@(\d+)秒/g)].map((m) => Number(m[1]));'
+    'const found = [...src.matchAll(/waiting up to (\d+)s/g)].map((m) => Number(m[1]));' \
+    'const found = [...src.matchAll(/waiting up to @@@(\d+)s/g)].map((m) => Number(m[1]));'
 
 # ⑮ 宣言(三項式)が行ではなく式で名指されている事。式が動けば宣言が外れて総数が合わない。
 probe "三項式が動いて宣言が外れる(行ではなく式で名指しているか)" "$POLLLOOP" \
@@ -270,8 +270,8 @@ edits = {
         ("static let pollTimeout: TimeInterval = serverPollMaxWait + 10",
          "static let pollTimeout: TimeInterval = serverPollMaxWait + 25"),
     ],
-    "ios/UITests/InFlightUITests.swift": [("最大30秒", "最大45秒")],
-    "ios/UITests/TapTargetUITests.swift": [("最大30秒", "最大45秒")],
+    "ios/UITests/InFlightUITests.swift": [("waiting up to 30s", "waiting up to 45s")],
+    "ios/UITests/TapTargetUITests.swift": [("waiting up to 30s", "waiting up to 45s")],
 }
 for rel, pairs in edits.items():
     p = os.path.join(work, rel)
@@ -295,8 +295,8 @@ restore_from_root "ios/UITests/TapTargetUITests.swift"
 # Ⓑ 縛っているのは**数**であって文ではない。秒数以外を書き換えても緑。
 #   文まで固定すると、言い回しを直すたびに赤が出る = 誰も直さない検査になる。
 if mutate "$INFLIGHTU" \
-    'private let sendSentence = "送っています…(机の返事を最大30秒待ちます)"' \
-    'private let sendSentence = "送信中です…(机の返事を最大30秒待ちます)"'; then
+    'private let sendSentence = "Sending… (waiting up to 30s for the desk)"' \
+    'private let sendSentence = "Now sending… (waiting up to 30s for the desk)"'; then
     if run_suite; then
         echo "  PASS  秒数以外の言い回しは何に替えても緑のまま"
         PASS=$((PASS + 1))

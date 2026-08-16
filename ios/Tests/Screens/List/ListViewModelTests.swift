@@ -101,8 +101,8 @@ final class ListViewModelTests: XCTestCase {
             return XCTFail("expected .paneFault, got \(vm.phase)")
         }
         // 錨(此処が無いと、空文字を配る実装でも下の2つを満たせてしまう)。
-        XCTAssertTrue(headline.contains("一覧"), "落とし所の見出しが文になっていない: \(headline)")
-        XCTAssertTrue(body.contains("机で確認"), "落とし所の本文が文になっていない: \(body)")
+        XCTAssertTrue(headline.contains("pane list"), "落とし所の見出しが文になっていない: \(headline)")
+        XCTAssertTrue(body.contains("Check the desk"), "落とし所の本文が文になっていない: \(body)")
         XCTAssertFalse(headline.contains("panes-unreadable"), "生の理由コードを見出しに据えている: \(headline)")
         XCTAssertFalse(body.contains("secret-project"), "生の detail を本文に載せている: \(body)")
     }

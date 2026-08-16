@@ -254,7 +254,7 @@ final class AccountClientTests: XCTestCase {
 
         let result = await client.current(baseURL: baseURL, apiKey: "k")
 
-        XCTAssertEqual(result, .failure(.backend("サーバが理由を返しませんでした")))
+        XCTAssertEqual(result, .failure(.backend("The server gave no reason")))
     }
 
     // MARK: - 名指しで選ぶ側(§9-3)
@@ -294,7 +294,7 @@ final class AccountClientTests: XCTestCase {
 
         let result = await client.select(name: "sdgs", baseURL: baseURL, apiKey: "k")
 
-        XCTAssertEqual(result, .failure(.refused("その口座は選べません")))
+        XCTAssertEqual(result, .failure(.refused("That account cannot be selected")))
     }
 
     /// 名指しの切替も撃ち直さない。断られた1本で終わる。

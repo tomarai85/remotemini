@@ -3,7 +3,7 @@
 #
 # 何を確かめるか(全部**観測**で):
 #   1. 製品の `InterruptClient` が本物のサーバから `display` を受け取る(モックではなく)
-#   2. その `display` が「止めました(生成が止まったのを確認)。」= サーバ側 `stopped:"verified"`
+#   2. その `display` が「Stopped (generation confirmed stopped).」= サーバ側 `stopped:"verified"`
 #      ★電話は `stopped` を**読まない**(`InterruptClient` の見出し ★ 参照)。だから此処でも
 #        生フィールドは見ない。`view.mjs` の `interruptResult` が `"verified"` の時にだけ
 #        書く文を、電話が受け取った事で確かめる —— 四択の他の3つは全部**別の文**になる。
@@ -35,7 +35,7 @@
 set -uo pipefail
 
 # サーバが `stopped:"verified"` の時にだけ書く文(`src/view.mjs` の `interruptResult`)。
-VERIFIED_TEXT="止めました(生成が止まったのを確認)。"
+VERIFIED_TEXT="Stopped (generation confirmed stopped)."
 
 # 割り込みの返り文を四択のどれかに名付ける。**純粋な文字列判定**(通信もしない)。
 #
@@ -47,9 +47,9 @@ VERIFIED_TEXT="止めました(生成が止まったのを確認)。"
 classify_interrupt_text() {
     case "$1" in
         *"$VERIFIED_TEXT"*) echo verified ;;
-        *"押した時には終わっていました"*) echo already-done ;;
-        *"止める対象が見当たりませんでした"*) echo not-in-flight ;;
-        *"まだ止まっていません"*) echo unverified ;;
+        *"It had already finished"*) echo already-done ;;
+        *"Nothing was running to stop ("*) echo not-in-flight ;;
+        *"has not stopped yet"*) echo unverified ;;
         *) echo unknown ;;
     esac
 }

@@ -36,10 +36,10 @@ done
 # 実機検査が掴んでいる4つの針。左から順に、`interruptResult` の四択に対応する。
 #   verified / already-done / unverified / null
 NEEDLES=(
-    "止めました(生成が止まったのを確認)。"
-    "押した時には終わっていました"
-    "まだ止まっていません"
-    "止める対象が見当たりませんでした"
+    "Stopped (generation confirmed stopped)."
+    "It had already finished"
+    "has not stopped yet"
+    "Nothing was running to stop ("
 )
 NAMES=(verified already-done unverified null)
 
@@ -125,15 +125,15 @@ cls() { # $1 = 期待, $2 = 食わせる文
 cls verified      "outcome=display kind=ok tone=ok
 text=${NEEDLES[0]}"
 cls already-done  "outcome=display kind=ok tone=ok
-text=押した時には終わっていました(止めるものは残っていません)。"
+text=It had already finished (nothing left to stop)."
 cls unverified    "outcome=display kind=warn tone=warn
-text=Escape は押しましたが、まだ止まっていません。画面を見て確かめてください。"
+text=Escape was sent, but it has not stopped yet. Check the screen."
 cls not-in-flight "outcome=display kind=warn tone=warn
-text=止める対象が見当たりませんでした(Escape は押しました)。"
+text=Nothing was running to stop (Escape was sent)."
 # ★陰性対照。四択のどれにも当たらない文が **unknown** に落ちる事(= 判定が
 #   「何でも verified にする」形になっていない事)。
 cls unknown       "outcome=display kind=ok tone=ok
-text=止めました(Escape)。"
+text=Stopped it (Escape)."
 
 echo
 echo "== 陰性対照: 在りもしない文が「在る」と出ないか =="

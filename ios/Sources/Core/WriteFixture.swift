@@ -68,8 +68,8 @@ struct InterruptingFixture: Interrupting {
 struct QueueClearingFixture: QueueClearing {
     func clearQueue(baseURL: URL, apiKey: String, sessionID: String) async -> ClearQueueOutcome {
         switch await WriteFixture.holdThenGiveUp() {
-        case .cancelled: return .error("取り消されました")
-        default: return .error("机に届きません")
+        case .cancelled: return .error("Cancelled")
+        default: return .error("Can't reach the desk")
         }
     }
 }

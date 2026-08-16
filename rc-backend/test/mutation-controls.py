@@ -321,8 +321,8 @@ MUT = [
  #   `retry` は読み手が0人のまま残っていた死に field なので、その日のうちに削除した。
  #   同じ「断られた送信」の危険を、生きている field(`keepText`)で測り直す。
  ("M54 断られた送信で入力欄を空にする(打った本文が消え、打ち直す先を間違える)", VIE,
-  'return { kind: "refused", text: b.error || "送信を断られました。", keepText: true };',
-  'return { kind: "refused", text: b.error || "送信を断られました。", keepText: false };'),
+  'return { kind: "refused", text: b.error || "The server declined to send.", keepText: true };',
+  'return { kind: "refused", text: b.error || "The server declined to send.", keepText: false };'),
  ("M55 末尾の孤立 CR をその場で確定させる(チャンクを跨いだ CRLF が2行に割れる)", FRM,
   'if (m[0] === "\\r" && m.index === buf.length - 1) break; // 次の push を待つ',
   ''),
@@ -347,14 +347,14 @@ MUT = [
  #   未確認枝だけの形に絞って一意に戻す。文面をわざと違える方向は採らない — 人に出す助言は
  #   どちらの枝でも同じ(本文は残した / 送り直すと二重に入る)であるべきなので。
  ("M60 未確認の送信で入力欄を空にする(届いたか分からない本文を黙って捨てる)", VIE,
-  '        text: `${note}本文は残してあります。送り直すと二重に入ることがあります。`,\n        keepText: true,',
-  '        text: `${note}本文は残してあります。送り直すと二重に入ることがあります。`,\n        keepText: false,'),
+  '        text: `${note} Your text is kept — resending may duplicate it.`,\n        keepText: true,',
+  '        text: `${note} Your text is kept — resending may duplicate it.`,\n        keepText: false,'),
  ("M61 二重注入の注意を落とす(送り直しが二重に入る事を人に伝えない)", VIE,
-  '`${note}本文は残してあります。送り直すと二重に入ることがあります。`',
-  '`${note}本文は残してあります。`'),
+  '`${note} Your text is kept — resending may duplicate it.`',
+  '`${note} Your text is kept.`'),
  ("M62 「止める対象が無い」を失敗に丸める(静かな会話への Escape が赤く出る)", VIE,
-  ': { kind: "warn", text: "止める対象がありませんでした。" };',
-  ': { kind: "error", text: "止める対象がありませんでした。" };'),
+  ': { kind: "warn", text: "Nothing was running to stop." };',
+  ': { kind: "error", text: "Nothing was running to stop." };'),
  ("M63 一度つながっただけで待ち時間を戻す(受けた直後に切る相手に毎秒つなぎ直す)", VIE,
   'const healthy = Boolean(openedAt) && nowMs - openedAt > HEALTHY_MS;',
   'const healthy = Boolean(openedAt);'),
@@ -365,8 +365,8 @@ MUT = [
   'return Math.min(500, (current || 50) + 100);',
   'return Math.min(500, current || 50);'),
  ("M66 走査の欠けた値を 0 で埋める(「読めなかった」を「0本だった」と表示する)", VIE,
-  '${scan.files ?? "?"}本のうち ${scan.read ?? "?"}本',
-  '${scan.files ?? 0}本のうち ${scan.read ?? 0}本'),
+  'Read ${scan.read ?? "?"} of ${scan.files ?? "?"} files',
+  'Read ${scan.read ?? 0} of ${scan.files ?? 0} files'),
  ("M67 起動失敗の理由を出さない(移動中に読むログが EADDRINUSE の一行になる)", SRV,
   'server.on("error", (e) => {',
   'server.on("error", (e) => { process.exit(1); } ); (() => {'),
@@ -413,9 +413,9 @@ MUT = [
   'export function limitNoticeIn(text) {\n  return true || USAGE_LIMIT.test(String(text || ""));'),
  ("M76 電話の表示から上限を落とす(検出はできているのに人に届かない)", VIE,
   '''    if (v.limited) {
-      return work === "動いている"
-        ? { kind: "tmux", short: "動いている・★上限", text: "机で開いている・動いている(★画面に利用上限の告知が残っている)", screen: v.screen || "" }
-        : { kind: "tmux", short: "★利用上限", text: "机で開いている・★利用上限(答えは返りません)", screen: v.screen || "" };
+      return work === "Active"
+        ? { kind: "tmux", short: "Active · limit", text: "Open on desktop · Active (a usage limit notice remains on screen)", screen: v.screen || "" }
+        : { kind: "tmux", short: "Usage limit", text: "Open on desktop · usage limit (no reply will come)", screen: v.screen || "" };
     }
 ''',
   ''),
@@ -425,7 +425,7 @@ MUT = [
  # **同時に**与える検査が1本も無かったから。組み合わせを測らない検査は、
  # 個々の枝を全部緑にしたまま、その交差点を丸ごと見落とす。
  ("M77 上限を動きより優先させる(生成中の画面に「答えは返りません」と出す)", VIE,
-  '      return work === "動いている"',
+  '      return work === "Active"',
   '      return false'),
  # ★M78 は**継ぎ目**を撃つ(2026-08-02 追加)。分類器(M74/M75)と電話の表示(M76/M77)は
  # それぞれ撃っていたのに、その間の `server.mjs` が `limited` を JSON に載せる所は
@@ -724,8 +724,8 @@ MUT = [
   '  if (!digest) return { ...base, reason: CHOICE_BLOCKED["not-menu"] };\n',
   ""),
  ("C28 ★applied の値域を潰す(画面が動いていないのに「押しました」と出る)", VIE,
-  '    if (b.applied === "verified") return { kind: "ok", text: "押しました(画面が変わったのを確認)。" };',
-  '    if (b.applied !== "nope") return { kind: "ok", text: "押しました(画面が変わったのを確認)。" };'),
+  '    if (b.applied === "verified") return { kind: "ok", text: "Pressed (screen change confirmed)." };',
+  '    if (b.applied !== "nope") return { kind: "ok", text: "Pressed (screen change confirmed)." };'),
 
  # --- 配線 (W) = `inject.mjs` / `server.mjs` が鍵を**実際に通っている**か -------
  # 鍵単体(M88-M94)が完璧でも、注入器がそれを通らなければ何も守られない。
@@ -903,20 +903,20 @@ MUT = [
   """    if (body == null) {
       return {
         kind: "warn",
-        text: "送りましたが、サーバの返事を読めませんでした。本文は残してあります。送り直すと二重に入ることがあります。",
+        text: "Sent, but the server's reply could not be read. Your text is kept — resending may duplicate it.",
         keepText: true,
       };
     }""",
   "    void body;"),
  ("P9 読めない本文でも入力欄を空にする(打った文が黙って消える)", VIE,
-  '        text: "送りましたが、サーバの返事を読めませんでした。本文は残してあります。送り直すと二重に入ることがあります。",\n        keepText: true,',
-  '        text: "送りましたが、サーバの返事を読めませんでした。本文は残してあります。送り直すと二重に入ることがあります。",\n        keepText: false,'),
+  '        text: "Sent, but the server\'s reply could not be read. Your text is kept — resending may duplicate it.",\n        keepText: true,',
+  '        text: "Sent, but the server\'s reply could not be read. Your text is kept — resending may duplicate it.",\n        keepText: false,'),
  ("P2 その守りを広げすぎる(delivered の無い正当な worker 応答まで warn にする)", VIE,
   "    if (body == null) {\n      return {\n        kind: \"warn\",",
   "    if (!b.delivered) {\n      return {\n        kind: \"warn\","),
  ("P3 割り込み 200 で読めない本文を「対象が無かった」と断定する", VIE,
-  '      return { kind: "warn", text: "止めたかどうか確認できませんでした。画面を見て確かめてください。" };',
-  '      return { kind: "warn", text: "止める対象がありませんでした。" };'),
+  '      return { kind: "warn", text: "Could not confirm the stop. Check the screen." };',
+  '      return { kind: "warn", text: "There was nothing to stop." };'),
  # ★2026-08-04: 打鍵の口(`sendChoice`)が3本目になった時、割り込み側の find が**2箇所に当たる**
  #   ようになって的の照合が NG を出した(コメント行まで写しだったため)。曖昧な的は
  #   「どこを壊したか」を言えないので、各行を**次の行の判定関数名**で一意に留め直した。
@@ -1158,11 +1158,11 @@ MUT = [
   "    padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);",
   ""),
  ("V2 いつ測ったか分からない一覧を『新しい』側へ倒す(警告だけ消えて値は古いまま)", VIE,
-  '    return { text: "いつ測った値か不明", stale: true };',
+  '    return { text: "Measured at an unknown time", stale: true };',
   '    return { text: "", stale: false };'),
  ("V3 古さの境目を外す(何時間前の値でも「今」を名乗る)", VIE,
-  "  if (d < 60) return { text: `${d}秒前の値`, stale: false };",
-  "  if (d < 6000) return { text: `${d}秒前の値`, stale: false };"),
+  "  if (d < 60) return { text: `As of ${d}s ago`, stale: false };",
+  "  if (d < 6000) return { text: `As of ${d}s ago`, stale: false };"),
  ("V4 前面へ戻った時の一覧の取り直しを外す(拾っても20分前の値のまま)", APP,
   'document.addEventListener("visibilitychange", onForegroundList);',
   ""),
@@ -1224,8 +1224,8 @@ MUT = [
   '  if (typeof q !== "number" || !Number.isFinite(q)) {',
   "  if (false) {"),
  ("Q7 「動いている番は止まらない」を文面から落とす(取り消した=全部止まった と読める)", VIE,
-  "    return { kind: \"ok\", text: `${n} 件の送信を取り消しました(いま動いている番は止まりません)。` };",
-  "    return { kind: \"ok\", text: `${n} 件の送信を取り消しました。` };"),
+  "    return { kind: \"ok\", text: `Cancelled ${n} queued sends (the one already running is not stopped).` };",
+  "    return { kind: \"ok\", text: `Cancelled ${n} queued sends.` };"),
  ("Q8 押した後で伏せる(二度押しが同じ物を2回捨てに行く)", APP,
   "    btn.disabled = true; // fetch より前に、同期で伏せる。二度押しは同じ物を2回捨てに行く",
   "    // mutated: 伏せない"),

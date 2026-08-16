@@ -39,8 +39,8 @@ final class ConversationUITests: XCTestCase {
     func testThreeRolesShowsAllThreeRolesAndTheLoadEarlierButton() {
         let app = launch(fixture: "conversation-3roles")
 
-        XCTAssertTrue(app.staticTexts["予約の状況を確認して"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["確認します。少々お待ちください。"].exists)
+        XCTAssertTrue(app.staticTexts["Check the booking status"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Checking now — one moment."].exists)
         XCTAssertTrue(app.staticTexts["⚙ Bash"].exists)
         // `truncated: true` in the fixture is what puts this button on screen.
         XCTAssertTrue(element(app, "conversation.loadEarlier").exists)
@@ -49,8 +49,8 @@ final class ConversationUITests: XCTestCase {
         XCTAssertFalse(element(app, "conversation.stalled").exists)
         // 対照: この状態の poll は readable にならないので、下の2本が錨にしている
         // ライブの行は**出てはいけない**。出るなら錨の側が常に真 = 錨が錨でない。
-        XCTAssertFalse(app.staticTexts["ライブ(作業中)の行が届いた"].exists)
-        XCTAssertFalse(app.staticTexts["ライブ(確認待ち)の行が届いた"].exists)
+        XCTAssertFalse(app.staticTexts["live row (working) arrived"].exists)
+        XCTAssertFalse(app.staticTexts["live row (awaiting confirm) arrived"].exists)
     }
 
     // MARK: - conversation-busy: Tom's ruling, measured at the UI
@@ -69,7 +69,7 @@ final class ConversationUITests: XCTestCase {
         // ライブの行は `applyReadablePoll` が `screen` を代入するのと同じ呼び出しで
         // しか届かないので、これが出た事が「BUSY が着いた」の証拠になる。
         XCTAssertTrue(
-            app.staticTexts["ライブ(作業中)の行が届いた"].waitForExistence(timeout: 10),
+            app.staticTexts["live row (working) arrived"].waitForExistence(timeout: 10),
             "錨: readable な poll が適用されていない = 以下の主張は何も測っていない"
         )
 
@@ -89,7 +89,7 @@ final class ConversationUITests: XCTestCase {
         // 錨(BUSY と同じ理由。CHOICE は composer が止まる事自体が判別子になるので
         // 此処では二重の確認だが、fixture を取り違えた時に気付ける = 文言が
         // classification ごとに違う理由)。
-        XCTAssertTrue(app.staticTexts["ライブ(確認待ち)の行が届いた"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["live row (awaiting confirm) arrived"].waitForExistence(timeout: 10))
         // `display.choice` が適用された事の観測 -- 画面の分類とは別経路(§2-c は
         // 両者を同じ1箇所で扱うと決めているので、片方だけ着く事は在り得ない筈だが、
         // 「筈」を測る為に置く)。Sprint 6 の `choiceBadge` は Sprint 7 で card に
@@ -137,7 +137,7 @@ final class ConversationUITests: XCTestCase {
         let app = launch(fixture: "conversation-choice-keys")
 
         XCTAssertTrue(element(app, "conversation.choiceCard").waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["この変更を適用しますか？"].exists)
+        XCTAssertTrue(app.staticTexts["Apply this change?"].exists)
 
         for key in ["1", "2", "escape"] {
             let button = element(app, "conversation.choiceButton.\(key)")
@@ -173,7 +173,7 @@ final class ConversationUITests: XCTestCase {
 
         let reason = element(app, "conversation.composerDisabledReason")
         XCTAssertTrue(reason.waitForExistence(timeout: 10))
-        let promisesInterrupt = reason.label.contains("割り込み")
+        let promisesInterrupt = reason.label.contains("or interrupt")
         let interruptUsable = element(app, "conversation.interruptButton").isEnabled
 
         XCTAssertEqual(
@@ -201,14 +201,14 @@ final class ConversationUITests: XCTestCase {
         // 錨: 履歴が着いた事。`行 090` は最後の行なので、これが出た時点で
         // 「読み込めた」と「一番下に居る」が両方成り立っている。
         XCTAssertTrue(
-            app.staticTexts["行 090"].waitForExistence(timeout: 10),
+            app.staticTexts["line 090"].waitForExistence(timeout: 10),
             "錨: 90行の履歴が着いていない = 以下は何も測っていない"
         )
-        XCTAssertTrue(isOnScreen(app, "行 090"), "開いた時は一番新しい行が見えていなければならない")
+        XCTAssertTrue(isOnScreen(app, "line 090"), "開いた時は一番新しい行が見えていなければならない")
 
         // 対照。これが偽なら「1画面に全部入っている」= 上の主張は位置を測っていない。
         XCTAssertFalse(
-            isOnScreen(app, "行 031"),
+            isOnScreen(app, "line 031"),
             "60行が1画面に収まっている = この fixture は位置の検査に使えない"
         )
     }
@@ -235,9 +235,9 @@ final class ConversationUITests: XCTestCase {
         expectation(for: buttonGone, evaluatedWith: loadEarlier)
         waitForExpectations(timeout: 10)
 
-        XCTAssertTrue(isOnScreen(app, "行 031"), "足す前に一番古かった行が見えていなければならない")
+        XCTAssertTrue(isOnScreen(app, "line 031"), "足す前に一番古かった行が見えていなければならない")
         XCTAssertFalse(
-            isOnScreen(app, "行 090"),
+            isOnScreen(app, "line 090"),
             "一番下へ引き戻されている = 件数で追従する実装。押した行為が画面から消えた"
         )
     }
@@ -262,8 +262,8 @@ final class ConversationUITests: XCTestCase {
         let strip = element(app, "conversation.queueStrip")
         XCTAssertTrue(strip.waitForExistence(timeout: 10), "送信待ちの帯が画面に無い")
         let text = element(app, "conversation.queueText")
-        XCTAssertTrue(text.label.contains("2 件"), "件数が出ていない: \(text.label)")
-        XCTAssertTrue(text.label.contains("まだ Claude に渡していません"),
+        XCTAssertTrue(text.label.contains("2 queued"), "件数が出ていない: \(text.label)")
+        XCTAssertTrue(text.label.contains("not yet handed to Claude"),
                       "「走っている番は別」の断りの前半が落ちた: \(text.label)")
 
         let clear = element(app, "conversation.queueClear")

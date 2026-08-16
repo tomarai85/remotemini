@@ -15,7 +15,7 @@ final class FreshnessTests: XCTestCase {
         for bad in [0.0, Double.nan, Double.infinity] {
             let f = Freshness.freshness(bad, nowMs: 1_000_000)
             XCTAssertTrue(f.stale, "\(bad) を新しい側へ倒した")
-            XCTAssertTrue(f.text.contains("不明"), "分からない事を文でも言っていない")
+            XCTAssertTrue(f.text.contains("unknown"), "分からない事を文でも言っていない")
         }
     }
 
@@ -28,12 +28,12 @@ final class FreshnessTests: XCTestCase {
         XCTAssertTrue(Freshness.freshness(t0, nowMs: t0 + 60_000).stale, "60秒を過ぎても「今」を名乗っている")
 
         // Positive control -- the text actually switches (a stale flag alone with unchanged text is unreadable)
-        XCTAssertTrue(Freshness.freshness(t0, nowMs: t0 + 30_000).text.contains("30秒前"))
-        XCTAssertTrue(Freshness.freshness(t0, nowMs: t0 + 120_000).text.contains("2分前"))
-        XCTAssertTrue(Freshness.freshness(t0, nowMs: t0 + 7_200_000).text.contains("2時間前"))
-        XCTAssertTrue(Freshness.freshness(t0, nowMs: t0 + 172_800_000).text.contains("2日前"))
+        XCTAssertTrue(Freshness.freshness(t0, nowMs: t0 + 30_000).text.contains("30s ago"))
+        XCTAssertTrue(Freshness.freshness(t0, nowMs: t0 + 120_000).text.contains("2m ago"))
+        XCTAssertTrue(Freshness.freshness(t0, nowMs: t0 + 7_200_000).text.contains("2h ago"))
+        XCTAssertTrue(Freshness.freshness(t0, nowMs: t0 + 172_800_000).text.contains("2d ago"))
         // Stale text also says how to fix it.
-        XCTAssertTrue(Freshness.freshness(t0, nowMs: t0 + 120_000).text.contains("更新"))
+        XCTAssertTrue(Freshness.freshness(t0, nowMs: t0 + 120_000).text.contains("refresh"))
     }
 
     // MARK: - view.test.mjs: "一覧の古さ — 時計がずれて未来を指しても壊れない(relTime と同じ扱い)"
@@ -41,7 +41,7 @@ final class FreshnessTests: XCTestCase {
     func testClockSkewIntoTheFutureDoesNotBreak() {
         let f = Freshness.freshness(1_000_000, nowMs: 900_000) // now is in the past
         XCTAssertFalse(f.stale)
-        XCTAssertTrue(f.text.contains("たった今"))
+        XCTAssertTrue(f.text.contains("Just now"))
     }
 
     // MARK: - Negative control (repo convention: a control that doesn't go red when you break the thing measures nothing)

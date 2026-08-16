@@ -69,7 +69,7 @@ function footerBlock(text = source()) {
 test("loadEarlierFooter の切り出しが両端とも合っている", { skip: GATE.skip }, () => {
     const block = footerBlock();
     assert.ok(block, `${FOOTER_DECL} が見つからない = 以下は何も測っていない`);
-    assert.ok(block.includes("以前を読む"), "入口の文言が切り出しに入っていない");
+    assert.ok(block.includes("Load earlier"), "入口の文言が切り出しに入っていない");
     assert.ok(
         block.includes("conversation.loadEarlierCeiling"),
         "上限の枝まで届いていない = 切り出しが早く終わっている",

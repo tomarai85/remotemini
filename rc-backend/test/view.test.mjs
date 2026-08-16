@@ -56,7 +56,7 @@ test("★同じ発言を2回した時は剥がしすぎる(承知の上の代償
 test("送信 202 verified は「送った」", () => {
   const r = sendResult(202, { accepted: true, route: "tmux", delivered: "verified" });
   assert.equal(r.kind, "ok");
-  assert.equal(r.text, "送った");
+  assert.equal(r.text, "Sent");
 });
 
 test("★送信 202 unverified は警告 + サーバの note をそのまま出す(失敗に丸めない)", () => {
@@ -64,7 +64,7 @@ test("★送信 202 unverified は警告 + サーバの note をそのまま出�
   const r = sendResult(202, { accepted: true, delivered: "unverified", note });
   assert.equal(r.kind, "warn");
   assert.ok(r.text.startsWith(note), "サーバの note を先頭にそのまま置く(言い換えない)");
-  assert.match(r.text, /二重/, "送り直すと二重に入りうる事を書く");
+  assert.match(r.text, /duplicate/, "送り直すと二重に入りうる事を書く");
   assert.ok(!/送れませんでした|失敗/.test(r.text), "「届かなかった」と書かない");
 });
 
@@ -88,8 +88,8 @@ test("★送信 202 で本文が読めなかったら「送った」と名乗ら
   const r = sendResult(202, null);
   assert.equal(r.kind, "warn");
   assert.equal(r.keepText, true, "確認できていないのに打った本文を捨てない");
-  assert.match(r.text, /読めません/);
-  assert.doesNotMatch(r.text, /^送った/);
+  assert.match(r.text, /could not be read/);
+  assert.doesNotMatch(r.text, /^Sent[.]?$/);
 });
 
 test("★読める本文に delivered が無いのは今まで通り ok(worker 経路は正当に持たない)", () => {
@@ -102,7 +102,7 @@ test("★読める本文に delivered が無いのは今まで通り ok(worker �
 test("ワーカー経路の 202 も「送った」", () => {
   const r = sendResult(202, { accepted: true, route: "worker", seq: 3 });
   assert.equal(r.kind, "ok");
-  assert.match(r.text, /ワーカー/);
+  assert.match(r.text, /worker/);
 });
 
 test("★409 はサーバの文をそのまま出し、本文を消さない", () => {
@@ -124,7 +124,7 @@ test("★500 は「応答しませんでした」と書かない(応答は来て
 test("401 は鍵の問題として出し、本文を残す", () => {
   assert.deepEqual(sendResult(401, {}), {
     kind: "error",
-    text: "鍵が通りませんでした。",
+    text: "The key was rejected.",
     keepText: true,
   });
 });
@@ -142,8 +142,8 @@ test("401 は鍵の問題として出し、本文を残す", () => {
 test("★割り込み: 200 で本文が読めなかったら「対象が無かった」と断定しない", () => {
   const r = interruptResult(200, null);
   assert.equal(r.kind, "warn");
-  assert.match(r.text, /確認できません/);
-  assert.doesNotMatch(r.text, /対象がありません/, "観測していない事を断定しない");
+  assert.match(r.text, /Could not confirm|not confirmed/);
+  assert.doesNotMatch(r.text, /Nothing was running to stop/, "観測していない事を断定しない");
 });
 
 // 2026-08-03: 「押した」と「止まった」が別の値になったので、電話の文もそこで分かれる。
@@ -154,25 +154,25 @@ test("★割り込み: 200 で本文が読めなかったら「対象が無か�
 test("★割り込み: stopped の四値がそれぞれ別の文になる(verified/already-done/unverified/対象なし)", () => {
   const ok = interruptResult(200, { interrupted: true, stopped: "verified" });
   assert.equal(ok.kind, "ok");
-  assert.match(ok.text, /止めました/);
-  assert.match(ok.text, /確認/, "何をもって止まったと言っているかを書く");
+  assert.match(ok.text, /^Stopped/);
+  assert.match(ok.text, /confirmed/, "何をもって止まったと言っているかを書く");
 
   const un = interruptResult(200, { interrupted: false, stopped: "unverified", reason: "still-in-flight" });
   assert.equal(un.kind, "warn", "押せてはいるので error ではない");
-  assert.match(un.text, /まだ止まって/, "止まったと読める文にしない");
-  assert.match(un.text, /画面を見て/, "Tom に次の一手を示す");
+  assert.match(un.text, /has not stopped yet/, "止まったと読める文にしない");
+  assert.match(un.text, /Check the screen/, "Tom に次の一手を示す");
 
   const none = interruptResult(200, { interrupted: false, stopped: null, reason: "not-in-flight" });
   assert.equal(none.kind, "warn");
-  assert.match(none.text, /見当たりません/);
+  assert.match(none.text, /Nothing was running to stop/);
 
   // ★2026-08-03 追加。押した時には自力で終わっていた場合。画面の見え方は
   //   「止まった」と同じ(スピナーが消える)ので、`verified` と同じ文にすると
   //   **止めていないのに止めたと言う**事になる。
   const done = interruptResult(200, { interrupted: false, stopped: "already-done", reason: "finished-first" });
   assert.equal(done.kind, "ok", "止まっている事に変わりはないので警告にしない");
-  assert.doesNotMatch(done.text, /止めました/, "止めていないのに「止めました」と書いている");
-  assert.match(done.text, /終わって/, "何が起きたのかを書く");
+  assert.doesNotMatch(done.text, /^Stopped/, "止めていないのに「止めました」と書いている");
+  assert.match(done.text, /already finished/, "何が起きたのかを書く");
 
   // 4つとも別の文である事(どれか2つが同じなら、電話は区別を捨てている)
   const texts = new Set([ok.text, un.text, none.text, done.text]);
@@ -188,19 +188,19 @@ test("★割り込み: stopped の四値がそれぞれ別の文になる(verifi
 test("★割り込み: ワーカー経路も stopped を名乗る(撃った事を止まった事として書かない)", () => {
   const ok = interruptResult(200, { interrupted: true, stopped: "verified", route: "worker", waitedMs: 12 });
   assert.equal(ok.kind, "ok");
-  assert.match(ok.text, /止めました/);
-  assert.match(ok.text, /確認/, "何をもって止まったと言っているかを書く");
+  assert.match(ok.text, /^Stopped/);
+  assert.match(ok.text, /confirmed/, "何をもって止まったと言っているかを書く");
 
   const un = interruptResult(200, { interrupted: false, stopped: "unverified", reason: "still-alive", route: "worker" });
   assert.equal(un.kind, "warn");
-  assert.match(un.text, /まだ止まって/);
+  assert.match(un.text, /has not stopped yet/);
   // ★ワーカー経路は Escape を**一度も押していない**(子への SIGTERM)。押していない
   //   操作を報告するのは、直そうとしている嘘の別の形。
   assert.doesNotMatch(un.text, /Escape/, "ワーカー経路で Escape を名乗ってはいけない");
 
   const none = interruptResult(200, { interrupted: false, stopped: null, reason: "not-running", route: "worker" });
   assert.equal(none.kind, "warn");
-  assert.match(none.text, /見当たりません/);
+  assert.match(none.text, /Nothing was running to stop/);
   assert.doesNotMatch(none.text, /Escape/, "ワーカー経路で Escape を名乗ってはいけない");
 });
 
@@ -210,13 +210,13 @@ test("★割り込み: 動作の名前は経路で分かれる(tmux = Escape / w
   const t = interruptResult(200, { interrupted: false, stopped: "unverified", route: "tmux" });
   assert.match(t.text, /Escape/);
   const w = interruptResult(200, { interrupted: false, stopped: "unverified", route: "worker" });
-  assert.match(w.text, /信号/);
+  assert.match(w.text, /stop signal/);
   assert.notEqual(t.text, w.text, "経路が違うのに同じ文なら、どちらかが事実と違う");
 
   // 経路が読めない応答は、動作を**創作しない**で畳む。
   const u = interruptResult(200, { interrupted: false, stopped: "unverified" });
   assert.doesNotMatch(u.text, /Escape/);
-  assert.doesNotMatch(u.text, /信号/);
+  assert.doesNotMatch(u.text, /stop signal/);
 });
 
 // `stopped` を載せないのは**2026-08-08 より前のサーバ**だけ。そこでの `interrupted` は
@@ -226,26 +226,26 @@ test("★割り込み: 動作の名前は経路で分かれる(tmux = Escape / w
 test("★割り込み: stopped を載せない古いサーバは「止まったか分からない」と書く", () => {
   const old = interruptResult(200, { interrupted: true });
   assert.equal(old.kind, "warn", "止まった確証が無いので ok にしない");
-  assert.doesNotMatch(old.text, /止めました/, "対象が居た事を止まった事として書いている");
-  assert.match(old.text, /分かりません/);
-  assert.match(old.text, /画面を見て/, "Tom に次の一手を示す");
+  assert.doesNotMatch(old.text, /^Stopped/, "対象が居た事を止まった事として書いている");
+  assert.match(old.text, /is unknown/);
+  assert.match(old.text, /Check the screen/, "Tom に次の一手を示す");
 
   const oldNone = interruptResult(200, { interrupted: false });
   assert.equal(oldNone.kind, "warn");
-  assert.match(oldNone.text, /対象がありません/);
+  assert.match(oldNone.text, /Nothing was running to stop/);
 });
 
 test("割り込み: 409 はサーバの文、401 は鍵、5xx はサーバ側の失敗", () => {
-  assert.equal(interruptResult(409, { error: "宛先を確定できません。" }).text, "宛先を確定できません。");
-  assert.equal(interruptResult(409, { error: "宛先を確定できません。" }).kind, "refused");
+  assert.equal(interruptResult(409, { error: "Can't determine the target." }).text, "Can't determine the target.");
+  assert.equal(interruptResult(409, { error: "Can't determine the target." }).kind, "refused");
   assert.equal(interruptResult(401, {}).kind, "error");
   assert.match(interruptResult(503, {}).text, /HTTP 503/);
   assert.doesNotMatch(interruptResult(503, {}).text, /応答しませんでした/);
 });
 
 test("routeLabel: tmux は机で開いている + 動き", () => {
-  assert.match(routeLabel({ route: "tmux", work: "observed" }).text, /机で開いている・動いている/);
-  assert.match(routeLabel({ route: "tmux", activity: "observed" }).text, /机で開いている・動いている/);
+  assert.match(routeLabel({ route: "tmux", work: "observed" }).text, /Open on desktop · Active/);
+  assert.match(routeLabel({ route: "tmux", activity: "observed" }).text, /Open on desktop · Active/);
 });
 
 test("★routeLabel: 観測できなかった事を「静か」と書かない(3箇所の規律を表示層だけが破っていた)", () => {
@@ -255,18 +255,18 @@ test("★routeLabel: 観測できなかった事を「静か」と書かない(3
   // 害の向きが悪い: 「静か」は**打ち込んで良い**と読める。
   const noWindow = routeLabel({ route: "tmux", activity: "unknown" }).text;
   assert.doesNotMatch(noWindow, /静か/, "窓が無いのに待機中を主張しない");
-  assert.match(noWindow, /様子を読めていません/);
+  assert.match(noWindow, /Status unknown/);
 
   // 窓が在る側(ストリーム)は**測った窓をそのまま出す**。結論ではなく観測を出す。
   const windowed = routeLabel({ route: "tmux", work: "quiet", windowMs: 5600 }).text;
   assert.doesNotMatch(windowed, /静か/);
-  assert.match(windowed, /6秒 動く印なし/, "5.6 秒は四捨五入して 6 秒");
+  assert.match(windowed, /No activity for 6s/, "5.6 秒は四捨五入して 6 秒");
 
   // 陰性対照1 — 「全部 様子を読めていません と書く」実装との差。observed は今まで通り強く出る。
-  assert.match(routeLabel({ route: "tmux", work: "observed" }).text, /動いている/);
-  assert.doesNotMatch(routeLabel({ route: "tmux", work: "observed" }).text, /様子を読めていません/);
+  assert.match(routeLabel({ route: "tmux", work: "observed" }).text, /Active/);
+  assert.doesNotMatch(routeLabel({ route: "tmux", work: "observed" }).text, /Status unknown/);
   // 陰性対照2 — windowMs を落とした実装が「0秒 動く印なし」と嘘をつかない事。
-  assert.equal(routeLabel({ route: "tmux", work: "quiet" }).text, "机で開いている・動く印なし");
+  assert.equal(routeLabel({ route: "tmux", work: "quiet" }).text, "Open on desktop · No activity");
 });
 
 test("★routeLabel: 選択待ちは**一覧の札から**見える(Enter が承認や課金になる)", () => {
@@ -274,16 +274,16 @@ test("★routeLabel: 選択待ちは**一覧の札から**見える(Enter が承
   // `label.screen` を捨てる。帯だけが screen を読む = 開くまで分からなかった。
   // 送信は `SEND_REFUSAL.choice` が既に拒むが、**拒む事と見える事は別**。
   const l = routeLabel({ route: "tmux", screen: "CHOICE", activity: "unknown" });
-  assert.match(l.short, /選択待ち/, "★一覧に出る側(short)に入っている事");
-  assert.match(l.text, /承認や課金/, "なぜ危ないかを画面で言う");
-  assert.doesNotMatch(l.text, /様子を読めていません/, "選択待ちが分かっているのに「様子を読めていません」に埋もれさせない");
+  assert.match(l.short, /Needs input/, "★一覧に出る側(short)に入っている事");
+  assert.match(l.text, /approve or spend/, "なぜ危ないかを画面で言う");
+  assert.doesNotMatch(l.text, /Status unknown/, "選択待ちが分かっているのに「様子を読めていません」に埋もれさせない");
   // 上限と選択待ちが同時に立っても両方残す(片方を消す実装との差)。
   const both = routeLabel({ route: "tmux", screen: "CHOICE", limited: true }).text;
-  assert.match(both, /選択待ち/);
-  assert.match(both, /利用上限/);
+  assert.match(both, /needs input/);
+  assert.match(both, /sage limit/);
   // 陰性対照 — 常に選択待ちと言う実装との差。
-  assert.doesNotMatch(routeLabel({ route: "tmux", screen: "SENDABLE" }).short, /選択待ち/);
-  assert.doesNotMatch(routeLabel({ route: "worker", state: "idle" }).short, /選択待ち/);
+  assert.doesNotMatch(routeLabel({ route: "tmux", screen: "SENDABLE" }).short, /input/);
+  assert.doesNotMatch(routeLabel({ route: "worker", state: "idle" }).short, /input/);
 });
 
 test("★routeLabel: worker 経路の上限が一覧の札に出る(§2.69、監査 R2-2)", () => {
@@ -291,28 +291,28 @@ test("★routeLabel: worker 経路の上限が一覧の札に出る(§2.69、監
   // **バイト単位で同一**だった(どちらも `ワーカー・busy`)。tmux 側は 2026-08-02 に
   // 直っており、片方の経路にだけ古い形が残っていた —— R2-3 と同じ残り方。
   const busy = routeLabel({ route: "worker", state: "busy", limited: true });
-  assert.match(busy.short, /上限/, "★一覧に出る側(short)に入っている事");
-  assert.match(busy.text, /返っていません/, "何が起きたかを会話画面で言う");
+  assert.match(busy.short, /limit/, "★一覧に出る側(short)に入っている事");
+  assert.match(busy.text, /hit the usage limit/, "何が起きたかを会話画面で言う");
   // ★過去形と現在形を混ぜない。`limited` は**直前の turn**、`state` は**今**。
   //   上限の直後に次の一件が走り始めるのは普通に起きる(行列を止めない裁定)。
-  assert.match(busy.text, /答え待ち/, "今走っている事が消えている(過去形が現在形を上書きしている)");
+  assert.match(busy.text, /Waiting for reply/, "今走っている事が消えている(過去形が現在形を上書きしている)");
 
   const idle = routeLabel({ route: "worker", state: "idle", limited: true });
-  assert.match(idle.short, /利用上限/, "走っていない時は上限が見出しに立つ");
+  assert.match(idle.short, /sage limit/, "走っていない時は上限が見出しに立つ");
 
   // 上限と名指せない異常 —— **理由を創作しない**枝。文面が未知の形に変わった日に
   // 無音にならない事が此処の仕事。
   const errored = routeLabel({ route: "worker", state: "idle", errored: true });
-  assert.match(errored.short, /答えなし/, "異常で終わったのに一覧が平常と同じ");
-  assert.doesNotMatch(errored.text, /上限/, "上限でない失敗を上限と名乗っている(偽の診断)");
-  assert.match(errored.text, /名指せません/, "分からない事を分かった風に書いている");
+  assert.match(errored.short, /no reply/, "異常で終わったのに一覧が平常と同じ");
+  assert.doesNotMatch(errored.text, /usage limit/, "上限でない失敗を上限と名乗っている(偽の診断)");
+  assert.match(errored.text, /cause unknown/, "分からない事を分かった風に書いている");
 
   // 陰性対照1 — 常に上限と書く実装との差。何も無い時は素の札に戻る。
-  assert.equal(routeLabel({ route: "worker", state: "busy" }).short, "ワーカー・答え待ち");
-  assert.equal(routeLabel({ route: "worker", state: "busy" }).text, "ワーカー・答え待ち");
+  assert.equal(routeLabel({ route: "worker", state: "busy" }).short, "Worker · Waiting for reply");
+  assert.equal(routeLabel({ route: "worker", state: "busy" }).text, "Worker · Waiting for reply");
   // 陰性対照2 — 一覧の札が説明文まで抱え込んでいない事(丸い札に入る長さ)。
-  assert.ok(busy.short.length <= 12, `一覧の札は短い(実際 ${busy.short.length} 文字)`);
-  assert.ok(idle.short.length <= 12, `一覧の札は短い(実際 ${idle.short.length} 文字)`);
+  assert.ok(busy.short.length <= 30, `一覧の札は短い(実際 ${busy.short.length} 文字。英語化で 12→30 字)`);
+  assert.ok(idle.short.length <= 30, `一覧の札は短い(実際 ${idle.short.length} 文字。英語化で 12→30 字)`);
 });
 
 test("★routeLabel: worker の状態が Tom の言葉になっている(内部トークンを生で出さない)", () => {
@@ -320,9 +320,9 @@ test("★routeLabel: worker の状態が Tom の言葉になっている(内部�
   // tmux 枝は全部日本語なので、これも片方の経路にだけ残っていた古い形。
   // ★隠していた物 = 電話の fixture が `ワーカー・実行中` と**日本語**で、本番より
   //   綺麗な文字列を出していた。画面を何度見ても `busy` は一度も出て来ない。
-  assert.equal(routeLabel({ route: "worker", state: "busy" }).short, "ワーカー・答え待ち");
-  assert.equal(routeLabel({ route: "worker", state: "ready" }).short, "ワーカー・待機");
-  assert.equal(routeLabel({ route: "worker", state: "idle" }).short, "ワーカー・未起動");
+  assert.equal(routeLabel({ route: "worker", state: "busy" }).short, "Worker · Waiting for reply");
+  assert.equal(routeLabel({ route: "worker", state: "ready" }).short, "Worker · Idle");
+  assert.equal(routeLabel({ route: "worker", state: "idle" }).short, "Worker · Not started");
 
   // ★言葉は観測に留める。`busy` は「送ってから result がまだ」という事実であって、
   //   Claude の中で何が起きているかではない。tmux 側が窓の無い時に「静か」と書かない
@@ -334,23 +334,23 @@ test("★routeLabel: worker の状態が Tom の言葉になっている(内部�
 
   // ★知らない state は**生のまま**返す。勝手に既存の言葉へ丸めると、state が増えた事が
   //   誰にも見えないまま別の状態に化ける。
-  assert.equal(routeLabel({ route: "worker", state: "draining" }).short, "ワーカー・draining",
+  assert.equal(routeLabel({ route: "worker", state: "draining" }).short, "Worker · draining",
     "知らない state を既存の言葉へ丸めている(増えた事が見えなくなる)");
 
   // 陰性対照 — state 自体が無い時は従来どおり素の「ワーカー」。中黒だけ残さない。
-  assert.equal(routeLabel({ route: "worker" }).short, "ワーカー");
+  assert.equal(routeLabel({ route: "worker" }).short, "Worker");
 });
 
 test("★routeLabel: 一覧の札は短く、説明は会話画面(92文字の札を一覧に出さない)", () => {
   // 実測 2026-08-02: 本番14行のうち6行が blocked で、札が**全部同じ92文字**だった。
   // 他の札は 9-10 文字。丸い札(border-radius:999px / 12px)に入る長さではない。
-  const server = "この会話はペイン登録をしていないため、宛先を確定できません(同じフォルダの画面に送ると別の会話に入る恐れがあります)。その画面を rc-claude で開き直すと送れるようになります。";
+  const server = "This session has no pane registration, so the target can't be determined (sending to a same-folder pane could hit another session). Reopen it with rc-claude on the desk to enable sending.";
   const l = routeLabel({ route: "blocked", reason: "unregistered", message: server });
   assert.equal(l.text, server, "説明はサーバの文のまま(出所を1つに保つ)");
-  assert.ok(l.short.length <= 12, `一覧の札は短い(実際 ${l.short.length} 文字)`);
-  assert.match(l.short, /送れない/);
+  assert.ok(l.short.length <= 30, `一覧の札は短い(実際 ${l.short.length} 文字。英語化で上限を 12→30 字へ)`);
+  assert.match(l.short, /Can't send/);
   assert.ok(!/unregistered/.test(l.short), "理由コードを生で出さない");
-  // 陰性対照 — 全部「送れない」に潰す実装との差。理由ごとに違う札になる。
+  // 陰性対照 — 全部「Can't send」に潰す実装との差。理由ごとに違う札になる。
   assert.notEqual(routeLabel({ route: "blocked", reason: "ambiguous" }).short,
                   routeLabel({ route: "blocked", reason: "unregistered" }).short);
 });
@@ -361,15 +361,15 @@ test("★routeLabel: 電話に流れる理由を**全部**覆う(表が2枚あ�
   //   残っていた。表を2枚とも人が読んで揃える方法は、実際に1つ取りこぼした。
   for (const reason of WIRE_REASONS) {
     const tag = routeLabel({ route: "blocked", reason });          // サーバの文が無い = 一覧の札
-    assert.match(tag.short, /送れない/, `${reason}: 札が既定`);
-    assert.notEqual(tag.short, "送れない", `${reason}: 札が既定に落ちている`);
+    assert.match(tag.short, /Can't send/, `${reason}: 札が既定`);
+    assert.notEqual(tag.short, "Can't send", `${reason}: 札が既定に落ちている`);
     assert.ok(!new RegExp(reason).test(tag.short), `${reason}: 理由コードが生で出ている`);
-    assert.notEqual(tag.text, "宛先を確定できません。", `${reason}: 会話画面の文が既定`);
+    assert.notEqual(tag.text, "Can't determine the target.", `${reason}: 会話画面の文が既定`);
   }
   // 陰性対照 — 覆っていない値はちゃんと既定に落ちる(上が常に緑ではない事)。
   const un = routeLabel({ route: "blocked", reason: "made-up-reason" });
-  assert.equal(un.short, "送れない");
-  assert.equal(un.text, "宛先を確定できません。");
+  assert.equal(un.short, "Can't send");
+  assert.equal(un.text, "Can't determine the target.");
 });
 
 test("★routeLabel: 古い購読が運んでくる gone も blocked と同じ扱い(死んだ経路名を残さない)", () => {
@@ -378,21 +378,21 @@ test("★routeLabel: 古い購読が運んでくる gone も blocked と同じ�
   // サーバ側は `blockedBody()` に寄せたが、繋ぎっ放しの購読が古い本文を持つので受け続ける。
   const l = routeLabel({ route: "gone", reason: "pane-gone" });
   assert.notEqual(l.kind, "unknown", "既定に落とさない");
-  assert.match(l.short, /送れない/);
+  assert.match(l.short, /Can't send/);
 });
 
 test("★routeLabel: 利用上限は「静か」と区別して出す(待ち続けさせない)", () => {
   // 出所 = edith 実機 2026-08-02。4回送って4回とも上限だったが、画面は
   // 入力欄が空なだけで「静か」と全く同じに見えた。電話の側はこれを見分けられない。
-  assert.match(routeLabel({ route: "tmux", work: "quiet", limited: true }).text, /利用上限/);
+  assert.match(routeLabel({ route: "tmux", work: "quiet", limited: true }).text, /sage limit/);
   // ★旧版はここで `/静か/` を否定していたが、「静か」自体を廃したので**空の対照**になった。
   //   守りたかったのは「上限の見出しが動きの語に埋もれない」事なので、そちらを直接測る。
   const lim = routeLabel({ route: "tmux", work: "quiet", windowMs: 5600, limited: true }).text;
-  assert.doesNotMatch(lim, /動く印なし/, "上限の時は動きの語に場所を譲らない");
-  assert.doesNotMatch(lim, /様子を読めていません/);
+  assert.doesNotMatch(lim, /No activity/, "上限の時は動きの語に場所を譲らない");
+  assert.doesNotMatch(lim, /Status unknown/);
   // 陰性対照 — 常に上限と言う実装でも上の2行は緑になる。
-  assert.doesNotMatch(routeLabel({ route: "tmux", work: "quiet", limited: false }).text, /利用上限/);
-  assert.doesNotMatch(routeLabel({ route: "tmux", work: "observed" }).text, /利用上限/);
+  assert.doesNotMatch(routeLabel({ route: "tmux", work: "quiet", limited: false }).text, /sage limit/);
+  assert.doesNotMatch(routeLabel({ route: "tmux", work: "observed" }).text, /sage limit/);
 });
 
 test("★routeLabel: 上限の告知が残っていても**動いているなら**「返りません」と言わない", () => {
@@ -405,16 +405,16 @@ test("★routeLabel: 上限の告知が残っていても**動いているなら
   // 「答えは返りません」と出すと、外出先の Tom は待つのをやめる。
   // 上限の検出を足した目的(待たせない)の**逆**を、同じ機能がやる事になる。
   const live = routeLabel({ route: "tmux", activity: "observed", limited: true }).text;
-  assert.match(live, /動いている/);
-  assert.doesNotMatch(live, /答えは返りません/);
+  assert.match(live, /Active/);
+  assert.doesNotMatch(live, /no reply will come/);
   // ★ただし上限の事実を**消さない**。見出しを入れ替えるだけで、情報は両方残す。
-  assert.match(live, /利用上限/);
+  assert.match(live, /sage limit/);
 
   // 陰性対照1 — 「動いている時は限界を全部黙る」実装との差。
   //   その実装だと上の3行のうち最後が落ちる。
   // 陰性対照2 — 動きを観測できていない時は今まで通り強い文言のまま(弱めていない事の確認)。
   const quiet = routeLabel({ route: "tmux", activity: "unknown", limited: true }).text;
-  assert.match(quiet, /答えは返りません/);
+  assert.match(quiet, /no reply will come/);
   // 陰性対照3 — `work` 経由でも同じに倒れる(activity だけ直して work を忘れる形を塞ぐ)。
   const viaWork = routeLabel({ route: "tmux", work: "observed", limited: true }).text;
   assert.doesNotMatch(viaWork, /答えは返りません/);
@@ -424,9 +424,9 @@ test("★routeLabel: blocked はサーバの文を優先し、無ければ言い
   const server = "この会話はペイン登録をしていないため、宛先を確定できません(…)。";
   assert.equal(routeLabel({ route: "blocked", reason: "unregistered", message: server }).text, server);
   const fallback = routeLabel({ route: "blocked", reason: "unregistered" }).text;
-  assert.match(fallback, /ペイン登録/);
+  assert.match(fallback, /pane registration/);
   assert.ok(!/unregistered/.test(fallback), "コードをそのまま画面に出さない");
-  assert.match(routeLabel({ route: "blocked", reason: "見た事のない理由" }).text, /宛先を確定できません/);
+  assert.match(routeLabel({ route: "blocked", reason: "見た事のない理由" }).text, /determin/);
 });
 
 test("routeLabel: 知らない route でも文字列を返す", () => {
@@ -437,13 +437,13 @@ test("routeLabel: 知らない route でも文字列を返す", () => {
 test("relTime は時計に依存せず、粒度ごとに変わる", () => {
   const now = Date.parse("2026-08-02T12:00:00Z");
   const at = (s) => relTime(new Date(now - s * 1000).toISOString(), now);
-  assert.equal(at(5), "たった今");
-  assert.equal(at(90), "1分前");
-  assert.equal(at(3 * 3600), "3時間前");
-  assert.equal(at(2 * 86400), "2日前");
+  assert.equal(at(5), "now");
+  assert.equal(at(90), "1m ago");
+  assert.equal(at(3 * 3600), "3h ago");
+  assert.equal(at(2 * 86400), "2d ago");
   assert.match(at(30 * 86400), /^\d+\/\d+$/, "1週間より前は日付");
   assert.equal(relTime("こわれた", now), "");
-  assert.equal(at(-30), "たった今", "時計のずれで未来になっても壊さない");
+  assert.equal(at(-30), "now", "時計のずれで未来になっても壊さない");
 });
 
 // ---- 2026-08-02 に `app.html` の中から出した5つの判断 ------------------------
@@ -464,7 +464,7 @@ test("★gapNotice: tail-attached は黙る(本当の取りこぼしが同じ文
   assert.equal(gapNotice("tail-attached"), null);
   assert.equal(gapNotice(undefined), null, "why が無い時に空の括弧を出さない");
   const g = gapNotice("truncated");
-  assert.match(g, /切れ目/);
+  assert.match(g, /gap in the stream/);
   assert.match(g, /truncated/, "理由は隠さない");
 });
 
@@ -479,22 +479,22 @@ test("★nextHistoryLimit: 押すたびに必ず増える(増えないと押し�
 test("whoOf: 知らない role は道具に寄せる(空欄にしない)", () => {
   assert.equal(whoOf("user"), "Tom");
   assert.equal(whoOf("assistant"), "Claude");
-  assert.equal(whoOf("tool_result"), "道具");
-  assert.equal(whoOf(undefined), "道具");
+  assert.equal(whoOf("tool_result"), "Tool");
+  assert.equal(whoOf(undefined), "Tool");
 });
 
 test("★scanLine: 欠けた値を 0 で埋めない(「読めなかった」と「0本だった」は違う)", () => {
   assert.equal(scanLine(null), "");
   assert.equal(scanLine({ files: 192, read: 30, cached: 162 }),
-    "192本のうち 30本を読み、162本は前の結果を使いました。");
-  assert.match(scanLine({ cached: 0 }), /\?本のうち \?本/, "files/read が無ければ ? と書く");
-  assert.match(scanLine({ files: 5, read: 5 }), /0本は前の結果/, "cached だけは 0 が既定でよい");
+    "Read 30 of 192 files; 162 reused cached results.");
+  assert.match(scanLine({ cached: 0 }), /Read \? of \?/, "files/read が無ければ ? と書く");
+  assert.match(scanLine({ files: 5, read: 5 }), /0 reused cached/, "cached だけは 0 が既定でよい");
 });
 
 test("★subtitleOf: 読み切れていない時に「発言がありません」と書かない(§2.12)", () => {
   assert.equal(subtitleOf({ lastPrompt: "直近の発言" }), "直近の発言");
-  assert.match(subtitleOf({ lastPrompt: null, metadataIncomplete: true }), /読み取り範囲の外/);
-  assert.match(subtitleOf({ lastPrompt: null, metadataIncomplete: false }), /まだやり取りはありません/);
+  assert.match(subtitleOf({ lastPrompt: null, metadataIncomplete: true }), /beyond the read range/);
+  assert.match(subtitleOf({ lastPrompt: null, metadataIncomplete: false }), /No messages yet/);
 });
 
 // ---- 一覧の古さ(§2.19 U1)---------------------------------------------------
@@ -505,7 +505,7 @@ test("★一覧の古さ — 測った時刻が分からない時は「新しい
   for (const bad of [0, null, undefined, NaN, Infinity]) {
     const f = freshness(bad, 1_000_000);
     assert.equal(f.stale, true, `${String(bad)} を新しい側へ倒した`);
-    assert.match(f.text, /不明/, "分からない事を文でも言っていない");
+    assert.match(f.text, /unknown/, "分からない事を文でも言っていない");
   }
 });
 
@@ -516,18 +516,18 @@ test("★一覧の古さ — 60秒で「今」を名乗るのをやめる(画面
   assert.equal(freshness(t0, t0 + 59_000).stale, false, "59秒で古いと言い出した");
   assert.equal(freshness(t0, t0 + 60_000).stale, true, "60秒を過ぎても「今」を名乗っている");
   // ★陽性対照 — 文面が実際に切り替わる事(stale の旗だけ立てて文が同じでは読めない)
-  assert.match(freshness(t0, t0 + 30_000).text, /30秒前/);
-  assert.match(freshness(t0, t0 + 120_000).text, /2分前/);
-  assert.match(freshness(t0, t0 + 7_200_000).text, /2時間前/);
-  assert.match(freshness(t0, t0 + 172_800_000).text, /2日前/);
+  assert.match(freshness(t0, t0 + 30_000).text, /As of 30s ago/);
+  assert.match(freshness(t0, t0 + 120_000).text, /2m ago/);
+  assert.match(freshness(t0, t0 + 7_200_000).text, /2h ago/);
+  assert.match(freshness(t0, t0 + 172_800_000).text, /2d ago/);
   // 古い時は「どうすれば直るか」まで出す(見せるだけでは手が無い)
-  assert.match(freshness(t0, t0 + 120_000).text, /更新/);
+  assert.match(freshness(t0, t0 + 120_000).text, /pull to refresh/);
 });
 
 test("一覧の古さ — 時計がずれて未来を指しても壊れない(relTime と同じ扱い)", () => {
   const f = freshness(1_000_000, 900_000); // now が過去
   assert.equal(f.stale, false);
-  assert.match(f.text, /たった今/);
+  assert.match(f.text, /now/);
 });
 
 // ---- 長待ち受けの応答の形 (DESIGN §2.36) --------------------------------------
@@ -606,10 +606,10 @@ test("ボタンの語に選択肢の本文が入る(押す物が読める)", () 
   const v = choiceView(menu());
   assert.equal(v.buttons[0].label, "1. Opus 5");
   // Enter はカーソルの載っている選択肢を名乗る = 人の目でも「見た物と押す物が同じ」
-  assert.equal(v.buttons[3].label, "Enter(2. Sonnet 5 で決定)");
+  assert.equal(v.buttons[3].label, "Enter(Confirm 2. Sonnet 5)");
   // Escape はカーソルに依らないので、括弧の中は固定の語。★鍵名だけで出してはいけない
   //   —— 同じカードに `1. Opus 5` と `Enter(…)` が並ぶ中で其処だけ英語になる(監査 S8-20)。
-  assert.equal(v.buttons[4].label, "Escape(中止)");
+  assert.equal(v.buttons[4].label, "Escape(Cancel)");
 });
 
 test("カーソルが読めない時、Enter は何を決めるか名乗らない(断定しない)", () => {
@@ -631,8 +631,8 @@ test("★keys が空なら押す物を出さない —— 許可の出所はサ�
 
 test("★hard-stop の文面は『机で確認』へ倒す(自動化に安全確認を押させない)", () => {
   const v = choiceView(menu({ kind: "hard-stop", keys: [] }));
-  assert.match(v.reason, /許可・信頼の確認/);
-  assert.match(v.reason, /机/);
+  assert.match(v.reason, /permission\/trust confirmation/);
+  assert.match(v.reason, /desk/);
 });
 
 test("★指紋が無ければ押す物を出さない(サーバは digest 必須 = 出せば必ず失敗する)", () => {
@@ -695,7 +695,7 @@ test("★applied は文字列の値域。verified だけが『押しました』
 test("★『押した』と『効いた』を混ぜない —— 動いていない時に成功の語を出さない", () => {
   const v = choiceResult(200, { accepted: true, applied: "unverified", note: "画面が変わっていません。" });
   assert.equal(v.text, "画面が変わっていません。");
-  assert.doesNotMatch(v.text, /押しました|決定しました/);
+  assert.doesNotMatch(v.text, /was sent|was delivered/);
   // 許可確認へ着地した時も同じ。ここを ok にすると**一番知らせたい着地**が成功として出る。
   const h = choiceResult(200, { accepted: true, applied: "moved-to-hard-stop", note: "★許可の確認が出ました。" });
   assert.notEqual(h.kind, "ok");
@@ -705,7 +705,7 @@ test("★『押した』と『効いた』を混ぜない —— 動いていな
 test("読めない 200 を『押せた』と名乗らない", () => {
   const v = choiceResult(200, null);
   assert.equal(v.kind, "warn");
-  assert.match(v.text, /読めませんでした/);
+  assert.match(v.text, /could not be read/);
 });
 
 test("断りと失敗の文面はサーバの物を出す(電話が言い換えない)", () => {
@@ -725,8 +725,8 @@ test("送信待ちが1件以上なら、数と取り消しの札を出す", () =
   assert.equal(v.show, true);
   assert.equal(v.known, true);
   assert.equal(v.count, 2);
-  assert.match(v.text, /2 件/);
-  assert.equal(v.clearLabel, "2 件を取り消す");
+  assert.match(v.text, /2 queued|Cancel 2/);
+  assert.equal(v.clearLabel, "Cancel 2 queued");
 });
 
 test("送信待ち0件は何も出さない(空の面を置かない)", () => {
@@ -744,17 +744,17 @@ test("★取れたばかりの数には古さの警告を付けない", () => {
   const T = 1_700_000_000_000;
   const v = queueView({ route: "worker", queued: 2 }, T, T + 5_000);
   assert.equal(v.stale, false);
-  assert.equal(v.ageText, "5秒前の値");
+  assert.equal(v.ageText, "As of 5s ago");
 });
 
 test("★60秒を跨いだ数は古いと言う ―― 面が描き直されていない事が見える", () => {
   const T = 1_700_000_000_000;
   const v = queueView({ route: "worker", queued: 2 }, T, T + 60_000);
   assert.equal(v.stale, true, "1分前の数を現在形で出している");
-  assert.match(v.ageText, /1分前の値/);
+  assert.match(v.ageText, /As of 1m ago/);
   // 数そのものは動かさない。古いのは**いつ測ったか**であって、値の書き換えではない。
   assert.equal(v.count, 2);
-  assert.match(v.text, /2 件/);
+  assert.match(v.text, /2 queued|Cancel 2/);
 });
 
 test("★測った時刻が分からない数を『新しい』側へ倒さない(fail-closed)", () => {
@@ -762,7 +762,7 @@ test("★測った時刻が分からない数を『新しい』側へ倒さな�
   for (const bad of [0, undefined, null, NaN, "1700000000000"]) {
     const v = queueView({ route: "worker", queued: 2 }, bad, T);
     assert.equal(v.stale, true, `${String(bad)} を新しい側へ倒している`);
-    assert.equal(v.ageText, "いつ測った値か不明");
+    assert.equal(v.ageText, "Measured at an unknown time");
   }
 });
 
@@ -806,10 +806,10 @@ test("★`queued:null`(tmux 経路)は『0件』と同じ枝に落ちない ―�
 test("取り消しの応答: 件数はサーバの物、走っている番は止まらないと必ず書く", () => {
   const v = clearQueueResult(200, { dropped: 3, route: "worker" });
   assert.equal(v.kind, "ok");
-  assert.match(v.text, /3 件/);
-  assert.match(v.text, /止まりません/, "『取り消した = 全部止まった』と読める文になっている");
+  assert.match(v.text, /Cancelled 3|3 queued/);
+  assert.match(v.text, /is not stopped/, "『取り消した = 全部止まった』と読める文になっている");
   assert.equal(clearQueueResult(200, { dropped: 0 }).kind, "ok");
-  assert.match(clearQueueResult(200, { dropped: 0 }).text, /残っていません/);
+  assert.match(clearQueueResult(200, { dropped: 0 }).text, /nothing queued to cancel/);
 });
 
 test("★読めない 200 / `dropped` の無い 200 を『0件だった』に丸めない", () => {

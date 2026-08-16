@@ -88,8 +88,8 @@ struct SessionsListingFixture: SessionsListing {
                     reason: "panes-unreadable",
                     detail: "fixture-detail: production puts a raw JS error message here; the banner never draws it",
                     display: .init(
-                        headline: "tmux の画面一覧を読めていません",
-                        body: "tmux からの返事は来ていますが、中身が壊れていて読めません。復旧するまで、どの会話にも送れません。この故障は電話からは直せないので、机で確認してください。"
+                        headline: "Can't read the tmux pane list",
+                        body: "tmux is replying, but the output is corrupted and unreadable. Nothing can be sent until this recovers. Check the desk."
                     )
                 ),
                 fetchCount: n
@@ -111,15 +111,15 @@ struct SessionsListingFixture: SessionsListing {
     /// 保管の面の canned data(§9-1)。1行 + 空も測れる様に敢えて1件だけ。
     static func archivedResponse() -> SessionsResponse {
         response(sessions: [
-            row(id: "fixture-archived-901", title: "保管済みの一件", kind: .worker, short: "ワーカー・待機",
-                text: "ワーカー・待機", screen: ""),
+            row(id: "fixture-archived-901", title: "An archived session", kind: .worker, short: "Worker · Idle",
+                text: "Worker · Idle", screen: ""),
         ], paneFault: nil, fetchCount: 1)
     }
 
     private static func response(sessions: [SessionRow], paneFault: SessionsResponse.PaneFault?, fetchCount: Int) -> SessionsResponse {
         SessionsResponse(
             sessions: sessions,
-            display: .init(scan: "scan: fixture data, no real scan ran (取得 #\(fetchCount))"),
+            display: .init(scan: "scan: fixture data, no real scan ran (fetch #\(fetchCount))"),
             paneFault: paneFault
         )
     }
@@ -142,8 +142,8 @@ struct SessionsListingFixture: SessionsListing {
     ///   同日、その形にしたら正しい blocked 行を誤って赤にした)。文言を変える時は先に
     ///   サーバを変える事。この表を先に書き換えると、検査が「本番に作れない札」として止める。
     private static let sampleRows: [SessionRow] = [
-        row(id: "fixture-choice-001", title: "承認待ちの一件", kind: .choice, short: "★選択待ち",
-            text: "机で開いている・★選択待ち(Enter が承認や課金になります)", screen: "CHOICE"),
+        row(id: "fixture-choice-001", title: "Waiting for approval", kind: .choice, short: "Needs input",
+            text: "Open on desktop · needs input (Enter may approve or spend)", screen: "CHOICE"),
         // ★`screen` は `"MAIN"` だった(2026-08-09 に訂正)。サーバの `routeLabel` が tmux の枝で
         //   入れるのは `v.screen || ""` = `classifyScreen` の `SENDABLE` / `CHOICE` / `UNKNOWN` だけで、
         //   `MAIN` は**どの枝からも出ない**。出所は `test/fixture-labels-producible.test.mjs` の
@@ -152,17 +152,17 @@ struct SessionsListingFixture: SessionsListing {
         //   `SENDABLE` を選んだのは実測に依る —— `view.mjs` に、生成中の実画面
         //   (`generating-spinner-visible.txt`)が `{state:"SENDABLE", activity:"observed"}` に
         //   なると記録が在る。「動いている」は `activity` 側の話で、`screen` とは別の軸。
-        row(id: "fixture-tmux-002", title: "作業中のセッション", kind: .tmux, short: "机・動いている",
-            text: "机で開いている・動いている", screen: "SENDABLE"),
-        row(id: "fixture-worker-003", title: "バックグラウンド処理", kind: .worker, short: "ワーカー・答え待ち",
-            text: "ワーカー・答え待ち", screen: ""),
-        row(id: "fixture-blocked-004", title: "宛先不明のセッション", kind: .blocked, short: "送れない",
-            text: "宛先を確定できません。", screen: ""),
-        row(id: "fixture-unknown-005", title: "未知の経路", kind: .unknown, short: "様子を読めていません",
-            text: "様子を読めていません", screen: ""),
+        row(id: "fixture-tmux-002", title: "An active session", kind: .tmux, short: "Desktop · Active",
+            text: "Open on desktop · Active", screen: "SENDABLE"),
+        row(id: "fixture-worker-003", title: "Background work", kind: .worker, short: "Worker · Waiting for reply",
+            text: "Worker · Waiting for reply", screen: ""),
+        row(id: "fixture-blocked-004", title: "Untargetable session", kind: .blocked, short: "Can't send",
+            text: "Can't determine the target.", screen: ""),
+        row(id: "fixture-unknown-005", title: "Unknown route", kind: .unknown, short: "Status unknown",
+            text: "Status unknown", screen: ""),
         // §9-2(2026-08-16): 持ち出し(remote-mini)の行。バッジ「MBP の仕事」の検査面。
-        row(id: "fixture-checkout-006", title: "持ち出して来た仕事", kind: .tmux, short: "机・動いている",
-            text: "机で開いている・動いている", screen: "SENDABLE",
+        row(id: "fixture-checkout-006", title: "Checked-out work", kind: .tmux, short: "Desktop · Active",
+            text: "Open on desktop · Active", screen: "SENDABLE",
             machine: .init(kind: "checkout", checkoutId: "fixture-co", returnRequestedAt: nil)),
     ]
 

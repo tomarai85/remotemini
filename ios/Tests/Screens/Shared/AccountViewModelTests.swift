@@ -451,7 +451,7 @@ final class AccountViewModelTests: XCTestCase {
         await viewModel.load()
 
         XCTAssertTrue(dropped)
-        XCTAssertEqual(viewModel.phase, .failed(reason: "鍵が拒まれました"))
+        XCTAssertEqual(viewModel.phase, .failed(reason: "The key was rejected"))
     }
 
     func testAnUnauthorizedSwitchAlsoDropsTheCredentials() async {
@@ -478,7 +478,7 @@ final class AccountViewModelTests: XCTestCase {
         await viewModel.select("biz")
 
         XCTAssertTrue(dropped)
-        XCTAssertEqual(viewModel.phase, .failed(reason: "鍵が拒まれました"))
+        XCTAssertEqual(viewModel.phase, .failed(reason: "The key was rejected"))
         // 鍵が拒まれた時に断りの1行を残すと、鍵入力画面へ戻った後も口座の断りが
         // 画面に居座る。相を落とす道では消す。
         XCTAssertNil(viewModel.lastFailure)

@@ -36,7 +36,7 @@ struct SettingsView: View {
                 instrumentsSection(list)
             }
         }
-        .navigationTitle("設定")
+        .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.root")
         // 一覧の画面から押して来た直後でも、背面から戻った直後でも読み直す。
@@ -54,7 +54,7 @@ struct SettingsView: View {
             case .idle, .loading:
                 HStack {
                     ProgressView().controlSize(.small)
-                    Text("読み込み中").foregroundStyle(.secondary)
+                    Text("Loading").foregroundStyle(.secondary)
                 }
                 .accessibilityIdentifier("settings.account.loading")
 
@@ -64,7 +64,7 @@ struct SettingsView: View {
                         .font(.callout)
                         .foregroundStyle(.orange)
                         .accessibilityIdentifier("settings.account.failed")
-                    Button("もう一度読む") {
+                    Button("Reload") {
                         Task { await accountViewModel.load() }
                     }
                     .accessibilityIdentifier("settings.account.retry")
@@ -74,7 +74,7 @@ struct SettingsView: View {
                 loadedAccount(state)
             }
         } header: {
-            Text("アカウント")
+            Text("Account")
         } footer: {
             // ★理由は**机が書いた文**をそのまま出す。電話が言い換えを持つと、机の門が
             //   増えた日に画面の断り方だけが古いまま残る(`src/account.mjs` が正本)。
@@ -92,7 +92,7 @@ struct SettingsView: View {
         // と読めるが、実際は「読めなかった」。机が日本語の理由を寄越すので、それを出す。
         if !state.ok {
             VStack(alignment: .leading, spacing: 6) {
-                Text(state.statusMessage ?? "アカウント一覧が読めていません。")
+                Text(state.statusMessage ?? "The account list is unreadable.")
                     .font(.callout)
                     .foregroundStyle(.orange)
                     .accessibilityIdentifier("settings.account.unreadable")
@@ -106,7 +106,7 @@ struct SettingsView: View {
                     //   黙って先頭 2000 字を出すと「失敗行が無い = 台本は最後まで
                     //   走った」と読める。診断の材料としては其れが一番害の大きい嘘。
                     if state.rawTruncated {
-                        Text("（出力が長い為、先頭のみ表示しています。続きは edith 側の log にあります）")
+                        Text("(Output truncated to the beginning. The rest is in the log on edith.)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .accessibilityIdentifier("settings.account.rawTruncated")
@@ -117,9 +117,9 @@ struct SettingsView: View {
 
         // 現用は一覧の有無に関わらず出す(一覧が読めなくても現用は読めている事が在る)。
         HStack {
-            Text("現用")
+            Text("Current")
             Spacer()
-            Text(state.current ?? "（未設定）")
+            Text(state.current ?? "(not set)")
                 .font(.callout.monospaced())
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("settings.account.current")
@@ -143,7 +143,7 @@ struct SettingsView: View {
         } label: {
             HStack {
                 if accountViewModel.advancing { ProgressView().controlSize(.small) }
-                Text("次のアカウントへ")
+                Text("Next account")
             }
         }
         .disabled(accountViewModel.isBusy)
@@ -205,9 +205,9 @@ struct SettingsView: View {
     // MARK: - 接続
 
     private var connectionSection: some View {
-        Section("接続") {
+        Section("Connection") {
             HStack {
-                Text("机")
+                Text("Desk")
                 Spacer()
                 // ★鍵は出さない。出す物は「どこに繋いでいるか」まで。
                 //   host だけにしないのは、port が既定でない事が此の系では常態だから。
@@ -219,7 +219,7 @@ struct SettingsView: View {
                     .accessibilityIdentifier("settings.endpoint")
             }
             HStack {
-                Text("版")
+                Text("Build")
                 Spacer()
                 Text(BuildInfo.line)
                     .font(.callout.monospaced())
@@ -241,11 +241,11 @@ struct SettingsView: View {
                     ArchivedListView(baseURL: baseURL, apiKey: deps.apiKey,
                                      lister: deps.lister, archiver: deps.archiver)
                 } label: {
-                    Label("保管した会話", systemImage: "archivebox")
+                    Label("Archived sessions", systemImage: "archivebox")
                 }
                 .accessibilityIdentifier("settings.archived")
             } footer: {
-                Text("一覧から外した会話です。記録は机(edith)に残っていて、いつでも戻せます。")
+                Text("Sessions removed from the list. Their records stay on the desk (edith) and can be restored anytime.")
             }
         }
     }
@@ -257,7 +257,7 @@ struct SettingsView: View {
         Section {
             if let scan = list.phase.scanLine {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("走査")
+                    Text("Scan")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     // brief §3-b の契約は据え置き: サーバの文を逐語で描く(再組成しない)
@@ -270,7 +270,7 @@ struct SettingsView: View {
             if list.lastFetchedAtMs > 0 {
                 let f = Freshness.freshness(list.lastFetchedAtMs, nowMs: Date().timeIntervalSince1970 * 1000)
                 HStack {
-                    Text("鮮度")
+                    Text("Freshness")
                     Spacer()
                     Text(f.text)
                         .font(.callout)
@@ -279,9 +279,9 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            Text("計器")
+            Text("Instruments")
         } footer: {
-            Text("壊れた日に読む欄です。ふだんは気にしなくて構いません。")
+            Text("For debugging on a bad day. Safe to ignore normally.")
         }
     }
 

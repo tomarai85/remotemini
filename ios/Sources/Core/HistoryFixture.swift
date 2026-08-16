@@ -80,7 +80,7 @@ struct HistoryFetchingFixture: HistoryFetching {
         let role: EntryRole = n.isMultiple(of: 2) ? .assistant : .user
         return HistoryEntry(
             role: role,
-            text: String(format: "行 %03d", n),
+            text: String(format: "line %03d", n),
             display: .init(who: role == .user ? "Tom" : "Claude")
         )
     }
@@ -100,10 +100,10 @@ struct HistoryFetchingFixture: HistoryFetching {
 
     private static let threeRolesResponse = HistoryResponse(
         history: [
-            HistoryEntry(role: .user, text: "予約の状況を確認して", display: .init(who: "Tom")),
-            HistoryEntry(role: .assistant, text: "確認します。少々お待ちください。", display: .init(who: "Claude")),
-            HistoryEntry(role: .tool, text: "⚙ Bash", display: .init(who: "道具")),
-            HistoryEntry(role: .assistant, text: "予約が2件見つかりました。詳細を送ります。", display: .init(who: "Claude")),
+            HistoryEntry(role: .user, text: "Check the booking status", display: .init(who: "Tom")),
+            HistoryEntry(role: .assistant, text: "Checking now — one moment.", display: .init(who: "Claude")),
+            HistoryEntry(role: .tool, text: "⚙ Bash", display: .init(who: "Tool")),
+            HistoryEntry(role: .assistant, text: "Found 2 bookings. Sending details.", display: .init(who: "Claude")),
         ],
         // truncated: true so the DoD screenshot also shows the "以前を読む" button
         // alongside all 3 role types in the same frame.

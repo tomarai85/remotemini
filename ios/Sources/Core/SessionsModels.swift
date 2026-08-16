@@ -72,9 +72,9 @@ extension SessionsResponse.PaneFault {
     /// 見出しではなく、説明が来ていないと名乗った後ろに置く。
     var bannerDisplay: Display {
         display ?? Display(
-            headline: "机の画面一覧を取れていません",
-            body: "この故障の説明をサーバが送ってきません(サーバの版が古い可能性があります)。"
-                + "復旧するまで、どの会話にも送れません。机で確認してください。診断コード: \(reason)"
+            headline: "Can't read the desktop pane list",
+            body: "The server sent no explanation for this fault (it may be an older build). "
+                + "Nothing can be sent until this recovers. Check the desk. Diagnostic code: \(reason)"
         )
     }
 }

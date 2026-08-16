@@ -85,7 +85,7 @@ struct ListView: View {
         //   版の名乗りは settings.buildInfo / disconnected.buildInfo / keyEntry.buildInfo の
         //   3面に居る(BuildIdentityUITests が同一ビルドを名乗る事を見張る)。
         .safeAreaInset(edge: .bottom) { staleWarning }
-        .navigationTitle("セッション")
+        .navigationTitle("Sessions")
         // 口座は**脚ではなく上**に置く(2026-08-12、REQUIREMENTS §4-5/§5-8)。脚は既に
         // 鮮度 / 走査行 / 版の3行を載せていて、其処に4行目を足すと**版の名乗りが押し出される** ——
         // 版は「古いビルドで動いていないか」を最も疑う場面で見える必要が在り、
@@ -142,7 +142,7 @@ struct ListView: View {
 
         case .empty:
             ScrollView {
-                Text("会話がありません")
+                Text("No sessions")
                     .font(.headline)
                     .foregroundStyle(.secondary)
                     .padding(.top, 80)
@@ -172,14 +172,14 @@ struct ListView: View {
                     // 1-2 failures with a prior list: keep it, un-grayed, with a
                     // subtle one-line notice -- explicitly NOT a red banner
                     // (brief §4-a).
-                    noticeBar("しばらく取得できていません。前回の一覧を表示しています。", identifier: "list.retryable")
+                    noticeBar("Updates have been failing for a while. Showing the last list.", identifier: "list.retryable")
                     rows(sessions, grayedOut: false)
                 } else {
                     // The third, distinct state (brief §4-a): a failed first fetch
                     // with nothing to fall back on -- not `.empty`, not a bare
                     // spinner.
                     ScrollView {
-                        Text("まだ取れていません")
+                        Text("Nothing fetched yet")
                             .font(.headline)
                             .foregroundStyle(.secondary)
                             .padding(.top, 80)
@@ -233,18 +233,18 @@ struct ListView: View {
                     renameText = row.displayTitle
                     renameTarget = row
                 } label: {
-                    Label("名前を変更", systemImage: "pencil")
+                    Label("Rename", systemImage: "pencil")
                 }
                 Button {
                     Task { await archive(row) }
                 } label: {
-                    Label("一覧から外す", systemImage: "archivebox")
+                    Label("Archive", systemImage: "archivebox")
                 }
                 if row.isCheckout {
                     Button {
                         returnTarget = row
                     } label: {
-                        Label("MBP へ戻す…", systemImage: "arrow.uturn.backward.circle")
+                        Label("Return to MacBook…", systemImage: "arrow.uturn.backward.circle")
                     }
                 }
             }
@@ -253,7 +253,7 @@ struct ListView: View {
                 Button {
                     Task { await archive(row) }
                 } label: {
-                    Label("外す", systemImage: "archivebox")
+                    Label("Archive", systemImage: "archivebox")
                 }
                 .tint(.indigo)
             }
@@ -261,39 +261,39 @@ struct ListView: View {
         .listStyle(.plain)
         .opacity(grayedOut ? 0.5 : 1)
         .disabled(grayedOut)
-        .alert("名前を変更", isPresented: Binding(
+        .alert("Rename", isPresented: Binding(
             get: { renameTarget != nil },
             set: { if !$0 { renameTarget = nil } }
         )) {
-            TextField("名前(1〜60文字)", text: $renameText)
-            Button("保存") { Task { await submitRename(clear: false) } }
-            Button("名前を外す", role: .destructive) { Task { await submitRename(clear: true) } }
-            Button("キャンセル", role: .cancel) {}
+            TextField("Name (1–60 characters)", text: $renameText)
+            Button("Save") { Task { await submitRename(clear: false) } }
+            Button("Clear name", role: .destructive) { Task { await submitRename(clear: true) } }
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("この会話の一覧での呼び名を決めます。外すと元の自動の題に戻ります。")
+            Text("Sets this session's name in the list. Clearing it restores the automatic title.")
         }
-        .alert("名前を変更できません", isPresented: Binding(
+        .alert("Can't rename", isPresented: Binding(
             get: { renameNotice != nil },
             set: { if !$0 { renameNotice = nil } }
         )) {
-            Button("閉じる", role: .cancel) {}
+            Button("Close", role: .cancel) {}
         } message: {
             Text(renameNotice ?? "")
         }
-        .confirmationDialog("MBP へ戻す", isPresented: Binding(
+        .confirmationDialog("Return to MacBook", isPresented: Binding(
             get: { returnTarget != nil },
             set: { if !$0 { returnTarget = nil } }
         ), titleVisibility: .visible) {
-            Button("戻し待ちにする") { Task { await submitReturnRequest() } }
-            Button("キャンセル", role: .cancel) {}
+            Button("Queue the return") { Task { await submitReturnRequest() } }
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("依頼を置くだけです。実際に戻るのは MBP が開いた時で、MBP 側の安全確認(手元の変更との衝突など)を通った場合だけです。")
+            Text("This only queues a request. The work returns when the MacBook is next open, and only after its safety checks (e.g. conflicts with local edits) pass.")
         }
-        .alert("戻しの依頼", isPresented: Binding(
+        .alert("Return request", isPresented: Binding(
             get: { returnNotice != nil },
             set: { if !$0 { returnNotice = nil } }
         )) {
-            Button("閉じる", role: .cancel) {}
+            Button("Close", role: .cancel) {}
         } message: {
             Text(returnNotice ?? "")
         }
@@ -306,16 +306,16 @@ struct ListView: View {
         renameTarget = nil
         let title = clear ? nil : renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !clear, title?.isEmpty != false || (title?.count ?? 0) > 60 {
-            renameNotice = "名前は1〜60文字です(改行は使えません)。"
+            renameNotice = "Names are 1–60 characters (no line breaks)."
             return
         }
         switch await renamer.rename(baseURL: baseURL, apiKey: apiKey, sessionID: target.id, title: title) {
         case .renamed:
             await viewModel.refresh()
         case .rejected:
-            renameNotice = "名前は1〜60文字です(改行は使えません)。"
+            renameNotice = "Names are 1–60 characters (no line breaks)."
         case .unreachable:
-            renameNotice = "机に届きませんでした。もう一度試してください。"
+            renameNotice = "Couldn't reach the desk. Try again."
         case .unauthorized:
             onUnauthorized()
         }
@@ -328,7 +328,7 @@ struct ListView: View {
         case .done:
             await viewModel.refresh()
         case .unreachable:
-            renameNotice = "机に届きませんでした。もう一度試してください。"
+            renameNotice = "Couldn't reach the desk. Try again."
         case .unauthorized:
             onUnauthorized()
         }
@@ -341,13 +341,13 @@ struct ListView: View {
         switch await returner.requestReturn(baseURL: baseURL, apiKey: apiKey, sessionID: target.id) {
         case .requested(_, let already):
             returnNotice = already
-                ? "この仕事は既に戻し待ちです。MBP が開いた時に戻ります。"
-                : "戻し待ちにしました。MBP が開いた時に戻ります(電話からは実行できません)。"
+                ? "This work is already queued to return. It returns when the MacBook is next open."
+                : "Queued. It returns when the MacBook is next open (the phone can't run the return itself)."
             await viewModel.refresh()
         case .notACheckout(let message):
             returnNotice = message
         case .unreachable:
-            returnNotice = "机に届きませんでした。もう一度試してください。"
+            returnNotice = "Couldn't reach the desk. Try again."
         case .unauthorized:
             onUnauthorized()
         }
@@ -447,7 +447,7 @@ struct ListView: View {
             // ★X2-3。`.padding()` は Button の**外**に在るので、広く見えるのに
             // 押せるのは文字の上だけだった。旅程で「一覧が出ない」は最も起きやすい
             // 失敗で、これはその時に押す唯一の的。
-            Text("再試行").tapTarget()
+            Text("Retry").tapTarget()
         }
         .padding()
         .accessibilityIdentifier("list.retry")
@@ -490,12 +490,12 @@ private struct SessionRowView: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 // §9-2: 機体の名乗り。押す前に「今どちらの機体に居るか」が読める事が先。
                 if row.isCheckout {
-                    Text(row.machine?.returnRequestedAt != nil ? "戻し待ち" : "MBP の仕事")
+                    Text(row.machine?.returnRequestedAt != nil ? "Return queued" : "From MacBook")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.purple)
+                        .foregroundStyle(RCTheme.violet)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
-                        .background(Color.purple.opacity(0.12), in: Capsule())
+                        .background(RCTheme.violet.opacity(0.12), in: Capsule())
                         .accessibilityIdentifier("list.machineBadge")
                 }
                 if let word = statusWord {
@@ -570,10 +570,10 @@ private struct SessionRowView: View {
     /// 人の言葉。`nil` = 静かな状態(章を付けるほどの事ではない)。
     private var statusWord: String? {
         switch row.display.route.kind {
-        case .choice: return "返事待ち"
-        case .tmux: return "机で作業中"
+        case .choice: return "Needs input"
+        case .tmux: return "On desktop"
         case .worker: return nil
-        case .blocked: return "操作できません"
+        case .blocked: return "Unavailable"
         case .unknown: return nil
         }
     }

@@ -49,7 +49,7 @@
 //   証明ではない。
 //
 // ── S8-28 を此処へ畳んだ理由(2026-08-09、投資の側の判断)────────────────────────
-// 「電話の検査が持つ『送れない理由』8語の写しを `WIRE_REASONS` と照合する」は、当初
+// 「電話の検査が持つ『Can't send理由』8語の写しを `WIRE_REASONS` と照合する」は、当初
 // **別の検査 file + 専用の対照 suite** で立てる予定だった。着手前に通行量を測って畳んだ:
 //   ・`WIRE_REASONS` は生まれてから**一度も変わっていない**(`src/blocked.mjs` は全3 commit)
 //   ・電話は `reason` を**一度も描かない**(`PaneFault.reason` の注釈が "Never drawn"、
@@ -317,7 +317,7 @@ test("★★電話が焼いている復旧語彙の**値**を、サーバが実�
   );
 });
 
-test("★★電話の検査が並べる『送れない理由』が、サーバの WIRE_REASONS と過不足なく一致する", { skip }, () => {
+test("★★電話の検査が並べる『Can't send理由』が、サーバの WIRE_REASONS と過不足なく一致する", { skip }, () => {
   const phone = phoneBlockedReasons(readFileSync(POLL_TESTS_SWIFT, "utf8"));
   assert.ok(
     phone.length >= 6,
@@ -357,7 +357,7 @@ test("陰性対照: 判定が見分けている(常に緑を返しているの�
   const sw = 'struct RecoveryCode: Decodable {\n  let code: String?\n  static let sessionNotFound = "SESSION_NOT_FOUND"\n}\n';
   assert.deepEqual([...phoneRecoveryValues(sw)], [["sessionNotFound", "SESSION_NOT_FOUND"]]);
   assert.deepEqual([...phoneRecoveryValues("struct Other {}")], [], "型が無い木では空 = 上の錨が赤くなる");
-  // ★『送れない理由』の採り方(S8-28)。**配列の外へ出ない**事が此の関数の肝で、
+  // ★『Can't send理由』の採り方(S8-28)。**配列の外へ出ない**事が此の関数の肝で、
   //   本文の JSON には `route` / `blocked` / `message` が居るので、範囲を誤ると
   //   「サーバが出さない語を電話が持っている」と嘘の赤が出る。
   const blockedFn =

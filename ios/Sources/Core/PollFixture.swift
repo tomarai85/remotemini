@@ -176,7 +176,7 @@ final class PollFetchingFixture: PollFetching {
         case .choice:
             return PollDisplay(choice: ChoiceView(
                 show: true,
-                reason: "これは許可・信頼の確認画面です。電話からは操作を出しません(自動化に安全確認を押させない、という決め事)。机で確認してください。",
+                reason: "This is a permission/trust confirmation. The phone offers no controls for it (a standing rule: automation does not press safety prompts). Handle it on the desk.",
                 head: ["Claude requests permission to run:", "  rm -rf ./build"],
                 options: [
                     ChoiceOption(n: 1, label: "Yes"),
@@ -190,15 +190,15 @@ final class PollFetchingFixture: PollFetching {
             return PollDisplay(choice: ChoiceView(
                 show: true,
                 reason: "",
-                head: ["この変更を適用しますか？"],
+                head: ["Apply this change?"],
                 options: [
-                    ChoiceOption(n: 1, label: "はい"),
-                    ChoiceOption(n: 2, label: "いいえ"),
+                    ChoiceOption(n: 1, label: "Yes"),
+                    ChoiceOption(n: 2, label: "No"),
                 ],
                 buttons: [
-                    ChoiceButton(key: "1", label: "1. はい"),
-                    ChoiceButton(key: "2", label: "2. いいえ"),
-                    ChoiceButton(key: "escape", label: "Escape(中止)"),
+                    ChoiceButton(key: "1", label: "1. Yes"),
+                    ChoiceButton(key: "2", label: "2. No"),
+                    ChoiceButton(key: "escape", label: "Escape(Cancel)"),
                 ],
                 digest: "fixture-benign"
             ))
@@ -211,9 +211,9 @@ final class PollFetchingFixture: PollFetching {
     /// launched the wrong fixture still find its anchor and report green.
     private static func liveAnchorText(for classification: ScreenBody.Classification) -> String {
         switch classification {
-        case .busy: return "ライブ(作業中)の行が届いた"
-        case .choice: return "ライブ(確認待ち)の行が届いた"
-        case .sendable, .unknown, .unrecognized: return "ライブの行が届いた"
+        case .busy: return "live row (working) arrived"
+        case .choice: return "live row (awaiting confirm) arrived"
+        case .sendable, .unknown, .unrecognized: return "live row arrived"
         }
     }
 }

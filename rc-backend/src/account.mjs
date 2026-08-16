@@ -21,7 +21,7 @@
 
 // 台本の実出力の literal。`show()` の printf をそのまま写した物 —
 //   echo "現用: $(label "$cur")"  /  echo "現用: （未設定）"
-//   echo "優先順 (.order):"
+//   echo "Priority (.order):"
 //   printf "  %s %d. %-8s トークン:%s\n" "$mark" "$i" "$(label "$t")" "$have"
 const CURRENT_PREFIX = "現用:";
 const UNSET_LABEL = "（未設定）";
@@ -154,17 +154,17 @@ export const SELECTION_REASONS = [
 ];
 
 const SELECTION_MESSAGES = {
-  "not-a-string": "アカウント名が文字列で届いていません。",
-  empty: "アカウント名が空です(.order の行が `claude-token-` だけになっている可能性があります)。",
-  "too-long": `アカウント名が長すぎます(${ACCOUNT_NAME_MAX}文字まで)。`,
-  dot: "`.` と `..` はアカウント名として使えません。",
-  "leading-dash": "`-` で始まる名前は切替に使えません(fleet-account が option として読んでしまいます)。",
-  "path-separator": "名前に `/` か `\\` が入っています(トークンの置き場所を跨ぐので使えません)。",
-  "control-char": "名前に制御文字が入っています。",
-  whitespace: "名前に空白が入っています(一覧の桁揃えと見分けが付きません)。",
-  "listing-unreadable": "アカウント一覧が読めていないので切替は出来ません(edith の fleet-account の出力形式が変わった可能性があります)。",
-  "unknown-account": "そのアカウントは一覧にありません。",
-  "no-token": "そのアカウントのトークンが edith にありません。",
+  "not-a-string": "The account name did not arrive as a string.",
+  empty: "The account name is empty (an .order line may contain only `claude-token-`).",
+  "too-long": `The account name is too long (max ${ACCOUNT_NAME_MAX} chars).`,
+  dot: "`.` and `..` cannot be used as an account name.",
+  "leading-dash": "Names starting with `-` cannot be switched to (fleet-account would read them as an option).",
+  "path-separator": "The name contains `/` or `\\` (it would cross the token directory).",
+  "control-char": "The name contains control characters.",
+  whitespace: "The name contains whitespace (indistinguishable from list padding).",
+  "listing-unreadable": "The account list is unreadable, so switching is unavailable (fleet-account's output format may have changed).",
+  "unknown-account": "That account is not in the list.",
+  "no-token": "That account's token is missing on edith.",
 };
 
 /** 理由コードを人の読む1文にする。★覆い漏れは `unknownSelectionMessage` に落ちる(検査が押さえる)。 */
@@ -173,7 +173,7 @@ export function selectionMessage(reason) {
 }
 
 export function unknownSelectionMessage(reason) {
-  return `このアカウントは選べません(理由: ${reason})。`;
+  return `This account cannot be selected (reason: ${reason}).`;
 }
 
 // --- 状態コードの人語(★`paneFault` で一度やった失敗と同型を塞ぐ) --------------
@@ -187,9 +187,9 @@ export function unknownSelectionMessage(reason) {
 export const PARSE_STATUSES = ["ok", "no-current-line", "no-order-header", "unreadable-rows"];
 
 const PARSE_STATUS_MESSAGES = {
-  "no-current-line": "edith の fleet-account が想定と違う形を返しました(1行目が「現用:」ではありません)。切替は出来ません。",
-  "no-order-header": "edith の fleet-account が想定と違う形を返しました(「優先順 (.order):」の見出しがありません)。切替は出来ません。",
-  "unreadable-rows": "アカウント一覧の行が読めませんでした(fleet-account の出力形式が変わった可能性があります)。半端な一覧は出さずに伏せています。",
+  "no-current-line": "fleet-account on edith returned an unexpected shape (the first line is not 「現用:」). Switching is unavailable.",
+  "no-order-header": "fleet-account on edith returned an unexpected shape (the 「優先順 (.order):」 header is missing). Switching is unavailable.",
+  "unreadable-rows": "Account list rows were unreadable (fleet-account's output format may have changed). A partial list is withheld rather than shown.",
 };
 
 /** `ok` の時は **null**(出す物が無い)。空文字に化かさない —— `gapNotice` と同じ規律。 */
@@ -199,7 +199,7 @@ export function parseStatusMessage(status) {
 }
 
 export function unknownParseStatusMessage(status) {
-  return `アカウント一覧の状態が判りません(${status})。`;
+  return `The account list state is unknown (${status}).`;
 }
 
 /**
@@ -213,16 +213,16 @@ export const ANOMALY_REASONS = [
 ];
 
 const ANOMALY_MESSAGES = {
-  "unnamed-row": "名前が空のアカウントが一覧にあります(.order の行が `claude-token-` だけになっている可能性があります)。",
-  "order-not-sequential": "一覧の番号が飛んでいます(.order を手で編集した後などに起きます)。表示順は fleet-account の出した順のままです。",
-  "duplicate-name": "同じ名前のアカウントが一覧に2つ以上あります。どちらに切り替わるかは fleet-account 側の順序次第です。",
-  "current-not-listed": "現用のアカウントが一覧に載っていません(トークンの symlink を手で張り替えた可能性があります)。",
+  "unnamed-row": "An account with an empty name is in the list (an .order line may contain only `claude-token-`).",
+  "order-not-sequential": "List numbering has gaps (can happen after hand-editing .order). Display order follows fleet-account's output.",
+  "duplicate-name": "Two or more accounts share the same name. Which one a switch lands on depends on fleet-account's ordering.",
+  "current-not-listed": "The current account is not in the list (the token symlink may have been relinked by hand).",
   // ★「本当に0件」と断定していた文を撤回した(2026-08-15、Codex 指摘)。この file の頭が
   //   書いている通り `list_order()` は `.order` が**空・存在しない・読めない**の
   //   どれでも同じ0行を返すので、stdout だけでは3つを区別できない。区別できない物を
   //   断定すると、`.order` が読めない日に Tom が「登録し直す」方へ走る。
-  "empty-order": "fleet-account が返した優先順は0件です(.order が空・存在しない・読めない、のいずれでも同じ0行になります)。台本の出力自体は読めているので、通信や解釈の失敗ではありません。",
-  "active-name-mismatch": "現用として名乗っているアカウントと、一覧で選択中の印(->)が付いている行が食い違っています。fleet-account の出力が壊れているか、トークンの symlink を手で張り替えた可能性があります。",
+  "empty-order": "fleet-account returned zero priority entries (.order being empty, missing, or unreadable all produce the same zero rows). The script's own output was readable, so this is not a transport or parse failure.",
+  "active-name-mismatch": "The account named as current and the row marked selected (->) disagree. fleet-account's output may be corrupted, or the token symlink was relinked by hand.",
 };
 
 /** 引っ掛かり1件を人の読む1文にする。★`active-count-<n>` の族もここで畳む。 */
@@ -231,13 +231,13 @@ export function anomalyMessage(anomaly) {
     const n = anomaly.slice(ACTIVE_COUNT_PREFIX.length);
     if (/^\d+$/.test(n)) {
       return n === "0"
-        ? "一覧のどの行にも現用の印(->)が付いていません。"
-        : `現用の印(->)が${n}行に付いています。fleet-account の出力が壊れている可能性があります。`;
+        ? "No row in the list carries the current marker (->)."
+        : `The current marker (->) appears on ${n} rows. fleet-account output may be corrupted.`;
     }
   }
   return ANOMALY_MESSAGES[anomaly] ?? unknownAnomalyMessage(anomaly);
 }
 
 export function unknownAnomalyMessage(anomaly) {
-  return `一覧に引っ掛かる点があります(${anomaly})。`;
+  return `The list has an anomaly (${anomaly}).`;
 }

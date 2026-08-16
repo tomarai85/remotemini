@@ -162,26 +162,26 @@ echo "== ズレを1つずつ植え直す(全部で赤が出なければならな
 
 # ① 起票時の実物そのもの。fixture 側だけを綺麗な日本語に戻す。
 probe "fixture が本番より綺麗な札を出す(起票時の実物)" "$FIXTURE" \
-    'short: "ワーカー・答え待ち",' \
-    'short: "ワーカー・実行中",'
+    'short: "Worker · Waiting for reply",' \
+    'short: "Worker · Running",'
 
 # ② `short` は合っているが `text` がズレている。片方しか見ない検査を通さない。
 #    起票時の実物も `text` は `ワーカーが実行中` と、本番に無い語形だった。
 probe "説明文だけがズレる(short しか見ない検査を弾く)" "$FIXTURE" \
-    'text: "ワーカー・答え待ち", screen: ""' \
-    'text: "ワーカーが実行中", screen: ""'
+    'text: "Worker · Waiting for reply", screen: ""' \
+    'text: "Worker is running", screen: ""'
 
 # ③ ★向きが逆のズレ。fixture は触らず**サーバ側の文言を変える**。
 #    此処が赤にならないと、検査は「fixture を直し忘れた日」しか守らない。
 probe "サーバ側の文言だけが動く(向きが逆のズレ)" "rc-backend/src/view.mjs" \
-    'if (state === "busy") return "答え待ち";' \
-    'if (state === "busy") return "実行中";'
+    'if (state === "busy") return "Waiting for reply";' \
+    'if (state === "busy") return "Running";'
 
 # ④ 種類を1つ取り違える。`.tmux` の行に `.worker` の札を入れても、
 #    種類ごとに引き当てているなら赤になる(全行を1つの正解と比べる実装を弾く)。
 probe "種類の取り違え(tmux の行に worker の札)" "$FIXTURE" \
-    'id: "fixture-tmux-002", title: "作業中のセッション", kind: .tmux, short: "机・動いている",' \
-    'kind: .tmux, short: "ワーカー・答え待ち",'
+    'id: "fixture-tmux-002", title: "An active session", kind: .tmux, short: "Desktop · Active",' \
+    'kind: .tmux, short: "Worker · Waiting for reply",'
 
 # ⑤ 行を1つも拾えなくする。表の照合は「拾った行」しか見ないので、拾い方が壊れた日は
 #    **比べる物がゼロ = 全部一致**に化ける。錨(`rows.length >= 5`)がそれを止めるか。
@@ -194,24 +194,24 @@ echo "== 選択カードの札(S8-20。同じ形が別の fixture で出た) =="
 
 # ⑥ 起票時の実物そのもの。本番に無い「綺麗な」escape の札を植え直す。
 probe "escape の札が本番に無い形になる(起票時の実物)" "$POLLF" \
-    'ChoiceButton(key: "escape", label: "Escape(中止)")' \
-    'ChoiceButton(key: "escape", label: "中止(Escape)")'
+    'ChoiceButton(key: "escape", label: "Escape(Cancel)")' \
+    'ChoiceButton(key: "escape", label: "Cancel(Escape)")'
 
 # ⑦ 向きが逆のズレ。fixture は触らずサーバ側の語だけ動かす。
 probe "サーバ側の escape の語だけが動く(向きが逆)" "rc-backend/src/view.mjs" \
-    'const CHOICE_KEY_ACTION = { escape: "中止" };' \
-    'const CHOICE_KEY_ACTION = { escape: "取消" };'
+    'const CHOICE_KEY_ACTION = { escape: "Cancel" };' \
+    'const CHOICE_KEY_ACTION = { escape: "Abort" };'
 
 # ⑧ 数字の札。escape だけ見て数字を素通しする検査を弾く。
 probe "数字の札だけがズレる(escape しか見ない検査を弾く)" "$POLLF" \
-    'ChoiceButton(key: "1", label: "1. はい")' \
-    'ChoiceButton(key: "1", label: "1. はい(推奨)")'
+    'ChoiceButton(key: "1", label: "1. Yes")' \
+    'ChoiceButton(key: "1", label: "1. Yes (recommended)")'
 
 # ⑨ 断り文の言い換え。`PollFixture.swift` は「逐語で写す」と自分で書いているが、
 #    それを機械が見張っていた事は一度も無かった。
 probe "断り文を1語だけ言い換える(逐語の約束を機械が見張るか)" "$POLLF" \
-    '電話からは操作を出しません' \
-    '電話からは操作を出せません'
+    'The phone offers no controls for it' \
+    'The phone offers no control for it'
 
 # ⑩ カードを1枚も拾えなくする。⑤ と同じ穴が選択カード側にも在る ——
 #    拾えなければ「比べる物ゼロ = 全部一致」。錨(`blocks.length >= 2`)が止めるか。
@@ -229,38 +229,38 @@ probe "帯の reason を本番が作れない語に戻す(起票時の実物)" "
 
 # ⑫ 見出しだけを1語ズラす。reason は正しいままなので、reason しか見ない検査を弾く。
 probe "帯の見出しだけがズレる(reason しか見ない検査を弾く)" "$FIXTURE" \
-    'headline: "tmux の画面一覧を読めていません"' \
-    'headline: "tmux の画面一覧が読めていません"'
+    "headline: \"Can't read the tmux pane list\"" \
+    "headline: \"Can't read the tmux panes list\""
 
 # ⑬ 本文だけを1語ズラす。見出しだけ見る検査を弾く。
 probe "帯の本文だけがズレる(見出ししか見ない検査を弾く)" "$FIXTURE" \
-    '中身が壊れていて読めません' \
-    '中身が壊れていて読み取れません'
+    'corrupted and unreadable' \
+    'corrupted and not readable'
 
 # ⑭ ★向きが逆。fixture は触らず**サーバ側の帯の文言**を動かす。
 #    此処が赤にならないと、検査は「fixture を直し忘れた日」しか守らない。
 probe "サーバ側の帯の見出しだけが動く(向きが逆のズレ)" "rc-backend/src/blocked.mjs" \
-    'headline: "tmux の画面一覧を読めていません",' \
-    'headline: "tmux の一覧を読めていません",'
+    "headline: \"Can't read the tmux pane list\"," \
+    "headline: \"Can't read tmux pane list\","
 
 # ⑮ UI 検査の主張を**起票時の実物**(本番が作れない文)に戻す。
 #    これが此の節を書いた直接の理由 —— 検査は在り、走り、緑で、測っていた物が架空だった。
 probe "UI 検査が本番に無い文を主張する(起票時の実物)" "$UITESTF" \
-    'tmux からの返事は来ていますが、中身が壊れていて読めません。復旧するまで、どの会話にも送れません。この故障は電話からは直せないので、机で確認してください。' \
-    'tmux ペインの走査がタイムアウトしました。'
+    'tmux is replying, but the output is corrupted and unreadable. Nothing can be sent until this recovers. Check the desk.' \
+    'The tmux pane scan timed out.'
 
 # ⑯ ★ producible **だが別の面**の文言に替える。`list-panefault` は panes-unreadable の面
 #    なので、tmux-unavailable の見出しを主張する検査は実機で必ず落ちる —— しかも落ちる
 #    理由が「本番の文言が悪い」ではなく「検査が別の面を見ている」。所属だけ見る検査は
 #    此処を通してしまう(だから一致の主張を足した)。
 probe "UI 検査が producible だが別の面の文言を主張する" "$UITESTF" \
-    'app.staticTexts["tmux の画面一覧を読めていません"]' \
-    'app.staticTexts["サーバが tmux に届いていません"]'
+    "app.staticTexts[\"Can't read the tmux pane list\"]" \
+    "app.staticTexts[\"The server can't reach tmux\"]"
 
 # ⑰ 主張を1本だけ黙って落とす。本数の錨が無いと、残った1本が producible なので緑になる。
 probe "UI 検査の主張を1本だけ落とす(本数の錨が働くか)" "$UITESTF" \
-    '        XCTAssertTrue(app.staticTexts["tmux の画面一覧を読めていません"].exists)
-' \
+    "        XCTAssertTrue(app.staticTexts[\"Can't read the tmux pane list\"].exists)
+" \
     ''
 
 # ⑱ 帯を1枚も拾えなくする。⑤⑩ と同じ穴 —— 拾えなければ「比べる物ゼロ = 全部一致」。
@@ -273,12 +273,12 @@ echo "== 会話の発言者名(S8-21。腐ってはいなかったが誰も照�
 
 # ⑲ 名前だけを本番の作れない語へ。`whoOf` の値域は3語しかない。
 probe "発言者名を本番が作れない語にする" "$HISTF" \
-    'display: .init(who: "道具")' \
-    'display: .init(who: "ツール")'
+    'display: .init(who: "Tool")' \
+    'display: .init(who: "Tools")'
 
 # ⑳ ★役と名前の取り違え。両方とも producible なので、集合しか見ない検査は通す。
 probe "役と名前を取り違える(両方 producible なので集合検査では捕まらない)" "$HISTF" \
-    'HistoryEntry(role: .tool, text: "⚙ Bash", display: .init(who: "道具")),' \
+    'HistoryEntry(role: .tool, text: "⚙ Bash", display: .init(who: "Tool")),' \
     'HistoryEntry(role: .tool, text: "⚙ Bash", display: .init(who: "Claude")),'
 
 # ㉑ もう一方の fixture。1件しか who を持たないので、見張りから漏れやすい。
@@ -320,10 +320,10 @@ echo "== 正しい別の札は赤にしない(検査自身の陰性対照) =="
 #   正しい形を落とす検査は、それ自体が次の事故になる。だから「別の producible な札に
 #   替えても緑のまま」を機械に見張らせる。
 if mutate "$FIXTURE" \
-    'short: "送れない",
-            text: "宛先を確定できません。", screen: ""' \
-    'short: "送れない(未登録)",
-            text: "ペイン登録が無いため、宛先を確定できません。", screen: ""'; then
+    "short: \"Can't send\",
+            text: \"Can't determine the target.\", screen: \"\"" \
+    "short: \"Can't send (not registered)\",
+            text: \"No pane registration; the target can't be determined.\", screen: \"\""; then
     if run_suite; then
         echo "  PASS  producible な別の札は緑のまま"
         PASS=$((PASS + 1))
@@ -342,7 +342,7 @@ fi
 # 鍵の許しはカード毎に違い、数字しか許されない画面は本番に実在する。此処が赤くなる
 # 検査は「常に escape が在る」を要求している事になり、正しい形を落とす側へ倒れている。
 if mutate "$POLLF" \
-    '                    ChoiceButton(key: "escape", label: "Escape(中止)"),
+    '                    ChoiceButton(key: "escape", label: "Escape(Cancel)"),
 ' \
     ''; then
     if run_suite; then
@@ -407,8 +407,8 @@ fi
 #   此処が赤い検査は fixture を今日の姿に固定してしまい、fixture を書き換える人が
 #   正しい変更を「検査が通らない」で諦める —— S8-19 の初版で私が踏んだ形と同じ。
 if mutate "$HISTF" \
-    'HistoryEntry(role: .user, text: "予約の状況を確認して", display: .init(who: "Tom")),' \
-    'HistoryEntry(role: .assistant, text: "予約の状況を確認して", display: .init(who: "Claude")),'; then
+    'HistoryEntry(role: .user, text: "Check the booking status", display: .init(who: "Tom")),' \
+    'HistoryEntry(role: .assistant, text: "Check the booking status", display: .init(who: "Claude")),'; then
     if run_suite; then
         echo "  PASS  役と名前を揃えて動かすのは緑のまま"
         PASS=$((PASS + 1))
@@ -427,8 +427,8 @@ fi
 #   道具の行にだけ `sessions.mjs` の作る形が在る。人と Claude の行まで形を縛ると、
 #   会話の中身を書き換えるたびに赤が出る = 誰も直さない検査になる。
 if mutate "$HISTF" \
-    'text: "予約が2件見つかりました。詳細を送ります。"' \
-    'text: "別の文に書き換えた(道具ではないので形は自由)"'; then
+    'text: "Found 2 bookings. Sending details."' \
+    'text: "Rewrote this line (non-tool rows are free text)"'; then
     if run_suite; then
         echo "  PASS  道具以外の行の本文は何に替えても緑のまま"
         PASS=$((PASS + 1))

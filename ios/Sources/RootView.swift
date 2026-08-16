@@ -54,7 +54,7 @@ struct RootView: View {
                         baseURL: Self.fixtureBaseURL,
                         apiKey: "ui-fixture-key",
                         sessionID: "fixture-session",
-                        title: "fixture 会話",
+                        title: "fixture session",
                         onUnauthorized: {}
                     ))
                 } else {

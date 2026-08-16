@@ -53,7 +53,7 @@ final class KeyEntryViewModelTests: XCTestCase {
 
         await viewModel.submit()
 
-        XCTAssertEqual(viewModel.errorMessage, "サーバに届きません。URL を確認してください")
+        XCTAssertEqual(viewModel.errorMessage, "Can't reach the server. Check the URL")
         XCTAssertEqual(sessionsProbe.callCount, 0, "must not probe the key when the URL itself is unreachable")
         XCTAssertNil(savedCredentials)
     }
@@ -71,7 +71,7 @@ final class KeyEntryViewModelTests: XCTestCase {
 
         await viewModel.submit()
 
-        XCTAssertEqual(viewModel.errorMessage, "鍵が違います")
+        XCTAssertEqual(viewModel.errorMessage, "The key is wrong")
         XCTAssertNil(store.saved)
         XCTAssertNil(savedCredentials)
     }

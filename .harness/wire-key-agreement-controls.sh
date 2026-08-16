@@ -256,16 +256,16 @@ echo "== サーバの側だけ鍵名が動く =="
 
 # ③ 鍵が1つ増える。電話は知らない鍵を黙って捨てるので、増えた側は永久に画面へ出ない。
 probe "サーバ paneFaultView が鍵を1つ増やす" "$BLOCKED" \
-    '      headline: "机の画面一覧を取れていません",' \
-    '      headline: "机の画面一覧を取れていません",
+    '      headline: "Can'\''t read the desktop pane list",' \
+    '      headline: "Can'\''t read the desktop pane list",
       code: reason,'
 
 # ④ ★**枝を1本だけ**改名する。他の枝は `keepText` を出し続けるので、和を取るだけの
 #    検査なら「両方在る」で誤魔化せる。入力欄の本文を残すかを電話が読めなくなる形。
 probe "サーバ sendResult の成功枝だけ keepText を改名する" "$VIEW" \
-    '      text: b.route === "worker" ? "送った(ワーカー)" : "送った",
+    '      text: b.route === "worker" ? "Sent (worker)" : "Sent",
       keepText: false,' \
-    '      text: b.route === "worker" ? "送った(ワーカー)" : "送った",
+    '      text: b.route === "worker" ? "Sent (worker)" : "Sent",
       keepTextX: false,'
 
 # ⑮ 行に**重ねる**側の鍵。生の行(3生産者)は無傷なので、和を取るだけの検査は
@@ -546,9 +546,9 @@ work = sys.argv[1]
 edits = {
     "rc-backend/src/sessions.mjs": [
         ("      title: resolveTitle(e.meta, e.sessionId, titles[e.sessionId]),", "      heading: resolveTitle(e.meta, e.sessionId, titles[e.sessionId]),"),
-        ('    title: "(読めない)",', '    heading: "(読めない)",'),
+        ('    title: "(unreadable)",', '    heading: "(unreadable)",'),
     ],
-    "rc-backend/src/registry.mjs": [('title: "新しいセッション",', 'heading: "新しいセッション",')],
+    "rc-backend/src/registry.mjs": [('title: "New session",', 'heading: "New session",')],
     "ios/Sources/Core/SessionsModels.swift": [("    let title: String", "    let heading: String")],
 }
 for rel, pairs in edits.items():

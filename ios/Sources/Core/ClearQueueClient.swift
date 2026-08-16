@@ -32,13 +32,13 @@ struct ClearQueueClient: QueueClearing {
         do {
             (data, response) = try await session.data(for: request)
         } catch is CancellationError {
-            return .error("取り消されました")
+            return .error("Cancelled")
         } catch let urlError as URLError where urlError.code == .cancelled {
-            return .error("取り消されました")
+            return .error("Cancelled")
         } catch {
-            return .error("机に届きません")
+            return .error("Can't reach the desk")
         }
-        guard let http = response as? HTTPURLResponse else { return .error("机に届きません") }
+        guard let http = response as? HTTPURLResponse else { return .error("Can't reach the desk") }
 
         struct Wire: Decodable { let dropped: Int?; let error: String? }
         let wire = try? JSONDecoder().decode(Wire.self, from: data)

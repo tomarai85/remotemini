@@ -107,7 +107,7 @@ final class TapTargetUITests: XCTestCase {
     func testTheComposerButtonsAreThumbSizedIdleAndInFlight() {
         let app = launch(fixture: "conversation-busy")
         XCTAssertTrue(
-            app.staticTexts["ライブ(作業中)の行が届いた"].waitForExistence(timeout: 10),
+            app.staticTexts["live row (working) arrived"].waitForExistence(timeout: 10),
             "錨: readable な poll が適用されていない = 割り込める状態かも判っていない"
         )
 
@@ -119,7 +119,7 @@ final class TapTargetUITests: XCTestCase {
         XCTAssertTrue(interrupt.isEnabled, "押す前に押せない = 以下の飛行中は作れていない")
         interrupt.tap()
         XCTAssertTrue(
-            app.staticTexts["止めるよう伝えています…(机の返事を最大30秒待ちます)"].waitForExistence(timeout: 10),
+            app.staticTexts["Asking it to stop… (waiting up to 30s for the desk)"].waitForExistence(timeout: 10),
             "錨: 割り込みが飛んでいない = 以下は idle の的をもう一度測っているだけ"
         )
         assertThumbSized(app, "conversation.interruptButton")
@@ -131,7 +131,7 @@ final class TapTargetUITests: XCTestCase {
     func testTheInterruptButtonAnswersATapAtTheEdgeOfItsTarget() {
         let app = launch(fixture: "conversation-busy")
         XCTAssertTrue(
-            app.staticTexts["ライブ(作業中)の行が届いた"].waitForExistence(timeout: 10),
+            app.staticTexts["live row (working) arrived"].waitForExistence(timeout: 10),
             "錨: readable な poll が適用されていない"
         )
 
@@ -150,7 +150,7 @@ final class TapTargetUITests: XCTestCase {
         button.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)).tap()
 
         XCTAssertTrue(
-            app.staticTexts["止めるよう伝えています…(机の返事を最大30秒待ちます)"].waitForExistence(timeout: 10),
+            app.staticTexts["Asking it to stop… (waiting up to 30s for the desk)"].waitForExistence(timeout: 10),
             "的の端が反応しない = 枠だけ 44pt で、実際に押せるのは絵柄の上だけ"
         )
     }

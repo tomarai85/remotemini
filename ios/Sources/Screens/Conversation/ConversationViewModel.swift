@@ -285,9 +285,9 @@ final class ConversationViewModel: ObservableObject {
         // card that is not below is the same self-contradiction one line up, arrived at
         // from the other direction.
         if visibleChoice?.buttons.contains(where: { $0.key == "escape" }) == true {
-            return "この確認は割り込みでは止めません。中止するなら下の選択肢から選んでください"
+            return "This confirmation isn't stopped by interrupting. To cancel, pick from the options below"
         }
-        return "確認待ちの画面では、v1 は電話から中断しません。机で確認してください"
+        return "On a confirmation screen, v1 does not interrupt from the phone. Handle it on the desk"
     }
 
     var canInterrupt: Bool { interruptEnabled && !isInterrupting }
@@ -379,15 +379,15 @@ final class ConversationViewModel: ObservableObject {
                 // back to Sprint 6's sentence -- including its interrupt clause, which
                 // is why the constant is still read here.
                 return Self.interruptAllowedOnChoiceScreen
-                    ? "選択待ちです。文字は送れません。机で確認するか、割り込みで中断してください"
-                    : "選択待ちです。文字は送れません。机で確認してください"
+                    ? "Waiting on a choice. Text can't be sent. Handle it on the desk, or interrupt"
+                    : "Waiting on a choice. Text can't be sent. Handle it on the desk"
             }
             if card.canPress && card.digest != staleChoiceDigest {
-                return "選択待ちです。文字は送れません。下の選択肢から選んでください"
+                return "Waiting on a choice. Text can't be sent. Pick from the options below"
             }
-            return "選択待ちです。文字は送れません。理由は下に出しています"
+            return "Waiting on a choice. Text can't be sent. The reason is shown below"
         case .unknown:
-            return "画面の状態を読めていません"
+            return "The screen state is unreadable"
         case .sendable, .busy, .unrecognized:
             return nil
         }
@@ -764,9 +764,9 @@ final class ConversationViewModel: ObservableObject {
     /// 途中経過の文。**答えではない** —— この後 `verifySendByRereading` が観測で
     /// 置き換える。「机の画面を確認してください」を落としたのがこの節の要点で、
     /// あの一文は「電話しか無い」場面でしか出ないのに机を唯一の回復手段にしていた。
-    static let sendUnknownInterim = "送れたかどうか分かりません。本文は残してあります。今、机の履歴を取り直しています…"
-    static let interruptUnknownInterim = "止められたかどうか分かりません。今、机の履歴を取り直しています…"
-    static let choiceUnknownInterim = "押せたかどうか分かりません。今、机の履歴を取り直しています…"
+    static let sendUnknownInterim = "Whether it sent is unknown. Your text is kept. Re-reading the desk history now…"
+    static let interruptUnknownInterim = "Whether it stopped is unknown. Re-reading the desk history now…"
+    static let choiceUnknownInterim = "Whether the key landed is unknown. Re-reading the desk history now…"
 
     /// ★`sendUnknownInterim` の**一つ手前**の段の文(DESIGN §2.54)。すぐ上に置いてあるのは、
     /// 2つの段が続けて起きるのに意味が正反対だから —— こちらは「まだ飛んでいる」、
@@ -778,7 +778,7 @@ final class ConversationViewModel: ObservableObject {
     /// **文だけが古くなる**形にしない —— 電話が言った上限と実際の上限が違うのは、
     /// この節が直している当の病気(電話が観測していない事を言う)と同じ型。
     static func sendInFlightText(timeout: TimeInterval) -> String {
-        "送っています…(机の返事を最大\(Int(timeout))秒待ちます)"
+        "Sending… (waiting up to \(Int(timeout))s for the desk)"
     }
 
     /// ★2026-08-08(DESIGN §2.56): 割り込みと打鍵の、同じ段の文。
@@ -797,18 +797,18 @@ final class ConversationViewModel: ObservableObject {
     /// いるのと同じ理由 —— 同じ画面に3つの操作が在り、生き残った一文がどれの物か
     /// 読み手が判別できなくなる。動詞まで操作ごとに違えてある。
     static func interruptInFlightText(timeout: TimeInterval) -> String {
-        "止めるよう伝えています…(机の返事を最大\(Int(timeout))秒待ちます)"
+        "Asking it to stop… (waiting up to \(Int(timeout))s for the desk)"
     }
 
     static func choiceInFlightText(timeout: TimeInterval) -> String {
-        "選んだ答えを送っています…(机の返事を最大\(Int(timeout))秒待ちます)"
+        "Sending your choice… (waiting up to \(Int(timeout))s for the desk)"
     }
 
-    static let sendLandedText = "届いていました(取り直した机の履歴に、この本文が在ります)。本文は消していません —— 要らなければ消してください。"
+    static let sendLandedText = "It landed (the re-read desk history contains this text). Your draft is kept — delete it if you don't need it."
     /// ★「届いていません」とは書かない。取り直しに成功して行が無くても、机の側で
     /// まだ処理中の可能性は消えていない。**電話は自分が見た物だけを言う。**
-    static let sendNotOnDeskText = "今の机には出ていません。本文は残してあります。もう一度送れます。"
-    static let sendStillUnreachableText = "まだ繋がりません。送れたかどうかは分かりません。本文は残してあります。"
+    static let sendNotOnDeskText = "It isn't on the desk right now. Your text is kept. You can send again."
+    static let sendStillUnreachableText = "Still unreachable. Whether it sent is unknown. Your text is kept."
     /// ★3つ目の答え。取り直しには成功したが、送る前の記録と1行も重ならなかった時
     /// (机側の圧縮や `/clear` で記録が丸ごと入れ替わると起きる)。
     ///
@@ -820,8 +820,8 @@ final class ConversationViewModel: ObservableObject {
     /// (「机の画面を確認してください」)は、電話しか無い場面で机を指していた。
     /// 置き換えた先が同じ性質だったら直した事にならない。
     static let sendCannotTellText =
-        "取り直した記録が送る前と1行も重なっておらず、届いたかを見分けられませんでした。"
-        + "上が取り直した後の記録です。本文は残してあります —— 同じ物が上に無ければ送り直してください。"
+        "The re-read history shares no lines with what was there before sending, so delivery couldn't be told apart. "
+        + "Above is the re-read history. Your text is kept — if it isn't up there, send again."
 
     /// 送信の結果が分からなかった直後の観測(DESIGN §2.52)。
     ///
@@ -862,12 +862,12 @@ final class ConversationViewModel: ObservableObject {
         let resynced = await performResync()
         if !resynced {
             return interrupted
-                ? "まだ繋がりません。止められたかどうかは分かりません。"
-                : "まだ繋がりません。押せたかどうかは分かりません。"
+                ? "Still unreachable. Whether it stopped is unknown."
+                : "Still unreachable. Whether the key landed is unknown."
         }
         return interrupted
-            ? "止められたかどうかは分かりません。今の机の履歴を取り直しました —— 上に出ているのが取り直した後の記録です。"
-            : "押せたかどうかは分かりません。今の机の履歴を取り直しました —— 上に出ているのが取り直した後の記録です。"
+            ? "Whether it stopped is unknown. The desk history was re-read — what's above is the re-read record."
+            : "Whether the key landed is unknown. The desk history was re-read — what's above is the re-read record."
     }
 
     // MARK: - Interrupt (Sprint 6, brief §2-b)
@@ -1021,7 +1021,7 @@ final class ConversationViewModel: ObservableObject {
     var staleChoiceReason: String? {
         guard let card = visibleChoice, card.canPress,
               card.digest == staleChoiceDigest else { return nil }
-        return "机の画面が変わりました。新しい選択肢が届くまで押せません"
+        return "The desk screen changed. Keys are disabled until the new options arrive"
     }
 
     /// One keystroke.
