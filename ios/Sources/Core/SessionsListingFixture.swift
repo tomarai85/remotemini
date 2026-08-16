@@ -108,6 +108,14 @@ struct SessionsListingFixture: SessionsListing {
     ///
     /// 「違う番号になった」ではなく「**ちょうど +1**」を主張できる形にしてあるのが要点で、
     /// 戻るたびに2回撃つ実装(引き金を二重に配線した等)を緑で通さない。
+    /// 保管の面の canned data(§9-1)。1行 + 空も測れる様に敢えて1件だけ。
+    static func archivedResponse() -> SessionsResponse {
+        response(sessions: [
+            row(id: "fixture-archived-901", title: "保管済みの一件", kind: .worker, short: "ワーカー・待機",
+                text: "ワーカー・待機", screen: ""),
+        ], paneFault: nil, fetchCount: 1)
+    }
+
     private static func response(sessions: [SessionRow], paneFault: SessionsResponse.PaneFault?, fetchCount: Int) -> SessionsResponse {
         SessionsResponse(
             sessions: sessions,
@@ -150,11 +158,16 @@ struct SessionsListingFixture: SessionsListing {
             text: "ワーカー・答え待ち", screen: ""),
         row(id: "fixture-blocked-004", title: "宛先不明のセッション", kind: .blocked, short: "送れない",
             text: "宛先を確定できません。", screen: ""),
-        row(id: "fixture-unknown-005", title: "未知の経路", kind: .unknown, short: "状態不明",
-            text: "状態不明", screen: ""),
+        row(id: "fixture-unknown-005", title: "未知の経路", kind: .unknown, short: "様子を読めていません",
+            text: "様子を読めていません", screen: ""),
+        // §9-2(2026-08-16): 持ち出し(remote-mini)の行。バッジ「MBP の仕事」の検査面。
+        row(id: "fixture-checkout-006", title: "持ち出して来た仕事", kind: .tmux, short: "机・動いている",
+            text: "机で開いている・動いている", screen: "SENDABLE",
+            machine: .init(kind: "checkout", checkoutId: "fixture-co", returnRequestedAt: nil)),
     ]
 
-    private static func row(id: String, title: String, kind: RouteLabel.Kind, short: String, text: String, screen: String) -> SessionRow {
+    private static func row(id: String, title: String, kind: RouteLabel.Kind, short: String, text: String, screen: String,
+                            machine: SessionRow.Machine? = nil) -> SessionRow {
         SessionRow(
             id: id,
             title: title,
@@ -163,8 +176,16 @@ struct SessionsListingFixture: SessionsListing {
             display: .init(
                 route: RouteLabel(kind: kind, short: short, text: text, screen: screen),
                 subtitle: "fixture subtitle"
-            )
+            ),
+            machine: machine
         )
+    }
+}
+
+/// 保管の一覧の fixture(§9-1)。`ArchivedListView` の面が本物の口を握らない為の物。
+struct ArchivedListingFixture: ArchivedListing {
+    func fetchArchived(baseURL: URL, apiKey: String) async -> Result<SessionsResponse, SessionsFetchError> {
+        .success(SessionsListingFixture.archivedResponse())
     }
 }
 

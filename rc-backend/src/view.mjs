@@ -182,7 +182,7 @@ export function interruptResult(status, body) {
  * 向きも悪い —「静か」は「打ち込んでいい」と読めるので、生成中の所へ打たせる方に外す。
  *
  * `work:"quiet"` は窓が在るので**測った窓をそのまま出す**(結論ではなく観測)。
- * `activity` しか無い一覧は窓が無いので「状態不明」。
+ * `activity` しか無い一覧は窓が無いので「様子を読めていません」。
  */
 function workPhrase(v) {
   if (v.work === "observed" || v.activity === "observed") return "動いている";
@@ -190,14 +190,14 @@ function workPhrase(v) {
     const sec = Math.round((v.windowMs || 0) / 1000);
     return sec > 0 ? `${sec}秒 動く印なし` : "動く印なし";
   }
-  return "状態不明";
+  return "様子を読めていません";
 }
 
 /**
  * ワーカーの `state` を Tom の言葉にする。`workPhrase` の worker 版(2026-08-08)。
  *
  * 起票: 一覧の札が `ワーカー・busy` と、**内部のトークンを生で**出していた。tmux 枝は
- * 全部日本語(「動いている」「動く印なし」「状態不明」)なので、これも片方の経路にだけ
+ * 全部日本語(「動いている」「動く印なし」「様子を読めていません」)なので、これも片方の経路にだけ
  * 残っていた古い形 —— R2-2 / R2-3 と同じ型が、同じ関数の中で3件目。
  *
  * ★これを隠していた物が在る: `ios/Sources/Core/SessionsListingFixture.swift` の worker 行は
@@ -296,7 +296,7 @@ export function routeLabel(live) {
       screen: "",
     };
   }
-  return { kind: "unknown", short: "状態不明", text: "状態不明", screen: "" };
+  return { kind: "unknown", short: "様子を読めていません", text: "様子を読めていません", screen: "" };
 }
 
 /**
@@ -446,7 +446,7 @@ export function subtitleOf(row) {
   const r = row || {};
   if (r.lastPrompt) return r.lastPrompt;
   if (r.metadataIncomplete) return "(直近の発言は読み取り範囲の外)";
-  return "(まだ発言がありません)";
+  return "まだやり取りはありません";
 }
 
 /**

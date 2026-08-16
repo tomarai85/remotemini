@@ -545,10 +545,10 @@ import sys, io, os
 work = sys.argv[1]
 edits = {
     "rc-backend/src/sessions.mjs": [
-        ("      title: resolveTitle(e.meta, e.sessionId),", "      heading: resolveTitle(e.meta, e.sessionId),"),
+        ("      title: resolveTitle(e.meta, e.sessionId, titles[e.sessionId]),", "      heading: resolveTitle(e.meta, e.sessionId, titles[e.sessionId]),"),
         ('    title: "(読めない)",', '    heading: "(読めない)",'),
     ],
-    "rc-backend/src/registry.mjs": [('title: "(未発言)",', 'heading: "(未発言)",')],
+    "rc-backend/src/registry.mjs": [('title: "新しいセッション",', 'heading: "新しいセッション",')],
     "ios/Sources/Core/SessionsModels.swift": [("    let title: String", "    let heading: String")],
 }
 for rel, pairs in edits.items():

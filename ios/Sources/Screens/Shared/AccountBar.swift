@@ -17,6 +17,13 @@ struct AccountBar: View {
     @ObservedObject var viewModel: AccountViewModel
     /// 設定画面に渡す(机の在り処の表示に使う)。バー自身は使わない。
     let baseURL: URL
+    /// 設定画面の「計器」節に渡す(走査行・鮮度)。バー自身は使わない。
+    /// ★2026-08-16(spec-audit A4): 計器を一覧の面から設定へ移した。此のバーが
+    ///   一覧→設定の唯一の通路なので、計器の値も此処を通る。nil = 一覧以外の面から
+    ///   開いた設定(計器の節ごと出さない — 無い物を空欄で出さない)。
+    var listViewModel: ListViewModel? = nil
+    /// 保管の面の束(§9-1)。一覧 → 設定への通路が此処しか無いので相乗りする。
+    var archiveDeps: SettingsView.ArchiveDeps? = nil
 
     @Environment(\.scenePhase) private var scenePhase
     /// 一覧と**同じ器**(`ForegroundResume`)。背面への出入りは `.inactive` を挟んで
@@ -27,7 +34,7 @@ struct AccountBar: View {
 
     var body: some View {
         NavigationLink {
-            SettingsView(accountViewModel: viewModel, baseURL: baseURL)
+            SettingsView(accountViewModel: viewModel, baseURL: baseURL, listViewModel: listViewModel, archiveDeps: archiveDeps)
         } label: {
             label
         }

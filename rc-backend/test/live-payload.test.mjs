@@ -6,7 +6,7 @@
 //   1. blocked の札が **92文字**(他の札は9-10文字。丸い札に入らない)。しかも6行が同じ文
 //   2. `activity:"unknown"` を「静か」と断定していた(観測できなかっただけ)
 //   3. `screen:"CHOICE"` が一覧から見えない(`sessionRow` が `label.screen` を捨てる)
-//   4. `route:"gone"` に分岐が無く「状態不明」に落ちる
+//   4. `route:"gone"` に分岐が無く「様子を読めていません」に落ちる
 // だから**通す物自体を常設**にする。手で書いた入力では、この4件は1件も出なかった。
 //
 // fixture = edith 実機 2026-08-02 09:56 の `/api/sessions` の payload そのまま。
@@ -25,7 +25,7 @@ const PL = RAW.payload;
 const KINDS = new Set(["tmux", "worker", "blocked", "choice", "unknown"]);
 const CODES = /(unregistered|ambiguous|cwd-mismatch|pane-gone|tmux-unavailable|panes-unreadable|stale)/;
 
-test("実データ: 14行すべてが既知の kind に落ちる(例外も「状態不明」も出さない)", () => {
+test("実データ: 14行すべてが既知の kind に落ちる(例外も「様子を読めていません」も出さない)", () => {
   assert.equal(PL.sessions.length, 14, "fixture が差し替わったら期待も測り直す");
   for (const s of PL.sessions) {
     const l = routeLabel(s.live);
@@ -73,7 +73,7 @@ test("★実データ: 観測できなかった事を「静か」と書かない
   // この日の実データに tmux は1行。その行が「観測できていない」と言えている事。
   const t = PL.sessions.filter((s) => (s.live || {}).route === "tmux");
   assert.equal(t.length, 1);
-  assert.match(routeLabel(t[0].live).text, /状態不明|動く印なし|動いている|選択待ち|利用上限/);
+  assert.match(routeLabel(t[0].live).text, /様子を読めていません|動く印なし|動いている|選択待ち|利用上限/);
 });
 
 test("実データ: 走査の数字を埋めない(668/668 をそのまま出す)", () => {
@@ -84,6 +84,6 @@ test("実データ: 副題は読み残しを「発言なし」と言い換えな
   for (const s of PL.sessions) {
     const sub = subtitleOf(s);
     if (s.metadataIncomplete && !s.lastPrompt) assert.match(sub, /読み取り範囲の外/);
-    if (!s.metadataIncomplete && !s.lastPrompt) assert.match(sub, /まだ発言がありません/);
+    if (!s.metadataIncomplete && !s.lastPrompt) assert.match(sub, /まだやり取りはありません/);
   }
 });

@@ -24,8 +24,16 @@ import { choiceView, gapNotice, routeLabel, scanLine, subtitleOf, whoOf } from "
  *   毎回思い出す羽目になる。追加のみ = 既存の鍵は1つも動かさないので、
  *   `app.html` は無改修のまま(自分で view.mjs を呼び続ける)。
  */
-export function sessionRow(row, live) {
-  return { ...row, live, display: { route: routeLabel(live), subtitle: subtitleOf(row) } };
+export function sessionRow(row, live, machine) {
+  return {
+    ...row,
+    live,
+    // §9-2(2026-08-16): 「今どちらの機体に居るか」。無指定 = 机(edith)の仕事。
+    // kind: "desk" | "checkout"。checkout は MBP から持ち出されて来ている仕事で、
+    // returnRequestedAt が非 null なら「戻し待ち(MBP が開いた時に実行される)」。
+    machine: machine ?? { kind: "desk", checkoutId: null, returnRequestedAt: null },
+    display: { route: routeLabel(live), subtitle: subtitleOf(row) },
+  };
 }
 
 /**

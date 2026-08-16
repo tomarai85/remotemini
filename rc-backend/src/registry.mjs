@@ -345,8 +345,11 @@ export function registryOnlySessions({
       id: e.sessionId,
       project: null,
       cwd: info?.path || "",
-      // 中身が無いので中身から題を作れない。何であるかをそのまま書く。
-      title: "(未発言)",
+      // 中身が無いので中身から題は作れない。★「(未発言)」は機械の内部語で、
+      // Tom が 2026-08-16 に「論外」と裁定した画面の顔そのものだった(spec-audit A2)。
+      // 人が読む一覧に出すのは人の言葉。明示名(titles.mjs)が在れば server 側の
+      // 一括 override が此の値を上書きする。
+      title: "新しいセッション",
       lastPrompt: "",
       turns: 0,
       // jsonl が存在しない = 読み残したのではなく、本当に何も無い。false が正しい。

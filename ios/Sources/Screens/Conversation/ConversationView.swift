@@ -140,7 +140,7 @@ struct ConversationView: View {
                 statusBanners
                 if viewModel.entries.isEmpty {
                     ScrollView {
-                        Text("まだ発言がありません")
+                        Text("まだやり取りはありません")
                             .font(.headline)
                             .foregroundStyle(.secondary)
                             .padding(.top, 80)
@@ -210,21 +210,13 @@ struct ConversationView: View {
     @ViewBuilder
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if viewModel.isBackendUnreachable {
-                // Spec §5-4, the same component List draws. Sits above both banners:
-                // "nothing is getting through" is the frame the other two sentences
-                // have to be read inside.
-                UnreachableBanner(
-                    failures: viewModel.reachability.consecutiveFailures,
-                    context: .conversation,
-                    identifier: "conversation.unreachable"
-                )
-            }
-
-            // Queue(v2、2026-08-14)。送信待ち = **まだ Claude に渡していない**番の面。
-            // `queueView(nowMs:)` を描画の度に呼ぶ(一覧の freshnessLine と同じ型 ——
-            // timer を持たない。古さは poll が止まった時こそ出る必要が在る)。
-            queueStrip(viewModel.queueView(nowMs: Date().timeIntervalSince1970 * 1000))
+            // ★2026-08-16(§9-4 / spec-audit A5): 常設の**状態**帯は同時に1枠だけ。
+            //   優先順 = 届かない > 応答が読めない > 送信待ち。以前は3つが独立に描かれ、
+            //   悪い日には全部が同時に積み上がった(Tom の「帯3段」)。
+            //   ★操作の**答え**の帯(send/interrupt/choice/queueBanner)は畳まない —
+            //   あれは押した直後だけ出る返事で、どの操作の返事かの帰属が畳むと壊れる
+            //   (各 banner の註に実測の経緯)。畳んだのは常設の状態だけ。
+            standingStatusSlot
 
             if let banner = viewModel.queueBanner {
                 // 専用の band(sendBanner / interruptBanner と同じ理由 —— 主語を混ぜない)。
@@ -427,6 +419,21 @@ struct ConversationView: View {
         }
     }
 
+    /// 常設の状態帯の1枠(§9-4)。同時に出るのは最も重い1つだけ。
+    /// 識別子は中身の物がそのまま出る(検査の錨は変えない)。
+    @ViewBuilder
+    private var standingStatusSlot: some View {
+        if viewModel.isBackendUnreachable {
+            UnreachableBanner(
+                failures: viewModel.reachability.consecutiveFailures,
+                context: .conversation,
+                identifier: "conversation.unreachable"
+            )
+        } else {
+            queueStrip(viewModel.queueView(nowMs: Date().timeIntervalSince1970 * 1000))
+        }
+    }
+
     /// 送信待ちの面。`show` が偽なら何も描かない(空の帯を出すと「0件」という
     /// 観測の主張に見える —— `QueueViewState` の頭の nil/0 の区別ごと守る)。
     @ViewBuilder
@@ -566,7 +573,14 @@ struct ConversationView: View {
             // composer, and the badge went with it rather than staying as a second copy
             // of the same sentence: two places showing one refusal is how the two drift
             // apart later.
-            degradationBanner
+            //
+            // ★2026-08-16(§9-4「帯3段」): 「届かない」が composer 側に出ている間は
+            //   劣化の帯を引っ込める — 「応答が確認できません」は「届かない」の下位情報で、
+            //   両方出すと同じ事を2枚の帯で言う。届かないが消えた時に、劣化がまだ
+            //   続いていれば此処が再び出る(状態は消していない。描画だけ譲る)。
+            if !viewModel.isBackendUnreachable {
+                degradationBanner
+            }
         }
         .padding(.horizontal)
         .padding(.top, 6)

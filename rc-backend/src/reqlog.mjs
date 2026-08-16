@@ -32,7 +32,11 @@
  *   ログは新しい道を `(other)` と書き続ける。しかも**ログが静かなだけ**なので誰も気づかない。
  *   一覧は1箇所に集める。置き場を此処にしたのは「パスの型」を決める責任が此処だから。
  */
-export const SESSION_ROUTE_RE = /^\/api\/sessions\/([^/]+)\/(history|messages|stream|poll|interrupt|status|choice|queue)$/;
+// ★action は**白名簿**(2026-08-16 に title / archive / return-request を追加)。
+// 追加を忘れると handler が在っても**到達不能**になる — 実際に其の状態で3本を
+// 出荷しかけ、Codex の敵対レビューが掴んだ(静的検査は字面の存在しか見ないので素通り)。
+// 検体 = test/title-route.test.mjs の「到達できる」検査(regex に当てて実測する)。
+export const SESSION_ROUTE_RE = /^\/api\/sessions\/([^/]+)\/(history|messages|stream|poll|interrupt|status|choice|queue|title|archive|return-request)$/;
 
 /**
  * 語彙 = 小文字で始まり、小文字/数字/ハイフン/下線だけ、24字まで。

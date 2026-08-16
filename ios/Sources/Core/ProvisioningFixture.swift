@@ -32,7 +32,7 @@ enum ProvisioningFixture: String, ProvisioningSource {
     /// ★此処は `RootView.fixtureBaseURL` と違って**本当に呼ばれる**。一覧は本物の
     /// `SessionsClient` を握るので、この面の一覧は取得に失敗した相で描かれる。
     /// それで構わない —— 測るのは「どの画面に着いたか」であって一覧の中身ではなく、
-    /// 版の帯(`list.buildInfo`)は失敗した相でも必ず出る(`ListView` の
+    /// 一覧の容器(`list.root`)は失敗した相でも必ず在る(`ListView` の
     /// `.safeAreaInset`)。逆に口まで作り物にすると、また入口を迂回した面が1つ増える。
     static let baseURL = URL(string: "https://ui-fixture.invalid")!
 

@@ -74,7 +74,18 @@ struct SessionsClient: SessionsListing {
     }
 
     func fetch(baseURL: URL, apiKey: String) async -> Result<SessionsResponse, SessionsFetchError> {
-        var request = URLRequest(url: baseURL.appendingPathComponent("api/sessions"))
+        await fetch(baseURL: baseURL, apiKey: apiKey, scope: nil)
+    }
+
+    /// §9-1(2026-08-16): `scope: "archived"` = 保管した会話だけ。nil = 既定の一覧
+    /// (保管済みはサーバ側で絞られて出ない)。設定画面の「保管した会話」が使う。
+    func fetch(baseURL: URL, apiKey: String, scope: String?) async -> Result<SessionsResponse, SessionsFetchError> {
+        var url = baseURL.appendingPathComponent("api/sessions")
+        if let scope, var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            comps.queryItems = [URLQueryItem(name: "scope", value: scope)]
+            url = comps.url ?? url
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = BackendSession.interactiveTimeout
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")

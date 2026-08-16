@@ -65,9 +65,12 @@ export function extractSessionMeta(jsonlText) {
 /**
  * タイトルの解決順は本家 RC を真似る(research/remote-control-teardown.md §2):
  *   明示名 → ai-title → 最後の意味あるメッセージ → id 短縮。
- * 明示名の機構は Phase I-1 に無いので実質 ai-title から始まる。
+ * ★明示名の機構は 2026-08-16 に入った(src/titles.mjs、spec-audit A1)。
+ *   それまで此処の註は「Phase I-1 に無いので実質 ai-title から始まる」と自認したまま
+ *   1ヶ月放置されていた — 文書が掲げた優先順の1段目が製品に無かった。
  */
-export function resolveTitle(meta, sessionId) {
+export function resolveTitle(meta, sessionId, explicit) {
+  if (typeof explicit === "string" && explicit.length > 0) return explicit;
   if (meta.title) return meta.title;
   if (meta.lastPrompt) {
     const t = meta.lastPrompt.trim().replace(/\s+/g, " ");
@@ -99,7 +102,7 @@ export function resolveTitle(meta, sessionId) {
  */
 export const isPhoneVisible = (meta) => meta?.entrypoint === "cli";
 
-export function buildListing(entries) {
+export function buildListing(entries, titles = {}) {
   return entries
     .filter((e) => isPhoneVisible(e.meta))
     .sort((a, b) => b.mtimeMs - a.mtimeMs)
@@ -107,7 +110,7 @@ export function buildListing(entries) {
       id: e.sessionId,
       project: e.projectSlug,
       cwd: e.meta.cwd,
-      title: resolveTitle(e.meta, e.sessionId),
+      title: resolveTitle(e.meta, e.sessionId, titles[e.sessionId]),
       lastPrompt: e.meta.lastPrompt,
       turns: e.meta.turns,
       // ★層の中で測った正直さを HTTP の外まで出す。中で正直でも落とせば同じ事(§2.13 訂正 #5)。
@@ -233,5 +236,15 @@ function toolNames(content) {
   if (!Array.isArray(content)) return [];
   return content
     .filter((b) => b && b.type === "tool_use" && typeof b.name === "string")
-    .map((b) => `⚙ ${b.name}`);
+    .map((b) => {
+      // ★subagent(Task)は名前だけだと全部同じ「⚙ Task」になり、何が走っているのか
+      //   電話から読めない(spec-audit C2、本家は subagent の進捗を見せる)。入力の
+      //   description(短い人向けの題)が在れば添える。値の中身は description **だけ**
+      //   読む — prompt 本文は長く、機密が乗り得るので線に出さない。
+      if (b.name === "Task" && typeof b.input?.description === "string" && b.input.description.trim()) {
+        const d = b.input.description.trim().replace(/\s+/g, " ");
+        return `⚙ Task: ${d.length > 40 ? `${d.slice(0, 40)}…` : d}`;
+      }
+      return `⚙ ${b.name}`;
+    });
 }

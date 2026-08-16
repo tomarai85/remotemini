@@ -44,15 +44,15 @@ final class FirstRunUITests: XCTestCase {
 
     /// ★本体。刻印を持つ電話は、鍵入力画面を**一度も見ずに**一覧へ着く。
     ///
-    /// 版の帯(`list.buildInfo`)で「一覧に着いた」を測るのは、口が本物の
-    /// `SessionsClient` で `https://ui-fixture.invalid` へ繋ぎに行く = 一覧の中身は
-    /// 取得に失敗した相で描かれるから。帯は `ListView` の `.safeAreaInset` に在って
-    /// **どの相でも必ず出る**ので、着いた事だけを測るのに丁度いい。中身を測りたい
-    /// 訳ではない —— 口まで作り物にすると、また入口を迂回した面が1つ増える。
+    /// 一覧の容器(`list.root`)で「着いた」を測る。口が本物の `SessionsClient` で
+    /// `https://ui-fixture.invalid` へ繋ぎに行く = 中身は取得に失敗した相で描かれるが、
+    /// 容器はどの相でも在るので、着いた事だけを測るのに丁度いい。
+    /// (2026-08-16 まで錨は版の帯 `list.buildInfo` だった。§9-4 で計器を設定画面へ
+    /// 移した際に、相に依らない容器へ付け替えた。)
     func testAProvisionedPhoneReachesTheListWithoutBeingAskedToTypeAnything() {
         let app = launch("provisioned-seed")
 
-        XCTAssertTrue(element(app, "list.buildInfo").waitForExistence(timeout: 20),
+        XCTAssertTrue(element(app, "list.root").waitForExistence(timeout: 20),
                       "★種を蒔かない実装を落とす(初回起動が Base URL と API Key の入力欄になる)")
         XCTAssertFalse(element(app, "keyEntry.baseURL").exists,
                        "★入口に打つ欄が出る実装を落とす(下の錨が、此の行が測れる事を保証する)")
@@ -97,7 +97,7 @@ final class FirstRunUITests: XCTestCase {
 
         XCTAssertTrue(element(app, "keyEntry.baseURL").waitForExistence(timeout: 20),
                       "錨: 打つ欄は此の探し方で見付かる(上の否定が測定である事の根拠)")
-        XCTAssertFalse(element(app, "list.buildInfo").exists,
+        XCTAssertFalse(element(app, "list.root").exists,
                        "錨: 鍵を持たない電話は一覧へ着かない(此の面には種が無い)")
     }
 }

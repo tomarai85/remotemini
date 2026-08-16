@@ -460,6 +460,9 @@ const PAIRS = [
     serverOnly: ["scan"],
   },
   { swift: "SessionsResponse.OuterDisplay", builders: ["sessionsBody"], at: "display" },
+  // §9-2(2026-08-16): 機体の名乗り。組むのは `sessionRow`(checkout の枝は
+  // `src/server.mjs` が値を埋めるが、鍵名を決めるのは `wire.mjs` の literal)。
+  { swift: "SessionRow.Machine", builders: ["sessionRow"], at: "machine" },
   { swift: "SessionsResponse.PaneFault", builders: ["sessionsBody"], at: "paneFault" },
   {
     // 行の生産者は3本(jsonl から / 登録簿だけ / 読めなかった)+ 居場所を足す `sessionRow`。
@@ -557,6 +560,19 @@ const IGNORED = {};
  *   `.harness/wire-vocabulary-agreement-controls.sh`)。
  */
 const UNPAIRED = {
+  "ArchiveClient.Wire": "保管の応答(`{archived}` / 400 の `{error}`)。`src/server.mjs` の "
+    + "archive 分岐が `json(res, 200, { archived })` を直に書く(builder ではない)。"
+    + "★測る対 = `test/titles.test.mjs`(台帳の往復・transcript 削除機構の不在)と "
+    + "Swift 側 `ArchiveOutcome.from`。到達性は `test/title-route.test.mjs` の regex 実測が持つ",
+  "ReturnRequestClient.Wire": "戻し依頼の応答(`{requestedAt, already}` / 409 の `{error, message}`)。"
+    + "`src/server.mjs` の return-request 分岐が直に書く。★測る対 = `test/checkouts.test.mjs`"
+    + "(冪等・印の形)と Swift 側 `ReturnRequestOutcome.from`。message の文面はサーバが正本で、"
+    + "電話は言い換えを持たない(`AccountClient.Envelope` と同じ判断)",
+  "TitleClient.Wire": "明示名(rename)の応答(`{title}` / 400 の `{error}`)。`src/server.mjs` の "
+    + "title 分岐が `json(res, 200, { title })` を直に書く(builder ではない)。"
+    + "★片側が動いた時に赤を出すのは `test/title-route.test.mjs`(検証→保存の順・null の道・"
+    + "合流後の一括 override)と、Swift 側 `TitleClientTests`(status→意味の写像)の対。"
+    + "誤り語 `title required` の**値**の一致は `test/wire-vocabulary-agreement.test.mjs` が持つ",
   ScreenBody: "poll の `screen` の**中身**。封筒(`pollBodyTmux`)は受け取った物をそのまま載せるだけで、"
     + "鍵名を決めるのは `screenBody()`(`src/server.mjs` に居て単体から呼べない)と `blockedBody()` の2本",
   "SendClient.Envelope": "送信の誤り応答の封筒(`code` + `display`)。`json()`(`src/server.mjs`)が組む。"

@@ -13489,3 +13489,70 @@ Tom は同じ画面に2回「論外」と言った(2026-08-11 / 2026-08-15)。1�
   「一覧が読めない時に唯一押せる手」として残したのと同じ判断。
 - 合格条件(§9-0 の 9-5)= **1枚目に URL 欄も鍵欄も出ない。Tom は値を1つも埋めない。**
   畳んだ状態が既定なので満たす。開くのは Tom が自分で選んだ時だけ。
+
+### 2.101 §9-2「MBP へ戻す」を電話に出す — 土台の3条件を先に閉じた(2026-08-16)
+
+Codex 裁定(§0-5 の 3)は「`back` を今の形で露出するな」で、条件は3つだった。現状:
+
+| 条件 | 状態 | 根拠 |
+|---|---|---|
+| 原子的入替 | **閉じた**(本節) | `remote-mini.sh` の back を2相化。実測 = 下の表 |
+| 未追跡込みの内容ハッシュ | 既に在った | `fingerprint()`(HEAD + tracked-diff + untracked の中身の shasum) |
+| 電話からの `--force` 禁止 | 設計で担保(未実装) | サーバの口に force 引数を**作らない**(渡す道が構造的に無い) |
+
+#### 2相化の中身(`~/.claude/tools/remote-mini.sh`、この repo の外)
+
+旧形は `rsync --delete` を作業木へ直撃ちしていた。テザリング(Tom の常態)で途中切断
+すると木が「半分向こう・半分手元」で残り、--delete が先に消した分は戻らない。
+新形: 相1 = ネットワークから **staging へ**受ける(木は無傷のまま何度でも死ねる)。
+相2 = staging → 木をローカル同士で適用(ネットワークに依存しない)。
+厳密な rename(2) 一発ではない — cwd に居るプロセスと .git の inode を壊さない為に
+ディレクトリ交換はしない。「切断で木が裂ける」窓を相1に閉じ、相1は木に触らない。
+
+実測(2026-08-16、使い捨ての git 木で edith と実往復):
+- 往復: 向こうで足した行が手元に着く / untracked が生きる / staging は成功後に畳まれる
+- 敵対: 宛先を届かない住所にして back → 門(sentinel)で止まり、**木は1バイトも変わらない**
+- 検証残骸は両機とも撤去済み
+
+#### 電話側の形(未実装 — 次の切片)
+
+- 「戻す」は電話からは**依頼**であって実行ではない。`back` は MBP の上でしか走れず、
+  MBP は寝ている事が在る。誠実な形 = サーバ(edith)に return-request を置き、
+  電話には「戻し待ち(MBP が開いた時に実行)」と**状態が読める**事を先に出す(§9-2 の
+  「押せる事より、状態が読める事が先」)。
+- GET /api/checkouts = mirror root の sentinel から「何が持ち出されて来ているか」を列挙
+- POST /api/checkouts/<pid>/return-request = 依頼の印を置く(force という語彙は API に無い)
+- MBP 側は `remote-mini.sh back`(手動 or 既存セッション)が依頼を拾う。拒否
+  (指紋不一致・会話進行)は従来どおり MBP 側で止まり、その文言を依頼の状態に書き戻す
+
+### 2.102 安全既定(spec-audit D1/D2)— Codex 裁定で v1 案を棄却。実装は本節を正本に次で行う(2026-08-16)
+
+私の v1 案(device-id 白名簿 + TOFU + 30日 lastSeen 失効)は Codex が **REJECT**。
+理由の要点(全文 = scratchpad/codex-auth.txt、要旨をここに正本化):
+
+1. 静的鍵 + UUID は**再生可能な bearer が2つ**になるだけ。Trusted Device 認証とは呼べない
+   (per-device allowlist と呼ぶのが正直)。
+2. **TOFU は不可**。「最初に名乗った者が勝つ」+ tailnet の広さは競走になる。
+   devices.json の欠損・破損で登録が再び開く形も不可(fail-closed 必須)。
+   机側の一回限りの pairing code(5分・単回・原子的消費)で足りるので TOFU は要らない。
+3. 30日 lastSeen 失効はどちらの誓約も満たさない(polling が永遠に更新する。盗んだ者も更新できる)。
+4. 「自律フリートを起動しない」は誤り — `POST /messages` は tool を持つ Claude の turn を
+   起こす。1プロンプトでファイル変更も外部呼び出しも起きる。
+5. **誓約(1)の最小の誠実な形**: Face ID の明示操作で **30分の絶対 executeUntil リース**。
+   要求で延長されない。要るのは `messages` と `return-request`。
+   interrupt / queue-clear はリース切れ後も押せる(緊急停止を無効化しない)。
+   permission/trust/bypass/課金系の choice は今の fail-closed 白名簿のまま(良い)。
+6. **誓約(2)の最小形**: Secure Enclave 鍵 + 机側 one-time code で pairing + Face ID が
+   server nonce に署名 → 不透明 session token(authUntil ~18h)。api.key は机/bootstrap 専用に
+   格下げし、通常要求に載せない。
+7. 追加の穴: /messages に冪等鍵が無い(曖昧な再送で二重注入)/ 認可が route 分類の前の
+   1枚だけ(scope 別 allowlist + unknown deny が要る)/ 未知 UUID を永続化しない / log は
+   device 前置き・auth 年齢・scope・拒否理由まで(資格情報は決して)。
+
+★Codex 提案のうち1点は **Tom の裁定と衝突**するので採らない:
+「account/select・next を電話から外す」は §9-3(電話から CodexBar 同様に切替)の
+Tom 指示の逆。リースの対象に含める形(執行系に格上げ)を代案として次の実装で試す。
+
+**実装状態: 未実装(このセッションでは着手しない)。** 中途半端な鍵配りは
+security theater になる(Codex 1)。本節を spec として次のセッションが
+SE 鍵 → pairing → lease → scope allowlist → 冪等鍵 の順で入れる。
