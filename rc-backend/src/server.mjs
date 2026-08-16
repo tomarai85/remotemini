@@ -33,6 +33,11 @@ import { PaneRegistry, resolveSessionPane, registryOnlySessions } from "./regist
 // ★別名で入れる。素の `writeHead` はこのファイルで 3 回使う `res.writeHead` と紛らわしく、
 //   手が滑って裸で呼んでも**静かに通る**位置に居る(HTTP 応答のつもりが枝の頭を書く)。
 import { readHead as readBranchHead, writeHead as writeBranchHead, readAllHeads } from "./heads.mjs";
+import { loadTitles, setTitle, normalizeTitle, loadArchived, setArchived } from "./titles.mjs";
+import { DEFAULT_MIRROR_ROOT, checkoutIdForCwd, readReturnRequest, requestReturn } from "./checkouts.mjs";
+
+// remote-mini の mirror root(§9-2)。remote-mini.sh と同じ環境変数で上書きできる。
+const MIRROR_ROOT = process.env.REMOTE_MINI_MIRROR_ROOT || DEFAULT_MIRROR_ROOT;
 import { psSnapshot } from "./procs.mjs";
 import { paneFaultReason, UNDECIDABLE, blockedMessage, blockedBody, WORKER_REFUSAL } from "./blocked.mjs";
 import { cwdVerdict } from "./trust.mjs";
@@ -1102,14 +1107,20 @@ const server = createServer(async (req, res) => {
       //   「登録した会話だけ出せ」ではない。むしろ設計は逆向きで、jsonl がまだ無い会話も
       //   登録簿から拾って**足している**(下の registryOnlySessions)。既定で絞ると
       //   その裁定と正面から衝突するので、絞りは電話側が明示した時だけ効かせる。
-      const requestedScope = url.searchParams.get("scope") === "registered" ? "registered" : "all";
+      // scope=archived は §9-1 の「外した物の置き場」。既定の一覧は保管済みを**出さない**。
+      const scopeParam = url.searchParams.get("scope");
+      const requestedScope = scopeParam === "registered" ? "registered"
+        : scopeParam === "archived" ? "archived" : "all";
       const limit = Math.max(0, Math.trunc(Number(url.searchParams.get("limit")) || 0));
       const registered = new Set(entries.map((e) => e.sessionId));
       // ★地図は走査の**前**に1回だけ読む(手順の1番目)。走査の中で会話ごとに読むと
       //   open が file 数だけ増える上、`only` を広げる判断が走査より後になって罠1 を踏む。
       const heads = headMap();
       const scan = scanSessions({ only: requestedScope === "registered" ? registered : null, limit, heads });
-      const scanned = [...buildListing(scan.entries), ...scan.unreadable];
+      // 明示名と保管の台帳。要求ごとに1回読む(登録簿と同じ扱い)。
+      const explicitTitles = loadTitles(KEY_DIR);
+      const archivedLedger = loadArchived(KEY_DIR);
+      const scanned = [...buildListing(scan.entries, explicitTitles), ...scan.unreadable];
       // jsonl がまだ無い会話(開いただけ・未発言)も、登録簿に居てペインが生きていれば出す。
       // 見えないと電話から最初の一言を送れない = Tom 裁定「いつでも干渉できる」に反する。
       // 並びは updatedAt の新しい順で混ぜる。未発言の会話の updatedAt は登録簿の mtime
@@ -1123,7 +1134,15 @@ const server = createServer(async (req, res) => {
         ...(paneFault
           ? []
           : registryOnlySessions({ listing: scanned, entries, panes, isClaude: looksLikeClaudePane, ...ctx })),
-      ].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0)).map((s) => {
+      ]
+        // ★明示名と保管の絞りは**合流後に一括で**当てる(生産者は buildListing /
+        //   registryOnlySessions / unreadableRow の3人居るので、各自に台帳を配ると
+        //   1人だけ配り忘れる形になる)。読めない行に名前が当たるのも意図どおり。
+        //   保管の絞り(§9-1): 既定 = 保管済みを出さない / scope=archived = 保管済みだけ。
+        //   「消す」機構は存在しない — transcript に触るコードをそもそも持たない。
+        .map((s) => (explicitTitles[s.id] ? { ...s, title: explicitTitles[s.id] } : s))
+        .filter((s) => (requestedScope === "archived" ? !!archivedLedger[s.id] : !archivedLedger[s.id]))
+        .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0)).map((s) => {
         // 机で開かれている会話は画面が真実。開かれていなければワーカーの状態。
         const r = paneFault || livePaneFor(s.id, s.cwd, panes, entries, ctx);
         const live = r.pane
@@ -1131,7 +1150,17 @@ const server = createServer(async (req, res) => {
           : UNDECIDABLE.has(r.reason)
             ? blockedBody(r)
             : { route: "worker", ...manager.status(s.id) };
-        return sessionRow(s, live);
+        // §9-2: 持ち出し(remote-mini)の仕事は機体を名乗る。cwd が mirror root の
+        // worktree の下に在る事だけが判定で、名前や題名からは推測しない。
+        const checkoutId = checkoutIdForCwd(s.cwd || "", MIRROR_ROOT);
+        const machine = checkoutId
+          ? {
+              kind: "checkout",
+              checkoutId,
+              returnRequestedAt: readReturnRequest(MIRROR_ROOT, checkoutId)?.at ?? null,
+            }
+          : { kind: "desk", checkoutId: null, returnRequestedAt: null };
+        return sessionRow(s, live, machine);
       });
       // 何本見て何本開いたかを毎回名乗る。★「速い」を主張する側が計器を持たないと、
       // 遅くなった時に「気のせい」で片付く(この置き換え自体、測って初めて見つかった)。
@@ -1215,6 +1244,65 @@ const server = createServer(async (req, res) => {
     //   払う対価に対して得られる物が無い。末尾から有界に採る。
     const sessionCwd = () => cwdOfSessionFile(file);
     const resolvePane = () => livePaneFor(sessionId, sessionCwd(), undefined, regEntries);
+
+    // ── 明示名(rename)。本家 RC のタイトル優先順の1段目(spec-audit A1)────────
+    // body: {"title": "名前"} で付け、{"title": null} で外す。付けた名前は
+    // /api/sessions の一覧に**合流後の一括 override** で乗る(生産者3人に配らない)。
+    if (action === "title" && req.method === "POST") {
+      let body;
+      try {
+        body = JSON.parse(await readBody(req));
+      } catch {
+        // 語彙は messages 道の "text required" と同じ流儀(小文字の英語句)。
+        // 新しい大文字コードを鋳造すると wire-vocabulary の門が正しく止める(実測 2026-08-16)。
+        return json(res, 400, { error: "title required" });
+      }
+      if (body.title === null) {
+        setTitle(KEY_DIR, sessionId, null);
+        return json(res, 200, { title: null });
+      }
+      const t = normalizeTitle(body.title);
+      // ★空・60字超・文字列でない、は全部同じ1つの拒否(1〜60文字・改行なし)。
+      if (t === null) return json(res, 400, { error: "title required" });
+      setTitle(KEY_DIR, sessionId, t);
+      return json(res, 200, { title: t });
+    }
+
+    // ── 戻しの依頼(§9-2)。電話から出来るのは**依頼を置く**まで ────────────────
+    // 実行は MBP 側(`remote-mini.sh requests`)。force に相当する語彙は此の API に無い。
+    if (action === "return-request" && req.method === "POST") {
+      const cwd = sessionCwd();
+      const checkoutId = checkoutIdForCwd(cwd || "", MIRROR_ROOT);
+      if (!checkoutId) {
+        return json(res, 409, {
+          error: "not-a-checkout",
+          message: "この会話は持ち出されて来た仕事ではありません。戻す物がありません。",
+        });
+      }
+      const r = requestReturn(MIRROR_ROOT, checkoutId, sessionId);
+      if (r.error) {
+        return json(res, 409, {
+          error: "checkout-gone",
+          message: "持ち出しの印が見つかりません。机側で既に戻された可能性があります。",
+        });
+      }
+      return json(res, 200, { requestedAt: r.at, already: !!r.already });
+    }
+
+    // ── 保管(§9-1)。一覧から外す / 戻す。transcript には一切触れない ──────────
+    if (action === "archive" && req.method === "POST") {
+      let body;
+      try {
+        body = JSON.parse(await readBody(req));
+      } catch {
+        return json(res, 400, { error: "archived required" });
+      }
+      if (typeof body.archived !== "boolean") {
+        return json(res, 400, { error: "archived required" });
+      }
+      setArchived(KEY_DIR, sessionId, body.archived);
+      return json(res, 200, { archived: body.archived });
+    }
 
     if (action === "history" && req.method === "GET") {
       const limit = Math.min(Number(url.searchParams.get("limit") || 50), 500);

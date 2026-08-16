@@ -49,7 +49,7 @@ final class LiveSmokeUITests: XCTestCase {
         // 待つ物も其方へ移した。打つ欄は退避路の奥に在り、此の検査だけが其処を通る
         // (人は机で焼き直せば通らない道)。
         let manualEntry = element(app, "disconnected.manualEntry")
-        let scanLine = element(app, "list.scanLine")
+        let scanLine = element(app, "list.root")
         let deadline = Date().addingTimeInterval(15)
         while Date() < deadline && !manualEntry.exists && !scanLine.exists {
             usleep(300_000)
@@ -68,8 +68,13 @@ final class LiveSmokeUITests: XCTestCase {
         }
 
         // --- 生きた一覧(本物の走査行が出る = サーバの実データが着いた)---
-        XCTAssertTrue(element(app, "list.scanLine").waitForExistence(timeout: 30),
-                      "一覧に本物の走査行が出ない = 机に繋がっていない")
+        // 走査行は 2026-08-16 から list.root の accessibilityValue に載る(§9-4)。
+        let root = element(app, "list.root")
+        XCTAssertTrue(root.waitForExistence(timeout: 30), "一覧に着かない")
+        let gotScan = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value != ''"), object: root)
+        XCTAssertEqual(XCTWaiter.wait(for: [gotScan], timeout: 30), .completed,
+                       "一覧に本物の走査行が届かない = 机に繋がっていない")
 
         // --- 先頭の会話を開いて履歴が読める ---
         let target = app.cells.firstMatch

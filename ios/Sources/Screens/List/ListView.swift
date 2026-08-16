@@ -24,18 +24,39 @@ struct ListView: View {
     private let baseURL: URL
     private let apiKey: String
     private let onUnauthorized: () -> Void
+    /// 名前・保管・戻し依頼の口。**既定値を持たせない**(`ConversationClients` と同じ理由 —
+    /// 既定を本物にすると fixture の面が `ui-fixture.invalid` へ本当に飛ぶ。Sprint 8 で3回)。
+    private let renamer: SessionRenaming
+    private let archiver: SessionArchiving
+    private let returner: ReturnRequesting
+    private let archivedLister: ArchivedListing
+
+    /// rename の面の状態。alert 1枚 + 結果の1行。
+    @State private var renameTarget: SessionRow?
+    @State private var renameText = ""
+    @State private var renameNotice: String?
+    @State private var returnTarget: SessionRow?
+    @State private var returnNotice: String?
 
     init(
         viewModel: @autoclosure @escaping () -> ListViewModel,
         accountViewModel: @autoclosure @escaping () -> AccountViewModel,
         baseURL: URL,
         apiKey: String,
+        renamer: SessionRenaming,
+        archiver: SessionArchiving,
+        returner: ReturnRequesting,
+        archivedLister: ArchivedListing,
         onUnauthorized: @escaping () -> Void
     ) {
         _viewModel = StateObject(wrappedValue: viewModel())
         _accountViewModel = StateObject(wrappedValue: accountViewModel())
         self.baseURL = baseURL
         self.apiKey = apiKey
+        self.renamer = renamer
+        self.archiver = archiver
+        self.returner = returner
+        self.archivedLister = archivedLister
         self.onUnauthorized = onUnauthorized
     }
 
@@ -50,14 +71,20 @@ struct ListView: View {
                     .accessibilityIdentifier("list.refreshing")
             }
         }
-        // ★帯は**相ごとではなく此処で一度だけ**貼る(2026-08-08 / 監査 X2-7)。
-        // 以前は `content` の中の3つの case にだけ `.safeAreaInset` が付いていて、
-        // 失敗している3相(`.initialLoading` / `.retryable` / `.unreachable`)では
-        // 帯ごと消えていた。帯には版の名乗りが載るので、「古いビルドで動いていないか」を
-        // 最も疑う場面で版が見えない、という向きの欠け方をしていた。
-        // 走査行を持つかは `ListViewModel.Phase.scanLine` が答える(default 無しの
-        // switch なので、新しい相はそれを答えずには足せない)。
-        .safeAreaInset(edge: .bottom) { footer(scanLine: viewModel.phase.scanLine) }
+        // ★一覧の面そのものの錨(2026-08-16)。走査行の常設表示を設定画面へ移した後も、
+        //   UI 検査は「一覧に着いた」と「取得が何回走ったか」を測る必要が在る。
+        //   識別子はどの相でも在る此の容器に、走査行は**描かずに** accessibilityValue で
+        //   持たせる(画素には出ない = §9-4 を守り、検査からは読める = 錨が残る)。
+        //   `.contain` は子の識別子を上書きしない為(AccountBar の註に在る実測の罠)。
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("list.root")
+        .accessibilityValue(viewModel.phase.scanLine ?? "")
+        // ★2026-08-16(spec-audit A4 / §9-4): 常設の脚(走査行・鮮度・版の3行)は
+        //   設定画面の「計器」節へ移した。此の面に残るのは**古い時にだけ**出る警告1本 ——
+        //   鮮度は使う人への警告なので面に残り、計器は診断なので別画面が正しい。
+        //   版の名乗りは settings.buildInfo / disconnected.buildInfo / keyEntry.buildInfo の
+        //   3面に居る(BuildIdentityUITests が同一ビルドを名乗る事を見張る)。
+        .safeAreaInset(edge: .bottom) { staleWarning }
         .navigationTitle("セッション")
         // 口座は**脚ではなく上**に置く(2026-08-12、REQUIREMENTS §4-5/§5-8)。脚は既に
         // 鮮度 / 走査行 / 版の3行を載せていて、其処に4行目を足すと**版の名乗りが押し出される** ——
@@ -69,7 +96,8 @@ struct ListView: View {
         //   工具帯の1マスに入る量ではなく、押し込めば此処もまた「1画面に全部」になる。
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                AccountBar(viewModel: accountViewModel, baseURL: baseURL)
+                AccountBar(viewModel: accountViewModel, baseURL: baseURL, listViewModel: viewModel,
+                           archiveDeps: .init(apiKey: apiKey, lister: archivedLister, archiver: archiver))
             }
         }
         .refreshable { await viewModel.refresh() } // pull-to-refresh (brief §3-d trigger #2)
@@ -199,10 +227,130 @@ struct ListView: View {
             } label: {
                 SessionRowView(row: row, nowMs: Date().timeIntervalSince1970 * 1000)
             }
+            // 行の操作(長押し = iOS の標準の置き場)。名前(A1)・保管(§9-1)・戻し(§9-2)。
+            .contextMenu {
+                Button {
+                    renameText = row.displayTitle
+                    renameTarget = row
+                } label: {
+                    Label("名前を変更", systemImage: "pencil")
+                }
+                Button {
+                    Task { await archive(row) }
+                } label: {
+                    Label("一覧から外す", systemImage: "archivebox")
+                }
+                if row.isCheckout {
+                    Button {
+                        returnTarget = row
+                    } label: {
+                        Label("MBP へ戻す…", systemImage: "arrow.uturn.backward.circle")
+                    }
+                }
+            }
+            // swipe でも外せる(§9-1「Tom が選んで外せ」— 長押しより1動作少ない道)。
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button {
+                    Task { await archive(row) }
+                } label: {
+                    Label("外す", systemImage: "archivebox")
+                }
+                .tint(.indigo)
+            }
         }
         .listStyle(.plain)
         .opacity(grayedOut ? 0.5 : 1)
         .disabled(grayedOut)
+        .alert("名前を変更", isPresented: Binding(
+            get: { renameTarget != nil },
+            set: { if !$0 { renameTarget = nil } }
+        )) {
+            TextField("名前(1〜60文字)", text: $renameText)
+            Button("保存") { Task { await submitRename(clear: false) } }
+            Button("名前を外す", role: .destructive) { Task { await submitRename(clear: true) } }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("この会話の一覧での呼び名を決めます。外すと元の自動の題に戻ります。")
+        }
+        .alert("名前を変更できません", isPresented: Binding(
+            get: { renameNotice != nil },
+            set: { if !$0 { renameNotice = nil } }
+        )) {
+            Button("閉じる", role: .cancel) {}
+        } message: {
+            Text(renameNotice ?? "")
+        }
+        .confirmationDialog("MBP へ戻す", isPresented: Binding(
+            get: { returnTarget != nil },
+            set: { if !$0 { returnTarget = nil } }
+        ), titleVisibility: .visible) {
+            Button("戻し待ちにする") { Task { await submitReturnRequest() } }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("依頼を置くだけです。実際に戻るのは MBP が開いた時で、MBP 側の安全確認(手元の変更との衝突など)を通った場合だけです。")
+        }
+        .alert("戻しの依頼", isPresented: Binding(
+            get: { returnNotice != nil },
+            set: { if !$0 { returnNotice = nil } }
+        )) {
+            Button("閉じる", role: .cancel) {}
+        } message: {
+            Text(returnNotice ?? "")
+        }
+    }
+
+    /// alert の「保存」/「名前を外す」から。成功 = 一覧を読み直す(名前はサーバの台帳が正本。
+    /// 手元の行を書き換えて済ませると、次の取得で黙って戻る形の嘘になる)。
+    private func submitRename(clear: Bool) async {
+        guard let target = renameTarget else { return }
+        renameTarget = nil
+        let title = clear ? nil : renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !clear, title?.isEmpty != false || (title?.count ?? 0) > 60 {
+            renameNotice = "名前は1〜60文字です(改行は使えません)。"
+            return
+        }
+        switch await renamer.rename(baseURL: baseURL, apiKey: apiKey, sessionID: target.id, title: title) {
+        case .renamed:
+            await viewModel.refresh()
+        case .rejected:
+            renameNotice = "名前は1〜60文字です(改行は使えません)。"
+        case .unreachable:
+            renameNotice = "机に届きませんでした。もう一度試してください。"
+        case .unauthorized:
+            onUnauthorized()
+        }
+    }
+
+    /// §9-1: 一覧から外す。成功 = 読み直し(行が消える事が「外れた事が画面で判る」)。
+    /// 戻す口は設定画面の「保管した会話」(消えた物の行き先が無いと削除に見える)。
+    private func archive(_ row: SessionRow) async {
+        switch await archiver.setArchived(baseURL: baseURL, apiKey: apiKey, sessionID: row.id, archived: true) {
+        case .done:
+            await viewModel.refresh()
+        case .unreachable:
+            renameNotice = "机に届きませんでした。もう一度試してください。"
+        case .unauthorized:
+            onUnauthorized()
+        }
+    }
+
+    /// §9-2: 「MBP へ戻す」の**依頼**。確認を挟む(取り返しに手間の掛かる操作)。
+    private func submitReturnRequest() async {
+        guard let target = returnTarget else { return }
+        returnTarget = nil
+        switch await returner.requestReturn(baseURL: baseURL, apiKey: apiKey, sessionID: target.id) {
+        case .requested(_, let already):
+            returnNotice = already
+                ? "この仕事は既に戻し待ちです。MBP が開いた時に戻ります。"
+                : "戻し待ちにしました。MBP が開いた時に戻ります(電話からは実行できません)。"
+            await viewModel.refresh()
+        case .notACheckout(let message):
+            returnNotice = message
+        case .unreachable:
+            returnNotice = "机に届きませんでした。もう一度試してください。"
+        case .unauthorized:
+            onUnauthorized()
+        }
     }
 
     /// ★この関数が**開くたびに新しい ViewModel を作る**事が、DESIGN §2.53 の理由その物。
@@ -226,43 +374,25 @@ struct ListView: View {
         )
     }
 
-    /// `scanLine == nil` = 机側の走査行をまだ一度も受け取っていない相。行ごと出さない
-    /// (空文字を出すと「走査が空だった」に読めるので、無い物は無いままにする)。
-    /// 版の行はその場合も出る —— 取得が失敗している時こそ「電話が古いのでは」を疑う。
-    /// 2026-08-14 の作り直し: 計器(走査行・版)は**消さずに沈める**。要素と識別子は
-    /// そのまま(検査の錨 + 壊れた日に読む物)だが、普段の目には入らない大きさ・色へ。
-    /// 鮮度だけは古い時に色が立つ(古さは使う人への警告なので)。
-    private func footer(scanLine: String?) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            freshnessLine()
-            if let scanLine {
-                Text(scanLine) // brief §3-b: rendered verbatim, never reassembled client-side
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.quaternary)
-                    .lineLimit(1)
-                    .accessibilityIdentifier("list.scanLine")
-            }
-            Text(BuildInfo.line)
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(.quaternary)
-                .accessibilityIdentifier("list.buildInfo")
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal)
-        .padding(.vertical, 4)
-        .background(.bar)
-    }
-
+    /// 古い時に**だけ**出る警告(§9-4 の後も面に残る唯一の計器)。
+    /// 新鮮な間は何も描かない — 常設の脚は設定画面の「計器」節へ移った(2026-08-16)。
+    /// 識別子 `list.freshness` は据え置き(RemoteMiniUITests の鮮度検査の錨)。
     @ViewBuilder
-    private func freshnessLine() -> some View {
+    private var staleWarning: some View {
         // Re-evaluated at every redraw (this computed property runs whenever body
         // does) rather than on a timer -- brief §2-2/§3-c forbid polling here.
         if viewModel.lastFetchedAtMs > 0 {
             let freshness = Freshness.freshness(viewModel.lastFetchedAtMs, nowMs: Date().timeIntervalSince1970 * 1000)
-            Text(freshness.text)
-                .font(freshness.stale ? .caption : .system(size: 9))
-                .foregroundStyle(freshness.stale ? AnyShapeStyle(.orange) : AnyShapeStyle(.quaternary))
-                .accessibilityIdentifier("list.freshness")
+            if freshness.stale {
+                Text(freshness.text)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+                    .padding(.vertical, 4)
+                    .background(.bar)
+                    .accessibilityIdentifier("list.freshness")
+            }
         }
     }
 
@@ -341,10 +471,9 @@ private struct SessionRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 9, height: 9)
-                    .padding(.top, 1)
+                // 本家 RC の識別意匠(teardown §2): 机で開いている会話は
+                // **コンピュータのアイコン + 緑の点**。それ以外は点だけ。
+                statusMark
                 Text(row.displayTitle)
                     .font(.body.weight(.semibold))
                     .lineLimit(1)
@@ -357,8 +486,18 @@ private struct SessionRowView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
-                .padding(.leading, 17)
+                .padding(.leading, 24)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
+                // §9-2: 機体の名乗り。押す前に「今どちらの機体に居るか」が読める事が先。
+                if row.isCheckout {
+                    Text(row.machine?.returnRequestedAt != nil ? "戻し待ち" : "MBP の仕事")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.purple)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Color.purple.opacity(0.12), in: Capsule())
+                        .accessibilityIdentifier("list.machineBadge")
+                }
                 if let word = statusWord {
                     Text(word)
                         .font(.caption2.weight(.semibold))
@@ -367,17 +506,52 @@ private struct SessionRowView: View {
                         .padding(.vertical, 2)
                         .background(statusColor.opacity(0.12), in: Capsule())
                 }
-                // 診断の原文。序列は最下段・最小 —— 消してはいない(壊れた日に此処を読む)。
-                Text(row.display.route.text)
-                    .font(.caption2)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .foregroundStyle(.tertiary)
+                // 診断の原文は**壊れている行にだけ**出す(2026-08-16、§9-4「一覧の行に
+                // 内部語を並べない」)。健康な行では status の言葉が全てで、原文は
+                // 説明でなく雑音になる。壊れた行(blocked / unknown)では原文こそが
+                // 次の一手の説明なので、そこでは消さない。
+                if showsDiagnostic {
+                    Text(row.display.route.text)
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundStyle(.tertiary)
+                }
             }
-            .padding(.leading, 17)
+            .padding(.leading, 24)
         }
         .padding(.vertical, 6)
         .listRowBackground(row.display.route.kind == .choice ? Color.orange.opacity(0.10) : nil)
+    }
+
+    /// 机で開いている会話の印。アイコンは SF Symbols の desktopcomputer(本家の意匠)。
+    @ViewBuilder
+    private var statusMark: some View {
+        if row.display.route.kind == .tmux {
+            Image(systemName: "desktopcomputer")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .overlay(alignment: .topTrailing) {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 7, height: 7)
+                        .offset(x: 3, y: -2)
+                }
+                .frame(width: 16)
+        } else {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 9, height: 9)
+                .padding(.top, 1)
+                .frame(width: 16)
+        }
+    }
+
+    private var showsDiagnostic: Bool {
+        switch row.display.route.kind {
+        case .blocked, .unknown: return true
+        case .choice, .tmux, .worker: return false
+        }
     }
 
     /// Brief §3-a: distinct visual treatment per `kind`, `choice` carrying the

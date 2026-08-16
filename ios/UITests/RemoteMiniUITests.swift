@@ -21,12 +21,18 @@ final class RemoteMiniUITests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
 
+    /// 走査行の文。2026-08-16(§9-4)から常設の帯ではなく `list.root` の
+    /// accessibilityValue に載る(画素に出さず、検査からは読める)。
+    private func scanText(_ root: XCUIElement) -> String {
+        (root.value as? String) ?? ""
+    }
+
     // MARK: - list-normal: the ordinary list, not the empty/fault banners
 
     func testListNormalShowsTheListNotTheEmptyOrFaultBanner() {
         let app = launch(fixture: "list-normal")
 
-        XCTAssertTrue(element(app, "list.scanLine").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, "list.root").waitForExistence(timeout: 10))
         XCTAssertFalse(element(app, "list.empty").exists)
         XCTAssertFalse(element(app, "list.paneFault").exists)
         XCTAssertFalse(element(app, "list.unreachable").exists)
@@ -95,12 +101,12 @@ final class RemoteMiniUITests: XCTestCase {
     func testColdLaunchFetchesTheListExactlyOnce() throws {
         let app = launch(fixture: "list-normal")
 
-        let scan = element(app, "list.scanLine")
+        let scan = element(app, "list.root")
         XCTAssertTrue(scan.waitForExistence(timeout: 10))
 
         let highest = try XCTUnwrap(
             highestFetchCount(scan, over: 3),
-            "錨: scan 行に取得の番号が一度も載らない(実測: \(scan.label))= 以下の主張は何も測っていない"
+            "錨: scan 行に取得の番号が一度も載らない(実測: \(scanText(scan)))= 以下の主張は何も測っていない"
         )
         XCTAssertEqual(highest, 1, "起動から3秒の間に走った取得の回数。2 = `.task` と scenePhase が両方撃っている")
     }
@@ -119,9 +125,9 @@ final class RemoteMiniUITests: XCTestCase {
     func testReturningFromTheBackgroundRefreshesTheListExactlyOnce() throws {
         let app = launch(fixture: "list-normal")
 
-        let scan = element(app, "list.scanLine")
+        let scan = element(app, "list.root")
         XCTAssertTrue(scan.waitForExistence(timeout: 10))
-        let beforeLabel = scan.label
+        let beforeLabel = scanText(scan)
         let before = try XCTUnwrap(
             fetchCount(beforeLabel),
             "錨: scan 行に取得の番号が載っていない(実測: \(beforeLabel))= 以下の主張は何も測っていない"
@@ -151,9 +157,9 @@ final class RemoteMiniUITests: XCTestCase {
     func testReturningFromAConversationRefreshesTheListExactlyOnce() throws {
         let app = launch(fixture: "list-normal")
 
-        let scan = element(app, "list.scanLine")
+        let scan = element(app, "list.root")
         XCTAssertTrue(scan.waitForExistence(timeout: 10))
-        let beforeLabel = scan.label
+        let beforeLabel = scanText(scan)
         let before = try XCTUnwrap(
             fetchCount(beforeLabel),
             "錨: scan 行に取得の番号が載っていない(実測: \(beforeLabel))= 以下の主張は何も測っていない"
@@ -192,7 +198,7 @@ final class RemoteMiniUITests: XCTestCase {
         let deadline = Date().addingTimeInterval(seconds)
         var highest: Int?
         while Date() < deadline {
-            if let n = fetchCount(subject.label) {
+            if let n = fetchCount(scanText(subject)) {
                 highest = max(highest ?? n, n)
             }
             Thread.sleep(forTimeInterval: 0.1)
@@ -213,7 +219,7 @@ final class RemoteMiniUITests: XCTestCase {
         let deadline = Date().addingTimeInterval(timeout)
         var lastSeen: String?
         while Date() < deadline {
-            let now = subject.label
+            let now = scanText(subject)
             if now != previous {
                 if let lastSeen, lastSeen == now { return fetchCount(now) }
                 lastSeen = now

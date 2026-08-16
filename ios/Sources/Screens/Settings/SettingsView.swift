@@ -14,11 +14,27 @@ struct SettingsView: View {
     @ObservedObject var accountViewModel: AccountViewModel
     /// 表示専用。机の在り処を人が確かめられる様にする為だけに持つ(鍵は**出さない**)。
     let baseURL: URL
+    /// 計器(走査行・鮮度)の出所。nil = 一覧以外から開いた設定(節ごと出さない)。
+    /// ★2026-08-16(spec-audit A4 / §9-4「計器は別画面」): 一覧の面に常時出ていた
+    ///   走査行・鮮度・版の3行は此処へ移った。一覧に残るのは**古い時だけ**出る鮮度の警告1本。
+    var listViewModel: ListViewModel? = nil
+    /// 保管の面の束(§9-1)。nil = 出さない(fixture の面に本物の口を残さない規約の徹底)。
+    var archiveDeps: ArchiveDeps? = nil
+
+    struct ArchiveDeps {
+        let apiKey: String
+        let lister: ArchivedListing
+        let archiver: SessionArchiving
+    }
 
     var body: some View {
         List {
             accountSection
+            archiveSection
             connectionSection
+            if let list = listViewModel {
+                instrumentsSection(list)
+            }
         }
         .navigationTitle("設定")
         .navigationBarTitleDisplayMode(.inline)
@@ -210,6 +226,62 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("settings.buildInfo")
             }
+        }
+    }
+
+    // MARK: - 保管(§9-1 の行き先)
+
+    /// 「一覧から外す」で消えた行の行き先。此処が無いと、外す操作が削除に見える —
+    /// §9-1 の合格条件は「外れた事が画面で判る(edith 側の file は残る)」。
+    @ViewBuilder
+    private var archiveSection: some View {
+        if let deps = archiveDeps {
+            Section {
+                NavigationLink {
+                    ArchivedListView(baseURL: baseURL, apiKey: deps.apiKey,
+                                     lister: deps.lister, archiver: deps.archiver)
+                } label: {
+                    Label("保管した会話", systemImage: "archivebox")
+                }
+                .accessibilityIdentifier("settings.archived")
+            } footer: {
+                Text("一覧から外した会話です。記録は机(edith)に残っていて、いつでも戻せます。")
+            }
+        }
+    }
+
+    // MARK: - 計器(一覧から移って来た走査行と鮮度。§9-4「計器は別画面」)
+
+    @ViewBuilder
+    private func instrumentsSection(_ list: ListViewModel) -> some View {
+        Section {
+            if let scan = list.phase.scanLine {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("走査")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    // brief §3-b の契約は据え置き: サーバの文を逐語で描く(再組成しない)
+                    Text(scan)
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("settings.scanLine")
+                }
+            }
+            if list.lastFetchedAtMs > 0 {
+                let f = Freshness.freshness(list.lastFetchedAtMs, nowMs: Date().timeIntervalSince1970 * 1000)
+                HStack {
+                    Text("鮮度")
+                    Spacer()
+                    Text(f.text)
+                        .font(.callout)
+                        .foregroundStyle(f.stale ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                        .accessibilityIdentifier("settings.freshness")
+                }
+            }
+        } header: {
+            Text("計器")
+        } footer: {
+            Text("壊れた日に読む欄です。ふだんは気にしなくて構いません。")
         }
     }
 

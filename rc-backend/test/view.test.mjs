@@ -255,16 +255,16 @@ test("★routeLabel: 観測できなかった事を「静か」と書かない(3
   // 害の向きが悪い: 「静か」は**打ち込んで良い**と読める。
   const noWindow = routeLabel({ route: "tmux", activity: "unknown" }).text;
   assert.doesNotMatch(noWindow, /静か/, "窓が無いのに待機中を主張しない");
-  assert.match(noWindow, /状態不明/);
+  assert.match(noWindow, /様子を読めていません/);
 
   // 窓が在る側(ストリーム)は**測った窓をそのまま出す**。結論ではなく観測を出す。
   const windowed = routeLabel({ route: "tmux", work: "quiet", windowMs: 5600 }).text;
   assert.doesNotMatch(windowed, /静か/);
   assert.match(windowed, /6秒 動く印なし/, "5.6 秒は四捨五入して 6 秒");
 
-  // 陰性対照1 — 「全部 状態不明 と書く」実装との差。observed は今まで通り強く出る。
+  // 陰性対照1 — 「全部 様子を読めていません と書く」実装との差。observed は今まで通り強く出る。
   assert.match(routeLabel({ route: "tmux", work: "observed" }).text, /動いている/);
-  assert.doesNotMatch(routeLabel({ route: "tmux", work: "observed" }).text, /状態不明/);
+  assert.doesNotMatch(routeLabel({ route: "tmux", work: "observed" }).text, /様子を読めていません/);
   // 陰性対照2 — windowMs を落とした実装が「0秒 動く印なし」と嘘をつかない事。
   assert.equal(routeLabel({ route: "tmux", work: "quiet" }).text, "机で開いている・動く印なし");
 });
@@ -276,7 +276,7 @@ test("★routeLabel: 選択待ちは**一覧の札から**見える(Enter が承
   const l = routeLabel({ route: "tmux", screen: "CHOICE", activity: "unknown" });
   assert.match(l.short, /選択待ち/, "★一覧に出る側(short)に入っている事");
   assert.match(l.text, /承認や課金/, "なぜ危ないかを画面で言う");
-  assert.doesNotMatch(l.text, /状態不明/, "選択待ちが分かっているのに「状態不明」に埋もれさせない");
+  assert.doesNotMatch(l.text, /様子を読めていません/, "選択待ちが分かっているのに「様子を読めていません」に埋もれさせない");
   // 上限と選択待ちが同時に立っても両方残す(片方を消す実装との差)。
   const both = routeLabel({ route: "tmux", screen: "CHOICE", limited: true }).text;
   assert.match(both, /選択待ち/);
@@ -374,7 +374,7 @@ test("★routeLabel: 電話に流れる理由を**全部**覆う(表が2枚あ�
 
 test("★routeLabel: 古い購読が運んでくる gone も blocked と同じ扱い(死んだ経路名を残さない)", () => {
   // 旧実装は `server.mjs` が `route:"gone"` を産み、使う側が**1つも無かった**。
-  // 既定に落ちて「状態不明」= 理由が画面から消えていた(2026-08-02 に実行して確認)。
+  // 既定に落ちて「様子を読めていません」= 理由が画面から消えていた(2026-08-02 に実行して確認)。
   // サーバ側は `blockedBody()` に寄せたが、繋ぎっ放しの購読が古い本文を持つので受け続ける。
   const l = routeLabel({ route: "gone", reason: "pane-gone" });
   assert.notEqual(l.kind, "unknown", "既定に落とさない");
@@ -389,7 +389,7 @@ test("★routeLabel: 利用上限は「静か」と区別して出す(待ち続�
   //   守りたかったのは「上限の見出しが動きの語に埋もれない」事なので、そちらを直接測る。
   const lim = routeLabel({ route: "tmux", work: "quiet", windowMs: 5600, limited: true }).text;
   assert.doesNotMatch(lim, /動く印なし/, "上限の時は動きの語に場所を譲らない");
-  assert.doesNotMatch(lim, /状態不明/);
+  assert.doesNotMatch(lim, /様子を読めていません/);
   // 陰性対照 — 常に上限と言う実装でも上の2行は緑になる。
   assert.doesNotMatch(routeLabel({ route: "tmux", work: "quiet", limited: false }).text, /利用上限/);
   assert.doesNotMatch(routeLabel({ route: "tmux", work: "observed" }).text, /利用上限/);
@@ -494,7 +494,7 @@ test("★scanLine: 欠けた値を 0 で埋めない(「読めなかった」と
 test("★subtitleOf: 読み切れていない時に「発言がありません」と書かない(§2.12)", () => {
   assert.equal(subtitleOf({ lastPrompt: "直近の発言" }), "直近の発言");
   assert.match(subtitleOf({ lastPrompt: null, metadataIncomplete: true }), /読み取り範囲の外/);
-  assert.match(subtitleOf({ lastPrompt: null, metadataIncomplete: false }), /まだ発言がありません/);
+  assert.match(subtitleOf({ lastPrompt: null, metadataIncomplete: false }), /まだやり取りはありません/);
 });
 
 // ---- 一覧の古さ(§2.19 U1)---------------------------------------------------

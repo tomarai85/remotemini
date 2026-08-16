@@ -39,7 +39,8 @@ final class ListViewModelTests: XCTestCase {
             title: "t-\(id)",
             updatedAt: "2026-08-05T09:00:00.000Z",
             fromRegistryOnly: nil,
-            display: .init(route: .init(kind: .tmux, short: "s", text: "t", screen: ""), subtitle: "s")
+            display: .init(route: .init(kind: .tmux, short: "s", text: "t", screen: ""), subtitle: "s"),
+            machine: nil
         )
     }
 

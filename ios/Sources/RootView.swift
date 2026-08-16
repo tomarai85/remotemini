@@ -27,6 +27,10 @@ struct RootView: View {
                         accountViewModel: Self.fixtureAccountViewModel(),
                         baseURL: Self.fixtureBaseURL,
                         apiKey: "ui-fixture-key",
+                        renamer: RenameFixture(),
+                        archiver: ArchiveFixture(),
+                        returner: ReturnRequestFixture(),
+                        archivedLister: ArchivedListingFixture(),
                         onUnauthorized: {}
                     )
                 } else if let conversationFixtureState = ConversationHistoryFactory.fixtureState {
@@ -107,6 +111,10 @@ struct RootView: View {
                 ),
                 baseURL: credentials.baseURL,
                 apiKey: credentials.apiKey,
+                renamer: TitleClient(),
+                archiver: ArchiveClient(),
+                returner: ReturnRequestClient(),
+                archivedLister: SessionsClient(),
                 onUnauthorized: { appState.clearCredentials(rejected: credentials) }
             )
         } else {

@@ -77,17 +77,18 @@ final class BuildIdentityUITests: XCTestCase {
         return text
     }
 
-    /// ★本命。**取得が失敗している面でも**版が見える事。
+    /// ★本命。**取得が失敗している面からでも**版に辿り着ける事。
     ///
-    /// 直す前は帯が `.empty` / `.paneFault` / `.list` の3相にしか貼られておらず、
-    /// 失敗の3相では帯ごと消えていた —— 「電話が古いビルドなのでは」を最も疑う場面で
-    /// 版が見えない、という向きの欠け方。
+    /// 2026-08-16(§9-4)から版の常設の家は設定画面(`settings.buildInfo`)。此の検査が
+    /// 守る物は変わらない —— 「電話が古いビルドなのでは」を最も疑うのは取得が失敗して
+    /// いる時で、その面から設定への入口(右上)が生きていて版が読める事を測る。
     func testTheVersionIsVisibleWhileTheListIsFailing() {
         let app = launch(fixture: "list-fetchfail")
         XCTAssertTrue(element(app, "list.retryable").waitForExistence(timeout: 10),
                       "錨: 取得に失敗した面が出ている(fixture が効いていない緑を落とす)")
-        _ = assertNamesARealBuild(app, "list.buildInfo", "取得失敗(retryable)")
-        photograph(app, "buildinfo-list-fetchfail")
+        openSettings(app)
+        _ = assertNamesARealBuild(app, "settings.buildInfo", "取得失敗(retryable)からの設定")
+        photograph(app, "buildinfo-settings-from-fetchfail")
     }
 
     /// 3回失敗して赤い帯が出た後も版は残る。`.unreachable` は `.retryable` とは別の相で、
@@ -105,19 +106,29 @@ final class BuildIdentityUITests: XCTestCase {
         }
         XCTAssertTrue(element(app, "list.unreachable").waitForExistence(timeout: 15),
                       "錨: 3回失敗して赤い帯まで来ている")
-        _ = assertNamesARealBuild(app, "list.buildInfo", "接続不能(unreachable)")
-        photograph(app, "buildinfo-list-unreachable")
+        openSettings(app)
+        _ = assertNamesARealBuild(app, "settings.buildInfo", "接続不能(unreachable)からの設定")
+        photograph(app, "buildinfo-settings-from-unreachable")
     }
 
-    /// 成功している3相にも出ている事。直す前から帯は在ったが、版は載っていなかった。
+    /// 成功している3相からも設定経由で版に着ける事。
     func testTheVersionIsOnEverySuccessfulListFace() {
         for (fixture, face) in [("list-normal", "通常"), ("list-empty", "空"), ("list-panefault", "ペイン異常")] {
             let app = launch(fixture: fixture)
-            XCTAssertTrue(element(app, "list.scanLine").waitForExistence(timeout: 10),
-                          "錨: \(face) の帯が出ている")
-            _ = assertNamesARealBuild(app, "list.buildInfo", face)
+            XCTAssertTrue(element(app, "list.root").waitForExistence(timeout: 10),
+                          "錨: \(face) の一覧に着いている")
+            openSettings(app)
+            _ = assertNamesARealBuild(app, "settings.buildInfo", face)
             app.terminate()
         }
+    }
+
+    /// 一覧右上の入口から設定画面へ。版の常設の家(2026-08-16、§9-4)。
+    private func openSettings(_ app: XCUIApplication) {
+        let entrance = element(app, "account.open")
+        XCTAssertTrue(entrance.waitForExistence(timeout: 10), "錨: 設定への入口(右上)が在る")
+        entrance.tap()
+        XCTAssertTrue(element(app, "settings.root").waitForExistence(timeout: 10), "錨: 設定画面に着いた")
     }
 
     /// 鍵入力画面 —— 直す前はここが**唯一**の出所だったのに、識別子が無いので
@@ -147,7 +158,8 @@ final class BuildIdentityUITests: XCTestCase {
     /// 「どっちが本当か」を人が判定する羽目になる。
     func testBothScreensNameTheSameBuild() {
         let listApp = launch(fixture: "list-normal")
-        let onList = assertNamesARealBuild(listApp, "list.buildInfo", "一覧")
+        openSettings(listApp)
+        let onList = assertNamesARealBuild(listApp, "settings.buildInfo", "設定(一覧側の家)")
         listApp.terminate()
 
         // 2026-08-16。鍵の無い側の代表を「名乗る面」へ移した —— 人が実際に landing する
@@ -155,6 +167,6 @@ final class BuildIdentityUITests: XCTestCase {
         let keyApp = launch(fixture: "keyentry-rejected")
         let onKeyEntry = assertNamesARealBuild(keyApp, "disconnected.buildInfo", "名乗る面")
 
-        XCTAssertEqual(onList, onKeyEntry, "一覧と名乗る面が違う版を名乗っている")
+        XCTAssertEqual(onList, onKeyEntry, "設定と名乗る面が違う版を名乗っている")
     }
 }

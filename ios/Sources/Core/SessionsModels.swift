@@ -93,6 +93,9 @@ struct SessionRow: Decodable, Equatable {
     /// lacks the key, i.e. on the overwhelming majority of real responses.
     let fromRegistryOnly: Bool?
     let display: RowDisplay
+    /// §9-2(2026-08-16): 今どちらの機体の仕事か。Optional なのは古いサーバ
+    /// (machine を知らない版)との互換 — 無ければ「机の仕事」として描く。
+    let machine: Machine?
 
     struct RowDisplay: Decodable, Equatable {
         let route: RouteLabel
@@ -100,6 +103,17 @@ struct SessionRow: Decodable, Equatable {
         /// §3-a: "自分で組み立てない".
         let subtitle: String
     }
+
+    /// `sessionRow`(`wire.mjs`)の machine。kind は enum にしない(知らない語で
+    /// 行ごと落とさない — `RouteLabel.Kind` の unknown 吸収と同じ判断を素の文字列で)。
+    struct Machine: Decodable, Equatable {
+        let kind: String                 // "desk" | "checkout"(将来増え得る)
+        let checkoutId: String?
+        let returnRequestedAt: String?
+    }
+
+    /// 持ち出し(remote-mini)の仕事か。
+    var isCheckout: Bool { machine?.kind == "checkout" }
 
     /// Brief §3-a: row title falls back to the id's first 8 characters when `title`
     /// is empty. The wire shape lists `title` as always-present (`string`, not
