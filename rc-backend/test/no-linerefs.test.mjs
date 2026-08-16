@@ -89,6 +89,8 @@ const NOT_SCANNED = {
   ios: [
     ["build", "xcodebuild の出力"],
     ["RemoteMini.xcodeproj", "生成物(実測 2026-08-05: 追跡 0 件)"],
+    ["Assets.xcassets", "アイコン等の画像資産(2026-08-16 新設)。png と Contents.json だけで、" +
+      "走査対象の拡張子は 0 件。source を置く場所ではない"],
   ],
 };
 
