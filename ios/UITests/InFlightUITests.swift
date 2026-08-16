@@ -52,9 +52,9 @@ final class InFlightUITests: XCTestCase {
     /// 言えず、画面に出ているのが本当にその文かを測れない。秒数だけは鎖の値なので
     /// `BackendSession.writeTimeout` に合わせて 30 —— これが変わったらこの検査は
     /// 落ちるべきで、落ちた時に直すのは文ではなく「電話が言う上限」の方。
-    private let interruptSentence = "止めるよう伝えています…(机の返事を最大30秒待ちます)"
-    private let choiceSentence = "選んだ答えを送っています…(机の返事を最大30秒待ちます)"
-    private let sendSentence = "送っています…(机の返事を最大30秒待ちます)"
+    private let interruptSentence = "Asking it to stop… (waiting up to 30s for the desk)"
+    private let choiceSentence = "Sending your choice… (waiting up to 30s for the desk)"
+    private let sendSentence = "Sending… (waiting up to 30s for the desk)"
 
     // MARK: - 割り込みが飛んでいる間
 
@@ -65,7 +65,7 @@ final class InFlightUITests: XCTestCase {
         // 画面上まったく同じなので、ライブの行が届いた事を先に取らないと、以下は
         // 「割り込める状態だったか」すら測っていない事になる。
         XCTAssertTrue(
-            app.staticTexts["ライブ(作業中)の行が届いた"].waitForExistence(timeout: 10),
+            app.staticTexts["live row (working) arrived"].waitForExistence(timeout: 10),
             "錨: readable な poll が適用されていない = 以下は何も測っていない"
         )
 
@@ -157,7 +157,7 @@ final class InFlightUITests: XCTestCase {
         let app = launch(fixture: "conversation-busy")
 
         XCTAssertTrue(
-            app.staticTexts["ライブ(作業中)の行が届いた"].waitForExistence(timeout: 10),
+            app.staticTexts["live row (working) arrived"].waitForExistence(timeout: 10),
             "錨: readable な poll が適用されていない"
         )
 

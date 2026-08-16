@@ -437,7 +437,7 @@ test("★実行: 良性メニューで、実在する選択肢の数だけボタ
   render(clone(MENU));
   const bs = buttonsIn(box);
   assert.deepEqual(bs.map((b) => b.textContent), [
-    "1. Opus 5", "2. Sonnet 5", "3. Haiku 4.5", "Enter(2. Sonnet 5 で決定)", "Escape(中止)",
+    "1. Opus 5", "2. Sonnet 5", "3. Haiku 4.5", "Enter(Confirm 2. Sonnet 5)", "Escape(Cancel)",
   ]);
   assert.ok(box.children.some((n) => n.className === "choice-head"),
     "何を選ぶ画面なのかの見出しが出ていない");
@@ -451,7 +451,7 @@ test("★実行: keys が空なら**ボタンは1つも作られない**(理由�
   render(s);
   assert.equal(buttonsIn(box).length, 0);
   const why = box.children.find((n) => /notice/.test(n.className));
-  assert.ok(why && /許可・信頼の確認/.test(why.textContent), "断る理由が画面に出ていない");
+  assert.ok(why && /permission\/trust confirmation/.test(why.textContent), "断る理由が画面に出ていない");
 });
 
 test("★実行: 押すと、その描画の指紋がそのまま送られる", () => {
@@ -581,10 +581,10 @@ test("★実行: 送信待ちが在れば、数の文と取り消しのボタン
   const { render, box } = mountQueue(() => {});
   render({ route: "worker", queued: 2, items: [] });
   const texts = box.children.filter((n) => n.tag === "div").map((n) => n.textContent);
-  assert.deepEqual(texts, ["送信待ち 2 件(まだ Claude に渡していません)", "0秒前の値"]);
+  assert.deepEqual(texts, ["2 queued (not yet handed to Claude)", "As of 0s ago"]);
   const b = queueBtn(box);
   assert.ok(b, "取り消しのボタンが出ていない");
-  assert.equal(b.textContent, "2 件を取り消す");
+  assert.equal(b.textContent, "Cancel 2 queued");
   assert.equal(b.type, "button", "form に包まれた時に入力欄の Enter で発火する");
   assert.equal(box.children.filter((n) => n.tag === "button").length, 1);
 });
@@ -632,7 +632,7 @@ test("★実行: 押した数を電話が自分で減らさない(サーバが�
   render({ route: "worker", queued: 2 });
   queueBtn(box).tap();
   assert.equal(box.children.filter((n) => n.tag === "div")[0].textContent,
-    "送信待ち 2 件(まだ Claude に渡していません)", "押しただけで表示上の数が動いている");
+    "2 queued (not yet handed to Claude)", "押しただけで表示上の数が動いている");
 });
 
 test("★陰性対照: 偽 DOM が送信待ちの面でも差を見分けるか(常に緑ではない事)", () => {
@@ -675,7 +675,7 @@ test("★実行: 数の隣に「いつ測った値か」が出る(取れた直�
   const age = q.ageNode();
   assert.ok(age, "古さの節点が出ていない");
   assert.ok(q.box.children.includes(age), "古さの節点が面に入っていない");
-  assert.equal(age.textContent, "0秒前の値");
+  assert.equal(age.textContent, "As of 0s ago");
   assert.equal(age.className, "queue-age muted", "取れた直後なのに古い印が付いている");
 });
 
@@ -686,10 +686,10 @@ test("★★実行: 網を叩かず、時計が進んだだけで古い印が付
   q.render({ route: "worker", queued: 2 });
   q.advance(90_000);
   q.tick();
-  assert.match(q.ageNode().textContent, /1分前の値/, "時計が進んでも文面が古いままになっていない");
+  assert.match(q.ageNode().textContent, /As of 1m ago/, "時計が進んでも文面が古いままになっていない");
   assert.equal(q.ageNode().className, "queue-age muted stale", "古い印(色)が付いていない");
   // ★数そのものは動かさない。古いのは**いつ測ったか**であって、値の書き換えではない。
-  assert.equal(q.box.children[0].textContent, "送信待ち 2 件(まだ Claude に渡していません)",
+  assert.equal(q.box.children[0].textContent, "2 queued (not yet handed to Claude)",
     "電話が自分で数を書き換えている");
 });
 

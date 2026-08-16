@@ -70,7 +70,7 @@ struct AccountBar: View {
         case .loaded(let state):
             HStack(spacing: 4) {
                 if viewModel.isBusy { ProgressView().controlSize(.small) }
-                Text(state.current ?? "（未設定）")
+                Text(state.current ?? "(not set)")
                     .font(.caption.monospaced())
                     .lineLimit(1)
                     .truncationMode(.middle)

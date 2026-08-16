@@ -79,8 +79,8 @@ final class SessionsModelsTests: XCTestCase {
         XCTAssertNil(fault.display)
         XCTAssertEqual(fault.reason, "panes-unreadable")
         // 錨: 落とし所は空文字ではなく文である。
-        XCTAssertTrue(fault.bannerDisplay.headline.contains("一覧"), "実測: \(fault.bannerDisplay.headline)")
-        XCTAssertTrue(fault.bannerDisplay.body.contains("机で確認"), "実測: \(fault.bannerDisplay.body)")
+        XCTAssertTrue(fault.bannerDisplay.headline.contains("pane list"), "実測: \(fault.bannerDisplay.headline)")
+        XCTAssertTrue(fault.bannerDisplay.body.contains("Check the desk"), "実測: \(fault.bannerDisplay.body)")
         // 生の値は画面へ出さない。理由コードだけは診断として本文の末尾に残す。
         XCTAssertFalse(fault.bannerDisplay.headline.contains("panes-unreadable"))
         XCTAssertFalse(fault.bannerDisplay.body.contains(fault.detail))

@@ -38,7 +38,7 @@ final class RemoteMiniUITests: XCTestCase {
         XCTAssertFalse(element(app, "list.unreachable").exists)
         // One row per `RouteLabel.Kind` in the fixture (`SessionsListingFixture.sampleRows`)
         // -- the choice row's title is distinctive enough to assert directly.
-        XCTAssertTrue(app.staticTexts["承認待ちの一件"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Waiting for approval"].waitForExistence(timeout: 5))
     }
 
     // MARK: - list-panefault: the fault banner, with its real reason/detail text
@@ -57,8 +57,8 @@ final class RemoteMiniUITests: XCTestCase {
         //   今は `rc-backend/test/fixture-labels-producible.test.mjs` が、此の関数の中の
         //   `staticTexts["..."]` を `paneFaultView` の出しうる集合と突き合わせる
         //   (本数もちょうど2本と主張する ので、黙って1本にして緑にする事も出来ない)。
-        XCTAssertTrue(app.staticTexts["tmux の画面一覧を読めていません"].exists)
-        XCTAssertTrue(app.staticTexts["tmux からの返事は来ていますが、中身が壊れていて読めません。復旧するまで、どの会話にも送れません。この故障は電話からは直せないので、机で確認してください。"].exists)
+        XCTAssertTrue(app.staticTexts["Can't read the tmux pane list"].exists)
+        XCTAssertTrue(app.staticTexts["tmux is replying, but the output is corrupted and unreadable. Nothing can be sent until this recovers. Check the desk."].exists)
         XCTAssertFalse(element(app, "list.empty").exists)
     }
 
@@ -69,7 +69,7 @@ final class RemoteMiniUITests: XCTestCase {
 
         let empty = element(app, "list.empty")
         XCTAssertTrue(empty.waitForExistence(timeout: 10))
-        XCTAssertEqual(empty.label, "会話がありません")
+        XCTAssertEqual(empty.label, "No sessions")
         XCTAssertFalse(element(app, "list.paneFault").exists)
         XCTAssertFalse(element(app, "list.unreachable").exists)
     }
@@ -165,11 +165,11 @@ final class RemoteMiniUITests: XCTestCase {
             "錨: scan 行に取得の番号が載っていない(実測: \(beforeLabel))= 以下の主張は何も測っていない"
         )
 
-        app.staticTexts["承認待ちの一件"].tap()
+        app.staticTexts["Waiting for approval"].tap()
         // 会話画面へ push できた事の錨。戻るボタンの label は一覧側の
         // `navigationTitle`(= 「セッション」)。`ConversationView` は toolbar を
         // 一つも持たないので、この bar に他のボタンは居ない。
-        let back = app.navigationBars.buttons["セッション"]
+        let back = app.navigationBars.buttons["Sessions"]
         XCTAssertTrue(back.waitForExistence(timeout: 10), "錨: 会話画面へ push できていない")
         back.tap()
 

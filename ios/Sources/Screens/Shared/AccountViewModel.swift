@@ -121,7 +121,7 @@ final class AccountViewModel: ObservableObject {
     func select(_ name: String) async {
         guard case .loaded(let state) = phase, !isBusy else { return }
         if let row = state.accounts.first(where: { $0.name == name }), !row.selectable {
-            lastFailure = row.blocked ?? "そのアカウントは選べません。"
+            lastFailure = row.blocked ?? "That account cannot be selected."
             return
         }
         generation += 1
@@ -135,7 +135,7 @@ final class AccountViewModel: ObservableObject {
             phase = .loaded(state)
         case .failure(.unauthorized):
             lastFailure = nil
-            phase = .failed(reason: "鍵が拒まれました")
+            phase = .failed(reason: "The key was rejected")
             onUnauthorized()
         case .failure(.cancelled):
             // Not an error worth showing: re-read and let the truth win.
@@ -175,7 +175,7 @@ final class AccountViewModel: ObservableObject {
         case .success(let state):
             phase = .loaded(state)
         case .failure(.unauthorized):
-            phase = .failed(reason: "鍵が拒まれました")
+            phase = .failed(reason: "The key was rejected")
             onUnauthorized()
         case .failure(.cancelled):
             await load()
@@ -194,7 +194,7 @@ final class AccountViewModel: ObservableObject {
         case .success(let state):
             phase = .loaded(state)
         case .failure(.unauthorized):
-            phase = .failed(reason: "鍵が拒まれました")
+            phase = .failed(reason: "The key was rejected")
             onUnauthorized()
         case .failure(let error):
             phase = .failed(reason: Self.message(for: error))
@@ -208,13 +208,13 @@ final class AccountViewModel: ObservableObject {
     ///   断り方は机の門の都合で増えるので、電話が言い換えを持つと必ず片方が古びる。
     static func message(for error: AccountError) -> String {
         switch error {
-        case .unreachable: return "机に届きません"
-        case .cancelled: return "取り消されました"
-        case .unauthorized: return "鍵が拒まれました"
-        case .backend(let detail): return "机の側で失敗しました: \(detail)"
+        case .unreachable: return "Can't reach the desk"
+        case .cancelled: return "Cancelled"
+        case .unauthorized: return "The key was rejected"
+        case .backend(let detail): return "Failed on the desk side: \(detail)"
         case .refused(let reason): return reason
-        case .unexpectedStatus(let code): return "想定外の応答 (\(code))"
-        case .malformedBody: return "応答の形が読めません"
+        case .unexpectedStatus(let code): return "Unexpected response (\(code))"
+        case .malformedBody: return "The response shape is unreadable"
         }
     }
 }

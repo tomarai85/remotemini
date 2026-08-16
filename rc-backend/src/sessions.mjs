@@ -133,7 +133,7 @@ export function unreadableRow({ id, project, updatedAt, errorCode }) {
     id,
     project,
     cwd: null,
-    title: "(読めない)",
+    title: "(unreadable)",
     lastPrompt: "",
     turns: null,
     updatedAt,

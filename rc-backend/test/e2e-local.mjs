@@ -1175,7 +1175,7 @@ try {
       method: "POST", headers: { ...H, "content-type": "application/json" }, body: JSON.stringify(body),
     });
   const stChoice = await (await fetch(`${B}/api/sessions/${SID_CHOICE}/status`, { headers: H })).json();
-  check("★選択待ちの画面には、電話が答えるのに要る材料が全部載る",
+  check("Needs inputの画面には、電話が答えるのに要る材料が全部載る",
     stChoice.choice?.kind === "benign" && stChoice.choice.matcher === "select-model@2" &&
     stChoice.choice.options?.length === 5 && stChoice.choice.keys?.includes("digit") &&
     typeof stChoice.choice?.digest === "string" && stChoice.choice?.digest.length === 16,
@@ -1240,7 +1240,7 @@ try {
   check("★着地した画面も返る(applied だけでは**どこへ**動いたかが落ちる)",
     jOk.after?.screen === "CHOICE" && jOk.after.choice === "benign", JSON.stringify(jOk.after));
   check("unverified には撃ち直しを止める但し書きが付く",
-    typeof jOk.note === "string" && jOk.note.includes("撃ち直さないでください"), JSON.stringify(jOk.note));
+    typeof jOk.note === "string" && jOk.note.includes("Do not re-send"), JSON.stringify(jOk.note));
 
   // ★同じ指紋への2発目。電話が `unverified` を「失敗」と読んで撃ち直す形を、
   //   HTTP 層でも断る事の検査(単体は choice.test.mjs、此処は口が緩んでいない事)。
@@ -1459,7 +1459,7 @@ try {
 
   // ---- 12. 未発言の会話(jsonl がまだ無い) -----------------------------------
   // 出典: DESIGN §2.10。transcript は最初のメッセージまで作られないので、
-  // 「開いて席を立った会話」は jsonl 走査の一覧に出ない = 電話から最初の一言を送れない。
+  // 「開いて席を立った会話」は jsonl 走査の一覧に出ない = 電話から最初の一言をCan't send。
   // Tom 裁定「返答待ちであれ作業中であれいつでも見て、干渉できればいい」に反するので通す。
   register(SID_FRESH, "%23", 3000);
   register(SID_GONE, "%90", 3000); // %90 は list-panes に存在しない
@@ -1469,12 +1469,12 @@ try {
   check("★未発言の会話が一覧に出る", !!fresh, JSON.stringify(list4.sessions.map((s) => s.id)));
   check("★未発言: 中身が無いことを名乗る(捏造しない)",
     // 2026-08-16(spec-audit A2): 「(未発言)」は機械の内部語だったので人の言葉に変えた。
-    fresh?.title === "新しいセッション" && fresh?.turns === 0 && fresh?.lastPrompt === "" && fresh?.fromRegistryOnly === true,
+    fresh?.title === "New session" && fresh?.turns === 0 && fresh?.lastPrompt === "" && fresh?.fromRegistryOnly === true,
     JSON.stringify(fresh));
   check("★未発言: cwd はペインの現在地", fresh?.cwd === CWD_FRESH, JSON.stringify(fresh));
   check("★未発言: 一覧の live は tmux/%23", fresh?.live?.route === "tmux" && fresh?.live?.pane === "%23",
     JSON.stringify(fresh?.live));
-  // ★陽性対照: ペインが消えた登録は一覧に出さない(叩いても送れない行を並べない)
+  // ★陽性対照: ペインが消えた登録は一覧に出さない(叩いてもCan't send行を並べない)
   check("★陽性対照: ペインが消えた登録は一覧に出ない", !list4.sessions.some((s) => s.id === SID_GONE),
     JSON.stringify(list4.sessions.map((s) => s.id)));
 
@@ -1560,9 +1560,9 @@ try {
     //   「登録されたペインの現在地(不明)が、この会話のフォルダと一致しません。」
     //   画面が消えた事と現在地がずれた事は別の事実で、後者は「開き直せば直る」と読める。
     check("★pane-gone の説明が cwd 不一致の文にすり替わっていない(既定に落ちる嘘の対照)",
-      typeof b.message === "string" && !/現在地.*一致しません/.test(b.message), JSON.stringify(b.message));
+      typeof b.message === "string" && !/doesn't match this session's/.test(b.message), JSON.stringify(b.message));
     check("★pane-gone の説明が画面消失の事を言っている",
-      /見つかりません|閉じられた/.test(String(b.message)), JSON.stringify(b.message));
+      /can't be found|closed/.test(String(b.message)), JSON.stringify(b.message));
 
     writeFileSync(join(SB, "tmux-panes.txt"), PANES); // 後続に影響させない
     ctl.abort();
@@ -2245,7 +2245,7 @@ try {
     //   いて、それは赤くなった —— 409 では `clearQueueResult` も `interruptResult` も
     //   `{kind:"refused", text: b.error}` に潰れるので、**口を取り違えても同じ値**になる。
     //   赤は実装ではなく fixture の欠陥の報せで、直すのは対照ではなく撃つ場所の方。
-    //   200 なら「取り消す送信は残っていませんでした。」対「止める対象がありませんでした。」で
+    //   200 なら「取り消す送信は残っていませんでした。」対「Nothing was running to stop.」で
     //   割れる。既に空にしてある行列をもう一度捨てるだけなので、他の検査の状態も動かさない。
     const rQD = await fetch(`${B}/api/sessions/${SID_SLOW}/queue`, { method: "DELETE", headers: H });
     const jQD = await rQD.json();
@@ -2344,8 +2344,8 @@ try {
       sleep(6000).then(() => { dup.kill("SIGKILL"); return "timeout"; }),
     ]);
     check("★二重起動は落ちる(半端に上がらない)", code === 1, `exit=${code} ${dupLog.slice(0, 300)}`);
-    check("★その理由が日本語の一行で出る(ポートが埋まっている事+確かめ先)",
-      /起動できません/.test(dupLog) && /二重/.test(dupLog), JSON.stringify(dupLog.slice(0, 300)));
+    check("★その理由が一行で出る(ポートが埋まっている事+確かめ先)",
+      /Cannot start/.test(dupLog) && /duplicate rc-backend/.test(dupLog), JSON.stringify(dupLog.slice(0, 300)));
     check("★陽性対照: 二重起動は listening を名乗らない", !dupLog.includes("listening"), dupLog.slice(0, 200));
     // 先に上がっている方は生きたまま = 後から来た方に道を譲らせない。
     check("★先に上がっている方は無傷", (await fetch(`${B}/api/sessions`, { headers: H })).ok);

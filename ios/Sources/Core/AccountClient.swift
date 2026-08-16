@@ -161,13 +161,13 @@ struct AccountClient: AccountReading, AccountAdvancing, AccountSelecting {
             return .success(state)
         case 400:
             // 断りは机が日本語で書いて寄越す(`src/account.mjs` の `selectionMessage`)。
-            return .failure(.refused(Self.decodeError(data) ?? "その口座は選べません"))
+            return .failure(.refused(Self.decodeError(data) ?? "That account cannot be selected"))
         case 401:
             return .failure(.unauthorized)
         case 500:
             // The server always attaches `error` on this route's failure path. If it is
             // missing, say so rather than inventing a reason.
-            return .failure(.backend(Self.decodeError(data) ?? "サーバが理由を返しませんでした"))
+            return .failure(.backend(Self.decodeError(data) ?? "The server gave no reason"))
         default:
             return .failure(.unexpectedStatus(http.statusCode))
         }

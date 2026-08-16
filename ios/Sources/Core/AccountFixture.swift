@@ -66,16 +66,16 @@ final class AccountFixture: AccountReading, AccountAdvancing, AccountSelecting {
         switch state {
         case .rotating:
             guard let hit = Self.names.firstIndex(of: name) else {
-                return .failure(.refused("そのアカウントは一覧にありません。"))
+                return .failure(.refused("That account is not in the list."))
             }
             index = hit
             return .success(listing())
         case .refuses:
             // ★断りは副作用の**前**に返る = `index` を動かさない。此処を動かすと、
             //   「断られたのに画面だけ切り替わる」実装が検査で緑になる。
-            return .failure(.refused("そのアカウントのトークンが edith にありません。"))
+            return .failure(.refused("That account's token is missing on edith."))
         case .listingUnreadable:
-            return .failure(.refused("アカウント一覧が読めていないので切替は出来ません。"))
+            return .failure(.refused("The account list is unreadable, so switching is unavailable."))
         case .backendFails:
             return .failure(.backend("fleet-account <name> failed: fixture"))
         case .unreachable:
@@ -124,7 +124,7 @@ final class AccountFixture: AccountReading, AccountAdvancing, AccountSelecting {
                     hasToken: hasToken,
                     active: offset == index,
                     selectable: hasToken,
-                    blocked: hasToken ? nil : "そのアカウントのトークンが edith にありません。"
+                    blocked: hasToken ? nil : "That account's token is missing on edith."
                 )
             },
             ok: true,
@@ -140,7 +140,7 @@ final class AccountFixture: AccountReading, AccountAdvancing, AccountSelecting {
             current: Self.names[index],
             accounts: [],
             ok: false,
-            statusMessage: "アカウント一覧の行が読めませんでした(fleet-account の出力形式が変わった可能性があります)。半端な一覧は出さずに伏せています。",
+            statusMessage: "Account list rows were unreadable (fleet-account's output format may have changed). A partial list is withheld rather than shown.",
             anomalyMessages: [],
             // ★生の出力も `index` に追随させる。固定文字列にすると、矢印を押した後に
             //   「現用 = biz」と「生の出力 = 現用: team」が同じ画面で食い違う ——

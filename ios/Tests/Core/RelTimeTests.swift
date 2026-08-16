@@ -14,16 +14,16 @@ final class RelTimeTests: XCTestCase {
             let iso = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: (now - seconds * 1000) / 1000))
             return RelTime.relTime(iso, nowMs: now)
         }
-        XCTAssertEqual(at(5), "たった今")
-        XCTAssertEqual(at(90), "1分前")
-        XCTAssertEqual(at(3 * 3600), "3時間前")
-        XCTAssertEqual(at(2 * 86400), "2日前")
+        XCTAssertEqual(at(5), "now")
+        XCTAssertEqual(at(90), "1m ago")
+        XCTAssertEqual(at(3 * 3600), "3h ago")
+        XCTAssertEqual(at(2 * 86400), "2d ago")
 
         let monthDay = at(30 * 86400)
         XCTAssertTrue(monthDay.range(of: #"^\d+/\d+$"#, options: .regularExpression) != nil, "1週間より前は日付: got \(monthDay)")
 
         XCTAssertEqual(RelTime.relTime("こわれた", nowMs: now), "")
-        XCTAssertEqual(at(-30), "たった今", "時計のずれで未来になっても壊さない")
+        XCTAssertEqual(at(-30), "now", "時計のずれで未来になっても壊さない")
     }
 
     // MARK: - Negative control (repo convention: a green suite alone proves no regression, not no defect)

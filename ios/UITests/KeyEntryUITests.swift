@@ -22,7 +22,7 @@ final class KeyEntryUITests: XCTestCase {
     /// 文言は `KeyEntryView.sentence(for:)` から**手で書き写す**。生成側を呼んで
     /// 比べると「同じ関数が同じ物を返す」しか言えず、画面に出ているのがその文かを
     /// 測れない(`InFlightUITests` と同じ約束)。
-    private let noticeSentence = "通っていた鍵がサーバに拒まれました。URL は前のまま入れてあるので、鍵だけ入れ直してください。"
+    private let noticeSentence = "The key that used to work was rejected by the server. The URL is kept from before — re-enter just the key."
 
     /// `SignOutNoticeFixture.baseURL` と同じ物を、これも手で書き写す。
     private let seededURL = "https://ui-fixture.invalid"
@@ -108,8 +108,8 @@ final class KeyEntryUITests: XCTestCase {
     /// 文言は `KeyEntryViewModel` から**手で書き写す**。生成側を呼んで比べると
     /// 「同じ関数が同じ物を返す」しか言えない。秒は `BackendSession.interactiveTimeout`
     /// (= 8)の現物 —— 定数が動いたらこの検査が落ちるのが正しい。
-    private let urlStageSentence = "サーバに届くか確かめています…(返事を最大8秒待ちます)"
-    private let keyStageSentence = "鍵が通るか確かめています…(返事を最大8秒待ちます)"
+    private let urlStageSentence = "Checking the server is reachable… (waiting up to 8s)"
+    private let keyStageSentence = "Checking the key works… (waiting up to 8s)"
 
     /// 1段目で止まる面 = 既存の `keyentry-rejected`(口が `.fixture(stallingAt: .url)`)。
     /// 2段目で止まる面 = `keyentry-slow-key`(`ios/Sources/Core/KeyEntryProbeFixture.swift`)。

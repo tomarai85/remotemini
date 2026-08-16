@@ -195,8 +195,8 @@ echo "== 片側だけが語彙を持つ(復号は通り、例外は出ない) ==
 #    fixture は「人が目で全状態を確かめる為の物」で、其処だけがサーバの語彙の外に居た形。
 #    直した後も、同じ手が再び効かない事は此処でしか言えない。
 probe "電話の fixture がサーバの出せない画面名へ戻る(実際に釣れた1件)" "$LISTFIX" \
-    'text: "机で開いている・動いている", screen: "SENDABLE"),' \
-    'text: "机で開いている・動いている", screen: "MAIN"),' \
+    'text: "Open on desktop · Active", screen: "SENDABLE"),' \
+    'text: "Open on desktop · Active", screen: "MAIN"),' \
     "電話にしか無い語"
 
 # ② fixture ではなく**実コード**が語を発明する形。①と分けるのは、走査が
@@ -298,14 +298,14 @@ echo "== 送れない理由の8語が、片側でだけ動く(S8-28) =="
 probe "電話の写しから理由が1語落ちる" "$POLLTESTS" \
     '"cwd-mismatch", "pane-gone", "panes-unreadable", "tmux-unavailable",' \
     '"cwd-mismatch", "pane-gone", "panes-unreadable",' \
-    "送れない理由"
+    "Can't send理由"
 
 # ⑭ 写しが太る。サーバが一度も出さない語で復号を確かめる形 = 測っているつもりの空振り。
 #    ⑬と向きが逆なだけに見えるが、痩せは「漏れ」、太りは「幻の安心」で症状が違う。
 probe "電話の写しにサーバが出さない理由が生える" "$POLLTESTS" \
     '"cwd-mismatch", "pane-gone", "panes-unreadable", "tmux-unavailable",' \
     '"cwd-mismatch", "pane-gone", "panes-unreadable", "tmux-unavailable", "pane-dead",' \
-    "送れない理由"
+    "Can't send理由"
 
 # ⑮ 錨にした関数名が変わる/消える。採れる語が0になり、**空を一致と読む**道が開く。
 #    検査側の床(`length >= 6`)が此処を塞いでいるかを見る —— 塞いでいなければ
@@ -313,7 +313,7 @@ probe "電話の写しにサーバが出さない理由が生える" "$POLLTESTS
 probe "電話側の錨にした関数が改名される" "$POLLTESTS" \
     'func testEveryBlockedReasonTheServerCanSendDecodes() throws {' \
     'func testEveryBlockedReasonTheServerCanSendDecodesRenamed() throws {' \
-    "送れない理由"
+    "Can't send理由"
 
 # ⑯ サーバ側が語を減らす。電話の写しが古い側に取り残される形で、
 #    ⑬⑭と違って**製品の正本が動いた**時に鳴るか。
@@ -321,7 +321,7 @@ probe "サーバの WIRE_REASONS から語が1つ消える" "$BLOCKED" \
     '  "cwd-mismatch",
   "pane-gone",' \
     '  "cwd-mismatch",' \
-    "送れない理由"
+    "Can't send理由"
 
 echo
 echo "== 正しい変更は赤にしない(陰性対照) =="

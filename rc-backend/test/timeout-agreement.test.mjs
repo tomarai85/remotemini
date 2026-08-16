@@ -230,7 +230,10 @@ test("★画面検査に焼いた秒数が、いま効いている秒数と同�
   for (const entry of readdirSync(join(REPO, UITESTS))) {
     if (!entry.endsWith(".swift")) continue;
     const src = readFileSync(join(REPO, UITESTS, entry), "utf8");
-    const found = [...src.matchAll(/最大(\d+)秒/g)].map((m) => Number(m[1]));
+    // 2026-08-17 英語化: 焼き文は "waiting up to Ns"。旧綴り(最大N秒)は assertion
+    // message やコメントにだけ残る(画面には出ない)ので、数えると偽の不一致になる —
+    // 英語綴りだけを見る。
+    const found = [...src.matchAll(/waiting up to (\d+)s/g)].map((m) => Number(m[1]));
     if (found.length > 0) seen[entry] = found;
   }
 

@@ -77,7 +77,7 @@ struct ConversationView: View {
 
         case .unreachable:
             failureView(
-                message: "会話を読み込めませんでした",
+                message: "Couldn't load the session",
                 identifier: "conversation.unreachable"
             )
 
@@ -85,7 +85,7 @@ struct ConversationView: View {
             // Brief §3-c: must never render as an empty conversation -- "broken" and
             // "genuinely nothing said yet" are never the same bucket.
             failureView(
-                message: "応答の形が読めません",
+                message: "The response shape is unreadable",
                 identifier: "conversation.malformedBody"
             )
 
@@ -95,14 +95,14 @@ struct ConversationView: View {
             // `failureView` above always renders one, which is exactly why this
             // case has its own view rather than reusing that helper.
             VStack(spacing: 12) {
-                Text("この会話はもう在りません(一覧が古いのかもしれません)")
+                Text("This session no longer exists (the list may be stale)")
                     .font(.headline)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
                 Button {
                     dismiss()
                 } label: {
-                    Text("一覧に戻る").tapTarget()
+                    Text("Back to sessions").tapTarget()
                 }
                 .accessibilityIdentifier("conversation.notFound.backToList")
             }
@@ -140,7 +140,7 @@ struct ConversationView: View {
                 statusBanners
                 if viewModel.entries.isEmpty {
                     ScrollView {
-                        Text("まだやり取りはありません")
+                        Text("No messages yet")
                             .font(.headline)
                             .foregroundStyle(.secondary)
                             .padding(.top, 80)
@@ -359,10 +359,10 @@ struct ConversationView: View {
                     .tapTarget()
                 }
                 .disabled(!viewModel.canInterrupt)
-                .accessibilityLabel("割り込む")
+                .accessibilityLabel("Interrupt")
                 .accessibilityIdentifier("conversation.interruptButton")
 
-                TextField("メッセージ", text: $viewModel.draft, axis: .vertical)
+                TextField("Message", text: $viewModel.draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...5)
                     .disabled(!viewModel.composerEnabled)
@@ -485,7 +485,7 @@ struct ConversationView: View {
             Button {
                 Task { await viewModel.load() }
             } label: {
-                Text("再試行").tapTarget()
+                Text("Retry").tapTarget()
             }
             .accessibilityIdentifier("conversation.retry")
         }
@@ -519,7 +519,7 @@ struct ConversationView: View {
                     // Brief §3-b-3: a persistent line, not a toast -- a disappearing
                     // message would lose the "older messages exist" STATE, not just
                     // an event.
-                    Text("これより古い発言は在りますが、今回は読み込めませんでした")
+                    Text("Older messages exist, but couldn't be loaded this time")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("conversation.loadEarlierMessage")
@@ -531,9 +531,9 @@ struct ConversationView: View {
                         if viewModel.loadEarlierState == .loading {
                             ProgressView()
                         } else if viewModel.loadEarlierState == .stalledRetry {
-                            Text("もう一度試す")
+                            Text("Try again")
                         } else {
-                            Text("以前を読む")
+                            Text("Load earlier")
                         }
                     }
                     .tapTarget()
@@ -545,7 +545,7 @@ struct ConversationView: View {
             .frame(maxWidth: .infinity)
 
         case .atCeiling:
-            Text("これより古い発言は在りますが、電話には最新 500 件までしか出せません")
+            Text("Older messages exist, but the phone shows at most the latest 500")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.vertical, 8)
@@ -758,10 +758,10 @@ struct ConversationView: View {
 
         case .degraded:
             HStack(spacing: 4) {
-                Text("更新が遅れています")
+                Text("Updates are lagging")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("最終確認 \(lastReadableTimeText)")
+                Text("Last confirmed \(lastReadableTimeText)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("conversation.lastReadableAt")
@@ -777,10 +777,10 @@ struct ConversationView: View {
         case .stalled:
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 4) {
-                    Text("応答が確認できません")
+                    Text("No response confirmed")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.red)
-                    Text("最終確認 \(lastReadableTimeText)")
+                    Text("Last confirmed \(lastReadableTimeText)")
                         .font(.caption)
                         .foregroundStyle(.red)
                         .accessibilityIdentifier("conversation.lastReadableAt")
@@ -789,13 +789,13 @@ struct ConversationView: View {
                     Button {
                         viewModel.retryPollingNow()
                     } label: {
-                        Text("再試行").tapTarget()
+                        Text("Retry").tapTarget()
                     }
                     .accessibilityIdentifier("conversation.stalled.retry")
                     Button {
                         viewModel.rereadNow()
                     } label: {
-                        Text("読み直す").tapTarget()
+                        Text("Re-read").tapTarget()
                     }
                     .accessibilityIdentifier("conversation.stalled.reread")
                 }

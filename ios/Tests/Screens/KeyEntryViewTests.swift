@@ -50,8 +50,8 @@ final class KeyEntryViewTests: XCTestCase {
     func testWithAURLTheSentenceExplainsWhyTheFieldIsAlreadyFilled() throws {
         let sentence = try XCTUnwrap(text(SignOutNotice(reason: .keyRejected, baseURL: Self.url)))
 
-        XCTAssertTrue(sentence.contains("前のまま"), "★欄が埋まっている理由を言わない実装を落とす")
-        XCTAssertTrue(sentence.contains("鍵"), "次の一手(鍵を入れ直す)まで言う")
+        XCTAssertTrue(sentence.contains("kept from before"), "★欄が埋まっている理由を言わない実装を落とす")
+        XCTAssertTrue(sentence.contains("key"), "次の一手(鍵を入れ直す)まで言う")
     }
 
     /// ★③ URL が無い時に「前のまま入れてある」と言わない。
@@ -61,8 +61,8 @@ final class KeyEntryViewTests: XCTestCase {
     func testWithoutAURLTheSentenceDoesNotClaimTheFieldWasFilled() throws {
         let sentence = try XCTUnwrap(text(SignOutNotice(reason: .keyRejected, baseURL: nil)))
 
-        XCTAssertFalse(sentence.contains("前のまま"), "★入れていない物を入れたと言う実装を落とす")
-        XCTAssertTrue(sentence.contains("鍵"), "理由だけ告げて終わらない")
+        XCTAssertFalse(sentence.contains("kept from before"), "★入れていない物を入れたと言う実装を落とす")
+        XCTAssertTrue(sentence.contains("key"), "理由だけ告げて終わらない")
     }
 
     /// ④ 鍵入力画面が自分で出す 401 の文とは別物。

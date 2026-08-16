@@ -349,7 +349,7 @@ export function registryOnlySessions({
       // Tom が 2026-08-16 に「論外」と裁定した画面の顔そのものだった(spec-audit A2)。
       // 人が読む一覧に出すのは人の言葉。明示名(titles.mjs)が在れば server 側の
       // 一括 override が此の値を上書きする。
-      title: "新しいセッション",
+      title: "New session",
       lastPrompt: "",
       turns: 0,
       // jsonl が存在しない = 読み残したのではなく、本当に何も無い。false が正しい。

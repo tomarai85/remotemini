@@ -20,11 +20,11 @@ enum RelTime {
         // A negative diff (clock skew making the timestamp look like it's in the
         // future) folds into "たった今" rather than printing a negative duration --
         // same bucket as "just happened," not a distinct error state.
-        if d < 0 { return "たった今" }
-        if d < 60 { return "たった今" }
-        if d < 3600 { return "\(Int(floor(d / 60)))分前" }
-        if d < 86400 { return "\(Int(floor(d / 3600)))時間前" }
-        if d < 86400 * 7 { return "\(Int(floor(d / 86400)))日前" }
+        if d < 0 { return "now" }
+        if d < 60 { return "now" }
+        if d < 3600 { return "\(Int(floor(d / 60)))m ago" }
+        if d < 86400 { return "\(Int(floor(d / 3600)))h ago" }
+        if d < 86400 * 7 { return "\(Int(floor(d / 86400)))d ago" }
         let dt = Date(timeIntervalSince1970: t / 1000)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone.current

@@ -33,8 +33,8 @@ struct DisconnectedView: View {
 
         var title: String {
             switch self {
-            case .retryWithBundledSeed: return "焼き込まれた鍵でもう一度試す"
-            case .reloadStore: return "もう一度読む"
+            case .retryWithBundledSeed: return "Retry with the built-in key"
+            case .reloadStore: return "Read again"
             }
         }
     }
@@ -61,11 +61,11 @@ struct DisconnectedView: View {
                 NavigationLink {
                     KeyEntryView(clients: clients, notice: notice, onSaved: onSaved)
                 } label: {
-                    Text("鍵を手で入れる")
+                    Text("Enter the key manually")
                 }
                 .accessibilityIdentifier("disconnected.manualEntry")
             } footer: {
-                Text("退避路です。机で焼き直せば、打たずに繋がります。")
+                Text("This is a fallback. Rebuilding on the desk connects without typing anything.")
             }
 
             Section {
@@ -92,19 +92,19 @@ struct DisconnectedView: View {
     static func headline(for reason: AppState.DisconnectedReason, notice: SignOutNotice?) -> String {
         switch reason {
         case .seedAbsent:
-            return "この app は接続先を持たずに焼かれています。机で焼き直すと、何も打たずに繋がります。"
+            return "This app was built without a destination. Rebuild it on the desk and it will connect without typing anything."
         case .seedRejected:
-            return "焼き込まれた鍵を机が拒みました。机で鍵を戻したなら、下のボタンでもう一度試せます。鍵を新しくしたなら、机で焼き直してください。"
+            return "The desk rejected the built-in key. If the key was restored on the desk, retry below. If it was rotated, rebuild the app on the desk."
         case .storeUnreadable:
-            return "電話の金庫が読めませんでした。ロックを解除してから、もう一度読んでください。"
+            return "The phone's keychain could not be read. Unlock the phone and try reading again."
         case .keyRejected:
             // 断りの文は `KeyEntryView` が既に持っている。二重に書くと片方だけ腐るので借りる。
             return KeyEntryView.sentence(for: notice)
-                ?? "通っていた鍵がサーバに拒まれました。鍵を入れ直してください。"
+                ?? "The key that used to work was rejected by the server. Enter it again."
         case .unexplained:
             // ★「判らない」を尤もらしい理由に化けさせない。`build.sh` の `build_rev` が
             //   「判らなかった事を『汚れている』と言い換えない」為に持っている枠と同じ趣旨。
-            return "繋がっていない理由を電話が説明できません。机で焼き直すか、鍵を手で入れてください。"
+            return "The phone can't explain why it isn't connected. Rebuild on the desk, or enter the key manually."
         }
     }
 

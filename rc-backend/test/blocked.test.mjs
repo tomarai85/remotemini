@@ -45,22 +45,22 @@ test("★resolveSessionPane の全域を通しても、電話に出る理由は 
 test("★none は画面消失として出る(cwd 不一致の文にすり替わらない)", () => {
   const body = blockedBody({ pane: null, reason: "none", candidates: 0, source: "registry" });
   assert.equal(body.reason, "pane-gone");
-  assert.ok(body.message.includes("見つかりません"), body.message);
+  assert.ok(body.message.includes("found (closed"), body.message);
   // 嘘の対照: 「現在地がずれている」と読めると「開き直せば直る」と誤解する。
-  assert.ok(!body.message.includes("現在地"), body.message);
-  assert.ok(!body.message.includes("一致しません"), body.message);
+  assert.ok(!body.message.includes("folder ("), body.message);
+  assert.ok(!body.message.includes("doesn't match"), body.message);
 });
 
 test("reason が無い時も既定(cwd 不一致)に落ちない", () => {
   const body = blockedBody({ pane: null, candidates: 0, source: "registry" });
   assert.equal(body.reason, "pane-gone");
-  assert.ok(!body.message.includes("現在地"), body.message);
+  assert.ok(!body.message.includes("folder ("), body.message);
 });
 
 test("not-claude は「消えた」でも「ずれた」でもなく中身が変わったと言う", () => {
   const msg = blockedMessage({ ...ctx, reason: "not-claude" });
-  assert.ok(msg.includes("Claude ではありません"), msg);
-  assert.ok(!msg.includes("見つかりません"), msg);
+  assert.ok(msg.includes("no longer Claude"), msg);
+  assert.ok(!msg.includes("found (closed"), msg);
 });
 
 test("UNDECIDABLE は resolveSessionPane の理由の部分集合(綴り違いを弾く)", () => {
@@ -89,8 +89,8 @@ test("★帯の文は paneFaultReason の全域を覆う(覆い漏れ = 電話�
     assert.ok(v.headline.length > 0 && v.body.length > 0, `${reason} の文が空`);
     // ★帯は**一覧全体**の話をする。行ごとの拒否文(blockedMessage)は「この会話には」と
     //   1つの会話を主語にするので、そのまま貼ると帯として嘘になる。
-    assert.ok(!v.body.includes("この会話"), `${reason} の帯が1つの会話を主語にしている: ${v.body}`);
-    assert.ok(v.body.includes("どの会話にも"), `${reason} の帯が全体を主語にしていない: ${v.body}`);
+    assert.ok(!v.body.includes("this session"), `${reason} の帯が1つの会話を主語にしている: ${v.body}`);
+    assert.ok(v.body.includes("Nothing can be sent"), `${reason} の帯が全体を主語にしていない: ${v.body}`);
     // ★下に会話が1件も無い事が在る(走査が0件で帯だけが出る)ので「下の会話は」と数えない。
     assert.ok(!v.body.includes("下の"), `${reason} の帯が下に並ぶ物を数えている: ${v.body}`);
   }
@@ -108,7 +108,7 @@ test("知らない reason に原因を作らない(名乗れないと言い、�
     assert.notEqual(v.body, known.body);
   }
   // reason 自体が無い時も、原因の無い文ではなく「不明」と名乗る。
-  assert.ok(paneFaultView(undefined).body.includes("不明"));
+  assert.ok(paneFaultView(undefined).body.includes("unknown"));
 });
 
 // ★2026-08-09。poll の `screen` 欄には**産む所が2つ**ある —— `screenBody()` と、この

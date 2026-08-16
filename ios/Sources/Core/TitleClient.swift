@@ -150,7 +150,7 @@ enum ReturnRequestOutcome: Equatable {
         case 200:
             guard let at = requestedAt else { return .unreachable }
             return .requested(at: at, already: already ?? false)
-        case 409: return .notACheckout(message ?? "この会話は持ち出されて来た仕事ではありません。")
+        case 409: return .notACheckout(message ?? "This session is not checked-out work.")
         case 401: return .unauthorized
         default: return .unreachable
         }

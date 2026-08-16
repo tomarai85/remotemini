@@ -181,7 +181,7 @@ test("対照①: 断り理由を `code` に戻した偽物では A9 が落ちる
 });
 
 test("対照①: 本文の受けを台本の 500 に戻した偽物では A10 が落ちる", () => {
-  const fake = real.replace("return json(res, 400, { error: `要求の本文が読めません: ${e.message}` });",
+  const fake = real.replace("return json(res, 400, { error: `Request body unreadable: ${e.message}` });",
                             "return json(res, 500, { error: `fleet-account <name> failed: ${e.message}` });");
   assert.notEqual(fake, real, "変異が当たっていない = 以降は測っていない");
   assert.ok(REQS.filter((r) => !r.ok(fake)).map((r) => r.id).includes("A10 選ぶ道は本文の解釈を台本の try の**外**でやる"),
@@ -241,7 +241,7 @@ test("対照②-e: 本文の解釈を台本の try へ畳み戻すと A10 が落
   const folded = real.replace(
     "      let want;\n      try {\n        want = JSON.parse((await readBody(req)) || \"{}\")?.name;\n"
       + "      } catch (e) {\n        if (e instanceof BodyTooLarge) return tooLarge(req, res, e);\n"
-      + "        return json(res, 400, { error: `要求の本文が読めません: ${e.message}` });\n"
+      + "        return json(res, 400, { error: `Request body unreadable: ${e.message}` });\n"
       + "      }\n      try {\n",
     "      try {\n        const want = JSON.parse((await readBody(req)) || \"{}\")?.name;\n");
   assert.notEqual(folded, real, "変異が当たっていない = A10 は測っていない");

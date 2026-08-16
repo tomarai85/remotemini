@@ -81,7 +81,7 @@ struct KeyEntryView: View {
                     if viewModel.isChecking {
                         ProgressView()
                     } else {
-                        Text("接続")
+                        Text("Connect")
                     }
                 }
                 .disabled(viewModel.isChecking || viewModel.baseURLText.isEmpty || viewModel.apiKeyText.isEmpty)
@@ -117,9 +117,9 @@ struct KeyEntryView: View {
             // 「前回の入力が残っている」のか「app が復元した」のか判らず、消してから
             // 打ち直す —— 打ち直しを省く為に入れたのに、省けない。
             if notice.baseURL != nil {
-                return "通っていた鍵がサーバに拒まれました。URL は前のまま入れてあるので、鍵だけ入れ直してください。"
+                return "The key that used to work was rejected by the server. The URL is kept from before — re-enter just the key."
             }
-            return "通っていた鍵がサーバに拒まれました。鍵を入れ直してください。"
+            return "The key that used to work was rejected by the server. Enter it again."
         }
     }
 }

@@ -960,8 +960,8 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertEqual(
             vm.composerDisabledReason,
             ConversationViewModel.interruptAllowedOnChoiceScreen
-                ? "選択待ちです。文字は送れません。机で確認するか、割り込みで中断してください"
-                : "選択待ちです。文字は送れません。机で確認してください"
+                ? "Waiting on a choice. Text can't be sent. Handle it on the desk, or interrupt"
+                : "Waiting on a choice. Text can't be sent. Handle it on the desk"
         )
     }
 
@@ -982,7 +982,7 @@ final class ConversationViewModelTests: XCTestCase {
             sentence.contains("選べません"),
             "the sentence must not deny a capability the card right below it provides"
         )
-        XCTAssertTrue(sentence.contains("下の選択肢"), "it must point at the card instead")
+        XCTAssertTrue(sentence.contains("options below"), "it must point at the card instead")
 
         // Not vacuous: Sprint 6's sentence really does contain the substring this
         // asserts is absent, so a revert to it fails here.
@@ -997,9 +997,9 @@ final class ConversationViewModelTests: XCTestCase {
 
         XCTAssertFalse(vm.choiceEnabled)
         let sentence = try XCTUnwrap(vm.composerDisabledReason)
-        XCTAssertTrue(sentence.contains("理由は下に出しています"))
+        XCTAssertTrue(sentence.contains("The reason is shown below"))
         XCTAssertFalse(
-            sentence.contains(" 机で確認してください"),
+            sentence.contains("Handle it on the desk"),
             "the desk instruction belongs to the server's `reason`, which the card renders verbatim"
         )
     }
@@ -1008,7 +1008,7 @@ final class ConversationViewModelTests: XCTestCase {
         let vm = try await loadedViewModel(screen: "UNKNOWN")
 
         XCTAssertFalse(vm.composerEnabled)
-        XCTAssertEqual(vm.composerDisabledReason, "画面の状態を読めていません")
+        XCTAssertEqual(vm.composerDisabledReason, "The screen state is unreadable")
     }
 
     /// A classification this build has never heard of must not silently remove a
@@ -1369,7 +1369,7 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertEqual(vm.sendBanner?.text, ConversationViewModel.sendNotOnDeskText)
         XCTAssertEqual(vm.sendBanner?.tone, .warn)
         XCTAssertFalse(
-            try XCTUnwrap(vm.sendBanner?.text).contains("届いていません"),
+            try XCTUnwrap(vm.sendBanner?.text).contains("didn't land"),
             "★取り直して見えなかっただけで、届いていない事の証明にはならない"
         )
         XCTAssertEqual(vm.draft, "止めて", "もう一度送れる状態で返す")
@@ -1652,7 +1652,7 @@ final class ConversationViewModelTests: XCTestCase {
             vm.interruptDisabledReason,
             ConversationViewModel.interruptAllowedOnChoiceScreen
                 ? nil
-                : "確認待ちの画面では、v1 は電話から中断しません。机で確認してください"
+                : "On a confirmation screen, v1 does not interrupt from the phone. Handle it on the desk"
         )
     }
 
@@ -1718,17 +1718,17 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertFalse(vm.interruptEnabled, "the interrupt PATH stays blocked -- that part is unchanged")
         let sentence = try XCTUnwrap(vm.interruptDisabledReason)
         XCTAssertFalse(
-            sentence.contains("中断しません。"),
+            sentence.contains("does not interrupt"),
             "a flat 「中断しません」 above a 中止 button makes the app contradict itself"
         )
-        XCTAssertTrue(sentence.contains("下の選択肢"), "it must send the user to the key that does work")
+        XCTAssertTrue(sentence.contains("options below"), "it must send the user to the key that does work")
 
         // Not vacuous: the sentence shown when no stop key is on offer really does make
         // the flat claim, so this assertion can fail.
         let noEscape = try await loadedViewModel(screen: "CHOICE", choiceJSON: hardStopChoiceJSON())
         XCTAssertEqual(
             noEscape.interruptDisabledReason,
-            "確認待ちの画面では、v1 は電話から中断しません。机で確認してください"
+            "On a confirmation screen, v1 does not interrupt from the phone. Handle it on the desk"
         )
     }
 
@@ -1812,7 +1812,7 @@ final class ConversationViewModelTests: XCTestCase {
         let choiceClient = RecordingChoiceClient()
         choiceClient.attemptQueue = [
             ChoiceAttempt(
-                outcome: .display(ResultDisplay(kind: "refused", text: "画面が変わりました", keepText: nil)),
+                outcome: .display(ResultDisplay(kind: "refused", text: "The screen changed", keepText: nil)),
                 serverDigest: "d-bbb"
             )
         ]
@@ -1825,8 +1825,8 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertEqual(choiceClient.callCount, 1, "★no auto-retry: exactly one request left the phone")
         XCTAssertEqual(vm.staleChoiceDigest, "d-aaa")
         XCTAssertFalse(vm.choiceEnabled, "the card the user is looking at is the stale one")
-        XCTAssertEqual(vm.staleChoiceReason, "机の画面が変わりました。新しい選択肢が届くまで押せません")
-        XCTAssertEqual(vm.choiceBanner?.text, "画面が変わりました")
+        XCTAssertEqual(vm.staleChoiceReason, "The desk screen changed. Keys are disabled until the new options arrive")
+        XCTAssertEqual(vm.choiceBanner?.text, "The screen changed")
 
         // And it stays dead to a second deliberate tap, rather than going out again
         // against a fingerprint we already know is gone.
@@ -1842,7 +1842,7 @@ final class ConversationViewModelTests: XCTestCase {
         let choiceClient = RecordingChoiceClient()
         choiceClient.attemptQueue = [
             ChoiceAttempt(
-                outcome: .display(ResultDisplay(kind: "refused", text: "画面が変わりました", keepText: nil)),
+                outcome: .display(ResultDisplay(kind: "refused", text: "The screen changed", keepText: nil)),
                 serverDigest: "d-bbb"
             )
         ]
@@ -1909,7 +1909,7 @@ final class ConversationViewModelTests: XCTestCase {
         let choiceClient = RecordingChoiceClient()
         choiceClient.attemptQueue = [
             ChoiceAttempt(
-                outcome: .display(ResultDisplay(kind: "refused", text: "画面が変わりました", keepText: nil)),
+                outcome: .display(ResultDisplay(kind: "refused", text: "The screen changed", keepText: nil)),
                 serverDigest: "d-bbb"
             )
         ]
@@ -1933,7 +1933,7 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertNil(vm.staleChoiceDigest)
         XCTAssertNil(vm.staleChoiceReason, "and the sentence that had become false is gone with it")
         XCTAssertEqual(
-            vm.choiceBanner?.text, "画面が変わりました",
+            vm.choiceBanner?.text, "The screen changed",
             "the banner is NOT cleared here: same fingerprint = same question, so the answer still belongs to it"
         )
 
@@ -2010,12 +2010,12 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertTrue(vm.choiceEnabled, "still pressable -- a repeat is refused server-side, a dead card is not")
         let text = try XCTUnwrap(vm.choiceBanner?.text)
         XCTAssertTrue(
-            text.contains("押せたかどうかは分かりません"),
+            text.contains("Whether the key landed is unknown"),
             "★どちらの結末も主張しない、が此処の全て(DESIGN §2.52 でも打鍵は「効いた」を主張しない)"
         )
         // `thenHistory` を渡していないので取り直しも届かない = 「まだ繋がりません」側。
         // 繋がらない機械に打って、その直後だけ繋がる筋書きの方が不自然。
-        XCTAssertTrue(text.hasPrefix("まだ繋がりません"), "取り直しも同じ回線を通る")
+        XCTAssertTrue(text.hasPrefix("Still unreachable"), "取り直しも同じ回線を通る")
         XCTAssertEqual(vm.choiceBanner?.fromServer, false)
     }
 

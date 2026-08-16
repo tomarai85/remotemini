@@ -213,7 +213,7 @@ test("★`anomalies` は全部、既定でない文を持つ(`active-count-<n>` 
     assert.notEqual(msg, unknownAnomalyMessage(a), `${a} が既定に落ちている`);
   }
   // 数の所は本当に読んでいる(族を1文に潰していない)
-  assert.match(anomalyMessage(`${ACTIVE_COUNT_PREFIX}3`), /3行/);
+  assert.match(anomalyMessage(`${ACTIVE_COUNT_PREFIX}3`), /3 rows/);
 });
 
 test("覆っていない anomaly / 壊れた族名は既定に落ちる(対照)", () => {
@@ -277,7 +277,7 @@ test("★`selectionProblem` が返す値は全部 SELECTION_REASONS に居る(�
 //   `wire-key-agreement` は**鍵名**しか見ないので、`display.anomalies` を
 //   組み立てる行(`wire.mjs` の `parsed.anomalies.map(anomalyMessage)`)を
 //   丸ごと落としても緑のままになる。電話が実際に描くのは此の枝。
-test("★行が0本の時、電話が描く `display.anomalies` に日本語の理由が届く(解析→封筒)", async () => {
+test("★行が0本の時、電話が描く `display.anomalies` に人の読める理由が届く(解析→封筒。2026-08-17 から英語)", async () => {
   const { accountBody } = await import("../src/wire.mjs");
   const body = accountBody(parseFleetAccount("現用: （未設定）\n優先順 (.order):\n"));
 
@@ -285,7 +285,7 @@ test("★行が0本の時、電話が描く `display.anomalies` に日本語の�
   assert.deepEqual(body.accounts, []);
   assert.equal(body.display.status, null);
   assert.equal(body.display.anomalies.length, 1);
-  assert.match(body.display.anomalies[0], /0件/);
+  assert.match(body.display.anomalies[0], /zero priority entries/);
   // 内部トークンは観測値として残るが、描く物は日本語の側(S8-22 の再演を塞ぐ)。
   assert.deepEqual(body.anomalies, ["empty-order"]);
   assert.notEqual(body.display.anomalies[0], "empty-order");

@@ -37,11 +37,11 @@ final class QueueViewStateTests: XCTestCase {
         let v = QueueViewState.make(queued: 2, fetchedAtMs: now - 1000, nowMs: now)
         XCTAssertTrue(v.show)
         XCTAssertEqual(v.count, 2)
-        XCTAssertTrue(v.text.contains("2 件"))
+        XCTAssertTrue(v.text.contains("2 queued"))
         // ★「まだ Claude に渡していません」は面の一部。落とすと「取り消し = 走っている番も
         //   止まる」と読める(サーバの route 註釈が2つを畳むなと書いている)。
-        XCTAssertTrue(v.text.contains("まだ Claude に渡していません"))
-        XCTAssertTrue(v.clearLabel.contains("2 件"))
+        XCTAssertTrue(v.text.contains("not yet handed to Claude"))
+        XCTAssertTrue(v.clearLabel.contains("2 queued"))
         XCTAssertFalse(v.stale)
     }
 
@@ -61,19 +61,19 @@ final class QueueViewStateTests: XCTestCase {
 
     func testADroppedCountIsReportedWithTheRunningTurnCaveat() {
         let o = ClearQueueOutcome.from(status: 200, dropped: 3, serverError: nil)
-        XCTAssertEqual(o, .ok("3 件の送信を取り消しました(いま動いている番は止まりません)。"))
+        XCTAssertEqual(o, .ok("Cancelled 3 queued sends (the one already running is not stopped)."))
     }
 
     func testZeroDroppedSaysThereWasNothingToCancel() {
         let o = ClearQueueOutcome.from(status: 200, dropped: 0, serverError: nil)
-        XCTAssertEqual(o, .ok("取り消す送信は残っていませんでした。"))
+        XCTAssertEqual(o, .ok("There was nothing queued to cancel."))
     }
 
     /// 200 は必ず `dropped` を載せる(server.mjs)。載っていないのは「0件」ではなく**不明**。
     func testAMissingDroppedFieldIsUnknownNotZero() {
         let o = ClearQueueOutcome.from(status: 200, dropped: nil, serverError: nil)
         guard case .warn(let t) = o else { return XCTFail("不明を \(o) に丸めた") }
-        XCTAssertTrue(t.contains("確認できません"))
+        XCTAssertTrue(t.contains("could not be confirmed"))
     }
 
     /// 409 は設計された断り。サーバの人向けの文をそのまま見せる。
@@ -87,14 +87,14 @@ final class QueueViewStateTests: XCTestCase {
 
     func testARefusalWithoutASentenceStillSaysSomething() {
         let o = ClearQueueOutcome.from(status: 409, dropped: nil, serverError: "  ")
-        XCTAssertEqual(o, .refused("取り消せませんでした。"))
+        XCTAssertEqual(o, .refused("Could not cancel."))
     }
 
     /// 入力(503 / 418)は `test/view.test.mjs` の clearQueueResult の検査と**同じ値**。
     /// port-coverage-gate が両側を突き合わせるので、JS 側が入力を足すと此処の写し漏れが赤になる。
     func testAuthAndServerErrorsAreTheirOwnKinds() {
         XCTAssertEqual(ClearQueueOutcome.from(status: 401, dropped: nil, serverError: nil),
-                       .error("鍵が通りませんでした。"))
+                       .error("The key was rejected."))
         guard case .error(let t) = ClearQueueOutcome.from(status: 503, dropped: nil, serverError: nil)
         else { return XCTFail() }
         XCTAssertTrue(t.contains("503"), "5xx の status が文から落ちた: \(t)")

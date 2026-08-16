@@ -34,8 +34,8 @@ struct QueueViewState: Equatable {
         return QueueViewState(
             show: true, known: true, count: q,
             // ★「送信待ち」= まだ Claude へ**渡していない**。渡した番は取り消せない。
-            text: "送信待ち \(q) 件(まだ Claude に渡していません)",
-            clearLabel: "\(q) 件を取り消す",
+            text: "\(q) queued (not yet handed to Claude)",
+            clearLabel: "Cancel \(q) queued",
             ageText: f.text,
             stale: f.stale)
     }
@@ -59,19 +59,19 @@ enum ClearQueueOutcome: Equatable {
         if status == 200 {
             // 200 は必ず `dropped` を載せる(`server.mjs`)。載っていないのは「0件」ではなく「不明」。
             guard let n = dropped else {
-                return .warn("取り消せたかどうか確認できませんでした。画面を見て確かめてください。")
+                return .warn("Whether the cancel worked could not be confirmed. Check the screen.")
             }
-            if n <= 0 { return .ok("取り消す送信は残っていませんでした。") }
+            if n <= 0 { return .ok("There was nothing queued to cancel.") }
             // ★走っている番は止まらない事を必ず書く。省くと「取り消した = 全部止まった」と読める。
-            return .ok("\(n) 件の送信を取り消しました(いま動いている番は止まりません)。")
+            return .ok("Cancelled \(n) queued sends (the one already running is not stopped).")
         }
         if status == 409 {
-            let fallback = "取り消せませんでした。"
+            let fallback = "Could not cancel."
             let e = (serverError ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             return .refused(e.isEmpty ? fallback : e)
         }
-        if status == 401 { return .error("鍵が通りませんでした。") }
-        if status >= 500 { return .error("サーバ側で失敗しました(HTTP \(status))。") }
-        return .error("想定していない応答でした(HTTP \(status))。")
+        if status == 401 { return .error("The key was rejected.") }
+        if status >= 500 { return .error("Server-side failure (HTTP \(status)).") }
+        return .error("Unexpected response (HTTP \(status)).")
     }
 }

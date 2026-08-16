@@ -21,14 +21,14 @@ struct ArchivedListView: View {
     var body: some View {
         List {
             if phase == .loading {
-                HStack { ProgressView().controlSize(.small); Text("読み込み中").foregroundStyle(.secondary) }
+                HStack { ProgressView().controlSize(.small); Text("Loading").foregroundStyle(.secondary) }
             } else if phase == .failed {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("読めませんでした").foregroundStyle(.orange)
-                    Button("もう一度読む") { Task { await load() } }
+                    Text("Couldn't load").foregroundStyle(.orange)
+                    Button("Reload") { Task { await load() } }
                 }
             } else if rows.isEmpty {
-                Text("保管した会話はありません")
+                Text("No archived sessions")
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("archived.empty")
             } else {
@@ -42,21 +42,21 @@ struct ArchivedListView: View {
                                 .lineLimit(1)
                         }
                         Spacer()
-                        Button("戻す") { Task { await restore(row) } }
+                        Button("Restore") { Task { await restore(row) } }
                             .buttonStyle(.bordered)
                             .accessibilityIdentifier("archived.restore.\(row.id)")
                     }
                 }
             }
         }
-        .navigationTitle("保管した会話")
+        .navigationTitle("Archived")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("archived.root")
         .task { await load() }
-        .alert("保管", isPresented: Binding(
+        .alert("Archive", isPresented: Binding(
             get: { notice != nil }, set: { if !$0 { notice = nil } }
         )) {
-            Button("閉じる", role: .cancel) {}
+            Button("Close", role: .cancel) {}
         } message: { Text(notice ?? "") }
     }
 
@@ -76,9 +76,9 @@ struct ArchivedListView: View {
         case .done:
             await load()   // 消えた事を描画で確かめる(手元の配列を弄って済ませない)
         case .unreachable:
-            notice = "机に届きませんでした。もう一度試してください。"
+            notice = "Couldn't reach the desk. Try again."
         case .unauthorized:
-            notice = "鍵が通りませんでした。一覧へ戻ってやり直してください。"
+            notice = "The key was rejected. Go back to the list and retry."
         }
     }
 }

@@ -69,12 +69,12 @@ export function paneFaultReason(e) {
  */
 export const PANE_FAULT_VIEW = {
   "tmux-unavailable": {
-    headline: "サーバが tmux に届いていません",
-    body: "机で開いている画面の一覧を取れませんでした。復旧するまで、どの会話にも送れません。この故障は電話からは直せないので、机で確認してください。",
+    headline: "The server can't reach tmux",
+    body: "Couldn't list the panes open on the desktop. Nothing can be sent until this recovers. Check the desk.",
   },
   "panes-unreadable": {
-    headline: "tmux の画面一覧を読めていません",
-    body: "tmux からの返事は来ていますが、中身が壊れていて読めません。復旧するまで、どの会話にも送れません。この故障は電話からは直せないので、机で確認してください。",
+    headline: "Can't read the tmux pane list",
+    body: "tmux is replying, but the output is corrupted and unreadable. Nothing can be sent until this recovers. Check the desk.",
   },
 };
 
@@ -89,8 +89,8 @@ export const PANE_FAULT_VIEW = {
 export function paneFaultView(reason) {
   return (
     PANE_FAULT_VIEW[reason] || {
-      headline: "机の画面一覧を取れていません",
-      body: `原因を名乗れません(理由: ${reason || "不明"})。復旧するまで、どの会話にも送れません。この故障は電話からは直せないので、机で確認してください。`,
+      headline: "Can't read the desktop pane list",
+      body: `The cause can't be named (reason: ${reason || "unknown"}). Nothing can be sent until this recovers. Check the desk.`,
     }
   );
 }
@@ -101,9 +101,9 @@ export function paneFaultView(reason) {
  *   `ok` の文は**置かない** —— 通した時の文が在ると、断りと通過が同じ表に混ざる。
  */
 export const WORKER_REFUSAL = {
-  cwd_unknown: "この会話の作業場所が記録に無いので、机の外からは起こせません。一度机で開くと記録されます。",
-  cwd_missing: "この会話の作業場所(フォルダ)が今は見つかりません。移動か削除をされていないか確認してください。",
-  cwd_untrusted: "この作業場所はまだ Claude Code に信頼されていません。机で一度 claude を起動して確認画面に答えてください(電話からは答えません)。",
+  cwd_unknown: "This session's working folder isn't on record, so it can't be started remotely. Open it once on the desk to record it.",
+  cwd_missing: "This session's working folder can't be found right now. Check whether it was moved or deleted.",
+  cwd_untrusted: "This folder isn't trusted by Claude Code yet. Start claude there once on the desk and answer the trust prompt (the phone never answers it).",
 };
 
 /** 決められなかった理由のうち、ワーカー経路にも落としてはいけないもの。 */
@@ -118,41 +118,41 @@ export const UNDECIDABLE = new Set([
 
 /** 既定の文。**原因を名乗らない**(下の理由を参照)。 */
 export function unknownBlockedMessage(reason) {
-  return `宛先を確定できません(理由: ${reason || "不明"})。送信しません。`;
+  return `The target can't be determined (reason: ${reason || "unknown"}). Nothing was sent.`;
 }
 
 /** 拒否理由を Tom が読める1文にする(画面にそのまま出る)。 */
 export function blockedMessage(r) {
   if (r.reason === "ambiguous") {
-    return `同じフォルダで Claude が ${r.candidates} 個開いています。どの画面かを特定できないため送信しません。`;
+    return `${r.candidates} Claude sessions are open in the same folder. The right pane can't be identified, so nothing was sent.`;
   }
   if (r.reason === "unregistered") {
     // 直せる拒否なので、直し方まで書く。ここが「エラーで終わり」だと電話側で詰む。
-    return "この会話はペイン登録をしていないため、宛先を確定できません(同じフォルダの画面に送ると別の会話に入る恐れがあります)。その画面を rc-claude で開き直すと送れるようになります。";
+    return "This session has no pane registration, so the target can't be determined (sending to a same-folder pane could hit another session). Reopen it with rc-claude on the desk to enable sending.";
   }
   if (r.reason === "pane-gone") {
     // ★この分岐が無いと既定に落ちる。画面が消えた事と現在地がずれた事は別の事実で、
     //   後者を出すと「開き直せば直る」と読めてしまう。
-    return "開いていた画面が見つかりません(閉じられたか、別の会話が使っています)。宛先を確定できないため送信しません。";
+    return "The pane that was open can't be found (closed, or taken by another session). Nothing was sent.";
   }
   if (r.reason === "not-claude") {
     // ペインは在るが claude ではない。注入すれば**シェルに任意コマンドが入る**ので、
     // 「消えた」でも「ずれた」でもなく**中身が変わった**と書く。
-    return "開いていた画面は、今は Claude ではありません(終了してシェルに戻ったようです)。宛先を確定できないため送信しません。";
+    return "The pane that was open is no longer Claude (it seems to have exited to a shell). Nothing was sent.";
   }
   if (r.reason === "stale") {
-    return "この会話が登録したペインは、今は別の会話が使っています。宛先を確定できないため送信しません。";
+    return "The pane this session registered is now used by another session. Nothing was sent.";
   }
   if (r.reason === "cwd-mismatch") {
-    return `登録されたペインの現在地(${r.panePath || "不明"})が、この会話のフォルダと一致しません。宛先を確定できないため送信しません。`;
+    return `The registered pane's folder (${r.panePath || "unknown"}) doesn't match this session's. Nothing was sent.`;
   }
   if (r.reason === "panes-unreadable") {
     // 電話の持ち主が取れる手が無い種類の故障なので、**故障だと分かる文**にする。
     // 「ペインが無い」風に書くと、机で開いている会話が消えたように読めて誤解を招く。
-    return "サーバが tmux の画面一覧を読めていません(書式の壊れた出力が返っています)。宛先を確定できないため送信しません。復旧するまでこの会話には送れません。";
+    return "The server can't read the tmux pane list (the output is malformed). Nothing was sent — this session can't receive anything until it recovers.";
   }
   if (r.reason === "tmux-unavailable") {
-    return "サーバが tmux に届いていません(画面一覧を取れませんでした)。宛先を確定できないため送信しません。復旧するまでこの会話には送れません。";
+    return "The server can't reach tmux (couldn't list panes). Nothing was sent — this session can't receive anything until it recovers.";
   }
   // ★既定は**原因を作らない**。以前はここが cwd 不一致の文で、覆えていない理由が来ると
   //   もっともらしい嘘が出た。理由コードを見せる方が「知らない」と分かるだけましで、
