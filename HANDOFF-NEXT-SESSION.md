@@ -2,6 +2,60 @@
 
 **起動合図**: 「移動中作業のプロジェクトの続き」
 
+> ## 0-0000. 2026-08-18 未明 — **UI 刷新が Liquid Glass D で確定・全画面展開済み。英語化+D は commit/配備/実機まで全部通した(f7b99b0 / build 63)。残りは Tom の実機目視のみ**
+>
+> ### この章だけ読めば足りる(前章までの§9 実装史は 0-000 へ)
+>
+> ### Tom 裁定(覆すな)
+>
+> | 裁定 | 中身 | 正本 |
+> |---|---|---|
+> | UI 言語 = 英語 | 製品の文字列は電話・サーバ wire 表示文の両方英語。**fleet-account の parse 錨(現用:/(未設定)/優先順/有)だけは台本の実出力なので日本語のまま** | REQUIREMENTS §4-4 / commit `41a04d7` |
+> | 見た目 = Liquid Glass ダーク(D) | 5案(A Claude風/B ライト/C グラファイト/D glass暗/E glass明)を**実機スクショで比較して Tom が D を選択**。既定は `RCTheme.resolveVariant()` が glassdark を返す。切替は DEBUG 限定 env `RC_THEME_VARIANT` | RCTheme.swift / rc-theme-pick.vercel.app |
+> | 見せる経路 = Vercel | **claude.ai の Artifact URL は Tom に見えない**(本人明言)。視覚物は `vercel deploy --prod`(scratchpad の静的 dir で可)。比較ページの現物 = rc-theme-pick.vercel.app | memory: show-it-where-they-can-see-it |
+> | 趣味の収束方法 | 「綺麗じゃない」系の曖昧な指摘に自分の目で直して再出荷するな(3連敗の型)。**具体物2-5案を実機で並べて選ばせる** | この章 |
+>
+> ### 状態(2026-08-18 未明時点の観測値)
+>
+> | 物 | 状態 | 証拠 |
+> |---|---|---|
+> | 英語化+テーマ基盤 | **commit 済 `41a04d7`**(76 files) | git log |
+> | edith 配備 | **済**。`/healthz` = `{"ok":true,"version":"41a04d7"}`、実 wire が英語 | deploy-to-edith.sh 走行ログ |
+> | iPhone | **glass 版 `f7b99b0`(build 63)install 済**(02:28 JST、attempt 1 成功) | scratchpad/device-build-glass.log |
+> | Glass D 全画面展開 | 実装済・**sim スイート 653/0**・5面スクショ目視済 | scratchpad/sim10.log / .harness/evidence-2026-08-05/glass-*.png |
+> | Glass D の commit | **着地済 `f7b99b0`**(対照 6/6 緑・単体 849 緑・的 241/241)。1回目は wire-vocabulary が RC_THEME_VARIANT を検出して停止 → PHONE_ONLY へ理由つき登録済 | commit-glass2.log |
+> | 比較+展開ギャラリー | rc-theme-pick.vercel.app(上段 D/E、中段 D 展開後 5 面、下段 A/B/C) | curl 200 実測 |
+>
+> ### 次の1手(順に)
+>
+> 1. ~~commit → device ビルド~~ **済**(f7b99b0 / build 63 install 済。build.sh が警告した変異記録の陳腐化も signout-notice-control 再走行 28/28 PASS で閉じ、`ios/build/.mutation-sweep-stamp` 更新済)。
+> 2. **Tom の実機目視(Tailscale ON で開く)— これが残りの全部**。細部の注文(光彩の色・角丸・文字)が来たら RCTheme のトークンだけで受ける。曖昧な「違う」には具体物2-5案を並べる(裁定4)。
+> 3. rc-backend は glass では変わっていない(意匠は電話側)。**edith 再配備は不要**。wire-vocabulary の PHONE_ONLY 登録は test 側なので配備物に影響しない。
+>
+> ### 英語化がゲートに払わせた代金(次に文言を触る人への地図)
+>
+> **製品文字列はこの repo では「検査の錨」を兼ねる。文言を1語変える = 錨の付け替えが発生する。** 今回の実測: 文言全面英語化で錨 40 本超が外れ、付け替え先は全部で7ファイル:
+>
+> - `rc-backend/test/mutation-controls.py`(的 14)
+> - `.harness/fixture-label-parity-controls.sh`(20)/ `wire-key-agreement-controls.sh`(3)/ `wire-vocabulary-agreement-controls.sh`(5)/ `timeout-agreement-controls.sh`(4)/ `live-interrupt-wording-controls.sh`(針4+ladder)
+> - `rc-backend/test/interrupt-honesty-control.sh`(7)
+>
+> 外れ方は2種: **NG(0件)= 探し文が本文に当たらない**(→ 新しい実文へ付け替え)と **「赤は出たが別の項が倒れた」= 期待する検査名の変更**(→ want 文字列を新名へ)。`python3 test/mutation-controls.py --dry` が的の照合だけを安く回す(フル走行を撃つな。--help は無い、知らない引数でフル走行が始まる)。
+>
+> ### この章の実バグ・機構知見
+>
+> - **XCUITest の文字列 subscript は 128 字上限**。英語化で paneFault 帯本文が 155 字になり query 自体が throw。本文短縮で解決(blocked.mjs / SessionsListingFixture / RemoteMiniUITests の3点同時が必須 — fixture-labels-producible が3点一致を強制)。
+> - timeout-agreement.test.mjs の秒数走査は**英語綴りだけ**(`waiting up to (\d+)s`)。旧綴り(最大N秒)は assertion message にしか残らず、数えると「揃えた変更が赤」の偽陽性(実測)。
+> - Liquid Glass は iOS 26 native(`.glassEffect`、deployment target 17 なので `#available` 分岐、旧 OS は ultraThinMaterial)。**HIG 通り glass は操作の層だけ**(カード・チップ・承認カード)。内容(吹き出し本文)は透かさない。composer の `.background(.bar)` は bar-is-composer-only の錨なので触るな(.bar 自体が半透明 material で glass と整合)。
+> - 新しい電話側 env 変数は `wire-vocabulary-agreement.test.mjs` の `PHONE_ONLY` に理由つきで登録しないと単体が止める(RC_THEME_VARIANT で実証)。
+> - **このセッションの背景タスクは外部から SIGTERM され得る**(sim9・commit×2 が実際に killed)。長走行は `nohup <cmd> &` で切り離し、until-loop の watcher を別 task で張る。watcher が殺されても本体は生きる。
+> - ゲート/スイート走行中に repo へ書くと UNMEASURED の偽赤(既知の型の再確認)。書く物は scratchpad に溜めて rc= を見てから。
+>
+> ### 未着手(前章から変わらず)
+>
+> D1/D2 認証(DESIGN §2.102、Codex 承認済み仕様のまま未実装)/ C1 添付 / C3 diff / C4 転写モード(v1/v2 線引きは Tom)/ 設定・保管画面の行の glass 化(現状は地だけ glass、行は標準面 — HIG 準拠だが Tom の目視次第)/ dualsense-bridge の mic_receiver 位置バグ(別レーン、報告済み)。
+
+
 > ## 0-000. 2026-08-16 夕 — **§9 の表が全行「実装済 / Tom の目視待ち」になった。文書 vs 製品の全件照合が起点**
 >
 > Tom 裁定 2日連続の「論外」(見た目の全体)を受け、**文書に書いた計画 50 項目を
