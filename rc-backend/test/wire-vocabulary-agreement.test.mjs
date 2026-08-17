@@ -130,6 +130,7 @@ const PHONE_ONLY = {
   //   (2026-08-12、走行のログの `root flow:normal` で確定。UI 検査5本が同じ理由で赤)。
   //   相が直交するなら変数も分ける、が此の2本目が在る理由。
   RC_UI_ACCOUNT_FIXTURE: "電話の環境変数名(口座の相を一覧の相と独立に振る為)。線には出ない",
+  RC_THEME_VARIANT: "電話の環境変数名(DEBUG 限定で意匠の variant を切替、既定は glassdark)。線には出ない",
 };
 
 /**

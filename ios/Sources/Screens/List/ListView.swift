@@ -62,6 +62,7 @@ struct ListView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
+            RCBackdrop()
             content
             if showsRefreshingIndicator {
                 ProgressView()
@@ -257,8 +258,14 @@ struct ListView: View {
                 }
                 .tint(.indigo)
             }
+            // カード化(2026-08-17)。行の面は SessionRowView が自分で描くので、
+            // List 側の標準装飾(区切り線・行背景)は全部降ろす。
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 10))
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .opacity(grayedOut ? 0.5 : 1)
         .disabled(grayedOut)
         .alert("Rename", isPresented: Binding(
@@ -520,8 +527,10 @@ private struct SessionRowView: View {
             }
             .padding(.leading, 24)
         }
-        .padding(.vertical, 6)
-        .listRowBackground(row.display.route.kind == .choice ? Color.orange.opacity(0.10) : nil)
+        .padding(14)
+        // 面はカードが持つ(List の行背景は clear)。描き方の正本は RCCard —
+        // choice 行だけ橙で名指しする理由もあちらに書いてある。
+        .modifier(RCCard(emphasized: row.display.route.kind == .choice))
     }
 
     /// 机で開いている会話の印。アイコンは SF Symbols の desktopcomputer(本家の意匠)。

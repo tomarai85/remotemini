@@ -49,6 +49,7 @@ struct ArchivedListView: View {
                 }
             }
         }
+        .rcThemedSurface()
         .navigationTitle("Archived")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("archived.root")

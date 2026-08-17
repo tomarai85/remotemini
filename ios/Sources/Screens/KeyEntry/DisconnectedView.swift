@@ -79,6 +79,7 @@ struct DisconnectedView: View {
                     .accessibilityIdentifier("disconnected.buildInfo")
             }
         }
+        .rcThemedSurface()
         .navigationTitle("Remote Mini")
     }
 
