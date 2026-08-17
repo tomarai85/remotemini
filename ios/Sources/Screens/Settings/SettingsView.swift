@@ -36,6 +36,7 @@ struct SettingsView: View {
                 instrumentsSection(list)
             }
         }
+        .rcThemedSurface()
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("settings.root")

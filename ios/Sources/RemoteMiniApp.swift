@@ -5,8 +5,9 @@ struct RemoteMiniApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
-                // アプリアイコン(藍黒 × 青紫)と同じ系統を全画面の tint に(RCTheme)。
+                // 意匠の正本は RCTheme。tint と明暗を根に1回だけ通す(散らさない)。
                 .tint(RCTheme.accent)
+                .preferredColorScheme(RCTheme.colorScheme)
         }
     }
 }

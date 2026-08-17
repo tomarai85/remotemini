@@ -96,6 +96,7 @@ struct KeyEntryView: View {
                     .accessibilityIdentifier("keyEntry.buildInfo")
             }
         }
+        .rcThemedSurface()
         .navigationTitle("Remote Mini")
     }
 

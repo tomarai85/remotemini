@@ -42,6 +42,7 @@ struct ConversationView: View {
 
     var body: some View {
         content
+            .background(RCBackdrop())
             // Brief §3-c: the title comes from the List row that navigated here and
             // survives any failure phase below -- never re-derived from `/history`
             // (which carries no title), never blanked while retrying.
@@ -720,6 +721,10 @@ struct ConversationView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // 承認カードは操作の層なので glass の面を持つ(HIG: glass は操作の層)。
+            // 橙の名指し(= choice だけ別格)は RCCard の emphasized が持つ。
+            .padding(12)
+            .modifier(RCCard(emphasized: true))
             // ★`.accessibilityElement(children: .contain)` is not decoration -- without
             // it this identifier propagates DOWN and overwrites every child's own.
             // Measured 2026-08-08: the card rendered perfectly (screenshot) while
@@ -853,7 +858,8 @@ private struct EntryBubble: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            .background(Color(.systemGray6), in: Capsule())
+            .background(RCTheme.usesGlass ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color(.systemGray6)),
+                        in: Capsule())
             .frame(maxWidth: .infinity, alignment: .leading)
 
         // 2026-08-14 の UI 作り直し。北極星 = Claude の公式アプリ:
@@ -870,7 +876,10 @@ private struct EntryBubble: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 9)
-                        .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 18))
+                        // glass の系では自分の発言を accent の淡い面に(地の光彩と同系で
+                        // 「自分の色」が付く)。glass でない系は従来の柔らかい灰のまま。
+                        .background(RCTheme.usesGlass ? RCTheme.accent.opacity(0.26) : Color(.systemGray5),
+                                    in: RoundedRectangle(cornerRadius: 18))
                 }
             }
 
