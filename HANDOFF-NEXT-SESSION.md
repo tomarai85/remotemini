@@ -4,6 +4,13 @@
 
 > ## 0-0000. 2026-08-18 未明 — **UI 刷新が Liquid Glass D で確定・全画面展開済み。英語化+D は commit/配備/実機まで全部通した(f7b99b0 / build 63)。残りは Tom の実機目視のみ**
 >
+> ### ★2026-08-20 追記 — **このレーンは凍結中(Tom: Edith/Friday 統合 PJ が先)**
+>
+> - Tom 08-18 目視の結果: 細部でなく**画面構造**の指摘(Sessions の置き場 / team チップ / 下部に複数選択肢 + Banana 型スワイプ切替)。
+>   具体物 = rc-theme-pick.vercel.app/structure.html(案1 3タブ推し / 案2 4タブ / 案3 2タブ)+ i13.html(iPhone 13 実寸で見つけた「>」切れバグ、直し A/B/C)。**Tom の案番号待ち**。
+> - 統合で動く境界の正本 = memory `project_macmini_relationship_map_2026-08-20.md`(edith 実機観測つき)。統合中に edith の fleet-account / claude-work / rc-claude / tmux work / ~/.claude.json / Tailscale 名を触ったら `departure-survivability-check.sh` を撃つ。
+> - 木は綺麗(HEAD この commit)。iPhone 13 sim `iPhone-13-layout` は作成済み(shutdown)。
+>
 > ### この章だけ読めば足りる(前章までの§9 実装史は 0-000 へ)
 >
 > ### Tom 裁定(覆すな)
