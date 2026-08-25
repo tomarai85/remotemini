@@ -1,0 +1,113 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a03a7d-08c3-71e1-b4a6-db39676fad6b
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+I am reviewing a small change to a bash deploy script. Everything you need is inline; you have NO file access.
+
+CONTEXT: rc-backend is a Node service deployed over ssh to a mac mini. The deploy script had the launchd job label hardcoded as `job=gui/501/com.edith.rc-backend` inside a quoted heredoc that runs remotely. The target machine is changing (old host is offline permanently), so I parameterized the label and the remote log dir. The heredoc is quoted (<<'REMOTE_RESTART') so $6/$7 expand REMOTELY, not locally. The caller passes args in the existing style: ssh "$H" bash -s -- "'$A'" "'$B'" ...
+
+DIFF:
+diff --git a/rc-backend/tools/deploy-to-edith.sh b/rc-backend/tools/deploy-to-edith.sh
+index 2755e6a..69f9c36 100755
+--- a/rc-backend/tools/deploy-to-edith.sh
++++ b/rc-backend/tools/deploy-to-edith.sh
+@@ -57,6 +57,11 @@ RELEASES="${RC_EDITH_RELEASES:-/Users/edith/rc-releases}"
+ MARK="${RC_DEPLOY_MARK:-/Users/edith/.rc-backend/deploy-in-progress}"
+ LOCK="${RC_DEPLOY_LOCK:-/Users/edith/.rc-backend/deploy.lock}"
+ LOCK_MAX_S="${RC_DEPLOY_LOCK_MAX_S:-7200}"
++# ★配備先の機体名を台本から剥がす(2026-08-25)。既定は edith の実物のまま =
++#   引数無しの既往の呼び方は 1 文字も変わらない。他機体へ向ける時だけ env で差し替える。
++#   `RC_JOB_LABEL` は **plist の Label と一致していなければならない**(kickstart の宛先)。
++JOB_LABEL="${RC_JOB_LABEL:-com.edith.rc-backend}"
++REMOTE_LOG_DIR="${RC_REMOTE_LOG_DIR:-/Users/edith/Library/Logs/rc-backend}"
+ NODE="/opt/homebrew/bin/node"
+ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ 
+@@ -472,13 +477,13 @@ say "8. 常設(launchd)が在るなら、走っている物を新しい木に入
+ #   「配ったが動かない」で終わらせない = 戻す判断を人の手に残さない(戻す事自体は可逆)。
+ assert_lock_owner
+ restart_rc=0
+-ssh "$EDITH" bash -s -- "'$SNAPSHOT'" "'$LIVE'" "'$MARK'" "'$SRC_REV'" "'$OWNER'" <<'REMOTE_RESTART' || restart_rc=$?
++ssh "$EDITH" bash -s -- "'$SNAPSHOT'" "'$LIVE'" "'$MARK'" "'$SRC_REV'" "'$OWNER'" "'$JOB_LABEL'" "'$REMOTE_LOG_DIR'" <<'REMOTE_RESTART' || restart_rc=$?
+ # ★`set -e` は**足さない**。この段は `verify` が非零を返す事を前提に分岐しており、
+ #   `lsof` や `sed` が空を返す場面も正常。`set -e` を足すと正常な分岐が中断に化ける。
+ #   代わりに、黙って進んで良い所が 1 箇所も無い**戻しの rsync** を明示的に見る(下)。
+ set -u
+ snapshot="$1"; live="$2"; mark="$3"; want_rev="$4"; owner="$5"
+-job=gui/501/com.edith.rc-backend
++job="gui/501/$6"; logdir="$7"
+ jobpid() { launchctl print "$job" 2>/dev/null | awk -F'= *' '/^[[:space:]]*pid =/ {print $2; exit}'; }
+ # 戻しの途中で launchd に起こされない為の印(step 6 と同じ物)。**自分が立てた印だけ**外す。
+ trap 'case "$(cat "$mark" 2>/dev/null)" in *" $owner") rm -f "$mark" ;; esac' EXIT
+@@ -556,7 +561,7 @@ echo "" >&2
+ echo "★★新しい木で立ち上がらなかった。複製から戻す。" >&2
+ if [ "$snapshot" = "NONE" ] || [ ! -d "$snapshot" ]; then
+     echo "★戻す複製が無い(${snapshot})。手で直す必要がある。" >&2
+-    echo "  ログ: /Users/edith/Library/Logs/rc-backend/rc-backend.error.log" >&2
++    echo "  ログ: $logdir/rc-backend.error.log" >&2
+     exit 1
+ fi
+ # 戻しの間も KeepAlive は生きている。印を立ててから書き戻す(でないと**戻している最中の
+@@ -577,7 +582,7 @@ done
+ if [ "$back_rc" -ne 0 ]; then
+     echo "★戻しの rsync が 3 回失敗した(rc=${back_rc})。本番の木は版が混ざっている。" >&2
+     echo "  ここから先の検査は意味を持たない(前の版を名乗る混ざった木を緑と読む)ので、進まない。" >&2
+-    echo "  ログ: /Users/edith/Library/Logs/rc-backend/rc-backend.error.log" >&2
++    echo "  ログ: $logdir/rc-backend.error.log" >&2
+     exit 3
+ fi
+ rm -f "$mark"
+@@ -589,7 +594,7 @@ if verify "$before" "$prev_rev"; then
+     exit 2
+ fi
+ echo "★★戻した木でも立ち上がらない。これは配備とは別の障害。" >&2
+-echo "  ログ: /Users/edith/Library/Logs/rc-backend/rc-backend.error.log" >&2
++echo "  ログ: $logdir/rc-backend.error.log" >&2
+ exit 3
+ REMOTE_RESTART
+ 
+
+QUESTIONS:
+1. Is the quoting style "'$JOB_LABEL'" safe here given the remote runs 'bash -s -- args'? Any injection or word-splitting hazard I introduced that the existing 5 args did not already have?
+2. Default is unchanged (com.edith.rc-backend). Is there a failure mode where RC_JOB_LABEL is set but the plist Label differs, and would the script fail loudly or silently?
+3. Anything else structurally wrong with this specific diff? Be terse, list concrete defects only.
+2026-08-25T19:54:28.663571Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-25T19:54:28.678934Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-25T19:54:29.070461Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+1. Safe only if values contain no single quote. Spaces and `$()` are preserved safely, but `'` breaks the remote quoting and permits command injection. This is the same existing flaw, with two new input surfaces.
+
+2. Yes. A mismatched label targets a nonexistent—or worse, unrelated—launchd job. `jobpid` hides errors and its pipeline normally returns `awk`’s zero status, so “job missing” becomes an empty PID. Downstream verification may eventually fail and roll back, but this diff does not guarantee an immediate, explicit failure.
+
+3. Concrete defects:
+
+- `gui/501` is still machine-specific; derive it with `id -u` or parameterize the full launchd target.
+- Validate `JOB_LABEL`, ideally allowing only `[A-Za-z0-9._-]+`.
+- Explicitly check that `launchctl print "$job"` succeeds before deployment/restart.
+- Use proper shell escaping such as Bash `printf %q` instead of embedded remote single quotes.
+
+Otherwise, `$6`/`$7` placement and quoted-heredoc expansion are structurally correct.
+tokens used
+15,513
+1. Safe only if values contain no single quote. Spaces and `$()` are preserved safely, but `'` breaks the remote quoting and permits command injection. This is the same existing flaw, with two new input surfaces.
+
+2. Yes. A mismatched label targets a nonexistent—or worse, unrelated—launchd job. `jobpid` hides errors and its pipeline normally returns `awk`’s zero status, so “job missing” becomes an empty PID. Downstream verification may eventually fail and roll back, but this diff does not guarantee an immediate, explicit failure.
+
+3. Concrete defects:
+
+- `gui/501` is still machine-specific; derive it with `id -u` or parameterize the full launchd target.
+- Validate `JOB_LABEL`, ideally allowing only `[A-Za-z0-9._-]+`.
+- Explicitly check that `launchctl print "$job"` succeeds before deployment/restart.
+- Use proper shell escaping such as Bash `printf %q` instead of embedded remote single quotes.
+
+Otherwise, `$6`/`$7` placement and quoted-heredoc expansion are structurally correct.

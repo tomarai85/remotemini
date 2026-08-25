@@ -13556,3 +13556,118 @@ Tom 指示の逆。リースの対象に含める形(執行系に格上げ)を�
 **実装状態: 未実装(このセッションでは着手しない)。** 中途半端な鍵配りは
 security theater になる(Codex 1)。本節を spec として次のセッションが
 SE 鍵 → pairing → lease → scope allowlist → 冪等鍵 の順で入れる。
+
+---
+
+## 2.103 配備先を edith から Friday へ移す —— **常時稼働でない機体の上では、この道具は成立しない**(2026-08-25、実測)
+
+### なぜ移すのか(前提が崩れた)
+
+この道具の定義は「**常時動いている機械の Claude Code を、外から見て打つ**」(§1)。
+edith はその前提を満たす艦隊機だったが、2026-08-20 に**家族(家族)の日常機**になった。
+日常機は持ち主が寝かせれば落ちる。落ちた機械の上では、道具そのものが成立しない。
+
+実測(2026-08-25 14:5x CDT / Jervis から):
+
+| 観測 | 値 |
+|---|---|
+| `ssh edith@10.0.0.0` | connect timeout |
+| Tailscale の見え方 | `edith … offline, last seen 9h ago` |
+| Friday(athenas)の見張りが記録した rc-backend の生死 | **`{"status":"down","fails":202,"firstFailAt":1787565019}`** = 2026-08-24 04:50 CDT から 34 時間 down |
+| `ssh athenas` | OK(`Friday.local`, up 1 day 15:22) |
+
+★見張り(`com.fleet.rc-health-observer`、Friday 上で 10 分毎)は down を**正しく検出していたが、
+一度も鳴っていない**(log は全行「ng — 鳴らさない」)。つまり **Tom には道具が死んだ事を
+知る手段が無かった**。これは配備先とは別の欠陥で、別途潰す(§2.103-c)。
+
+### 移設先の決め方 —— 軸は「機体の生死」ではなく「触りたい Claude が住んでいる場所」
+
+最初に立てた問い(「edith 復電待ちか Friday 移設か」)は**軸を間違えていた**。
+生きているから置くのではない。**Tom がスマホから触りたい Claude がどの機体に居るか**で決まる。
+Friday は米国(Tom と同じ大陸)に在る Tom 自身の艦隊機なので、両方の意味で正しい。
+
+### この機体の固有事情 —— 入口が 443 ではない
+
+Friday の `tailscale serve` 443 は既に埋まっていた(実測):
+
+```
+"Web": {"desk.tailnet.example:443": {"Handlers": {
+    "/":   {"Proxy": "http://127.0.0.1:8799"},
+    "/ja": {"Proxy": "http://127.0.0.1:8801"}}}},
+"AllowFunnel": {"desk.tailnet.example:443": true}
+```
+
+持ち主は `~/Personal/resonance-os`(Tom 自身の別 PJ)。そして **`AllowFunnel: true` =
+公開インターネットへ露出している**。ここへ相乗りすると、パス配下に置こうが
+**Claude Code の操縦面が公開される**。却下。
+
+平文 HTTP で tailnet IP へ直接繋ぐ案(`RC_BIND=10.0.0.0` + `http://…:8787`)も却下 ——
+iOS アプリの `Info.plist` に `NSAppTransportSecurity` の例外が**1つも無い**(実測)ので
+iOS が cleartext を止める。直すには実機再ビルドが要る = Tom の電話と Xcode を占有する。
+
+**採った形: 別ポートの tailnet 限定 HTTPS = 9443。**
+
+```
+tailscale serve --bg --https=9443 http://127.0.0.1:8787
+  → Available within your tailnet:
+     https://desk.tailnet.example:9443/
+```
+
+実測で確かめた性質(2026-08-25、Codex 追認):
+
+1. 任意の HTTPS ポートで serve は張れる。**443/8443/10000 の制限は Funnel の話であって
+   serve の話ではない**
+2. **Funnel が使えるのはその3ポートだけ**。9443 を選ぶ事で「うっかり公開する」が
+   構造的に起こせなくなる(現行 Tailscale が強制する性質であって、将来の保証ではない)
+3. 追加は**加算的**で 443 の設定を壊さない(前後の JSON を保存して確認)
+4. ★`tailscale serve reset` は**使わない**。共有設定を全部消すので resonance-os を巻き込む。
+   撤去は `serve` の `https=9443` 旗を off で**ポート単位**に行う
+
+### 常設(launchd)
+
+`~/Library/LaunchAgents/com.fleet.rc-backend.plist`(現物 = `rc-backend/tools/com.fleet.rc-backend.plist`)。
+
+`com.edith.*` を名乗らせなかった理由: Friday には**未 load の `com.edith.*` が 23 本残骸として
+残っている**ので、同じ名前空間に生きた job を混ぜると残骸と見分けが付かなくなる。
+この機体で既に動いている `com.fleet.rc-health-observer` と対にした。
+
+再起動を跨ぐか(実測): FileVault = Off / `autoLoginUser` = athenas → 無人再起動でも
+GUI セッションが立ち `gui/501` が存在する = この LaunchAgent は人が触らなくても読まれる。
+
+据え方:
+
+```
+bash rc-backend/tools/deploy-to-friday.sh
+ssh athenas 'mkdir -p /Users/athenas/Library/Logs/rc-backend'
+scp rc-backend/tools/com.fleet.rc-backend.plist athenas:/Users/athenas/Library/LaunchAgents/
+ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-backend.plist'
+curl https://desk.tailnet.example:9443/healthz
+```
+
+撤去は plist 冒頭の TEARDOWN。
+
+### 2.103-b 台本から機体名を剥がした3箇所(と、剥がさなかった物)
+
+| 直した物 | 何が直火だったか |
+|---|---|
+| `deploy-to-edith.sh` | launchd の Label が `job=gui/501/com.edith.rc-backend` の直書き。`RC_JOB_LABEL` へ。`gui/501` も `id -u` で測る |
+| 同上 | 遠隔のログ path が直書き → `RC_REMOTE_LOG_DIR` |
+| `serve-decision.sh` / `rc-backend-launch.sh` | 入口ポートが 443 の直書き → 第2引数 / `RC_SERVE_PORT`(既定 443) |
+
+**剥がさなかった物: 台本名 `deploy-to-edith.sh` と `RC_EDITH_*` という env 名。**
+14 file(対照4本を含む)が名前を**検査の錨**として持っている(`RC_EDITH_HOST` だけで 17 箇所)。
+改名は錨 27 本の付け替えを、機能を1つも増やさずに発生させる —— 2026-08-18 に文言の
+英語化で錨 40 本を付け替えたのと同じ代金。**名前が古い事より、検査が外れる事の方が高い。**
+Friday への入口は薄い殻 `deploy-to-friday.sh`(env を被せて呼ぶだけ)で足りる。
+
+### 2.103-c 判定が Funnel を一度も見ていなかった(Codex 2026-08-25 が掴んだ実バグ)
+
+`serve-decision.sh` は「その入口の `/` が自分の宛先か」しか見ていなかった。
+つまり **自分のポートが Funnel で公開されても `ok` を返す** = 操縦面が公開面に化けても
+誰も気付けない。5語目 **`funneled`** を新設し、宛先が自分でも独立に断る様にした。
+`foreign`(他人が居る)と分けたのは、人が取る次の手が違うから —— 前者は「退けるか
+ポートを変える」、後者は「Funnel を外すか、Funnel が使えないポートへ移す」。
+検査は `serve-decision-check.sh` に 6 ケース追加(計 25)。
+
+**未了(この節が閉じていない部分)**: 見張りが down を検出しても鳴らない件(冒頭 ★)。
+検出は生きているので、欠かけているのは通知の一段だけ。

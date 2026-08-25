@@ -57,6 +57,17 @@ RELEASES="${RC_EDITH_RELEASES:-/Users/edith/rc-releases}"
 MARK="${RC_DEPLOY_MARK:-/Users/edith/.rc-backend/deploy-in-progress}"
 LOCK="${RC_DEPLOY_LOCK:-/Users/edith/.rc-backend/deploy.lock}"
 LOCK_MAX_S="${RC_DEPLOY_LOCK_MAX_S:-7200}"
+# ★配備先の機体名を台本から剥がす(2026-08-25)。既定は edith の実物のまま =
+#   引数無しの既往の呼び方は 1 文字も変わらない。他機体へ向ける時だけ env で差し替える。
+#   `RC_JOB_LABEL` は **plist の Label と一致していなければならない**(kickstart の宛先)。
+JOB_LABEL="${RC_JOB_LABEL:-com.edith.rc-backend}"
+# ★値を検証する(Codex 2026-08-25)。遠隔へは `"'"'"'$VAR'"'"'"` の形で渡しており、値に単引用符が
+#   在ると引用が割れて任意コマンドになる。既存 5 引数と同じ構造の穴だが、**新しく開けた面は
+#   自分で塞ぐ**。launchd の Label が取り得る字だけ通す。
+case "$JOB_LABEL" in
+    *[!A-Za-z0-9._-]*|"") echo "★RC_JOB_LABEL に使えない字が在る: $JOB_LABEL" >&2; exit 1 ;;
+esac
+REMOTE_LOG_DIR="${RC_REMOTE_LOG_DIR:-/Users/edith/Library/Logs/rc-backend}"
 NODE="/opt/homebrew/bin/node"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -472,19 +483,20 @@ say "8. 常設(launchd)が在るなら、走っている物を新しい木に入
 #   「配ったが動かない」で終わらせない = 戻す判断を人の手に残さない(戻す事自体は可逆)。
 assert_lock_owner
 restart_rc=0
-ssh "$EDITH" bash -s -- "'$SNAPSHOT'" "'$LIVE'" "'$MARK'" "'$SRC_REV'" "'$OWNER'" <<'REMOTE_RESTART' || restart_rc=$?
+ssh "$EDITH" bash -s -- "'$SNAPSHOT'" "'$LIVE'" "'$MARK'" "'$SRC_REV'" "'$OWNER'" "'$JOB_LABEL'" "'$REMOTE_LOG_DIR'" <<'REMOTE_RESTART' || restart_rc=$?
 # ★`set -e` は**足さない**。この段は `verify` が非零を返す事を前提に分岐しており、
 #   `lsof` や `sed` が空を返す場面も正常。`set -e` を足すと正常な分岐が中断に化ける。
 #   代わりに、黙って進んで良い所が 1 箇所も無い**戻しの rsync** を明示的に見る(下)。
 set -u
 snapshot="$1"; live="$2"; mark="$3"; want_rev="$4"; owner="$5"
-job=gui/501/com.edith.rc-backend
+job="gui/$(id -u)/$6"; logdir="$7"
 jobpid() { launchctl print "$job" 2>/dev/null | awk -F'= *' '/^[[:space:]]*pid =/ {print $2; exit}'; }
 # 戻しの途中で launchd に起こされない為の印(step 6 と同じ物)。**自分が立てた印だけ**外す。
 trap 'case "$(cat "$mark" 2>/dev/null)" in *" $owner") rm -f "$mark" ;; esac' EXIT
 
 if ! launchctl print "$job" >/dev/null 2>&1; then
-    echo "常設なし(まだ plist を入れていない)。入れ替えだけで終わり = これは正常"
+    echo "常設なし($job を探したが無い)。入れ替えだけで終わり = 初回配備なら正常、"
+    echo "  既に常設している筈なら **Label の綴りが違う** = 走っている job は古い木のまま。"
     exit 0
 fi
 
@@ -556,7 +568,7 @@ echo "" >&2
 echo "★★新しい木で立ち上がらなかった。複製から戻す。" >&2
 if [ "$snapshot" = "NONE" ] || [ ! -d "$snapshot" ]; then
     echo "★戻す複製が無い(${snapshot})。手で直す必要がある。" >&2
-    echo "  ログ: /Users/edith/Library/Logs/rc-backend/rc-backend.error.log" >&2
+    echo "  ログ: $logdir/rc-backend.error.log" >&2
     exit 1
 fi
 # 戻しの間も KeepAlive は生きている。印を立ててから書き戻す(でないと**戻している最中の
@@ -577,7 +589,7 @@ done
 if [ "$back_rc" -ne 0 ]; then
     echo "★戻しの rsync が 3 回失敗した(rc=${back_rc})。本番の木は版が混ざっている。" >&2
     echo "  ここから先の検査は意味を持たない(前の版を名乗る混ざった木を緑と読む)ので、進まない。" >&2
-    echo "  ログ: /Users/edith/Library/Logs/rc-backend/rc-backend.error.log" >&2
+    echo "  ログ: $logdir/rc-backend.error.log" >&2
     exit 3
 fi
 rm -f "$mark"
@@ -589,7 +601,7 @@ if verify "$before" "$prev_rev"; then
     exit 2
 fi
 echo "★★戻した木でも立ち上がらない。これは配備とは別の障害。" >&2
-echo "  ログ: /Users/edith/Library/Logs/rc-backend/rc-backend.error.log" >&2
+echo "  ログ: $logdir/rc-backend.error.log" >&2
 exit 3
 REMOTE_RESTART
 

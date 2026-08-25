@@ -26,6 +26,12 @@ LOG_DIR="${RC_LOG_DIR:-/Users/edith/Library/Logs/rc-backend}"
 KEY_FILE="${RC_KEY_FILE:-/Users/edith/.rc-backend/api.key}"
 MARK="${RC_DEPLOY_MARK:-/Users/edith/.rc-backend/deploy-in-progress}"
 MARK_MAX_S="${RC_DEPLOY_MARK_MAX_S:-180}"
+# ★serve 側の入口ポート(2026-08-25)。既定 443 = 既往の機体では 1 文字も変わらない。
+#   別ポートが要る機体が実在する: 443 が別 PJ に埋まっていて、しかも Funnel で公開されている
+#   機体へ相乗りすると、Claude Code の操縦面が公開インターネットに出る。
+#   ★Funnel が使えるのは 443 / 8443 / 10000 の3つだけなので、それ以外を選ぶと
+#     「うっかり公開する」が**構造的に起こせなくなる**。
+SERVE_PORT="${RC_SERVE_PORT:-443}"
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"; }
 
@@ -163,23 +169,30 @@ if [ "$TS_READY" = yes ]; then
     serrtxt=$(tr -d '\r' < "$serr" | tr '\n' ' '); rm -f "$serr"
     [ "$srrc" = 0 ] || log "★serve status が rc=${srrc} で終わった: ${serrtxt:-(stderr なし)}"
 
-    dec=$(printf '%s' "$snap" | /bin/bash "${APP}/tools/serve-decision.sh" "${PORT}" 2>/dev/null); decrc=$?
+    dec=$(printf '%s' "$snap" | /bin/bash "${APP}/tools/serve-decision.sh" "${PORT}" "${SERVE_PORT}" 2>/dev/null); decrc=$?
     snap1=$(printf '%s' "$snap" | tr -d ' \n')
     case "$dec" in
         apply)
-            log "serve: 443 は未使用なので入れる --https=443 -> http://127.0.0.1:${PORT}"
-            "$TS" serve --bg --https=443 "http://127.0.0.1:${PORT}" 2>&1 | sed 's/^/  serve: /'
+            log "serve: ${SERVE_PORT} は未使用なので入れる --https=${SERVE_PORT} -> http://127.0.0.1:${PORT}"
+            "$TS" serve --bg --https="${SERVE_PORT}" "http://127.0.0.1:${PORT}" 2>&1 | sed 's/^/  serve: /'
             ;;
         ok)
-            log "serve: 443 の / が既に自分に向いている(入れ直しても no-op なので触らない)"
+            log "serve: ${SERVE_PORT} の / が既に自分に向いている(入れ直しても no-op なので触らない)"
+            ;;
+        funneled)
+            log "★★serve: ${SERVE_PORT} が **Funnel で公開インターネットに晒されている**。"
+            log "  宛先が自分自身でも入れない —— 操縦面を公開面に繋ぐのは設定の一致より重い。"
+            log "  判定した現物: ${snap1:-(空)}"
+            log "  次の手: ${TS} funnel status で誰が公開したか見て、外すか RC_SERVE_PORT を"
+            log "          Funnel が使えないポート(443 / 8443 / 10000 以外)へ移す"
             ;;
         foreign)
-            log "★serve: 443 に**自分以外の設定**が在る。上書きしない = 電話からは到達できない"
+            log "★serve: ${SERVE_PORT} に**自分以外の設定**が在る。上書きしない = 電話からは到達できない"
             log "  判定した現物: ${snap1:-(空)}"
-            log "  次の手: ${TS} serve status で誰が 443 を持っているか見て、手で退けてから再起動"
+            log "  次の手: ${TS} serve status で誰が ${SERVE_PORT} を持っているか見て、退けるか RC_SERVE_PORT を変える"
             ;;
         unknown)
-            log "★serve: 443 の状態が**読めない**(status rc=${srrc})。読めない物には書かない"
+            log "★serve: ${SERVE_PORT} の状態が**読めない**(status rc=${srrc})。読めない物には書かない"
             log "  判定した現物: ${snap1:-(空)}"
             log "  次の手: ${TS} serve status --json が JSON を返すか / /usr/bin/jq が在るかを見る"
             ;;
@@ -187,7 +200,7 @@ if [ "$TS_READY" = yes ]; then
             # 4 語のどれでもない = 設定の話ではなく**判定台本側の不具合**。
             # ここを `foreign` と同じ枝に落とすと、自分の bug を他人のせいにしたログが残る。
             log "★serve: 判定台本が 1 語を返さなかった(rc=${decrc} 出力=${dec:-(空)})。触らない"
-            log "  次の手: printf '%s' '<status の JSON>' | ${APP}/tools/serve-decision.sh ${PORT}"
+            log "  次の手: printf '%s' '<status の JSON>' | ${APP}/tools/serve-decision.sh ${PORT} ${SERVE_PORT}"
             ;;
     esac
 fi
