@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.fleet.rc-phone-window  (Friday / athenas 用。2026-08-25 新設)
+  ============================================================================
+  DESIGN.md §6「常設の完了条件はサーバが上がる事ではない — 鎖4本」の ② と ③ を持つ。
+    ① 機械が起きて rc-backend が上がる … com.fleet.rc-backend
+    ② tmux `work` が在る               … tools/ensure-work-session.sh  ★この job
+    ③ その中で Claude Code が走る       … tools/ensure-phone-window.sh  ★この job
+    ④ 登録簿に載る                     … 起動を rc-claude 経由にする事で満たす
+
+  ★edith との違い(2026-08-25 実測): edith では ② を既存の `com.tom.work-tmux` が
+    持っていた。**Friday にはその job が無く、tmux サーバ自体が居なかった。**
+    鎖②が欠けたまま③だけ据えると ensure-phone-window は永久に exit 10 を返す ——
+    それは「異常ではない」と定義された値なので、静かに永久に何もしない状態になる。
+    だから②を repo 側の台本として明示的に持たせた。
+
+  ★なぜ Friday に人間のセッションが 1 本も無かったか(移設で判った事実)
+    Friday の `~/.claude/projects` は jsonl 9792 本すべてが `entrypoint:"sdk-cli"`
+    (= 自動化のログ)で、`cli`(= 人間の TUI)はゼロ。電話の一覧は cli だけを出すので、
+    この鎖を据えるまで一覧は**構造的に空**だった。サーバの健康とは無関係の空。
+
+  ★起動する会話は `bypass permissions on` で立つ(この機体の既定。2026-08-25 実測)。
+    電話から打つ相手がその状態である事は Tom が知っておくべき性質。
+
+  ★この注釈の中にハイフン2連続を書けない(XML コメントの規則)。
+
+  INSTALL:
+    scp .../com.fleet.rc-phone-window.plist athenas:/Users/athenas/Library/LaunchAgents/
+    ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-phone-window.plist'
+  TEARDOWN:
+    ssh athenas 'launchctl bootout gui/501/com.fleet.rc-phone-window'
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fleet.rc-phone-window</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>/bin/bash /Users/athenas/rc-backend/tools/ensure-work-session.sh; exec /bin/bash /Users/athenas/rc-backend/tools/ensure-phone-window.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/athenas/rc-backend</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/athenas/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/athenas</string>
+    <key>RC_PHONE_SESSION</key>
+    <string>work</string>
+    <key>RC_PHONE_WINDOW</key>
+    <string>phone</string>
+    <key>RC_PHONE_CWD</key>
+    <string>/Users/athenas/Athenas</string>
+    <key>RC_WORK_SESSION_CWD</key>
+    <string>/Users/athenas/Athenas</string>
+    <key>RC_PHONE_CMD</key>
+    <string>/Users/athenas/.local/bin/rc-claude</string>
+    <key>RC_PHONE_TMUX</key>
+    <string>/opt/homebrew/bin/tmux</string>
+    <key>RC_PHONE_PATH</key>
+    <string>/Users/athenas/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>LimitLoadToSessionType</key>
+  <array>
+    <string>Aqua</string>
+    <string>Background</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartInterval</key>
+  <integer>60</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/athenas/Library/Logs/rc-backend/rc-phone-window.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/athenas/Library/Logs/rc-backend/rc-phone-window.error.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
