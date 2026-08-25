@@ -13671,3 +13671,39 @@ Friday への入口は薄い殻 `deploy-to-friday.sh`(env を被せて呼ぶだ�
 
 **未了(この節が閉じていない部分)**: 見張りが down を検出しても鳴らない件(冒頭 ★)。
 検出は生きているので、欠かけているのは通知の一段だけ。
+
+### 2.103-d 移設して初めて見えた事 —— **Friday には人間のセッションが1本も無い**(2026-08-25 実測)
+
+配備が通り `/healthz` が 200 を返した後、電話がやる事と同じ呼び方で一覧を引いたら
+**0 件**だった。サーバは健康で、映す物が無い。
+
+| 測った物 | 値 |
+|---|---|
+| `~/.claude/projects/**/*.jsonl` の総数(Friday) | **9792** |
+| そのうち `"entrypoint":"cli"`(= 人間の TUI)を含む物 | **0** |
+| 内訳(先頭400本の抽出) | `sdk-cli` のみ 2430 件 |
+| tmux サーバ | 不在(`no server running`) |
+| `rc-claude` / `claude-work` | 無し |
+
+一覧の定義は `isPhoneVisible = meta.entrypoint === "cli"`(`src/sessions.mjs`)。
+edith は 642 本中 `cli` が 6 本で、**そもそも細かった**。Friday はゼロ = 構造的に空。
+
+**機構**: この道具が映すのは「その機体で人が開いた Claude Code」。Tom は Friday の前に
+座らないので、Friday は自動化ログしか産まない。だから鎖②③④を据えるまで、
+配備がどれだけ健康でも電話には何も出ない。**サーバの健康と一覧の中身は別の物**で、
+`/healthz` が 200 な事はこの空を1ミリも説明しない。
+
+実測で通した鎖(2026-08-25):
+
+1. `rc-claude` + `rc-pane-register.sh` を Jervis の `~/.claude/tools/` から Friday へ配り、
+   `~/.local/bin/rc-claude` に symlink
+2. tmux で起こして 14 秒後に画面を読むと、**認証を通って TUI が立ち**、
+   status 行に `[rc %0]` = ペイン登録済み。既定は `bypass permissions on`(この機体の設定)
+3. `~/.rc-backend/panes/<session_id>.json` が生まれ、
+   Jervis から `GET /api/sessions` が **1 件**を返した(`cwd=/Users/athenas/Athenas`)
+
+常設化 = `com.fleet.rc-phone-window`(鎖②③を1つの job で持つ)。
+★edith では鎖② を既存の `com.tom.work-tmux` が持っていたが Friday には無いので、
+`tools/ensure-work-session.sh` を新設して repo 側に持たせた。鎖②が欠けたまま③だけ
+据えると `ensure-phone-window.sh` は永久に exit 10(= 異常ではない、と定義された値)を
+返し続け、**静かに永久に何もしない**状態になる。
