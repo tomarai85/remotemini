@@ -68,6 +68,13 @@ case "$JOB_LABEL" in
     *[!A-Za-z0-9._-]*|"") echo "★RC_JOB_LABEL に使えない字が在る: $JOB_LABEL" >&2; exit 1 ;;
 esac
 REMOTE_LOG_DIR="${RC_REMOTE_LOG_DIR:-/Users/edith/Library/Logs/rc-backend}"
+# ★9b(冷起動の鎖)が見に行く先。**渡していなかったので、移設先でも edith を探していた**
+#   (2026-08-25 に Friday への初回配備で実際に鳴った: 「自動ログイン: athenas(欲しいのは
+#   edith)」「plist が …/com.edith.rc-backend.plist に無い」)。coldboot-chain.sh 側は
+#   CB_PLIST / CB_USER で既にパラメータ化されていて、**呼び出し側が繋いでいなかっただけ**。
+#   直さないと、移設先では 9b が永久に赤を出す = 計器が嘘をつく(赤が壁紙になる)。
+COLDBOOT_PLIST="${RC_COLDBOOT_PLIST:-\$HOME/Library/LaunchAgents/com.edith.rc-backend.plist}"
+COLDBOOT_USER="${RC_COLDBOOT_USER:-edith}"
 NODE="/opt/homebrew/bin/node"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -652,7 +659,7 @@ say "9b. 停電で落ちた後、自分で戻って来られるか(**警告で�
 #   ★門にしない判断は変えていない。`|| true` を `wl_run` に替えたのは、
 #     **飲み込んだ終了コードを最後の帳尻まで持ち帰る**為(tools/warn-ledger.sh)。
 #     「門にしない」と「信号を捨てる」は別で、旧版はその2つを一緒にやっていた。
-wl_run "停電から戻れるか" ssh "$EDITH" "/bin/bash '$LIVE/tools/coldboot-chain.sh'"
+wl_run "停電から戻れるか" ssh "$EDITH" "CB_PLIST=\"$COLDBOOT_PLIST\" CB_USER='$COLDBOOT_USER' /bin/bash '$LIVE/tools/coldboot-chain.sh'"
 
 say "10. 複製の在庫(**自動では消さない**)"
 # ★消す判断を台本に持たせない。1つ 2.7MB 程度で、消し間違いの害の方が大きい。

@@ -36,4 +36,6 @@ RC_DEPLOY_MARK="/Users/athenas/.rc-backend/deploy-in-progress" \
 RC_DEPLOY_LOCK="/Users/athenas/.rc-backend/deploy.lock" \
 RC_JOB_LABEL="com.fleet.rc-backend" \
 RC_REMOTE_LOG_DIR="/Users/athenas/Library/Logs/rc-backend" \
+RC_COLDBOOT_PLIST="$HOME/Library/LaunchAgents/com.fleet.rc-backend.plist" \
+RC_COLDBOOT_USER="athenas" \
 exec bash "$HERE/deploy-to-edith.sh" "$@"
