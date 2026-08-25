@@ -2,6 +2,36 @@
 
 **起動合図**: 「移動中作業のプロジェクトの続き」
 
+> ## 0-00000. 2026-08-25 — **凍結の理由が消滅した。再開の入口は「配備先の再決定」1問**
+>
+> ### この PJ の目的(1文)
+>
+> 外出中の Tom が iPhone から、常時稼働 Mac mini 上で動く Claude Code のセッションを見て指示を打てるようにする(本家 Remote Control の模倣。正本 = `DESIGN.md` §1、全体像 = 本ファイル §0)。
+>
+> ### 現在地(§0-0000 の状態から変わっていない物)
+>
+> - iPhone 側: Liquid Glass D 出荷済(`f7b99b0` / build 63 install 済)。**画面構造の再設計が Tom 裁定待ち** — rc-theme-pick.vercel.app/structure.html(案1 3タブ推し/案2 4タブ/案3 2タブ)+ i13.html(「>」切れ直し A/B/C)。
+> - rc-backend 側: `41a04d7` を edith へ配備済(当時 healthz 実測 ok)。glass 以降 backend は無変更。
+>
+> ### 変わった物(2026-08-25 実測 @Jervis)
+>
+> | 事実 | 観測 |
+> |---|---|
+> | 凍結理由の Edith/Friday 統合 PJ は**不要化** | Friday 渡米・Edith は日本で家族機+艦隊機(memory `HANDOFF-2026-08-20-friday-departure-yumiko-setup.md`)。「統合が先」という凍結根拠はもう存在しない |
+> | edith = **到達不能** | `ssh edith@10.0.0.0` → connect timeout(8/22 台帳では電源抜け)。rc-backend の生死は**観測不能** |
+> | Friday(athenas)= **復帰** | `ssh athenas` → OK(8/22「ネット無し」から変化) |
+>
+> ### 再開時の壁(この順で潰す)
+>
+> 1. **配備先の再決定(Tom 判断)**: backend は edith 前提で焼いてある — `RC_BIND=10.0.0.0` / `RC_PORT=8787`(`src/server.mjs` の `const PORT = Number(process.env.RC_PORT || 8787)` と冒頭コメントの `RC_BIND=10.0.0.0` 例)、配備台本も `tools/deploy-to-edith.sh`。選択肢 = (a) edith 復電待ち(日本の家族機を米国から使う形になる。復電は Tom にしか出来ない) / (b) Friday へ移設(今動いていて米国に在る。BIND IP・Tailscale 名・deploy 台本・iPhone 側 RCBaseURL/RCAPIKey が全部動く)。境界の正本 = memory `project_macmini_relationship_map_2026-08-20.md`、fleet-account / claude-work / rc-claude / tmux work / `~/.claude.json` / Tailscale 名を触ったら `departure-survivability-check.sh` を撃つ。
+> 2. **UI 構造案の裁定**(§0-0000 の通り。案番号2つ: 構造 1/2/3、「>」A/B/C)。
+> 3. 配備先確定後: healthz 実測 → UI 実装 → ゲート → `ios/tools/build.sh` → Tom 目視。
+>
+> ### Tom への2問(どちらも1語で答えられる)
+>
+> - 配備先: **(b) Friday 移設を推奨**(米国に在って今生きている。edith は家族機になった上に電源断)。edith 待ちにするなら「a」。
+> - 画面構造: 案1/2/3 のどれか(推し = 案1 3タブ)+「>」直し A/B/C。
+>
 > ## 0-0000. 2026-08-18 未明 — **UI 刷新が Liquid Glass D で確定・全画面展開済み。英語化+D は commit/配備/実機まで全部通した(f7b99b0 / build 63)。残りは Tom の実機目視のみ**
 >
 > ### ★2026-08-20 追記 — **このレーンは凍結中(Tom: Edith/Friday 統合 PJ が先)**
