@@ -13707,3 +13707,29 @@ edith は 642 本中 `cli` が 6 本で、**そもそも細かった**。Friday 
 `tools/ensure-work-session.sh` を新設して repo 側に持たせた。鎖②が欠けたまま③だけ
 据えると `ensure-phone-window.sh` は永久に exit 10(= 異常ではない、と定義された値)を
 返し続け、**静かに永久に何もしない**状態になる。
+
+### 2.103-e 常設した窓が **Claude Code の初回プロンプトで固まる**(2026-08-25 実測、未解決)
+
+`com.fleet.rc-phone-window` が窓を作った直後、その窓の claude は登録簿に載らなかった。
+画面を読むと **`Try the new fullscreen renderer?` の 1/2 選択**で止まっていた
+(Claude Code v2.1.245 / `~/.claude.json` の `fullscreenUpsellSeenCount` が数えている)。
+
+**この穴の形**: 電話の一覧は登録済みの会話しか出さない。会話は初回プロンプトに答えるまで
+登録されない。→ **電話からは答える道が無い**。DESIGN §3 が `exit 20`(未信頼の cwd)で
+避けている穴と同じ形だが、`ensure-phone-window.sh` の信頼判定は `~/.claude.json` の
+`projects` しか見ないので、**版が上がって新しいプロンプトが増えるとすり抜ける**。
+
+今回の手当て(手で1回):
+
+```
+tmux send-keys -t work:phone "2"; tmux send-keys -t work:phone Enter
+```
+
+`2 = Not now` を選んだ。fullscreen renderer は alternate screen を使うので、
+電話側が `capture-pane` で読む前提を壊しうる。**この選択は意図的**。
+
+**未解決**: 再起動で窓を作り直す度に、その時点の版が持つ初回プロンプトで再発しうる。
+`ensure-phone-window.sh` は「窓が在るか」で冪等を取っており、**窓の中の claude が
+登録まで到達したか**は見ていない。窓が在って中が固まっている状態は、この台本からは
+正常に見える。次の担当への宿題 = 冪等の判定に「N 秒以内に `panes/<id>.json` が生えたか」を
+足すか、別の見張りに持たせるか。
