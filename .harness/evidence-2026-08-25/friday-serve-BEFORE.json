@@ -1,0 +1,22 @@
+{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "desk.tailnet.example:443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:8799"
+        },
+        "/ja": {
+          "Proxy": "http://127.0.0.1:8801"
+        }
+      }
+    }
+  },
+  "AllowFunnel": {
+    "desk.tailnet.example:443": true
+  }
+}

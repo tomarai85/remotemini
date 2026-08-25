@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.fleet.rc-backend  (Friday / athenas 用。2026-08-25 新設)
+  ============================================================================
+  電話(iPhone)から Friday 上の Claude Code セッションを見る / 打ち込む為の面。
+  `com.edith.rc-backend.plist` の Friday 版。設計の正本は同じ = DESIGN.md。
+
+  ★なぜ機体ごとに別 file なのか(2026-08-25)
+    edith が家族(家族)の日常機になり、常時稼働の保証が消えた。rc-backend は
+    「常時動いている機械の Claude を外から触る」道具なので、寝る機械の上では
+    道具そのものが成立しない。Friday(米国・Tom の艦隊機)へ移した。
+    Label を `com.edith.*` にしなかった理由: Friday には未 load の `com.edith.*` が
+    23 本残っており、同名前空間に生きた job を混ぜると残骸と見分けが付かない。
+    `com.fleet.rc-health-observer`(この機体で既に動いている見張り)と対にした。
+
+  ★入口ポートが 443 ではない。ここがこの機体の固有事情:
+    Friday の tailscale serve 443 は `~/Personal/resonance-os` が既に持っていて、
+    しかも **AllowFunnel = true(公開インターネットへ露出)**。そこへ相乗りすると
+    Claude Code の操縦面が公開される。よって **9443** に載せる。
+    Funnel が使えるのは 443 / 8443 / 10000 の3つだけなので、9443 を選ぶ事で
+    「うっかり公開する」が構造的に起こせなくなる(2026-08-25 実測で確認)。
+    電話が開く URL = https://desk.tailnet.example:9443/
+
+  ★この注釈の中にハイフン2連続を書けない(XML コメントの規則)。旗は語で書く。
+    `plutil -lint` はこれを通してしまい、`xmllint` だけが落とす。
+
+  形:
+    node は 127.0.0.1:8787 だけに bind する(RC_BIND)。tailnet に晒す面は
+    tailscaled 側で、起動ラッパが `tailscale serve` を冪等に入れ直す。
+
+  ★依存(launchd に After は無い。KeepAlive で自己修復する形):
+    tailscaled が上がっている事。落ちていれば serve が入らないが node は上がる。
+    tmux サーバは前提にしない。無ければ「見る」だけが動き「打ち込む」は 409 で断る。
+
+  ★再起動を跨ぐか(2026-08-25 実測): FileVault = Off / autoLoginUser = athenas
+    なので、無人再起動でも GUI セッションが立ち gui/501 が存在する。
+
+  ★触らない物(deploy 台本の delete 旗が届かない同期ツリーの外):
+    /Users/athenas/.rc-backend/api.key       鍵。作り直すと電話に貼った鍵が失効する
+    /Users/athenas/.rc-backend/panes/*.json  登録簿
+    /Users/athenas/Library/Logs/rc-backend/  ログ
+
+  INSTALL(私が実行する。Tom ゲートではない = 可逆なローカル/常設操作):
+    bash ~/Infra/mobile-work/rc-backend/tools/deploy-to-friday.sh
+    ssh athenas 'mkdir -p /Users/athenas/Library/Logs/rc-backend'
+    ssh athenas 'chmod 700 /Users/athenas/rc-backend/tools/rc-backend-launch.sh'
+    scp .../com.fleet.rc-backend.plist athenas:/Users/athenas/Library/LaunchAgents/
+    ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-backend.plist'
+    ssh athenas 'launchctl list | grep rc-backend'
+    curl https://desk.tailnet.example:9443/healthz
+
+  TEARDOWN:
+    ssh athenas 'launchctl bootout gui/501/com.fleet.rc-backend'
+    ssh athenas '/Applications/Tailscale.app/Contents/MacOS/Tailscale serve の https=9443 旗を off'
+    (443 の resonance-os は別設定なので `serve reset` は使わない。あれは全部消す)
+
+  変更する時: plist を書き換えたら bootout してから bootstrap。
+  `launchctl load` の重ね掛けは古い定義のまま動き続ける。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fleet.rc-backend</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/athenas/rc-backend/tools/rc-backend-launch.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/athenas/rc-backend</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/athenas</string>
+    <key>RC_BIND</key>
+    <string>127.0.0.1</string>
+    <key>RC_PORT</key>
+    <string>8787</string>
+    <key>RC_SERVE_PORT</key>
+    <string>9443</string>
+    <key>RC_APP_DIR</key>
+    <string>/Users/athenas/rc-backend</string>
+    <key>RC_LOG_DIR</key>
+    <string>/Users/athenas/Library/Logs/rc-backend</string>
+    <key>RC_KEY_FILE</key>
+    <string>/Users/athenas/.rc-backend/api.key</string>
+    <key>RC_DEPLOY_MARK</key>
+    <string>/Users/athenas/.rc-backend/deploy-in-progress</string>
+  </dict>
+
+  <key>LimitLoadToSessionType</key>
+  <array>
+    <string>Aqua</string>
+    <string>Background</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>15</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/athenas/Library/Logs/rc-backend/rc-backend.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/athenas/Library/Logs/rc-backend/rc-backend.error.log</string>
+
+  <key>ProcessType</key>
+  <string>Standard</string>
+
+  <key>ExitTimeOut</key>
+  <integer>10</integer>
+</dict>
+</plist>

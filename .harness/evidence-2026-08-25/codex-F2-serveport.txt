@@ -1,0 +1,75 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a03a80-9705-76d1-a322-2c25a8ecc58e
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Design review. No file access; everything is inline. Be terse, list concrete defects only.
+
+SITUATION: A Node service (rc-backend, listens 127.0.0.1:8787) must be reachable from an iPhone over a Tailscale tailnet. It used to run on host A (now permanently offline). Moving it to host B. On host B, `tailscale serve` port 443 is ALREADY taken by an unrelated project of the owner, and 443 has AllowFunnel=true (publicly exposed to the internet). The launch wrapper has a fail-closed decision function that returns apply/ok/foreign/unknown by inspecting `tailscale serve status --json`; it currently hardcodes 443 as the serve port and refuses to overwrite a foreign 443.
+
+REJECTED OPTIONS AND WHY:
+- Mount rc-backend under a subpath of the existing 443: that 443 is funneled, so the Claude Code control plane would be on the public internet.
+- Bind rc-backend to the tailnet IP and use plain http://100.x.x.x:8787: the iOS app has NO NSAppTransportSecurity exception in its Info.plist, so iOS blocks cleartext; would require an app rebuild on the owner's physical phone.
+
+CHOSEN: run a SECOND tailscale serve listener on a tailnet-only HTTPS port (9443, deliberately NOT 443/8443/10000 which are the only Funnel-capable ports, so public exposure becomes structurally impossible). Phone URL becomes https://desk.tailnet.example:9443/. Implementation: add an optional 2nd arg SERVE_PORT (default 443) to the decision script and replace the literal ":443" / ["443"] lookups with it; wrapper passes --https=$SERVE_PORT.
+
+QUESTIONS:
+1. Does `tailscale serve --bg --https=9443 http://127.0.0.1:8787` actually work for a non-443 port, tailnet-only, on macOS? Any known constraint that only 443/8443/10000 are valid for serve (not funnel)?
+2. Is 'not funnel-capable' a real safety property, or can funnel be enabled on arbitrary ports?
+3. Does adding a second serve listener on 9443 risk disturbing the existing funneled 443 config (shared state, reset semantics)?
+4. Any defect in the default-443 backward-compatible parameterization plan?
+2026-08-25T19:58:21.732924Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-25T19:58:21.825338Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-25T19:58:22.438698Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+1. Yes. `tailscale serve --bg --https=9443 http://127.0.0.1:8787` supports arbitrary HTTPS ports on macOS. The 443/8443/10000 restriction applies to Funnel, not Serve. MagicDNS and tailnet HTTPS must be enabled.
+
+2. Yes, currently. Funnel accepts only 443, 8443, and 10000; 9443 cannot be funneled. Treat this as a current Tailscale-enforced property, not a permanent future-proof guarantee.
+
+3. Adding 9443 is additive and should preserve 443. Defects to avoid:
+
+- Never run `tailscale serve reset`; it clears shared Serve/Funnel configuration.
+- Avoid global `off` or full-config replacement operations.
+- Existing automation managing 443 could still reset the shared configuration and remove 9443.
+- The inspect-then-apply decision has a race if another process changes Serve configuration concurrently.
+
+4. The parameterization is sound, provided that:
+
+- `SERVE_PORT` is validated as an integer from 1–65535.
+- Every port-dependent JSON key is derived from it, including `"9443"`, `hostname:9443`, and any `AllowFunnel` entry.
+- Ownership checks examine only the selected port; the foreign 443 must not make 9443 return `foreign`.
+- `unknown` remains fail-closed for unrecognized JSON shapes.
+- Apply and rollback are port-targeted and never use `reset`.
+- The generated phone URL always includes `:9443`.
+- The wrapper rejects Funnel-capable ports when this listener is required to remain structurally private.
+tokens used
+14,097
+1. Yes. `tailscale serve --bg --https=9443 http://127.0.0.1:8787` supports arbitrary HTTPS ports on macOS. The 443/8443/10000 restriction applies to Funnel, not Serve. MagicDNS and tailnet HTTPS must be enabled.
+
+2. Yes, currently. Funnel accepts only 443, 8443, and 10000; 9443 cannot be funneled. Treat this as a current Tailscale-enforced property, not a permanent future-proof guarantee.
+
+3. Adding 9443 is additive and should preserve 443. Defects to avoid:
+
+- Never run `tailscale serve reset`; it clears shared Serve/Funnel configuration.
+- Avoid global `off` or full-config replacement operations.
+- Existing automation managing 443 could still reset the shared configuration and remove 9443.
+- The inspect-then-apply decision has a race if another process changes Serve configuration concurrently.
+
+4. The parameterization is sound, provided that:
+
+- `SERVE_PORT` is validated as an integer from 1–65535.
+- Every port-dependent JSON key is derived from it, including `"9443"`, `hostname:9443`, and any `AllowFunnel` entry.
+- Ownership checks examine only the selected port; the foreign 443 must not make 9443 return `foreign`.
+- `unknown` remains fail-closed for unrecognized JSON shapes.
+- Apply and rollback are port-targeted and never use `reset`.
+- The generated phone URL always includes `:9443`.
+- The wrapper rejects Funnel-capable ports when this listener is required to remain structurally private.

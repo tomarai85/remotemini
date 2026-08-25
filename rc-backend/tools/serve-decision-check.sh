@@ -78,6 +78,17 @@ run() { # <番号> <説明> <期待> <port> <json>
     compare_old "$3" "$4" "$5"
 }
 
+# ★入口ポートを指定して撃つ版(2026-08-25)。第2引数 = serve 側の入口。
+#   `compare_old` は当てない —— 旧判定に第2引数は無く、比べる相手が存在しない。
+run2() { # <番号> <説明> <期待> <port> <serve_port> <json>
+    local got; got=$(printf '%s' "$6" | /bin/bash "$DEC" "$4" "$5" 2>/dev/null)
+    if [ "$got" = "$3" ]; then
+        printf '  %-3s %-52s → %-8s OK\n' "$1" "$2" "$got"
+    else
+        printf '  %-3s %-52s → %-8s ★期待 %s\n' "$1" "$2" "$got" "$3"; fail=1
+    fi
+}
+
 echo "=== v1 から引き継いだ7ケース(ケース4 は期待値を意図的に変えた)==="
 run 1 "edith の現物(pretty のまま)"                ok      8787 "$REAL"
 run 2 "同じ現物・ポートだけ違う[負]"                 foreign 9999 "$REAL"
@@ -123,6 +134,17 @@ usage_case() { # <番号> <説明> <port>
 usage_case J "port=0"              0
 usage_case K "port=70000"          70000
 usage_case L "port が数字でない"   abc
+
+echo
+echo "=== 入口ポートの指定と Funnel(2026-08-25 追加)==="
+FRIDAY='{"TCP":{"443":{"HTTPS":true},"9443":{"HTTPS":true}},"Web":{"desk.tailnet.example:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8799"}}},"desk.tailnet.example:9443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8787"}}}},"AllowFunnel":{"desk.tailnet.example:443":true}}'
+run2 M "Friday 現物・9443 は自分で公開されていない"   ok       8787 9443 "$FRIDAY"
+run2 N "同じ現物・443 は他人かつ Funnel[負]"          funneled 8787 443  "$FRIDAY"
+run2 O "自分の宛先でも Funnel されていたら断る[負]"   funneled 8787 9443 '{"TCP":{"9443":{"HTTPS":true}},"Web":{"h:9443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8787"}}}},"AllowFunnel":{"h:9443":true}}'
+run2 P "入口が空いている(9443 に何も無い)"           apply    8787 9443 '{"TCP":{"443":{"HTTPS":true}},"Web":{"h:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:1"}}}}}'
+run2 Q "Funnel が別ポートに在っても巻き込まない"      apply    8787 9443 '{"AllowFunnel":{"h:443":true},"TCP":{"443":{"HTTPS":true}},"Web":{"h:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:1"}}}}}'
+printf '  %-3s %-52s → ' R "serve port が数字でない(使い方エラー)"
+if printf '{}' | /bin/bash "$DEC" 8787 abc >/dev/null 2>&1; then printf '★通ってしまった\n'; fail=1; else printf 'exit 2 OK\n'; fi
 
 echo
 echo "=== 旧判定との対比(1件でなく全 19 ケース)==="

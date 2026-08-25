@@ -18,11 +18,16 @@
 # 使い方:
 #   out=$("$TS" serve status --json 2>/tmp/err); rc=$?      # ★パイプに直で繋がない
 #   printf '%s' "$out" | serve-decision.sh <port>            #   (パイプは status の rc を捨てる)
-#   stdout に apply / ok / foreign / unknown のいずれか1語。exit 0 = 1語出した / 2 = 使い方が違う。
+#   stdout に apply / ok / foreign / funneled / unknown のいずれか1語。exit 0 = 1語出した / 2 = 使い方が違う。
 #
 #   apply   … 443 が**完全に未使用**。入れてよい
 #   ok      … `TCP["443"].HTTPS == true` かつ `:443` の Web entry 全部の `/` が自分に向いている
-#   foreign … 443 に何か在るが上と一致しない。**上書きしない**(fail-closed)
+#   foreign … その入口に何か在るが上と一致しない。**上書きしない**(fail-closed)
+#   funneled… その入口が **Funnel で公開インターネットに晒されている**(2026-08-25 追加)。
+#             宛先が自分でも `ok` と言わない —— Claude Code の操縦面を公開面へ繋ぐのは
+#             設定の一致より重い事故なので、独立に見て独立に断る。
+#             ★これが無いと「自分の物だから ok」で通り、**公開された事に誰も気付けない**。
+#             Codex 2026-08-25 の指摘: 判定が AllowFunnel を一度も見ていなかった。
 #   unknown … 状態が読めない(空 / 壊れた JSON / object でない / jq が無い)。**触らない**
 #             ★`foreign` と分ける理由: 「他人が居る」と「読めない」は人が取る次の手が違う。
 #
@@ -45,6 +50,20 @@ if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
     echo "usage: port は 1..65535: $PORT" >&2; exit 2
 fi
 
+# ★第2引数 = **serve 側の入口ポート**(既定 443)。2026-08-25 に足した。
+#   理由: 配備先の機体では 443 が別 PJ に埋まっていて、しかも Funnel で公開されている。
+#   そこへ相乗りすると操縦面が公開インターネットに出る。よって別ポートへ載せる必要が
+#   出たが、判定は 443 を直書きしていたので「他人の 443」を見て毎回 foreign を返し、
+#   自分の入口が入っているかを**一度も見られなかった**。
+#   既定を 443 にしてあるので、引数1つの既往の呼び方は 1 文字も変わらない。
+SPORT="${2:-443}"
+case "$SPORT" in
+    ''|*[!0-9]*) echo "usage: serve port は数字: $SPORT" >&2; exit 2 ;;
+esac
+if [ "$SPORT" -lt 1 ] || [ "$SPORT" -gt 65535 ]; then
+    echo "usage: serve port は 1..65535: $SPORT" >&2; exit 2
+fi
+
 JQ=""
 if [ -x /usr/bin/jq ]; then JQ=/usr/bin/jq
 elif command -v jq >/dev/null 2>&1; then JQ=$(command -v jq)
@@ -57,19 +76,24 @@ case "$(printf '%s' "$raw" | tr -d ' \t\n\r')" in
     '') echo unknown; exit 0 ;;
 esac
 
-out=$(printf '%s' "$raw" | "$JQ" -r --arg port "$PORT" '
+out=$(printf '%s' "$raw" | "$JQ" -r --arg port "$PORT" --arg sport "$SPORT" '
   if type != "object" then "unknown"
   else
     (.TCP // {}) as $tcp
     | (.Web // {}) as $web
-    | (if ($web|type) == "object" then ($web | to_entries | map(select(.key | endswith(":443")))) else [] end) as $w443
-    | (if ($tcp|type) == "object" then ($tcp["443"] // null) else null end) as $t443
-    | (($t443 != null) or (($w443 | length) > 0)) as $has443
-    | if ($has443 | not) then "apply"
-      elif ($t443 | type) == "object"
-           and ($t443.HTTPS == true)
-           and (($w443 | length) > 0)
-           and ($w443 | all(.value.Handlers["/"].Proxy? == ("http://127.0.0.1:" + $port)))
+    | (if ($web|type) == "object" then ($web | to_entries | map(select(.key | endswith(":" + $sport)))) else [] end) as $wsp
+    | (if ($tcp|type) == "object" then ($tcp[$sport] // null) else null end) as $tsp
+    | (($tsp != null) or (($wsp | length) > 0)) as $hassp
+    | ((.AllowFunnel // {})
+       | if type == "object"
+         then (to_entries | map(select(.key | endswith(":" + $sport))) | any(.value == true))
+         else false end) as $funneled
+    | if $funneled then "funneled"
+      elif ($hassp | not) then "apply"
+      elif ($tsp | type) == "object"
+           and ($tsp.HTTPS == true)
+           and (($wsp | length) > 0)
+           and ($wsp | all(.value.Handlers["/"].Proxy? == ("http://127.0.0.1:" + $port)))
         then "ok"
       else "foreign"
       end
@@ -78,7 +102,7 @@ out=$(printf '%s' "$raw" | "$JQ" -r --arg port "$PORT" '
 
 # jq が解析に失敗した(= 壊れた JSON)時は空。**推測しない**。
 case "$out" in
-    apply|ok|foreign|unknown) echo "$out" ;;
+    apply|ok|foreign|funneled|unknown) echo "$out" ;;
     *) echo unknown ;;
 esac
 exit 0
