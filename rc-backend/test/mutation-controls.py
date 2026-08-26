@@ -867,7 +867,7 @@ MUT = [
   "\n    realpathSync(plan.cwd);\n",
   "\n    // mutated: 同期の確認を外す\n"),
  ("W21 未信頼でも断らずに送る(電話から答えられない確認画面を作る)", SRV,
-  '      if (verdict !== "ok") {\n        return json(res, 409, {\n          accepted: false, route: "worker", reason: verdict,\n          error: WORKER_REFUSAL[verdict],\n        });\n      }\n',
+  '      if (verdict !== "ok") {\n        if (idemHeld) idem.abandon(sendId);\n        return json(res, 409, {\n          accepted: false, route: "worker", reason: verdict,\n          error: WORKER_REFUSAL[verdict],\n        });\n      }\n',
   "      // mutated: 断らない\n"),
  # ★**書く形の変異は作らない**。木に一瞬でも信頼一覧へ書く文を置きたくない
  #   (Tom の裁定「自動化に安全確認を押させない」の的は、書く手段が**在る事**そのもの)。

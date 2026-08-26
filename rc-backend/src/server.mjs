@@ -54,6 +54,7 @@ import { attachRequestLog, markResult, noteBody, SESSION_ROUTE_RE } from "./reql
 import { digestOf, digestLine, actionRequired, attentionOf } from "./digest.mjs";
 import { storeImage, pathOf, sweepOld, ATTACH_MAX_BYTES } from "./attach.mjs";
 import { loadRules, checkDeny, denyMessage } from "./deny.mjs";
+import { createIdemStore, validKey, IDEM_REFUSAL } from "./idem.mjs";
 
 const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
@@ -70,6 +71,15 @@ const ATTACH_DIR = process.env.RC_ATTACH_DIR || join(HOME, ".rc-backend", "attac
  * 無ければ規則ゼロ = この層が在る前と挙動が変わらない。
  */
 const DENY_FILE = process.env.RC_DENY_FILE || join(HOME, ".rc-backend", "deny.json");
+
+/**
+ * 同じ送信を2回打たない為の記憶。★**プロセスの中だけ**に持つ。
+ * file に落とさないのは、落とせば「何をいつ送ったか」の跡が机に残るから ——
+ * この repo が明示的に選んでいる「打った物を残さない」線を越える。
+ * 再起動で忘れるが、忘れて困るのは「再起動を跨いだ再送」だけで、
+ * それは電話から見て別の送信として扱われる方が正しい。
+ */
+const idem = createIdemStore();
 /**
  * 外部台本を諦める時刻。**電話から見える道に居ないので緩い**(2026-08-08)。
  *
@@ -1491,6 +1501,33 @@ const server = createServer(async (req, res) => {
       const text = typeof body.text === "string" ? body.text.trim() : "";
       if (!text) return json(res, 400, { error: "text required" });
 
+      // ★同じ送信を2回打たない(2026-08-26)。実測: 本番で同じ本文を2回投げると
+      //   2回とも verified で通り、**実画面に2回入った**。電話の `.unreachable` は
+      //   「もう一度やれば通るかもしれない」と定義され下書きも残るので、
+      //   タイムアウトしたが実は届いていた時、再送で同じ指示が2回実行される。
+      //
+      // ★鍵が無い要求は**今まで通り通す**。古い電話が黙って打てなくなるのは、
+      //   防いでいる害より大きい。鍵を付けた要求だけが守られる。
+      const sendId = typeof body.sendId === "string" ? body.sendId : null;
+      if (sendId && !validKey(sendId)) {
+        return json(res, 400, { error: "sendId must be 8-64 chars of [A-Za-z0-9_-]" });
+      }
+      let idemHeld = false;
+      if (sendId) {
+        const g = idem.begin(sendId, text);
+        if (!g.go) {
+          if (g.why === "duplicate") {
+            // ★1回目の結果をそのまま返す。**打ち直さない。**
+            //   ★status も1回目と同じ 202 にする。200 で返すと `sendResult` が
+            //   「知らない形」と読んで電話に error の顔で出る —— 実際に届いている
+            //   送信を失敗として見せる事になり、Tom はもう一度押す(実測 2026-08-26)。
+            return json(res, 202, { ...(g.result || {}), duplicate: true });
+          }
+          return json(res, 409, { error: IDEM_REFUSAL[g.why], reason: g.why });
+        }
+        idemHeld = true;
+      }
+
       // ★机の拒否規則(2026-08-26)。**電話が何を送っても効く唯一の層**。
       //   生の打鍵注入は万能権限なので、電話側の確認やエンドポイント単位の権限では
       //   原理的に迂回される(Codex 2026-08-26)。止めるなら打つ直前のここ。
@@ -1499,6 +1536,8 @@ const server = createServer(async (req, res) => {
       const loaded = loadRules(DENY_FILE);
       const hit = checkDeny(text, loaded.rules);
       if (hit.denied) {
+        // 予約を外す。外さないと、規則を直した後も同じ鍵で打てないままになる。
+        if (idemHeld) idem.abandon(sendId);
         return json(res, 409, {
           error: denyMessage(hit),
           reason: "denied-by-desk",
@@ -1513,6 +1552,7 @@ const server = createServer(async (req, res) => {
       if (!file && !found.pane) {
         // 発言も無く、開いていたペインも無い = 掴めるものが何も無い。
         // ワーカー(-p --resume)に落とすと存在しない会話を再開しようとして失敗する。
+        if (idemHeld) idem.abandon(sendId);
         return json(res, 409, {
           error: "This session has no messages yet and its open pane can no longer be found.",
           route: "blocked", reason: "pane-gone", candidates: 0, source: "registry",
@@ -1522,6 +1562,7 @@ const server = createServer(async (req, res) => {
       if (UNDECIDABLE.has(found.reason)) {
         // 宛先を確定できない。送らないし、ワーカー経路にも落とさない
         // (開かれている会話を別プロセスで触ると同じ会話を2実行が読む = lost-update)。
+        if (idemHeld) idem.abandon(sendId);
         return json(res, 409, { error: blockedMessage(found), ...blockedBody(found) });
       }
 
@@ -1532,7 +1573,10 @@ const server = createServer(async (req, res) => {
         // (Claude Code 自身が次ターンとして扱う = 自前のキューは持たない)。
         const r = await injector.send(pane, text);
         if (r.sent) {
-          return json(res, 202, {
+          // ★**打った後**に記録する。前だけだと落ちた時に永久に打てなくなり、
+          //   後だけだと同時の2本が両方通る —— だから予約(begin)は打つ前、
+          //   結果(finish)は打った後、と位置を分けてある。
+          const sentBody = {
             accepted: true, route: "tmux", pane, source: found.source,
             // verified = 入力欄から本文が消えた(= TUI が取り込んだ)。
             // unverified = **確認できなかった**。中身は2通りあり、画面からは区別できない:
@@ -1547,8 +1591,13 @@ const server = createServer(async (req, res) => {
                     "(it may remain in the composer, or the composer is no longer visible). Check the screen.",
                 }
               : {}),
-          });
+          };
+          // 打てた。ここで初めて「済んだ」にする。再送は打ち直さずこの結果を返す。
+          if (idemHeld) idem.finish(sendId, sentBody);
+          return json(res, 202, sentBody);
         }
+        // 送れなかった = 予約を外す。外さないと、原因を直した後も同じ鍵で打てない。
+        if (idemHeld) idem.abandon(sendId);
         return json(res, 409, {
           error: SEND_REFUSAL[r.reason] || SEND_REFUSAL.unknown,
           route: "tmux", pane, screen: r.state, reason: r.reason,
@@ -1561,6 +1610,7 @@ const server = createServer(async (req, res) => {
       const wcwd = sessionCwd();
       const verdict = cwdVerdict(wcwd);
       if (verdict !== "ok") {
+        if (idemHeld) idem.abandon(sendId);
         return json(res, 409, {
           accepted: false, route: "worker", reason: verdict,
           error: WORKER_REFUSAL[verdict],
@@ -1575,18 +1625,22 @@ const server = createServer(async (req, res) => {
       } catch (e) {
         // 検査と spawn の間で dir が消えた(競合)。**202 を返してから死ぬより 409**。
         if (e?.code === "ENOENT") {
+          if (idemHeld) idem.abandon(sendId);
           return json(res, 409, {
             accepted: false, route: "worker", reason: "cwd_missing",
             error: WORKER_REFUSAL.cwd_missing,
           });
         }
         // それ以外は握り潰さない。理由は伏せてから出す(src/redact.mjs)。
+        if (idemHeld) idem.abandon(sendId);
         return json(res, 500, {
           accepted: false, route: "worker", reason: "spawn_failed",
           error: redact(String(e?.message || e)),
         });
       }
-      return json(res, 202, { accepted: true, route: "worker", seq });
+      const workerBody = { accepted: true, route: "worker", seq };
+      if (idemHeld) idem.finish(sendId, workerBody);
+      return json(res, 202, workerBody);
     }
 
     if (action === "interrupt" && req.method === "POST") {

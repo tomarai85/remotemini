@@ -120,7 +120,7 @@ final class ConversationClientsTests: XCTestCase {
             switch path {
             case .send:
                 outcome = await MessageSendingFixture().send(
-                    baseURL: url, apiKey: apiKeyValue, sessionID: sid, text: "x"
+                    baseURL: url, apiKey: apiKeyValue, sessionID: sid, text: "x", sendId: "testsendid0001"
                 )
             case .interrupt:
                 outcome = await InterruptingFixture().interrupt(

@@ -625,9 +625,34 @@ final class ConversationViewModel: ObservableObject {
     /// touched until the response has been classified.** Clearing on tap reads as
     /// snappier UI and is wrong -- 409 (refused) and every transport failure would
     /// then cost the user everything they wrote.
+    /// この下書きに対する送信 id。★**下書きが変わるまで同じ値**を使う。
+    ///
+    /// 意味はここに在る: `.unreachable` は「もう一度やれば通るかもしれない」と定義され、
+    /// 下書きも残るので、Tom はそのまま再送する。その2回が**同じ送信**だと机に伝える
+    /// 手段がこれしか無い。毎回作り直すと机からは別々の送信に見え、
+    /// タイムアウトしたが実は届いていた時に同じ指示が2回実行される
+    /// (2026-08-26 に本番で実測: 2回とも verified で通り、実画面に2回入った)。
+    ///
+    /// ★下書きを書き換えたら新しい id にする。別の文は別の送信で、
+    ///   同じ id で送ると机が `key-reused` で断る(そちらが正しい振る舞い)。
+    private var pendingSendId: String?
+    private var pendingSendIdFor: String?
+
+    private func sendIdFor(_ text: String) -> String {
+        if pendingSendIdFor == text, let id = pendingSendId { return id }
+        let id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        pendingSendId = id
+        pendingSendIdFor = text
+        return id
+    }
+
+    /// 送れた後に忘れる。次の送信は新しい id になる。
+    private func clearSendId() { pendingSendId = nil; pendingSendIdFor = nil }
+
     func send() async {
         guard canSend else { return }
         let text = draft
+        let sendId = sendIdFor(text)
 
         // ★取るのは**送る前**。送信が飛んでいる間に poll が机からの追記を運んで来る
         // 事が在り、後で取ると「送る前から在った行」と「送った結果として出た行」が
@@ -644,8 +669,12 @@ final class ConversationViewModel: ObservableObject {
             baseURL: baseURL,
             apiKey: apiKey,
             sessionID: sessionID,
-            text: text
+            text: text,
+            sendId: sendId
         )
+        // ★送れた時だけ忘れる。届かなかった時に忘れると、再送が別の送信になって
+        //   重複の防ぎ方が丸ごと無効になる —— この機能の要はここ1行に在る。
+        if case .display = outcome { clearSendId() }
         if applySendOutcome(outcome, sentText: text) {
             await verifySendByRereading(text: text, entriesBefore: entriesBeforeSend)
         }

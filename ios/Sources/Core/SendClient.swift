@@ -39,7 +39,7 @@ enum SendOutcome: Equatable {
 }
 
 protocol MessageSending {
-    func send(baseURL: URL, apiKey: String, sessionID: String, text: String) async -> SendOutcome
+    func send(baseURL: URL, apiKey: String, sessionID: String, text: String, sendId: String) async -> SendOutcome
 }
 
 /// `POST /api/sessions/<id>/messages`, body `{"text": …}`.
@@ -55,7 +55,7 @@ struct SendClient: MessageSending {
         self.session = session
     }
 
-    func send(baseURL: URL, apiKey: String, sessionID: String, text: String) async -> SendOutcome {
+    func send(baseURL: URL, apiKey: String, sessionID: String, text: String, sendId: String) async -> SendOutcome {
         let url = baseURL.appendingPathComponent("api/sessions/\(sessionID)/messages")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -65,7 +65,7 @@ struct SendClient: MessageSending {
 
         let encoded: Data
         do {
-            encoded = try JSONEncoder().encode(RequestBody(text: text))
+            encoded = try JSONEncoder().encode(RequestBody(text: text, sendId: sendId))
         } catch {
             // Unreachable for this shape (a Swift `String` is always encodable), but
             // written as a real branch rather than `try!` so that adding a field to
@@ -125,6 +125,10 @@ struct SendClient: MessageSending {
 
     private struct RequestBody: Encodable {
         let text: String
+        /// 1つの論理送信に1つ。**再送では同じ値を使い回す** —— それが「同じ送信」だと
+        /// 机に伝える唯一の手段で、無いと timeout 後の再送で同じ指示が2回実行される
+        /// (2026-08-26 に本番で実測: 2回とも verified で通り、実画面に2回入った)。
+        let sendId: String
     }
 
     /// Only the two fields the phone acts on. Every other key the server sends
