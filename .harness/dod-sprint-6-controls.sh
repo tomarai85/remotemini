@@ -64,7 +64,9 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IOS="$ROOT/ios"
-SIM_NAME="${SIM_NAME:-iPhone-dogfood}"
+# ★機の既定は ios/tools/sim-device.sh が持つ(2026-08-26)。此処は `test` を 14 回回すので、
+#   dogfood 機を指していると **Tom が見る機**へ種なしの Debug 版が 14 回 install される。
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../ios/tools" && pwd)/sim-device.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-s6.XXXXXX")"
 # 失敗した回の全文だけ WORK の外へ残す(WORK は EXIT で畳まれるので、中に置くと
 # 「なぜ緑だったのか」を後から読めない)。

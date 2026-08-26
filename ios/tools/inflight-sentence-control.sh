@@ -70,7 +70,10 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # = ios/
 ROOT="$(cd "$HERE/.." && pwd)"
 IOS="$HERE"
-SIM_NAME="${SIM_NAME:-iPhone-dogfood}"
+# ★機の既定は tools/sim-device.sh が持つ(2026-08-26)。此処で直に dogfood を既定に
+#   していた間、`xcodebuild test` が対照のたびに **Tom が見る機**へ種なしの Debug 版を
+#   install していた。守りを1箇所へ寄せる —— 既定・dogfood の拒否・機の不在を全部あちらで。
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sim-device.sh"
 BUNDLE_ID="com.tomarai.remotemini"
 # UDID が読めなくても走る(落ち着かせる手順を飛ばすだけ)。此処で止めると、元は
 # 動いていた対照を「測れない」に変えてしまう —— 直そうとした欠陥をこちら側で作る事になる。

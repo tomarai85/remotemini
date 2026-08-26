@@ -25,7 +25,10 @@ cd "$HERE" || { echo "ios/ に入れない"; exit 2; }
 
 DERIVED="$HERE/build"
 mkdir -p "$DERIVED"
-SIM_NAME="${SIM_NAME:-iPhone-dogfood}"
+# ★機の既定は tools/sim-device.sh が持つ(2026-08-26)。此処で直に dogfood を既定に
+#   していた間、`xcodebuild test` が対照のたびに **Tom が見る機**へ種なしの Debug 版を
+#   install していた。守りを1箇所へ寄せる —— 既定・dogfood の拒否・機の不在を全部あちらで。
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sim-device.sh"
 BUNDLE="com.tomarai.remotemini"
 
 # ★生成物(ios/Info.plist / RemoteMini.xcodeproj)を触る走行を **1 本に絞る**。
