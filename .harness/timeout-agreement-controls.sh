@@ -223,15 +223,19 @@ echo "== 分割そのものが畳まれる =="
 
 # ⑩ 読む待ちと書く待ちを1本に畳む。写しどうしは一致したままなので①-⑨は全部緑で通り、
 #    REQUIREMENTS §5-6 が直した症状(応答の無い網で白画面が長く続く)だけが戻る。
+# ★錨が直値の秒数を持っている(2026-08-26 に 8 -> 20 で腐った)。値ではなく形で
+#   錨れないのは `sed` の置換だから —— 動かすたびに此処を付け替える手が要る。
+#   それでも直値を選ぶのは、変異が壊すべきなのは**関係**(読み < 書き)であって、
+#   関係を壊すには具体的な今の値を書き換えるのが一番確実だから。
 probe "読む待ちと書く待ちを1本に畳む" "$SESSION" \
-    "static let interactiveTimeout: TimeInterval = 8" \
+    "static let interactiveTimeout: TimeInterval = 20" \
     "static let interactiveTimeout: TimeInterval = pollTimeout"
 
 # ⑪ 秒数の式が評価器の解けない形になる。**飛ばさずに赤で言う**事の確認 ——
 #    解けない式を黙って飛ばすと、その定数だけ誰にも照合されないまま緑に見える。
 probe "秒数の式が解けない形になる(飛ばさずに赤で言うか)" "$SESSION" \
-    "static let interactiveTimeout: TimeInterval = 8" \
-    "static let interactiveTimeout: TimeInterval = max(8, 4)"
+    "static let interactiveTimeout: TimeInterval = 20" \
+    "static let interactiveTimeout: TimeInterval = max(20, 4)"
 
 echo
 echo "== 検査自身の錨が外れる(拾えない物を0件にしない) =="

@@ -67,7 +67,18 @@ final class BackendSession {
     ///
     /// Reads only. Re-issuing a read is free, which is what makes a shorter give-up
     /// window strictly better here.
-    static let interactiveTimeout: TimeInterval = 8
+    ///
+    /// ★2026-08-26 に 8 -> 20 へ上げた。**上の見積もりは新規接続の TLS を含んでいなかった。**
+    ///   実測(simulator、本番の机): アプリの**初回**の TLS ハンドシェイクが 6030ms
+    ///   かかり、8 秒の枠に間に合わず `-1001 timed out`。2回目以降は 74ms で通る。
+    ///   症状は「**アプリを初めて開いた時だけ『机に届きません』になり、Retry で直る**」
+    ///   —— Tom が一番最初に触る瞬間に一番失敗する形で、画を見るまで誰も気付かなかった。
+    ///   (curl が 0.14 秒で返るのは接続を使い回すから。同じ URL でも測っている物が違う。)
+    ///
+    ///   ★上げた分の代償を正直に書く: 本当に黙った線で諦めるまでが 8 秒 -> 20 秒に延びる。
+    ///   読み直しは無料なので、**遅い時に諦める**より**初回に失敗する**方が高くつく、
+    ///   という判断でこちらを採った。
+    static let interactiveTimeout: TimeInterval = 20
 
     /// Sends and interrupts keep the long timeout, deliberately.
     ///
@@ -80,8 +91,11 @@ final class BackendSession {
     /// anyway: a send happens on an already-loaded screen that has the reachability
     /// banner, not behind a spinner.
     ///
-    /// The real fix for the write side is an idempotency key on the server, which is
-    /// a backend change outside v1's four items -- recorded rather than smuggled in.
+    /// ★2026-08-26: **その冪等鍵を入れた**(`src/idem.mjs` + 電話が `sendId` を送る)。
+    /// 上の「retry types it into Claude's composer twice」は、この日まで**実際に起きていた**
+    /// —— 本番で同じ本文を2回投げたら実画面に2回入るのを測って確かめ、そこから塞いだ。
+    /// 鍵が入った今、この長い上限を短くする道は開いている。ただし短くする理由が
+    /// 今は無い(送信は一覧が出た後の操作で、待たされても画面は空にならない)ので据え置く。
     static let writeTimeout: TimeInterval = pollTimeout
 
     let session: URLSession

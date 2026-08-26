@@ -108,8 +108,8 @@ final class KeyEntryUITests: XCTestCase {
     /// 文言は `KeyEntryViewModel` から**手で書き写す**。生成側を呼んで比べると
     /// 「同じ関数が同じ物を返す」しか言えない。秒は `BackendSession.interactiveTimeout`
     /// (= 8)の現物 —— 定数が動いたらこの検査が落ちるのが正しい。
-    private let urlStageSentence = "Checking the server is reachable… (waiting up to 8s)"
-    private let keyStageSentence = "Checking the key works… (waiting up to 8s)"
+    private let urlStageSentence = "Checking the server is reachable… (waiting up to 20s)"
+    private let keyStageSentence = "Checking the key works… (waiting up to 20s)"
 
     /// 1段目で止まる面 = 既存の `keyentry-rejected`(口が `.fixture(stallingAt: .url)`)。
     /// 2段目で止まる面 = `keyentry-slow-key`(`ios/Sources/Core/KeyEntryProbeFixture.swift`)。
