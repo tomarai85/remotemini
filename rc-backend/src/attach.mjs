@@ -32,8 +32,10 @@
 import { randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { closeSync, constants as FS, mkdirSync, openSync, statSync, writeSync,
-         lstatSync, readdirSync, unlinkSync, renameSync, realpathSync, chmodSync } from "node:fs";
+         lstatSync, readdirSync, unlinkSync, renameSync, realpathSync, chmodSync,
+         readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { scrub, jpegOrientation } from "./scrub.mjs";
 
 /** 圧縮後の上限。電話の写真1枚に十分で、置き場が育ちすぎない大きさ。 */
 export const ATTACH_MAX_BYTES = 12 * 1024 * 1024;
@@ -156,6 +158,7 @@ export function storeImage(buf, o) {
 
   let finalExt = format === "heic" ? "jpg" : format;
   let converted = false;
+  let dropped = [];
   try {
     if (format === "heic") {
       // ★HEIC はそのまま渡さない。エージェント側の対応が不安定で、向き・色域・
@@ -163,6 +166,30 @@ export function storeImage(buf, o) {
       convert(tmp, tmp, "jpeg");
       converted = true;
     }
+    // ★素性を剥がす(2026-08-26)。実測: 何もしないと GPS 11 項目がバイト単位でそのまま
+    //   机に届いていた。受け手は注入され得る LLM でシェルと外部通信を持つので、
+    //   写真1枚ごとに「今どこに居るか」を注入経路へ渡す形になっていた。
+    //   ★`sips` の再エンコードでは落ちない(実測)。「変換すれば消える」は間違い。
+    //
+    // ★向きだけは別扱い。EXIF を丸ごと捨てると縦で撮った写真が横倒しで届く。
+    //   **回る必要が在る時だけ**焼き込んでから剥がす —— 全部を再エンコードすると
+    //   CPU も色域も無駄に払う事になる(その1枚は回っていないのに)。
+    {
+      const raw = readFileSync(tmp);
+      const ori = finalExt === "jpg" ? jpegOrientation(raw) : null;
+      if (ori && ori !== 1) {
+        // 画素の側に向きを焼く。`sips -r` は EXIF ではなく実データを回す。
+        (o?.rotate ?? sipsRotate)(tmp, ori);
+      }
+      const after = readFileSync(tmp);
+      const sc = scrub(after, finalExt);
+      dropped = sc.dropped;
+      if (sc.out.length !== after.length) {
+        // 書き戻しは同じ file へ。ここは既に自分だけが持っている一時名。
+        writeFileSync(tmp, sc.out, { mode: 0o600 });
+      }
+    }
+
     const px = pixelsOf(tmp, o?.measure);
     // ★バイト数とは別に画素数を見る。圧縮爆弾はバイト数の門を素通りする。
     if (px !== null && px > ATTACH_MAX_PIXELS) throw new Error("too-many-pixels");
@@ -173,7 +200,7 @@ export function storeImage(buf, o) {
     //   戻っていて、0600 で開いた意味が消えていた)。置いた後に**もう一度**締める。
     //   検査は「置いた物の mode が 0600」で見る —— 開き方ではなく結果を測る。
     chmodSync(dest, 0o600);
-    return { id, ext: finalExt, bytes: statSync(dest).size, format, converted };
+    return { id, ext: finalExt, bytes: statSync(dest).size, format, converted, dropped };
   } catch (e) {
     try { unlinkSync(tmp); } catch { /* 置きっぱなしにしない */ }
     throw e;
@@ -214,6 +241,19 @@ function sipsMeasure(path) {
   const w = Number(/pixelWidth:\s*(\d+)/.exec(out)?.[1]);
   const h = Number(/pixelHeight:\s*(\d+)/.exec(out)?.[1]);
   return { w, h };
+}
+
+/**
+ * 向きを**画素の側へ焼く**。EXIF を消した後でも正しく見える様にする為で、
+ * 回っていない画像には一度も呼ばない(実測: 検体の大半は orientation=1)。
+ */
+function sipsRotate(path, orientation) {
+  // EXIF の向き → 実際に回す角度。反転(2/4/5/7)はここでは扱わない
+  // (電話のカメラが出すのは 1/3/6/8 が実質全部。扱わない物を扱うふりをしない)。
+  const deg = { 3: 180, 6: 90, 8: 270 }[orientation];
+  if (!deg) return;
+  execFileSync("/usr/bin/sips", ["-r", String(deg), path],
+    { encoding: "utf8", timeout: 60000, killSignal: "SIGKILL" });
 }
 
 function sipsConvert(from, to, fmt) {

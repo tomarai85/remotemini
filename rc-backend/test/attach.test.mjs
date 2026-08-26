@@ -214,3 +214,32 @@ test("★改行入りは断る(『Enter を送らない』の約束が本文で�
   }
   assert.throws(() => inj.typeLiteral("%1", ""), /empty-literal/);
 });
+
+// ---- 素性を剥がす(2026-08-26。実測で見つけた穴)-----------------------------
+
+test("★★本物の GPS 付き写真を通すと、机に置かれる物から GPS が消える", { skip }, () => {
+  // 実測で始まった機能: 何もしないと GPS 11 項目がバイト単位でそのまま届いていた
+  // (緯度 65°40'58" N)。受け手は注入され得る LLM でシェルと外部通信を持つので、
+  // 写真1枚ごとに「今どこに居るか」を注入経路へ渡す形になっていた。
+  const fix = join(process.cwd(), "test", "fixtures", "photos", "gps-real.jpg");
+  if (!existsSync(fix)) return;                    // 検体が無い機体では測らない
+  const raw = readFileSync(fix);
+  const hasApp1 = (b) => { for (let i = 0; i + 1 < b.length; i++) if (b[i] === 0xff && b[i + 1] === 0xe1) return true; return false; };
+  assert.ok(hasApp1(raw), "検体に EXIF が無い = この検査は空振りしている");
+
+  const d = fixtures(); const base = join(d, "scrub1");
+  const r = storeImage(raw, { baseDir: base });
+  assert.ok(r.dropped.length > 0, "何も落とさずに置いた");
+
+  const landed = readFileSync(pathOf(base, r.id, r.ext));
+  assert.ok(!hasApp1(landed), "机に置かれた物に EXIF が残っている");
+  assert.ok(!landed.includes(Buffer.from("Exif", "latin1")), "Exif ヘッダが残っている");
+  assert.ok(landed.length < raw.length, "サイズが減っていない = 何も外していない");
+});
+
+test("★回っていない画像に回転を掛けない(払う理由の無い CPU と色を払わない)", { skip }, () => {
+  const d = fixtures(); const base = join(d, "scrub2");
+  let rotated = 0;
+  storeImage(readFileSync(join(d, "a.png")), { baseDir: base, rotate: () => { rotated++; } });
+  assert.equal(rotated, 0, "PNG に回転を掛けた");
+});

@@ -146,6 +146,7 @@ const SERVER_ONLY = {
   TRANSCRIPT_UNREADABLE: "行の `errorCode`。電話は値で分岐せず `display` を描く(SessionsModels の `PaneFault` と同じ判断)",
   TMUX_UNAVAILABLE: "`blocked` の理由コード。電話は生で出さず、サーバが組んだ文面を描く",
   TMUX_UNREADABLE: "同じく `blocked` の理由コード。描くのはサーバの文面",
+  IEND: "★語彙ではない。PNG のチャンク名(`src/scrub.mjs` が素性チャンクを落とす時に\n    終端を見る為に書いてある)。線に一度も出ず、電話が分岐する材料でもない。\n    走査が大文字の識別子を拾う形をしている所為でここに現れているだけで、\n    消すなら走査側を狭める話になる —— それは別の話なので、今は理由を書いて残す",
   ATTACH_REJECTED: "断りの**分類**であって分岐の材料ではない。電話は 400 という status と、\n    その本文の `reason`(unknown-format / too-many-pixels …)で文を選ぶ。綴り自体は読まない\n    —— 読ませると『どの語が来たら撮り直せるか』の判断が2箇所に散る",
   ATTACH_READ_FAILED: "本文が読めなかった時の 400。電話から見れば『送れなかった』1通りで、\n    上の `reason` 付きの断りとは分岐が同じにならない(撮り直しても直らない)。値では分けない",
   ATTACH_FAILED: "置く途中の想定外(500)。理由を線に出さないのは、出せる語が\n    実装の内部語しか無い為。電話は 500 を契約違反として扱う既存の道に流す",
