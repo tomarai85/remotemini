@@ -159,7 +159,29 @@ function choiceBlocks(src) {
     const btnRe = /ChoiceButton\(key:\s*"([^"]*)",\s*label:\s*"([^"]*)"\)/g;
     while ((m = btnRe.exec(block)) !== null) buttons.push({ key: m[1], label: m[2] });
     const reason = /reason:\s*"([^"]*)"/.exec(block);
-    return { options, buttons, digest: d[1], reason: reason ? reason[1] : null };
+    // ★危険度も拾う(2026-08-26)。fixture は `ChoiceRisk(...)` を**直値**で持つので、
+    //   放っておけば必ずサーバから乖離する。乖離した瞬間、fixture で撮った画は
+    //   「製品がこう見える」の証拠にならなくなる —— 8/16 に踏んだ「撮影器が製品を
+    //   映していなかった」と同じ形。だから此処で拾い、下で `classifyRisk` と突き合わせる。
+    //   ★`digest:` より後ろに在るので、block ではなく raw の当該範囲から取る。
+    const after = raw.slice(d.index);
+    const rk = /ChoiceRisk\(\s*tier:\s*"([^"]*)",\s*notice:\s*"([^"]*)"/.exec(after);
+    const sigIds = [];
+    const sigRe = /ChoiceRiskSignal\(id:\s*"([^"]*)",\s*why:\s*"([^"]*)"\)/g;
+    if (rk) {
+      const scope = after.slice(0, rk.index + 2000);
+      let sm;
+      while ((sm = sigRe.exec(scope)) !== null) sigIds.push({ id: sm[1], why: sm[2] });
+    }
+    // ★`head` も拾う。危険度の材料そのものなので、これが無いと突き合わせが成立しない。
+    const headBlock = /head:\s*\[([^\]]*)\]/.exec(block);
+    const head = [];
+    if (headBlock) {
+      let hm; const hRe = /"([^"]*)"/g;
+      while ((hm = hRe.exec(headBlock[1])) !== null) head.push(hm[1]);
+    }
+    return { head, options, buttons, digest: d[1], reason: reason ? reason[1] : null,
+             risk: rk ? { tier: rk[1], notice: rk[2], signals: sigIds } : null };
   });
 }
 
@@ -443,4 +465,36 @@ test("★入力の列挙は5種類すべてを覆っている(種類が増えた
     assert.ok(!producible(kind).includes("ワーカー・実行中 ||| ワーカーが実行中"),
       `.${kind} が起票時の偽の札まで出せる事になっている(集合が広すぎる)`);
   }
+});
+
+test("★fixture の危険度は、同じ文字列をサーバに食わせた答えと一致する", { skip: outside.skip }, () => {
+  // なぜ要るか: `PollFixture.swift` の `ChoiceRisk(...)` は直値。直値は必ず古くなる。
+  // 古くなった瞬間、fixture で撮った画は「製品がこう見える」の証拠でなくなる
+  // (2026-08-16 に踏んだ「撮影器が製品を映していなかった」と同じ形)。
+  // 語の一覧を此処に書き写すのではなく、**本物の分類器に同じ入力を通す**。
+  const cards = choiceBlocks(readFileSync(join(REPO, POLL_FIXTURE), "utf8"))
+    .filter(Boolean);
+  assert.ok(cards.length > 0, "fixture のカードが1枚も読めていない");
+
+  let checked = 0;
+  for (const card of cards) {
+    if (!card.risk) continue;                    // 危険度を書いていないカードは対象外
+    checked++;
+    const want = choiceView({
+      screen: "CHOICE",
+      choice: { head: card.head, options: card.options, keys: ["digit"],
+                digest: card.digest || "d", cursor: 1 },
+    }).risk;
+    assert.equal(card.risk.tier, want.tier,
+      `fixture の tier がサーバとズレた(head=${JSON.stringify(card.head)})`);
+    assert.equal(card.risk.notice, want.notice, "fixture の notice がサーバとズレた");
+    assert.deepEqual(card.risk.signals.map((x) => x.id).sort(),
+                     want.signals.map((x) => x.id).sort(),
+      "fixture の signals がサーバとズレた");
+    for (const sig of card.risk.signals) {
+      const server = want.signals.find((x) => x.id === sig.id);
+      assert.equal(sig.why, server?.why, `signal ${sig.id} の説明文がズレた`);
+    }
+  }
+  assert.ok(checked > 0, "★危険度を持つ fixture が1枚も無い = この検査は空振りしている");
 });

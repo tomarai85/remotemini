@@ -20,6 +20,8 @@
  * **同じ発言を2回した場合は剥がしすぎる**ことがある(下の検査に明記)。
  * 取りこぼしより重複、重複より剥がしすぎ、の順で害が小さいと判断した。
  */
+import { classifyRisk, riskNotice, RISK_CLASSIFIER_VERSION } from "./risk.mjs";
+
 export function mergeHistory(history, live) {
   const h = history || [];
   const l = live || [];
@@ -542,7 +544,8 @@ const CHOICE_KEY_ACTION = { escape: "Cancel" };
  *   —— **押せない事と、何が出ているか見える事は別**(routeLabel の §2 と同じ判断)。
  */
 export function choiceView(state) {
-  const none = { show: false, reason: "", head: [], options: [], buttons: [], digest: "" };
+  const none = { show: false, reason: "", head: [], options: [], buttons: [], digest: "",
+                 risk: { tier: "unmatched", notice: riskNotice("unmatched"), signals: [], version: RISK_CLASSIFIER_VERSION } };
   const v = state || {};
   if (v.screen !== "CHOICE") return none;
   const c = v.choice || null;
@@ -554,7 +557,15 @@ export function choiceView(state) {
   const options = Array.isArray(c.options) ? c.options : [];
   const keys = Array.isArray(c.keys) ? c.keys : [];
   const digest = typeof c.digest === "string" ? c.digest : "";
-  const base = { show: true, reason: "", head, options, buttons: [], digest };
+  // ★危険度(2026-08-26)。**許可は1ミリも変えない** —— 押せる物は `keys` が決めたまま。
+  //   ここが足すのは「同じ y/n でも重さが違う」という表示の情報だけ。
+  //   材料は**この画面から取れた文字列そのもの**(見出し・選択肢・要約)。
+  //   ★`unmatched` の notice は空文字。UI が「安全です」と言い換える材料を渡さない。
+  const risk = (() => {
+    const r = classifyRisk([...head, ...options.map((o) => (o && o.label) || ""), digest]);
+    return { tier: r.tier, notice: riskNotice(r.tier), signals: r.signals, version: RISK_CLASSIFIER_VERSION };
+  })();
+  const base = { show: true, reason: "", head, options, buttons: [], digest, risk };
 
   // ★指紋が無ければ**押す物を出さない**。サーバは digest 必須(省略は 400)なので、
   //   出したボタンは押した瞬間に必ず失敗する。押せない物を押せる顔で出さない(fail-closed)。

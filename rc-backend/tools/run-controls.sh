@@ -809,6 +809,10 @@ LOCAL_CTLS=(
     test/phone-window-notify-controls.sh
                                      # ★2026-08-26。↑の赤を Tom へ届ける段。偽の health と偽の通知先で
                                      #   回すので、鳴らし過ぎと鳴らな過ぎの両方を陰性で押さえている。
+    test/deploy-to-friday-controls.sh
+                                     # ★2026-08-26。Friday 向けの殻が渡す env が本当に
+                                     #   exec へ届くかを、字面ではなく env で実測する。
+                                     #   ssh も rsync も撃たない(exec を env に差し替える)。
                                      #   17 本のうち 9 本が「緑しか出せない計器」を潰す陰性。
 )
 # ── ★ここに**わざと入れていない**物(消えた訳ではない)────────────────────────

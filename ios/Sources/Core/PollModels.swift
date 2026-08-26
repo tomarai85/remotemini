@@ -69,6 +69,55 @@ struct PollDisplay: Decodable, Equatable {
 /// buttons" into "we cannot read this response at all". Same argument
 /// `ResultDisplay.kind` makes for being a `String` rather than an enum: an unknown
 /// wire shape degrades what is shown, never whether anything is shown.
+/// `view.mjs` の `choiceView().risk`。段は**上がるだけ**(サーバ側の規約)。
+struct ChoiceRisk: Decodable, Equatable {
+    /// `danger` / `caution` / `unmatched`。**enum にしない** -- 知らない語が来た時に
+    /// カード全体を落とすより、知らない語として運ぶ方が安全側(この repo の既存規約)。
+    let tier: String
+    /// 人へ出す1文。`unmatched` では空文字で届く。
+    let notice: String
+    let signals: [ChoiceRiskSignal]
+    /// サーバの分類器の版(`src/risk.mjs` の `RISK_CLASSIFIER_VERSION`)。電話は自分で
+    /// 分類しないので、これが無いと「古いサーバの弱い判定」と「新しい判定」を区別できない。
+    let version: Int
+
+    /// ★`notice` は空ではなく**明文**。無言に戻すと、帯の出ない要求が「安全」に読まれる
+    ///   (2026-08-26 の裁定)。古いサーバから `risk` が来ない時もこの文が出る。
+    static let unmatched = ChoiceRisk(
+        tier: "unmatched",
+        notice: "Not checked against known hazards — read it yourself.",
+        signals: [], version: 0)
+
+    var isDanger: Bool { tier == "danger" }
+    var isCaution: Bool { tier == "caution" }
+
+    private enum CodingKeys: String, CodingKey { case tier, notice, signals, version }
+    init(tier: String, notice: String, signals: [ChoiceRiskSignal], version: Int = 0) {
+        self.tier = tier; self.notice = notice; self.signals = signals; self.version = version
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tier = (try? c.decode(String.self, forKey: .tier)) ?? "unmatched"
+        notice = (try? c.decode(String.self, forKey: .notice)) ?? ""
+        signals = (try? c.decode([ChoiceRiskSignal].self, forKey: .signals)) ?? []
+        // 0 = 版を名乗らないサーバ。**「版が無い = 新しい」と読まない**為に既定を最小にする。
+        version = (try? c.decode(Int.self, forKey: .version)) ?? 0
+    }
+}
+
+/// 何が怖いかを1行で。`id` は機械用、`why` は人が読む文。
+struct ChoiceRiskSignal: Decodable, Equatable {
+    let id: String
+    let why: String
+    init(id: String, why: String) { self.id = id; self.why = why }
+    private enum CodingKeys: String, CodingKey { case id, why }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? ""
+        why = (try? c.decode(String.self, forKey: .why)) ?? ""
+    }
+}
+
 struct ChoiceView: Decodable, Equatable {
     let show: Bool
     let reason: String
@@ -84,8 +133,16 @@ struct ChoiceView: Decodable, Equatable {
     /// The screen's fingerprint. `POST …/choice` requires it, so an empty one means
     /// nothing on this card can be sent -- see `canPress`.
     let digest: String
+    /// How heavy this approval is. **This never changes what may be pressed** --
+    /// `buttons` still decides that. It only lets the screen show a `rm -rf` prompt
+    /// and an `ls` prompt with different weight, which no tool in this space does
+    /// (research 2026-08-26). `tier` is one of `danger` / `caution` / `unmatched`.
+    /// ★`unmatched` means "no known dangerous pattern matched" -- **not "safe"**.
+    ///   Never render it as a reassurance; the server deliberately sends an empty
+    ///   `notice` for it so there is no wording to misuse.
+    let risk: ChoiceRisk
 
-    private enum CodingKeys: String, CodingKey { case show, reason, head, options, buttons, digest }
+    private enum CodingKeys: String, CodingKey { case show, reason, head, options, buttons, digest, risk }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -99,18 +156,27 @@ struct ChoiceView: Decodable, Equatable {
         options = (try? c.decode([ChoiceOption].self, forKey: .options)) ?? []
         buttons = (try? c.decode([ChoiceButton].self, forKey: .buttons)) ?? []
         digest = (try? c.decode(String.self, forKey: .digest)) ?? ""
+        // A server older than this build sends no `risk`. Falling back to
+        // `unmatched` is correct: it is the "nothing known matched" value, and its
+        // notice is empty, so an old server renders exactly as it did before.
+        risk = (try? c.decode(ChoiceRisk.self, forKey: .risk)) ?? ChoiceRisk.unmatched
     }
 
     /// Memberwise init for fixtures and tests (the custom `init(from:)` suppresses the
     /// synthesized one).
     init(show: Bool, reason: String, head: [String] = [], options: [ChoiceOption] = [],
-         buttons: [ChoiceButton] = [], digest: String = "") {
+         buttons: [ChoiceButton] = [], digest: String = "",
+         risk: ChoiceRisk = ChoiceRisk.unmatched) {
         self.show = show
         self.reason = reason
         self.head = head
         self.options = options
         self.buttons = buttons
         self.digest = digest
+        // 既定は `unmatched`。検体を1本ずつ直さずに済むが、**危険な検体を書く時は
+        // 明示的に渡す事** —— 既定のまま書いた検体は「危険度を測っていない検体」で、
+        // それを危険側の検査に使うと空振りする。
+        self.risk = risk
     }
 
     /// Fail-closed, on the phone's own side of the wire: a button with no fingerprint
