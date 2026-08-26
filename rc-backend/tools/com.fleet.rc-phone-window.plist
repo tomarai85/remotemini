@@ -62,6 +62,12 @@
     <string>work</string>
     <key>RC_PHONE_WINDOW</key>
     <string>phone</string>
+    <!-- ★cwd は ~/Athenas のまま。2026-08-26 に ~/個人 へ移そうとして戻した:
+         あちらは `hasTrustDialogAccepted=false` で、対話で起こすと信頼確認の画面で
+         固まる(実測。窓が 60 秒ごとに生まれて死ぬ)。`claude -p` なら飛ぶが、
+         **非対話で動く事は対話で立つ事の証拠にならない**。
+         代わりに ~/Athenas/CLAUDE.md へ「メモリと UNO の在り処」を書いた ——
+         cwd を動かさずに視界だけ広げる。Tom の手が1回も要らない方を選んだ。 -->
     <key>RC_PHONE_CWD</key>
     <string>/Users/athenas/Athenas</string>
     <key>RC_WORK_SESSION_CWD</key>

@@ -171,6 +171,15 @@ p = (j.get("projects") or {}).get(os.environ["CWD"])
 print("trusted" if isinstance(p, dict) and p.get("hasTrustDialogAccepted") is True else "untrusted")
 PY
 )
+# ★`untrusted` は**そのまま断る**。2026-08-26 に「非対話なら通る」と読んで緩めかけたが、
+#   実測で**間違いだった**: `claude -p` は確かに信頼ダイアログを飛ばして動くが、
+#   本番の起こし方は**対話**で、そちらは飛ばない ——
+#   手で `rc-claude` を起こすと画面が
+#     「Quick safety check: Is this a project you created or one you trust?」
+#     「1. Yes, I trust this folder / 2. No, exit」
+#   で止まり、窓は作られたまま死ぬ(常設のログが「まだ無い」を繰り返した)。
+#   **非対話で動く事は、対話で立つ事の証拠にならない。** 測る対象を間違えると、
+#   緩めた結果が「窓が60秒ごとに生まれて死ぬ」になる。だから元の fail-closed に戻す。
 case "${trust_verdict:-unknown}" in
     trusted) ;;
     untrusted)
