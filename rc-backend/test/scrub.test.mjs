@@ -117,3 +117,32 @@ test("★空振り防止: 落とす対象が1つも無い JPEG では dropped �
   assert.deepEqual(r.dropped, []);
   assert.ok(r.out.equals(b), "落とす物が無いのに書き換えた");
 });
+
+test("★★ICC プロファイルは残す(色を変えない)", { skip }, () => {
+  // 2026-08-26 の回帰: 最初は APP2 を丸ごと落としていて、ICC 3144 bytes が消えていた。
+  // agent が見る色が撮った時と違う = バグの見え方が変わる。Codex も「ICC は残せ」。
+  const raw = readFileSync(FIX);
+  assert.ok(containsAscii(raw, "ICC_PROFILE"), "検体に ICC が無い = この検査は空振りしている");
+  const r = scrubJpeg(raw);
+  assert.ok(containsAscii(r.out, "ICC_PROFILE"), "★ICC を落とした = 色が変わる");
+});
+
+test("★ICC でない APP2(MPF 等)は落とす", () => {
+  // APP2 は識別子で中身が違う。ICC だけを通し、それ以外は通す理由が無い。
+  const app2 = (id) => {
+    const payload = Buffer.concat([Buffer.from(id, "latin1"), Buffer.from("payloadbytes")]);
+    const seg = Buffer.alloc(4 + payload.length);
+    seg[0] = 0xff; seg[1] = 0xe2;
+    seg.writeUInt16BE(payload.length + 2, 2);
+    payload.copy(seg, 4);
+    return seg;
+  };
+  const build = (id) => Buffer.concat([
+    Buffer.from([0xff, 0xd8]), app2(id),
+    Buffer.from([0xff, 0xda, 0x00, 0x02]), Buffer.from("pixels"),
+  ]);
+  assert.ok(containsAscii(scrubJpeg(build("ICC_PROFILE\0")).out, "payloadbytes"), "ICC を落とした");
+  assert.ok(!containsAscii(scrubJpeg(build("MPF\0")).out, "payloadbytes"), "MPF を残した");
+  assert.ok(!containsAscii(scrubJpeg(build("????????????")).out, "payloadbytes"),
+    "識別子の読めない APP2 を通した(何か分からない物を通す理由が無い)");
+});

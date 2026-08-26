@@ -23,12 +23,24 @@
 
 /** JPEG のセグメントのうち、丸ごと落とす物。 */
 const JPEG_DROP = new Set([
-  0xe1, // APP1  = EXIF / XMP(GPS・日時・端末・レンズはここ)
-  0xe2, // APP2  = ICC / MPF(複数フレーム。iPhone の写真は付く事がある)
+  0xe1, // APP1  = EXIF / XMP(GPS・日時・端末・レンズ・MakerNote はここ)
   0xed, // APP13 = Photoshop IRB(IPTC。撮影者・所在地が入りうる)
   0xee, // APP14 = Adobe
   0xfe, // COM   = 自由コメント
 ]);
+
+/**
+ * ★`APP2` は**中身で分ける**(2026-08-26、実測で直した)。
+ *   最初は APP2 を丸ごと落としていて、**ICC プロファイル 3144 bytes が消えて色が変わって
+ *   いた**(Codex も「ICC は残せ」と言った)。APP2 は識別子で見分けられる:
+ *     `ICC_PROFILE\0` … 色。**残す** —— 消すと agent が見る色が撮った時と違う
+ *     `MPF\0`         … 複数フレーム。落とす(depth や副画像が付いて回る)
+ *   識別子が読めない APP2 は**落とす**(何か分からない物を通す理由が無い)。
+ */
+function app2Keep(buf, start, end) {
+  const id = buf.subarray(start, Math.min(start + 12, end)).toString("latin1");
+  return id.startsWith("ICC_PROFILE\0");
+}
 
 /**
  * ★`APP1` を落とすと向きも消えるので、**先に読んで別に返す**。
@@ -60,7 +72,9 @@ export function scrubJpeg(buf) {
     }
     const len = buf.readUInt16BE(i + 2);
     if (len < 2 || i + 2 + len > buf.length) { parts.push(buf.subarray(i)); i = buf.length; break; }
-    if (JPEG_DROP.has(marker)) {
+    const isApp2 = marker === 0xe2;
+    const keepApp2 = isApp2 && app2Keep(buf, i + 4, i + 2 + len);
+    if (JPEG_DROP.has(marker) || (isApp2 && !keepApp2)) {
       dropped.push(`APP${marker - 0xe0 >= 0 && marker <= 0xef ? marker - 0xe0 : "?"}:0x${marker.toString(16)}`);
     } else {
       parts.push(buf.subarray(i, i + 2 + len));
