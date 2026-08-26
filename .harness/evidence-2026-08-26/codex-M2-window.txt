@@ -1,0 +1,119 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a03cc1-e441-7ab0-a14d-8e1c3d03f980
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Review a monitoring design. No file access; all facts inline. Terse, concrete defects only.
+
+SETTING: a launchd agent every 60s keeps a tmux window alive whose pane runs an interactive terminal AI agent (Claude Code). The agent writes a registry file ~/.rc-backend/panes/<session_id>.json containing {session_id, pane:'%N', pid} once it reaches its prompt. A phone client lists only sessions present in that registry and injects keystrokes into the registered pane.
+
+THE BUG BEING FIXED: the keeper's idempotency is 'does the window exist'. That is deliberate — when the agent hits a weekly usage limit its TUI stays alive showing a limit screen, so judging by pane contents would spawn a new window every 60s forever. Side effect: a window whose agent is BLOCKED ON A FIRST-RUN MODAL never registers, so the phone shows nothing, and the phone cannot answer the modal because unregistered sessions are not listed. Observed for real: a version upgrade introduced a 'Try the new fullscreen renderer? 1/2' prompt.
+
+NEW CHECKER (exit codes deliberately distinct): 0 usable = window exists AND some registry row's pane == this window's pane AND that row's pid is alive (os.kill(pid,0)); 1 wedged = window exists but no such row, and it prints the last 12 non-blank lines of the pane so a human can see what is waiting; 10 no tmux session yet; 11 no window yet; 3 monitor itself broken (registry dir unreadable). It NEVER auto-answers, on the stated grounds that a machine cannot tell a cosmetic upsell from a destructive-action confirmation.
+
+NOTIFIER stage: runs the checker, keeps {last,at} state, notifies on any state CHANGE, plus a reminder every 6h while still wedged/broken, and once on recovery. Does not notify for 10/11.
+
+QUESTIONS:
+1. Is 'registry row pane matches AND pid alive' actually sufficient to conclude the session is USABLE from the phone? What states pass this check but still fail for the user?
+2. tmux pane ids (%N) are recycled after panes die. Can a stale registry row plus a recycled pane id produce a false 'usable'? How would you make the match unforgeable cheaply?
+3. The 60s keeper and this checker read/write the same state dir. Any interleaving that produces a wrong verdict?
+4. Is refusing to auto-answer correct here, or is there a safe subset worth automating?
+2026-08-26T06:28:55.324333Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-26T06:28:55.359508Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-26T06:28:56.160285Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+1. No. It proves only “a PID once registered against this pane still exists.” False usable states include:
+
+- Weekly-limit screen.
+- A later modal or confirmation prompt.
+- Hung/frozen agent.
+- Agent disconnected, unauthenticated, or offline.
+- Zombie process.
+- Wrapper PID alive after Claude has died.
+- PID reused by an unrelated process.
+- Registry row belongs to another `session_id` if that is not also compared.
+- Pane exists but is not accepting input.
+
+Rename the state from `usable` to `registered_alive`; true usability requires an application-level heartbeat/readiness signal.
+
+2. Yes. Pane-ID reuse plus PID reuse can make stale data pass. Add a random `launch_id` UUID for every pane creation:
+
+- Store it as a tmux pane/window user option.
+- Pass it to the agent.
+- Include it in the registry row.
+- Require `session_id + pane + launch_id + pid` to match.
+
+Also compare the PID’s process start time, not merely `kill(pid, 0)`. The random launch ID is the cheap decisive protection.
+
+3. Yes:
+
+- Checker reads a partially written JSON file.
+- It observes the pane after creation but before registration and reports a transient wedge.
+- Registry replacement/deletion occurs during directory scanning.
+- PID dies immediately after `kill(pid, 0)`.
+- Overlapping notifier runs race on `{last,at}`, causing duplicate or missed notifications.
+
+Use write-to-temp plus atomic rename, lock notifier state updates, and snapshot/retry registry reads. Add a startup grace period or require two consecutive wedged samples before the first alert.
+
+4. Default refusal is correct. Never generically answer `yes/no`, `1/2`, or text-matched prompts.
+
+A safe subset is narrow:
+
+- Preconfigure known first-run cosmetic choices through supported config/flags.
+- Optionally allowlist an exact prompt/version and select the conservative “keep existing behavior” response.
+- Answer at most once per `launch_id`, revalidate immediately before sending, log it, and notify afterward.
+
+Unknown, changed, permission-related, or destructive prompts must remain human-controlled.
+tokens used
+13,671
+1. No. It proves only “a PID once registered against this pane still exists.” False usable states include:
+
+- Weekly-limit screen.
+- A later modal or confirmation prompt.
+- Hung/frozen agent.
+- Agent disconnected, unauthenticated, or offline.
+- Zombie process.
+- Wrapper PID alive after Claude has died.
+- PID reused by an unrelated process.
+- Registry row belongs to another `session_id` if that is not also compared.
+- Pane exists but is not accepting input.
+
+Rename the state from `usable` to `registered_alive`; true usability requires an application-level heartbeat/readiness signal.
+
+2. Yes. Pane-ID reuse plus PID reuse can make stale data pass. Add a random `launch_id` UUID for every pane creation:
+
+- Store it as a tmux pane/window user option.
+- Pass it to the agent.
+- Include it in the registry row.
+- Require `session_id + pane + launch_id + pid` to match.
+
+Also compare the PID’s process start time, not merely `kill(pid, 0)`. The random launch ID is the cheap decisive protection.
+
+3. Yes:
+
+- Checker reads a partially written JSON file.
+- It observes the pane after creation but before registration and reports a transient wedge.
+- Registry replacement/deletion occurs during directory scanning.
+- PID dies immediately after `kill(pid, 0)`.
+- Overlapping notifier runs race on `{last,at}`, causing duplicate or missed notifications.
+
+Use write-to-temp plus atomic rename, lock notifier state updates, and snapshot/retry registry reads. Add a startup grace period or require two consecutive wedged samples before the first alert.
+
+4. Default refusal is correct. Never generically answer `yes/no`, `1/2`, or text-matched prompts.
+
+A safe subset is narrow:
+
+- Preconfigure known first-run cosmetic choices through supported config/flags.
+- Optionally allowlist an exact prompt/version and select the conservative “keep existing behavior” response.
+- Answer at most once per `launch_id`, revalidate immediately before sending, log it, and notify afterward.
+
+Unknown, changed, permission-related, or destructive prompts must remain human-controlled.
