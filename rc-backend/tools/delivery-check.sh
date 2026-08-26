@@ -74,7 +74,21 @@ except Exception:
     esac
 fi
 
-echo "=== 5. 外からトンネルが見えるか(loopback の緑は電話の緑ではない)==="
+echo "=== 5. 公開面が机へ繋がっていないか(2026-08-26 追加)==="
+# ★実測して分かった形: この機体の 443 は別 PJ(resonance-os)が Funnel で**公開**していて、
+#   私たちの机は 9443(tailnet 限定)に載っている。公開されている入口に `/rc -> 8787` を
+#   1行足すだけで、生きた Claude Code の操縦面が公開インターネットに出る。
+#   ★入口の**名前**ではなく**経路**で見る。「9443 が Funnel されていないか」は Funnel が
+#   443/8443/10000 しか扱えない以上 原理的に真にならない空虚な条件だった(Codex 2026-08-26)。
+fx=$(rexec "/Applications/Tailscale.app/Contents/MacOS/Tailscale serve status --json")
+fxout=$(printf '%s' "$fx" | bash "$REPO/tools/funnel-exposure-check.sh" 8787 2>/dev/null); fxrc=$?
+case "$fxrc" in
+    0) good "公開されている入口から机(8787)へ繋がっていない" ;;
+    1) bad  "★公開面が机へ繋がっている" "$fxout — 生きた Claude Code が公開面に出ている" ;;
+    *) bad  "公開面の判定" "serve status が読めなかった(exit=$fxrc)= 安全とは言えない" ;;
+esac
+
+echo "=== 6. 外からトンネルが見えるか(loopback の緑は電話の緑ではない)==="
 code=$(curl -s -o /dev/null -m 12 -w '%{http_code}' "${RC_TUNNEL_URL:-https://desk.tailnet.example:9443/healthz}" 2>/dev/null)
 [ "$code" = "200" ] && good "外から 200" || bad "外からトンネル" "code=$code"
 

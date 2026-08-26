@@ -147,6 +147,25 @@ printf '  %-3s %-52s → ' R "serve port が数字でない(使い方エラー)"
 if printf '{}' | /bin/bash "$DEC" 8787 abc >/dev/null 2>&1; then printf '★通ってしまった\n'; fail=1; else printf 'exit 2 OK\n'; fi
 
 echo
+echo "=== 引数の順の取り違え(2026-08-26 追加。実際に踏んだ形)==="
+# ★守る一線は「**別の入口の答えを 1 語で返さない**」。呼び手は 1 語しか見ないので、
+#   どの入口についての答えかを区別できない = 黙って間違える形になる。
+printf '  %-3s %-52s → ' S "入口ポートを第1引数に撃った(第2引数なし)[負]"
+out=$(printf '%s' "$FRIDAY" | /bin/bash "$DEC" 9443 2>/dev/null); rc=$?
+if [ "$rc" = 2 ] && [ -z "$out" ]; then printf 'exit=2・stdout 空  OK\n'
+else printf 'exit=%s stdout=%s ★1語を返してしまった\n' "$rc" "${out:-(空)}"; fail=1; fi
+
+printf '  %-3s %-52s → ' T "同じ第1引数でも入口を明示すれば通る(逃げ道)"
+out=$(printf '%s' "$FRIDAY" | /bin/bash "$DEC" 9443 443 2>/dev/null); rc=$?
+if [ "$rc" = 0 ] && [ -n "$out" ]; then printf '%-8s OK\n' "$out"
+else printf 'exit=%s stdout=%s ★逃げ道が塞がっている\n' "$rc" "${out:-(空)}"; fail=1; fi
+
+printf '  %-3s %-52s → ' U "普通の手元ポートは巻き込まない(過剰発火の負)"
+out=$(printf '%s' "$REAL" | /bin/bash "$DEC" 8787 2>/dev/null); rc=$?
+if [ "$rc" = 0 ] && [ "$out" = ok ]; then printf 'ok       OK\n'
+else printf 'exit=%s stdout=%s ★期待 exit=0・ok\n' "$rc" "${out:-(空)}"; fail=1; fi
+
+echo
 echo "=== 旧判定との対比(1件でなく全 19 ケース)==="
 echo "  旧と答えが違った行: ${moved} 件"
 # ★退行の検出は compare_old の中で構造的に済んでいる: 動いた行は必ず「旧 ≠ 期待」でしか

@@ -311,6 +311,40 @@ ctl_back_tree_conflict(){
   return "$rc"
 }
 
+# 7b. **指紋を採れない木を「変化なし」と読ませない。**(2026-08-26 に足した)
+#     `fingerprint` は non-git の木を find + shasum で採る。ファイルが在るのに shasum が
+#     1行も出さない事が在り(読めない / shasum が居ない / xargs が失敗)、その時 外側の
+#     shasum は**空入力のハッシュ**= 毎回同じ定数を返す。`back` は sent_fp と now_fp を
+#     比べるだけなので、定数同士は必ず一致し、**手元の変更が在っても上書きする**。
+#     だから守りは「比較が必ず外れる値を返す」= 二度呼べば違う値になる事。
+#
+#     ★なぜ此処に足したか: `mutant:newermt`(= この守りを旧実装へ戻す変異)は
+#       `ctl_back_tree_conflict` に組んであったが、あの対照は普通に指紋が採れる木を使うので
+#       **この枝を一度も通らず**、変異を掛けても緑のままだった(= 空虚な緑)。
+#       2026-08-26 に組み直し、newermt はこの対照が受け持つ。
+ctl_unfingerprintable_tree(){
+  local script="$1" line; line="$(setup_env)"
+  local tmp lh rh wd sid slug; read -r tmp lh rh wd sid slug <<<"$line"
+  local rc=0 d="$tmp/unfp"
+  mkdir -p "$d"; printf 'x\n' > "$d/a.txt"; printf 'y\n' > "$d/b.txt"
+  chmod 000 "$d/a.txt" "$d/b.txt"   # ファイルは在るが shasum が1行も出せない
+  local empty; empty="$(printf '' | shasum -a 256 | cut -d' ' -f1)"
+  # ★前提の確認。実装の pipeline を写しているのは承知の上で置く —— 写しがずれた時に
+  #   **黙って緑になる**のではなく此処で赤くなる側へ倒す為(= 設定の壊れと守りの壊れを分ける)。
+  local raw; raw="$(find "$d" -type f -not -path '*/.git/*' -print0 2>/dev/null \
+                    | sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1)"
+  [ "$raw" = "$empty" ] || { echo "    (前提が崩れた: この木は普通に指紋が採れている = 当の枝を測っていない)" >&2; rc=1; }
+  local x y
+  x="$(call_fn "$script" "$tmp" "$rh" fingerprint "$d" 2>/dev/null)"
+  y="$(call_fn "$script" "$tmp" "$rh" fingerprint "$d" 2>/dev/null)"
+  [ -n "$x" ] || { echo "    (指紋が空)" >&2; rc=1; }
+  [ "$x" != "$empty" ] || { echo "    (空入力のハッシュをそのまま返した = 定数)" >&2; rc=1; }
+  [ "$x" != "$y" ] || { echo "    (二度呼んで同じ値 = back の比較が必ず一致し、手元の変更を上書きする)" >&2; rc=1; }
+  chmod 644 "$d/a.txt" "$d/b.txt"
+  rm -rf "$tmp"
+  return "$rc"
+}
+
 # 8. 持ち出し中に **手元でも同じ会話が伸びていたら** 止まる。作業ツリーが無傷でも
 #    会話だけ潰れる経路が在り、指紋だけでは見えない(2026-08-03 に足した門)。
 ctl_back_session_conflict(){
@@ -485,6 +519,16 @@ if old not in s: sys.exit(9)
 p.write_text(s.replace(old, new))
 PY
       ;;
+    treeguard) # 作業ツリーの衝突ゲートを抜く = 手元の変更が在っても黙って上書きする
+      python3 - "$dst" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = '''  if [ "$sent_fp" != "$now_fp" ]; then'''
+new = '''  if false; then'''
+if old not in s: sys.exit(9)
+p.write_text(s.replace(old, new, 1))
+PY
+      ;;
     landing) # 着地検証を抜く = 1件も JSON でない記録でも本名を与えて受理する
       python3 - "$dst" <<'PY'
 import pathlib, sys
@@ -545,7 +589,8 @@ CONTROLS=(
   "ctl_sentinel|fix"
   "ctl_home_refusal|regression"
   "ctl_double_checkout|mutant:dup"
-  "ctl_back_tree_conflict|mutant:newermt"
+  "ctl_back_tree_conflict|mutant:treeguard"
+  "ctl_unfingerprintable_tree|mutant:newermt"
   "ctl_back_session_conflict|mutant:sessguard"
   "ctl_session_lines_number|mutant:lines"
   "ctl_landing_rejects_garbage|mutant:landing"
