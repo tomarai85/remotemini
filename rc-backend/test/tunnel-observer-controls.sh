@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/tools/tunnel-observer.sh
+# controls-for: tools/tunnel-observer.sh
 #
 # ★この対照が守る一線: **緑しか出せない計器を緑と読まない**。
 #   だから測るのは「生きている時に 0 を返す」ではなく、
