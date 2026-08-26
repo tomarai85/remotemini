@@ -85,7 +85,7 @@ final class ConversationClientsTests: XCTestCase {
         let url = baseURL, apiKeyValue = apiKey, sid = sessionID
         let task = Task {
             await ChoiceSendingFixture().choose(
-                baseURL: url, apiKey: apiKeyValue, sessionID: sid, key: "1", digest: "d-aaa"
+                baseURL: url, apiKey: apiKeyValue, sessionID: sid, key: "1", digest: "d-aaa", confirm: nil
             )
         }
         task.cancel()
@@ -128,7 +128,7 @@ final class ConversationClientsTests: XCTestCase {
                 )
             case .choice:
                 outcome = await ChoiceSendingFixture().choose(
-                    baseURL: url, apiKey: apiKeyValue, sessionID: sid, key: "1", digest: "d-aaa"
+                    baseURL: url, apiKey: apiKeyValue, sessionID: sid, key: "1", digest: "d-aaa", confirm: nil
                 ).outcome
             }
             await box.set(outcome)

@@ -1,0 +1,177 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a03e23-6f3f-76a0-9b66-e2c6f7219b07
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Design review. No file access; everything inline. Terse, concrete defects only.
+
+CONTEXT: single-user private iOS app + Node server on the owner's own Mac, reachable only inside a Tailscale tailnet, TLS on a nonstandard port. Auth today is ONE bearer token: 64 hex chars, generated on the Mac, baked into the app build's Info.plist at build time and copied into the iOS Keychain on first launch. That token grants EVERYTHING the API offers: list sessions, read transcripts, inject keystrokes into a live terminal running an AI coding agent, answer its multiple-choice prompts, switch accounts.
+
+WHY I AM CHANGING IT: research found a documented incident where someone approved a destructive database change from their phone while distracted. I already shipped a risk classifier that paints dangerous approval prompts red. The next layer is per-device auth plus short-lived approval authority.
+
+WHAT I AM CONSIDERING:
+- Each device (currently one phone) gets its own credential, revocable independently, so losing the phone does not mean rotating the one key every build has.
+- Reading (list, transcript, digest) stays always-allowed for an enrolled device.
+- WRITING that can have consequences (inject keystrokes, answer a prompt, switch account, attach a file) requires a short-lived "authority" the user activates deliberately, expiring after N minutes of inactivity — the real product this mimics uses 30 minutes.
+- The server keeps the enrollment list on disk; the phone keeps its credential in the Keychain.
+
+MY CONCERNS, WHICH I WANT ATTACKED:
+(a) This is a single user with one phone inside a private VPN. Is per-device auth actually buying anything here, or is it security theater that adds failure modes (a lockout while the owner is abroad and cannot reach the Mac physically)? Argue the strongest case that I should NOT build this.
+(b) If the expiring authority is right, what expires it? Inactivity, absolute time, or an explicit end? What happens to an in-flight injected keystroke when it expires mid-operation?
+(c) Enrollment has to bootstrap somehow. The current baked-token flow means the Mac and the app already share a secret at build time. Is there a reason not to derive the per-device credential from that, and what is the recovery path when the phone is wiped and the owner is 6000 km from the Mac?
+(d) The threat this most plausibly defends against is not an intruder — it is the OWNER acting carelessly while distracted, and an LLM that has been prompt-injected asking for something destructive. Does per-device auth address either? If not, what would?
+2026-08-26T12:55:05.611185Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-26T12:55:05.679318Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-26T12:55:05.977234Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+The core defect: per-device auth does little against your stated threat. It improves credential hygiene and revocation, but not distracted approval or prompt injection.
+
+### (a) Strongest case for not building it
+
+- With one phone and one user, “independent device revocation” has almost no present value.
+- If the phone is lost and it is also the only administration channel, revocation is unusable precisely when needed.
+- Enrollment, persistence, expiry, clock handling, migration, and recovery add lockout paths.
+- A recovery backdoor strong enough to work 6,000 km away may recreate the same universal bearer secret.
+- Tailscale already substantially limits remote credential abuse.
+
+Also, “read-only” is not necessarily low-risk: transcripts and digests may expose credentials, source code, or private data.
+
+Build per-device identity only as baseline credential hygiene—not as the primary safety feature.
+
+### (b) Authority expiry
+
+Use all three:
+
+- Short inactivity timeout.
+- Absolute maximum lifetime that activity cannot extend.
+- Explicit “End authority” action.
+
+Enforce them on the server. Reads must not refresh the idle timer; only accepted privileged actions should.
+
+For operations:
+
+- Check authority when the server atomically accepts the complete operation.
+- Once accepted, finish it; do not emit half a keystroke sequence.
+- Expiry rejects new operations and queued operations not yet accepted.
+- Streaming input must authorize each bounded chunk, not inherit authority indefinitely.
+- Use operation IDs for deduplication.
+
+A generic 30-minute window is too broad for destructive actions. It merely creates 30 minutes in which distraction remains dangerous.
+
+### (c) Enrollment and recovery
+
+Do not derive device credentials from the baked token. That makes the baked secret a permanent cloning/master key and undermines independent revocation.
+
+Acceptable migration:
+
+1. Phone generates its own private key, preferably hardware-backed.
+2. Existing token authorizes enrollment once.
+3. Server stores the device public key.
+4. Disable the bootstrap token entirely, including for older app builds.
+
+Recovery must be designed in advance:
+
+- A second enrolled admin device or Tailscale SSH access from a laptop.
+- Offline single-use recovery codes.
+- Optionally a deliberately enabled, time-limited recovery channel.
+
+If none exists, remote recovery and strong lockout resistance are mutually incompatible. Do not conceal that tradeoff with a permanent master secret.
+
+### (d) The actual threat
+
+Per-device identity addresses neither distracted ownership nor a malicious LLM request.
+
+More relevant controls:
+
+- Biometric confirmation for every high-risk action, not once per 30 minutes.
+- Bind approval to the exact operation: session, command/action, target, account, and expiry.
+- Show the actual effect, not only the model’s prompt text.
+- Require typed confirmation for destructive targets.
+- Server-side deny rules and allowlists.
+- Dry-run or preview where possible.
+- Delay destructive execution briefly with a cancel option.
+- Never let prompt text lower its own risk classification.
+- Treat raw terminal keystroke injection as universal authority: it can bypass every narrower endpoint permission.
+
+The best design is device identity plus operation-bound authorization for dangerous actions. A reusable 30-minute “write mode” is convenient, but weak against the incident you are trying to prevent.
+tokens used
+14,095
+The core defect: per-device auth does little against your stated threat. It improves credential hygiene and revocation, but not distracted approval or prompt injection.
+
+### (a) Strongest case for not building it
+
+- With one phone and one user, “independent device revocation” has almost no present value.
+- If the phone is lost and it is also the only administration channel, revocation is unusable precisely when needed.
+- Enrollment, persistence, expiry, clock handling, migration, and recovery add lockout paths.
+- A recovery backdoor strong enough to work 6,000 km away may recreate the same universal bearer secret.
+- Tailscale already substantially limits remote credential abuse.
+
+Also, “read-only” is not necessarily low-risk: transcripts and digests may expose credentials, source code, or private data.
+
+Build per-device identity only as baseline credential hygiene—not as the primary safety feature.
+
+### (b) Authority expiry
+
+Use all three:
+
+- Short inactivity timeout.
+- Absolute maximum lifetime that activity cannot extend.
+- Explicit “End authority” action.
+
+Enforce them on the server. Reads must not refresh the idle timer; only accepted privileged actions should.
+
+For operations:
+
+- Check authority when the server atomically accepts the complete operation.
+- Once accepted, finish it; do not emit half a keystroke sequence.
+- Expiry rejects new operations and queued operations not yet accepted.
+- Streaming input must authorize each bounded chunk, not inherit authority indefinitely.
+- Use operation IDs for deduplication.
+
+A generic 30-minute window is too broad for destructive actions. It merely creates 30 minutes in which distraction remains dangerous.
+
+### (c) Enrollment and recovery
+
+Do not derive device credentials from the baked token. That makes the baked secret a permanent cloning/master key and undermines independent revocation.
+
+Acceptable migration:
+
+1. Phone generates its own private key, preferably hardware-backed.
+2. Existing token authorizes enrollment once.
+3. Server stores the device public key.
+4. Disable the bootstrap token entirely, including for older app builds.
+
+Recovery must be designed in advance:
+
+- A second enrolled admin device or Tailscale SSH access from a laptop.
+- Offline single-use recovery codes.
+- Optionally a deliberately enabled, time-limited recovery channel.
+
+If none exists, remote recovery and strong lockout resistance are mutually incompatible. Do not conceal that tradeoff with a permanent master secret.
+
+### (d) The actual threat
+
+Per-device identity addresses neither distracted ownership nor a malicious LLM request.
+
+More relevant controls:
+
+- Biometric confirmation for every high-risk action, not once per 30 minutes.
+- Bind approval to the exact operation: session, command/action, target, account, and expiry.
+- Show the actual effect, not only the model’s prompt text.
+- Require typed confirmation for destructive targets.
+- Server-side deny rules and allowlists.
+- Dry-run or preview where possible.
+- Delay destructive execution briefly with a cancel option.
+- Never let prompt text lower its own risk classification.
+- Treat raw terminal keystroke injection as universal authority: it can bypass every narrower endpoint permission.
+
+The best design is device identity plus operation-bound authorization for dangerous actions. A reusable 30-minute “write mode” is convenient, but weak against the incident you are trying to prevent.

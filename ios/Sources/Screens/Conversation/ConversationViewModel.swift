@@ -479,6 +479,7 @@ final class ConversationViewModel: ObservableObject {
     private let pollClient: PollFetching
     private let sendClient: MessageSending
     private let interruptClient: Interrupting
+    private let attachClient: Attaching
     private let choiceClient: ChoiceSending
     private let clearQueueClient: QueueClearing
     /// 打ちかけの置き場(DESIGN §2.53)。**既定値を持たせていない** —— 既定を本物に
@@ -529,6 +530,7 @@ final class ConversationViewModel: ObservableObject {
         self.pollClient = clients.poll
         self.sendClient = clients.send
         self.interruptClient = clients.interrupt
+        self.attachClient = clients.attach
         self.choiceClient = clients.choice
         self.clearQueueClient = clients.clearQueue
         self.draftStore = draftStore
@@ -875,6 +877,19 @@ final class ConversationViewModel: ObservableObject {
     /// One interrupt attempt. Nothing is sent in the body and nothing local is
     /// staked on the outcome, so this is much simpler than `send()` -- there is no
     /// draft to protect and no `keepText` rule.
+    /// 写真を机へ渡す。2026-08-26。
+    ///
+    /// ★結果の**言い換えをここでしない**。`AttachWording` が1箇所で持つ。
+    ///   置けたが入力欄に載らなかった状態が実在するので、それを「送れました」に
+    ///   丸める場所を1つも作らない。
+    ///
+    /// ★履歴の再読み込みもしない。パスは入力欄に**載っただけ**で、まだ送っていない
+    ///   = 転写には何も増えていない。読み直すと「何も変わっていない」を
+    ///   「効かなかった」と読ませる余地を作る。
+    func attach(image: Data) async -> AttachOutcome {
+        await attachClient.attach(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, image: image)
+    }
+
     func interrupt() async {
         guard canInterrupt else { return }
 
@@ -1032,6 +1047,18 @@ final class ConversationViewModel: ObservableObject {
     /// server's guarantee 見た物と押す物が同じ across the wire: the fingerprint travels
     /// with the button it was drawn beside, so a menu that changed between the draw and
     /// the tap is refused rather than answered.
+    /// 危険な承認で「構えた」状態。★**指紋ごと**持つ —— 画面が変われば構えは無効で、
+    /// 別の画面のボタンを押した時に古い構えが効いてしまう事を防ぐ。
+    @Published private(set) var armedDangerDigest: String?
+
+    /// 構え直しを促す1文。サーバが返した理由をそのまま使い、電話で作文しない。
+    @Published private(set) var dangerNotice: String?
+
+    /// 今この鍵は「押せば実行」か「押せば構えるだけ」か。★画面に出す文がこれで決まる。
+    func isArmed(for digest: String) -> Bool { armedDangerDigest == digest }
+
+    func disarmDanger() { armedDangerDigest = nil; dangerNotice = nil }
+
     func choose(key: String) async {
         guard choiceEnabled, let card = visibleChoice else { return }
         // The key must be one the server offered. A tap can only originate from a
@@ -1044,12 +1071,26 @@ final class ConversationViewModel: ObservableObject {
         inFlightChoiceKey = key
         choiceBanner = nil
 
+        // ★危険な画面は1タップで通さない(2026-08-26)。構えていなければ、
+        //   この tap は**構えるだけ**でサーバへは行かない。指紋に束ねてあるので、
+        //   構えた後に画面が変われば次の tap も通らない(サーバ側の指紋検査が断る)。
+        let currentDigest = visibleChoice?.digest ?? ""
+        let isDanger = visibleChoice?.risk.isDanger == true
+        if isDanger && !isArmed(for: currentDigest) {
+            armedDangerDigest = currentDigest
+            dangerNotice = visibleChoice?.risk.notice ?? "This action is hard to undo."
+            return
+        }
+        let confirmValue = isDanger ? currentDigest : nil
+        defer { disarmDanger() }
+
         let attempt = await choiceClient.choose(
             baseURL: baseURL,
             apiKey: apiKey,
             sessionID: sessionID,
             key: key,
-            digest: sentDigest
+            digest: sentDigest,
+            confirm: confirmValue
         )
         if applyChoiceAttempt(attempt, sentDigest: sentDigest) {
             choiceBanner = SendBanner(

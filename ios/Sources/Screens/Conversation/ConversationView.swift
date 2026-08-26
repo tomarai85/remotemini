@@ -1,9 +1,15 @@
 import SwiftUI
+import PhotosUI
 
 /// The Conversation screen (Sprint 3 brief §3). Renders `ConversationViewModel`'s
 /// `phase`/`loadEarlierState` -- display only, same split `ListView`/`ListViewModel`
 /// already establishes.
 struct ConversationView: View {
+    /// 写真ピッカーの選択。★選ばれた事と送れた事は別なので、状態を分けて持つ。
+    @State private var pickedPhoto: PhotosPickerItem?
+    @State private var attachBusy = false
+    /// 結果の1文。**「送れました」で丸めない**(置けたが載っていない状態が実在する)。
+    @State private var attachNotice: String?
     @StateObject private var viewModel: ConversationViewModel
     /// Brief §3-c's `.notFound` row: "一覧へ戻る", not a retry. `NavigationStack`
     /// already supplies a back chevron when this view is pushed from `ListView` in
@@ -197,6 +203,10 @@ struct ConversationView: View {
                 }
                 loadEarlierFooter
                 composer
+                    .onChange(of: pickedPhoto) { _, item in
+                        guard let item else { return }
+                        Task { await sendPicked(item) }
+                    }
             }
         }
     }
@@ -209,6 +219,24 @@ struct ConversationView: View {
     /// INTO a conversation that failed to load, and a composer over a failure view
     /// would invite typing into a screen whose session may not exist.
     @ViewBuilder
+    /// 選ばれた写真を机へ送る。
+    ///
+    /// ★ここで**画像を作り直さない**。机側が形式を先頭バイトで判定し、HEIC は向こうで
+    ///   JPEG へ変換する。電話でも変換すると判定の材料が2箇所で変わり、
+    ///   「どちらの変換が原因か」が切り分けられなくなる。運ぶのは撮った物そのまま。
+    private func sendPicked(_ item: PhotosPickerItem) async {
+        attachBusy = true
+        attachNotice = nil
+        defer { attachBusy = false; pickedPhoto = nil }
+
+        guard let data = try? await item.loadTransferable(type: Data.self), !data.isEmpty else {
+            attachNotice = "Could not read that photo."
+            return
+        }
+        let outcome = await viewModel.attach(image: data)
+        attachNotice = AttachWording.text(for: outcome)
+    }
+
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
             // ★2026-08-16(§9-4 / spec-audit A5): 常設の**状態**帯は同時に1枠だけ。
@@ -338,6 +366,18 @@ struct ConversationView: View {
                     .accessibilityIdentifier("conversation.choiceInFlightNotice")
             }
 
+            // ★添付の結果は composer のすぐ上に出す。入力欄にパスが載ったのかどうかを、
+            //   入力欄を見る前に読める位置に置く為(「送れました」だけだと、載っていない
+            //   時に人は入力欄を見て『消えた』と思う)。
+            if let notice = attachNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.attachNotice")
+            }
+
             HStack(alignment: .bottom, spacing: 8) {
                 // Left of the field, deliberately far from the send button: these two
                 // do opposite things and a mis-tap on a phone in one hand is the
@@ -362,6 +402,19 @@ struct ConversationView: View {
                 .disabled(!viewModel.canInterrupt)
                 .accessibilityLabel("Interrupt")
                 .accessibilityIdentifier("conversation.interruptButton")
+
+                // ★写真(2026-08-26)。研究の1位で、**電話でしか出来ない用途** ——
+                //   手の中の端末で起きているバグを、机まで持って行かずに撮って送る。
+                //   置いた後もパスを差し込むだけで**送信はしない**(送るかは人が決める)。
+                PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
+                    Image(systemName: attachBusy ? "hourglass" : "photo.on.rectangle")
+                        .font(.system(size: 22))
+                        .foregroundStyle(viewModel.composerEnabled ? Color.accentColor : Color.secondary)
+                        .frame(width: 34, height: 34)
+                }
+                .disabled(!viewModel.composerEnabled || attachBusy)
+                .accessibilityIdentifier("conversation.attachButton")
+                .accessibilityLabel("Attach a photo")
 
                 TextField("Message", text: $viewModel.draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
@@ -686,6 +739,16 @@ struct ConversationView: View {
                     // labels embed the option they would land on (「決定(2. …で決定)」),
                     // so they are sentences, and a phone-width row would truncate the
                     // very part that says what the key does.
+                    // ★構えている事を画面に出す(2026-08-26)。出さないと「押しても何も
+                    //   起きなかった」に見え、2回押す設計そのものが利用者から消える。
+                    if let notice = viewModel.dangerNotice, viewModel.isArmed(for: choice.digest) {
+                        Text("Tap again to confirm — \(notice)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(RCTheme.danger)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("conversation.dangerArmed")
+                    }
                     ForEach(choice.buttons, id: \.key) { button in
                         HStack(spacing: 6) {
                             // 溝。★§2.62: スピナは**ボタンの外**に置く。

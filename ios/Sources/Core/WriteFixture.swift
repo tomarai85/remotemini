@@ -79,7 +79,8 @@ struct ChoiceSendingFixture: ChoiceSending {
     /// `ChoiceAttempt` 自身が「不在を『変わっていない』と読むな」と書いている通り、
     /// 何も届いていないこの場面で入れられる値は他に無い。
     func choose(
-        baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String
+        baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String,
+        confirm: String?
     ) async -> ChoiceAttempt {
         ChoiceAttempt(outcome: await WriteFixture.holdThenGiveUp(), serverDigest: nil)
     }

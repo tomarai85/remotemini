@@ -175,7 +175,8 @@ final class ConversationViewModelTests: XCTestCase {
         var callCount: Int { calls.count }
 
         func choose(
-            baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String
+            baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String,
+            confirm: String?
         ) async -> ChoiceAttempt {
             calls.append((key: key, digest: digest))
             if let whileInFlight {
@@ -198,7 +199,8 @@ final class ConversationViewModelTests: XCTestCase {
     /// succeeded" is whether this failure fires.
     private struct UnusedChoiceClient: ChoiceSending {
         func choose(
-            baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String
+            baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String,
+            confirm: String?
         ) async -> ChoiceAttempt {
             XCTFail("this test's view model was not expected to press anything (key=\(key))")
             return ChoiceAttempt(outcome: .unreachable, serverDigest: nil)

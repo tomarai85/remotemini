@@ -33,7 +33,8 @@ struct ChoiceAttempt: Equatable {
 
 protocol ChoiceSending {
     func choose(
-        baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String
+        baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String,
+        confirm: String?
     ) async -> ChoiceAttempt
 }
 
@@ -52,7 +53,8 @@ struct ChoiceClient: ChoiceSending {
     }
 
     func choose(
-        baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String
+        baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String,
+        confirm: String?
     ) async -> ChoiceAttempt {
         let url = baseURL.appendingPathComponent("api/sessions/\(sessionID)/choice")
         var request = URLRequest(url: url)
@@ -63,7 +65,7 @@ struct ChoiceClient: ChoiceSending {
 
         let encoded: Data
         do {
-            encoded = try JSONEncoder().encode(RequestBody(key: key, digest: digest))
+            encoded = try JSONEncoder().encode(RequestBody(key: key, digest: digest, confirm: confirm))
         } catch {
             // Same branch, same reasoning as `SendClient`: unreachable for two
             // `String`s, written out so that adding a field later cannot turn a
@@ -129,6 +131,10 @@ struct ChoiceClient: ChoiceSending {
     private struct RequestBody: Encodable {
         let key: String
         let digest: String
+        /// 危険な承認にだけ載る第2手。★**指紋そのもの**を送る —— 別の値にすると
+        /// 「何に対する確認か」が線の上で失われ、構えた画面と押した画面がずれても
+        /// 気付けない。null の時は鍵ごと出さない(要らない画面に欄を作らない)。
+        let confirm: String?
     }
 
     /// `digest` joins `display`/`code` here and nothing else does. The refusal body

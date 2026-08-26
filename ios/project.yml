@@ -41,6 +41,12 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Remote Mini
+        # ★写真ピッカー(2026-08-26)。この文が無いと iOS はピッカーを出さずに落とす。
+        #   ★`PhotosPicker` は本来アプリに読み取り権限を与えないが(選ばれた1枚だけが
+        #   渡る)、用途文は**書式として必須**。Tom が見る文なので、何に使うかを書く。
+        NSPhotoLibraryUsageDescription: >-
+          Pick a screenshot or photo to send to the Claude Code session on your Mac.
+          Only the image you choose is sent; the app does not browse your library.
         CFBundleShortVersionString: "0.1"
         # ★此処を `"${RC_BUILD_NUM}"` に「直さない」事(2026-08-10)。此の直値は
         # **build.sh を通さずに焼いた印**として意図的に置いてある。番号の刻印は

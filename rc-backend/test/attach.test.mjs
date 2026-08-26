@@ -179,3 +179,38 @@ test("上限は電話の実物に足りる大きさ", () => {
   assert.ok(ATTACH_MAX_BYTES >= 8 * 1024 * 1024);
   assert.ok(ATTACH_MAX_PIXELS >= 12 * 1000 * 1000, "1200万画素の写真が入らない");
 });
+
+// ---- pane への差し込み(Enter を送らない事が本題)-----------------------------
+
+test("★パスを打つだけで Enter は送らない(送るかどうかは人が決める)", async () => {
+  const { TmuxInjector } = await import("../src/inject.mjs");
+  const calls = [];
+  const r = (a) => { calls.push(a); return ""; };
+  const inj = new TmuxInjector({ tmux: { run: r, runStrict: r } });
+
+  inj.typeLiteral("%1", "/Users/x/.rc-backend/attachments/abc.png");
+
+  assert.equal(calls.length, 1, "1回で済ませる(打鍵が増えると割り込みの窓も増える)");
+  assert.deepEqual(calls[0].slice(0, 5), ["send-keys", "-t", "%1", "-l", "--"]);
+  assert.ok(!calls.some((c) => c.includes("Enter")), "★Enter を送った");
+});
+
+test("★`--` の後ろに置く(`-` で始まる文字列を旗と読ませない)", async () => {
+  const { TmuxInjector } = await import("../src/inject.mjs");
+  const calls = [];
+  const r = (a) => { calls.push(a); return ""; };
+  const inj = new TmuxInjector({ tmux: { run: r, runStrict: r } });
+  inj.typeLiteral("%1", "-rf /tmp/x");
+  const i = calls[0].indexOf("--");
+  assert.ok(i > 0 && calls[0][i + 1] === "-rf /tmp/x", "旗として読まれる位置に置いた");
+});
+
+test("★改行入りは断る(『Enter を送らない』の約束が本文で破られる)", async () => {
+  const { TmuxInjector } = await import("../src/inject.mjs");
+  const r = () => "";
+  const inj = new TmuxInjector({ tmux: { run: r, runStrict: r } });
+  for (const bad of ["a\nb", "x\r", "\n"]) {
+    assert.throws(() => inj.typeLiteral("%1", bad), /newline-in-literal/, JSON.stringify(bad));
+  }
+  assert.throws(() => inj.typeLiteral("%1", ""), /empty-literal/);
+});
