@@ -107,7 +107,7 @@ struct SettingsView: View {
                     //   黙って先頭 2000 字を出すと「失敗行が無い = 台本は最後まで
                     //   走った」と読める。診断の材料としては其れが一番害の大きい嘘。
                     if state.rawTruncated {
-                        Text("(Output truncated to the beginning. The rest is in the log on edith.)")
+                        Text("(Output truncated to the beginning. The rest is in the log on the desk.)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .accessibilityIdentifier("settings.account.rawTruncated")
@@ -246,7 +246,7 @@ struct SettingsView: View {
                 }
                 .accessibilityIdentifier("settings.archived")
             } footer: {
-                Text("Sessions removed from the list. Their records stay on the desk (edith) and can be restored anytime.")
+                Text("Sessions removed from the list. Their records stay on the desk and can be restored anytime.")
             }
         }
     }
