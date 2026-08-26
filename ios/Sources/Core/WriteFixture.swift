@@ -51,7 +51,7 @@ enum WriteFixture {
 }
 
 struct MessageSendingFixture: MessageSending {
-    func send(baseURL: URL, apiKey: String, sessionID: String, text: String) async -> SendOutcome {
+    func send(baseURL: URL, apiKey: String, sessionID: String, text: String, sendId: String) async -> SendOutcome {
         await WriteFixture.holdThenGiveUp()
     }
 }

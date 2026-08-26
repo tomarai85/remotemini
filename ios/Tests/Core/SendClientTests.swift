@@ -25,7 +25,7 @@ final class SendClientTests: XCTestCase {
             baseURL: baseURL,
             apiKey: "correct-fixture-key",
             sessionID: "sess-abc-123",
-            text: "こんにちは"
+            text: "こんにちは", sendId: "testsendid0001"
         )
 
         XCTAssertEqual(MockURLProtocol.requestedURLs.last?.path, "/api/sessions/sess-abc-123/messages")
@@ -50,10 +50,10 @@ final class SendClientTests: XCTestCase {
     func testTwoDifferentTextsProduceTwoDifferentRecordedBodiesNegativeControl() async {
         MockURLProtocol.stubQueue = [.init(statusCode: 202, body: Data(Self.okBody.utf8))]
         _ = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "first")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "first", sendId: "testsendid0001")
         MockURLProtocol.stubQueue = [.init(statusCode: 202, body: Data(Self.okBody.utf8))]
         _ = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "second")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "second", sendId: "testsendid0001")
 
         XCTAssertEqual(MockURLProtocol.requestedBodies.count, 2)
         XCTAssertNotNil(MockURLProtocol.requestedBodies.first ?? nil)
@@ -72,7 +72,7 @@ final class SendClientTests: XCTestCase {
         MockURLProtocol.stubQueue = [.init(statusCode: 202, body: Data(Self.okBody.utf8))]
         let client = SendClient(session: MockURLProtocol.makeSession())
 
-        _ = await client.send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "こんにちは")
+        _ = await client.send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "こんにちは", sendId: "testsendid0001")
 
         XCTAssertEqual(MockURLProtocol.requestedTimeouts, [BackendSession.writeTimeout])
         XCTAssertGreaterThan(BackendSession.writeTimeout, BackendSession.interactiveTimeout)
@@ -86,7 +86,7 @@ final class SendClientTests: XCTestCase {
         MockURLProtocol.stubQueue = [.init(statusCode: 202, body: Data(Self.okBody.utf8))]
         let client = SendClient(session: MockURLProtocol.makeSession())
 
-        _ = await client.send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "  padded  ")
+        _ = await client.send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "  padded  ", sendId: "testsendid0001")
 
         let body = MockURLProtocol.requestedBodies.last ?? nil
         let decoded = try? JSONDecoder().decode([String: String].self, from: body ?? Data())
@@ -144,7 +144,7 @@ final class SendClientTests: XCTestCase {
             MockURLProtocol.reset()
             MockURLProtocol.stubQueue = [.init(statusCode: c.status, body: Data(c.body.utf8))]
             let outcome = await SendClient(session: MockURLProtocol.makeSession())
-                .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+                .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
 
             guard case .display(let display) = outcome else {
                 XCTFail("\(c.name): expected .display, got \(outcome)")
@@ -165,7 +165,7 @@ final class SendClientTests: XCTestCase {
         ]
 
         let outcome = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "", sendId: "testsendid0001")
 
         XCTAssertEqual(outcome, .display(ResultDisplay(kind: "error", text: "text required", keepText: true)))
     }
@@ -180,7 +180,7 @@ final class SendClientTests: XCTestCase {
         ]
 
         let outcome = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
 
         guard case .display(let display) = outcome else {
             return XCTFail("expected .display, got \(outcome)")
@@ -210,7 +210,7 @@ final class SendClientTests: XCTestCase {
         ]
 
         let outcome = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "wrong", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "wrong", sessionID: "s", text: "t", sendId: "testsendid0001")
 
         XCTAssertEqual(outcome, .unauthorized)
     }
@@ -221,7 +221,7 @@ final class SendClientTests: XCTestCase {
         ]
 
         let outcome = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "gone", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "gone", text: "t", sendId: "testsendid0001")
 
         XCTAssertEqual(outcome, .sessionNotFound)
     }
@@ -232,7 +232,7 @@ final class SendClientTests: XCTestCase {
         ]
 
         let outcome = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
 
         XCTAssertEqual(
             outcome,
@@ -249,12 +249,12 @@ final class SendClientTests: XCTestCase {
             .init(statusCode: 404, body: Data(#"{"error":"unknown session","code":"SESSION_NOT_FOUND"}"#.utf8))
         ]
         let gone = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
         MockURLProtocol.stubQueue = [
             .init(statusCode: 404, body: Data(#"{"error":"not found","code":"NO_SUCH_ROUTE"}"#.utf8))
         ]
         let badPath = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
 
         XCTAssertNotEqual(gone, badPath)
     }
@@ -269,7 +269,7 @@ final class SendClientTests: XCTestCase {
         MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(#"{"accepted":true}"#.utf8))]
 
         let outcome = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
 
         XCTAssertEqual(outcome, .contractViolation(ResponseContractViolation(status: 200, code: nil)))
     }
@@ -282,7 +282,7 @@ final class SendClientTests: XCTestCase {
         MockURLProtocol.stubQueue = [.init(statusCode: 202, body: Data())]
 
         let outcome = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
 
         XCTAssertEqual(outcome, .contractViolation(ResponseContractViolation(status: 202, code: nil)))
     }
@@ -296,7 +296,7 @@ final class SendClientTests: XCTestCase {
         ]
 
         let outcome = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
 
         XCTAssertEqual(outcome, .contractViolation(ResponseContractViolation(status: 202, code: nil)))
     }
@@ -305,7 +305,7 @@ final class SendClientTests: XCTestCase {
         MockURLProtocol.stubQueue = [.init(statusCode: 502, body: Data("<html>bad gateway</html>".utf8))]
 
         let outcome = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
 
         XCTAssertEqual(outcome, .contractViolation(ResponseContractViolation(status: 502, code: nil)))
     }
@@ -316,10 +316,10 @@ final class SendClientTests: XCTestCase {
     func testContractViolationCarriesTheObservedStatusNegativeControl() async {
         MockURLProtocol.stubQueue = [.init(statusCode: 502, body: Data("x".utf8))]
         let a = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
         MockURLProtocol.stubQueue = [.init(statusCode: 418, body: Data("x".utf8))]
         let b = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
 
         XCTAssertNotEqual(a, b)
     }
@@ -329,10 +329,10 @@ final class SendClientTests: XCTestCase {
     func testContractViolationIsNotCollapsedIntoDisplayNegativeControl() async {
         MockURLProtocol.stubQueue = [.init(statusCode: 202, body: Data(#"{"accepted":true}"#.utf8))]
         let violation = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
         MockURLProtocol.stubQueue = [.init(statusCode: 202, body: Data(Self.okBody.utf8))]
         let display = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
 
         XCTAssertNotEqual(violation, display)
     }
@@ -343,7 +343,7 @@ final class SendClientTests: XCTestCase {
         MockURLProtocol.stubQueue = []
 
         let outcome = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
 
         XCTAssertEqual(outcome, .unreachable)
     }
@@ -352,7 +352,7 @@ final class SendClientTests: XCTestCase {
         MockURLProtocol.injectedError = URLError(.cancelled)
 
         let outcome = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
 
         XCTAssertEqual(outcome, .cancelled)
     }
@@ -362,7 +362,7 @@ final class SendClientTests: XCTestCase {
         MockURLProtocol.stubQueue = [.init(statusCode: 202, body: Data(Self.okBody.utf8))]
         let client = SendClient(session: MockURLProtocol.makeSession())
 
-        let task = Task { await client.send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t") }
+        let task = Task { await client.send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001") }
         try? await Task.sleep(for: .milliseconds(50))
         task.cancel()
         let outcome = await task.value
@@ -376,10 +376,10 @@ final class SendClientTests: XCTestCase {
     func testCancelledIsNotCollapsedIntoUnreachableNegativeControl() async {
         MockURLProtocol.injectedError = URLError(.cancelled)
         let cancelled = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
         MockURLProtocol.stubQueue = []
         let unreachable = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "t", sendId: "testsendid0001")
 
         XCTAssertNotEqual(cancelled, unreachable)
     }

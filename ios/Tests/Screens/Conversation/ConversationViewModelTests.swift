@@ -41,7 +41,7 @@ final class ConversationViewModelTests: XCTestCase {
         /// draft not yet touched) has no window in which to look.
         var deliveryDelay: Duration = .zero
 
-        func send(baseURL: URL, apiKey: String, sessionID: String, text: String) async -> SendOutcome {
+        func send(baseURL: URL, apiKey: String, sessionID: String, text: String, sendId: String) async -> SendOutcome {
             sentTexts.append(text)
             if deliveryDelay > .zero {
                 try? await Task.sleep(for: deliveryDelay)
@@ -70,7 +70,7 @@ final class ConversationViewModelTests: XCTestCase {
         var whileInFlight: (@MainActor () -> Void)?
         private(set) var probeCount = 0
 
-        func send(baseURL: URL, apiKey: String, sessionID: String, text: String) async -> SendOutcome {
+        func send(baseURL: URL, apiKey: String, sessionID: String, text: String, sendId: String) async -> SendOutcome {
             if let whileInFlight {
                 await MainActor.run { whileInFlight() }
                 probeCount += 1
@@ -112,7 +112,7 @@ final class ConversationViewModelTests: XCTestCase {
     }
 
     private struct UnusedSendClient: MessageSending {
-        func send(baseURL: URL, apiKey: String, sessionID: String, text: String) async -> SendOutcome {
+        func send(baseURL: URL, apiKey: String, sessionID: String, text: String, sendId: String) async -> SendOutcome {
             XCTFail("this test's view model was not expected to send anything")
             return .unreachable
         }

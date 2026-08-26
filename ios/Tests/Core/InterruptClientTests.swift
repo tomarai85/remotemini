@@ -50,7 +50,7 @@ final class InterruptClientTests: XCTestCase {
             .init(statusCode: 202, body: Data(#"{"display":{"kind":"ok","text":"送った","keepText":false}}"#.utf8))
         ]
         _ = await SendClient(session: MockURLProtocol.makeSession())
-            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "control")
+            .send(baseURL: baseURL, apiKey: "k", sessionID: "s", text: "control", sendId: "testsendid0001")
         XCTAssertNotNil(
             MockURLProtocol.requestedBodies.last ?? nil,
             "control: the recorder can see a body when one is sent -- without this the assertion below is vacuous"
