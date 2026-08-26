@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/tools/fleet-account-cswap.sh
+# controls-for: tools/fleet-account-cswap.sh
 #
 # `cswap` の JSON を `fleet-account` 形式へ翻訳する層の対照。
 # ★入力は**本物の生成元から取る**(test/fixtures-cswap-list.json = Friday の実出力を録った物)。
