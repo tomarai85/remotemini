@@ -28,6 +28,14 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ★ここから下は**1本の代入の連鎖**。途中に何も挟まない(空行もコメントも)。
+#   2026-08-26 に2回続けて踏んだ: `\` の次の行がコメントだと、そこで連鎖が切れ、
+#   **コメントより上の代入が全部 exec に届かなくなる**。bash は文句を言わない ——
+#   上半分はただの一時代入として捨てられ、下半分だけが渡る。
+#   症状は「Friday へ配備した筈が edith を叩いて 12 分後に timeout」。
+#   届いている事は test/deploy-to-friday-controls.sh が env で実測している。
+# ★`$HOME` も書かない。この殻は Jervis で走るので手元で展開され、
+#   /Users/tomtim/... を Friday 上で探しに行く。宛先は向こうの絶対パスで書く。
 RC_EDITH_HOST="${RC_FRIDAY_HOST:-athenas}" \
 RC_EDITH_DIR="/Users/athenas/rc-backend" \
 RC_EDITH_STAGE="/Users/athenas/rc-staging" \
@@ -36,9 +44,6 @@ RC_DEPLOY_MARK="/Users/athenas/.rc-backend/deploy-in-progress" \
 RC_DEPLOY_LOCK="/Users/athenas/.rc-backend/deploy.lock" \
 RC_JOB_LABEL="com.fleet.rc-backend" \
 RC_REMOTE_LOG_DIR="/Users/athenas/Library/Logs/rc-backend" \
-# ★`$HOME` を書かない(2026-08-26 実測)。この殻は Jervis で走るので `$HOME` は
-# **手元で展開され**、/Users/tomtim/... を Friday 上で探しに行って永久に NG を出していた。
-# 宛先は向こうの絶対パスで書く。
 RC_COLDBOOT_PLIST="/Users/athenas/Library/LaunchAgents/com.fleet.rc-backend.plist" \
 RC_COLDBOOT_USER="athenas" \
 exec bash "$HERE/deploy-to-edith.sh" "$@"

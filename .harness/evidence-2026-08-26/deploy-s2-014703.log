@@ -1,0 +1,300 @@
+★汚れた木から配備する。刻む版 = 9db29ef-dirty
+     M src/view.mjs
+     M test/fixture-labels-producible.test.mjs
+     M test/wire-key-agreement.test.mjs
+    ?? src/risk.mjs
+    ?? test/risk-tier.test.mjs
+    ⚠ src/ か test/ が未 commit = 配備される**実行コードが commit から再現できない**。
+
+=== 0-pre. 手元で e2e を先に回す(= 遠くへ行く前に落ちる) ===
+PASS  401 without key
+PASS  401 with wrong key
+PASS  / は電話の画面を返す
+PASS  / は認証を要求しない(鍵を貼る画面そのものなので)
+PASS  /debug に検証ページが残っている
+PASS  /frames.mjs が module として配られる
+PASS  /view.mjs が module として配られる
+PASS  manifest が JSON として読める
+PASS  icon.png が PNG の形で返る
+PASS  ★表に無いパスは配らない: /src/server.mjs
+PASS  ★表に無いパスは配らない: /package.json
+PASS  ★表に無いパスは配らない: /../package.json
+PASS  ★表に無いパスは配らない: /frames.mjs/../server.mjs
+PASS  ★表に無いパスは配らない: /keys/api.key
+PASS  ★表に無いパスは配らない: /app.html
+PASS  /healthz は鍵無しで 200(観測者に鍵の複製を持たせない為)
+PASS  /healthz は JSON を返す
+PASS  ok:true を名乗る
+PASS  ★pid が実際に起こしたサーバと一致する(別物が 200 を返しているのではない)
+PASS  uptime は 0 以上の整数
+PASS  version は DEPLOYED-REV の1行目(無ければ unknown)
+PASS    応答に "session" という項が無い
+PASS    応答に "sessions" という項が無い
+PASS    応答に "cwd" という項が無い
+PASS    応答に "pane" という項が無い
+PASS    応答に "title" という項が無い
+PASS    応答に "count" という項が無い
+PASS    応答に "key" という項が無い
+PASS    応答に "projects" という項が無い
+PASS    応答本文に 会話 ID が現れない
+PASS    応答本文に cwd が現れない
+PASS    応答本文に 鍵 が現れない
+PASS    応答は 4 項だけ(ok / pid / uptime / version)
+PASS    POST /healthz は 404(生存信号は読み取り専用)
+PASS    DELETE /healthz は 404(生存信号は読み取り専用)
+PASS  鍵を付けても同じ形が返る(認証で分岐していない)
+PASS  listing includes cli session
+PASS  listing excludes sdk-cli noise
+PASS  title resolved from ai-title
+PASS  history has user+assistant+tool
+PASS  account: 台本の出力を読み切ったと名乗る
+PASS  account: 現用は1行目から取る
+PASS  account: 出荷済みの版が読む `account` にも現用名が入る
+PASS  account: 一覧は .order の並びのまま届く
+PASS  account: 現用の行にだけ印が付く
+PASS  ★account: トークンの無い行は**選べない行**として届く(理由の文付き)
+PASS  ★account: 選べる行の断り文は空(理由が出っ放しにならない)
+PASS  ★account: 読めた時は生出力を載せない(読めなかった時だけの欄)
+PASS  select: 200 で返る
+PASS  ★select: 台本を動かした**後に読み直した**現用が返る
+PASS  ★select: 印も biz の行へ移っている(一覧ごと取り直している)
+PASS  ★select: トークンの無い名前は 400 で断る
+PASS  ★select: 断りに機械可読の理由が付く
+PASS  ★select: 断りに人の読む1文が付く
+PASS  ★select: 断った後、机の口座は動いていない
+PASS  ★select: 一覧に無い名前は 400
+PASS  ★select: その理由は unknown-account
+PASS  message accepted 202
+PASS  SSE carries assistant echo
+PASS  SSE carries result
+PASS  ★出荷する parser で SSE の枠組みが解ける(電話が通る経路そのもの)
+PASS  ワーカー経路の id は素の整数(tmux の epoch.seq と形が違う = 電話は解釈しない)
+PASS  echo が枠組みを解いた後の本文としても取れる
+PASS  worker ready after result
+PASS  interrupt returns true
+PASS  worker gone after interrupt
+PASS  H2: 頭なしの会話へ送れる
+PASS  ★H2: 頭が無い初回は --fork-session 付きで祖先を resume する
+PASS  ★H2: fork した子が名乗った ID が頭として保存される(次回はここへ resume)
+PASS  H2: 頭ありの会話へ送れる
+PASS  ★H2: 頭が有れば fork せず、その枝の先端へ resume する
+PASS  ★§3-V: 子は**会話の居場所**で開かれる(HOME ではない)
+PASS  ★§3-V: 子の cwd に HOME が1件も現れない(既定値へ落ちていない)
+PASS  bad body -> 400
+PASS  unknown session -> 404
+PASS  SENDABLE pane -> 202 route=tmux
+PASS  入力欄から本文が消えたので delivered=verified
+PASS  本文と Enter が別コマンドで届く
+PASS  ★scrollback を読んでいない(capture-pane に -S を付けない)
+PASS  ★CHOICE 画面 -> 409(陽性対照)
+PASS  ★CHOICE 画面へは send-keys が0件
+PASS  ★zsh だけの cwd -> 注入せずワーカーで**受理**される
+PASS  ★zsh ペインへは send-keys が0件
+PASS  ★§3-V: 別の会話は**別の**居場所で開く(cwd は会話ごとの値)
+PASS  ★未信頼の cwd -> 409 で断る(accepted:false)
+PASS  ★断りに人が読める文が付く(理由コードだけを電話に出さない)
+PASS  ★一覧に在っても dir が無ければ 409 cwd_missing(「在る」と「今そこに在る」は別)
+PASS  ★§3-V の断りでも send-keys は0件
+PASS  ★特定不能 -> 409 blocked
+PASS  ★特定不能で send-keys が0件
+PASS  ★生成中 -> 202 で実際に送る
+PASS  ★生成中でも本文と Enter が出る
+PASS  キューは存在しない(queued を返さない)
+PASS  status は送信可否と進行中を別項目で返す
+PASS  ★上限が status の応答に載る(継ぎ目 = server.mjs の screenOf)
+PASS  ★その時も送信可否は SENDABLE(上限を遮断条件にしていない)
+PASS  ★陰性対照: 上限でないセッションの status は limited=false
+PASS  ★上限が一覧の live にも載る(一覧と個別で別経路を通る)
+PASS  ★陰性対照: 一覧の他の行は live.limited=false
+PASS  ★本文が載らなければ 409 composer-mismatch
+PASS  ★その時 Enter は一度も出ていない
+PASS  ★本文の直後に選択画面 -> 409 modal-appeared
+PASS  ★★その時 Enter は一度も出ていない(押せば承認/課金になる)
+PASS  interrupt は Escape 1回だけ
+PASS  C-c は一度も出ていない
+PASS  ★★止まった①: `Interrupted` の印が増えたら interrupted=true / stopped=verified
+PASS  ★★止まらなかった: 印が残ったら interrupted=false / stopped=unverified
+PASS  ★★止まった②: 印が出なくても、消えて戻らなければ stopped=verified
+PASS  走っていなければ stopped=null / reason=not-in-flight(押しはする)
+      [割り込みの所要 ms] ①印=39 ②巻戻=2578 止まらず=4005 未走行=1491 / 予算=4000
+PASS  ★②と未走行は予算の 2/3 以内で決まっている(余白が痩せたら判定が変わる前に落ちる)
+PASS  止まったペインへ出たキーは Escape 1回だけ
+PASS  一覧: 入力欄のあるペインは tmux/SENDABLE
+PASS  ★一覧: 選択待ちは CHOICE のまま(電話に出す前に潰さない)
+PASS  一覧: 特定不能は blocked
+PASS  一覧: 開いていない会話は worker
+PASS  Needs inputの画面には、電話が答えるのに要る材料が全部載る
+PASS  ★★許可確認は CHOICE として出るが、打てる鍵がゼロで出る
+PASS  ★★許可確認へ打鍵 -> 409、承認は起きない
+PASS  ★★許可確認へ出た send-keys は0件
+PASS  ★指紋なしの打鍵は 400(サーバが埋めない)
+PASS  受け付けない鍵は 400
+PASS  400 の間 send-keys は0件
+PASS  ★古い指紋は 409 で、今の指紋を返す(電話が撮り直さずにやり直せる)
+PASS  古い指紋でも send-keys は0件
+PASS  ★無い番号は 409 で断る(5択へ 7 を流さない)
+PASS  無い番号でも send-keys は0件
+PASS  ★良性メニューへは打鍵が1回だけ届く(literal で 2)
+PASS  ★画面が動かない回は applied=unverified(送信を効果と読まない)
+PASS  ★着地した画面も返る(applied だけでは**どこへ**動いたかが落ちる)
+PASS  unverified には撃ち直しを止める但し書きが付く
+PASS  ★★同じ指紋への2発目は 409(1発目が次の画面へ流れない)
+PASS  2発目で send-keys は増えない
+PASS  ★登録なし: 同cwdに claude 2つ -> 409 ambiguous
+PASS  ★登録なし: send-keys が0件
+PASS  ★登録あり A -> %20 へ注入(source=registry)
+PASS  ★A の本文は %20 だけに届いた
+PASS  ★登録あり B -> %21 へ注入
+PASS  ★B の本文は %21 だけに届いた(Aのペインに混ざらない)
+PASS  ★stale -> 409 blocked
+PASS  ★stale で send-keys が0件
+PASS  ★cwd 不一致 -> 409 blocked
+PASS  ★cwd 不一致で send-keys が0件
+PASS  ★登録なし C -> 名乗り済みを除くと候補ゼロ = ワーカー経路
+PASS  ★C で send-keys が0件(A/B のペインに混ざらない)
+PASS  一覧: A は tmux/%20
+PASS  一覧: stale は blocked(理由つき)
+PASS  一覧: cwd 不一致も blocked
+PASS  status: A は registry 由来
+PASS  interrupt: A は %20 へ Escape 1回
+PASS  ★interrupt: stale は 409(別の会話を止めない)
+PASS  ★interrupt: stale で send-keys が0件
+PASS  前提: 鍵が満杯(容量を超えた送信は 409 pane-busy = 積まない)
+PASS  ★interrupt: 鍵が満杯でも断られない(優先は待ち上限に数えない)
+PASS  ★interrupt: 行列を飛び越える(Escape の前に走った送信は保持者の1本だけ)
+PASS  ★interrupt: Escape はこの窓で1回だけ(連打にならない)
+PASS  壊れた登録が1件あっても A は解決できる
+PASS  ★未発言の会話が一覧に出る
+PASS  ★未発言: 中身が無いことを名乗る(捏造しない)
+PASS  ★未発言: cwd はペインの現在地
+PASS  ★未発言: 一覧の live は tmux/%23
+PASS  ★陽性対照: ペインが消えた登録は一覧に出ない
+PASS  ★未発言: history は 404 でなく空配列
+PASS  ★未発言: status は tmux/registry
+PASS  ★未発言: 最初の一言が %23 へ注入される
+PASS  ★未発言: 本文は %23 だけに届いた
+PASS  ★陽性対照: 未発言+ペイン消失 -> 409 pane-gone(ワーカーに落とさない)
+PASS  ★陽性対照: pane-gone で send-keys が0件
+PASS  未発言+ペイン消失の interrupt は落ちず「止める物が無い」
+PASS  ★購読直後に今の画面が1件来る(tmux 経路)
+PASS  ★購読直後の windowMs が観測枚数ぶん(4倍の窓を主張しない)
+PASS  ★購読中にペインが消えたら blocked を流す(死んだ経路名 gone を残さない)
+PASS  ★pane-gone の説明が cwd 不一致の文にすり替わっていない(既定に落ちる嘘の対照)
+PASS  ★pane-gone の説明が画面消失の事を言っている
+PASS  ★poll は完了した JSON を返す(中継も browser も溜め込めない形)
+PASS  ★poll の応答は握られない(cache-control: no-store)
+PASS  栞は経路が読める形(電話は中身を解釈しない)
+PASS  ★世代の印が連番の見た目をしていない(8桁の16進)
+PASS  ★同じ経路の別の会話は別の世代の印を持つ(固定値へ退化していない)
+PASS  ★poll と poll の隙間に起きた gap が届く(id 無しで流して消えていた物)
+PASS  ★その gap は順序を持っている(= ring に載った = 再生できる)
+PASS  ★一度渡した gap を栞の先で二度渡さない(読み直しが永久に続かない)
+PASS  ★別の世代の栞では繋がない(再起動を跨いだ「追いついた」の嘘を塞ぐ)
+PASS  ★経路が入れ替わった栞では繋がない(seq の空間が別物)
+PASS  ワーカー経路の poll は route=worker、栞は w.
+PASS  ★ワーカー側の世代の印も連番の見た目をしていない(8桁の16進)
+PASS  ★tmux の栞をワーカー経路に持ち込んでも「追いついた」にしない
+PASS  ★保留中の poll が出来事で起きる(時間切れ待ちではない)
+PASS  ★机の会話の送信待ちは `null`(0 ではない = 観測していない事を数にしない)
+PASS  ★机の会話の送信待ちは電話から捨てない(409 / queue-not-ours)
+PASS  送信待ちの土台: 1本目はワーカー経路で受理される
+PASS  ★ワーカー経路の poll が送信待ちの数を載せる(1本走り、2本待つ)
+PASS  ★待っている送信を捨てられる(捨てた数を名乗る)
+PASS  ★捨てた後の数は 0(電話が自分で引き算していない = server が言い直す)
+PASS  ★空の行列を捨てても失敗にしない(0 は「無かった」で嘘ではない)
+PASS  ★捨てた turn は1件ずつ名指しで残る(切断中でも後から拾える)
+PASS  ★★取り消しても走っている番は死なない(取り消す ≠ 止める)
+PASS  GET /queue は 405(行列は消す口しか無い。数は poll が載せる)
+PASS  ★捨てた事で保留中の poll が起きる(電話は張り直さずに知る)
+PASS  ★★捨てる物が無い時は保留を起こさない(空の 200 で電話に張り直させない)
+PASS  登録も jsonl も無い ID -> 404
+PASS  ★未登録+同cwdに claude 1つ -> 409 unregistered(推測で注入しない)
+PASS  ★陽性対照: そのペインへ send-keys が0件
+PASS  ★拒否文が直し方(rc-claude)を含む
+PASS  ★unregistered はワーカー経路にも落ちない
+PASS  status も unregistered を返す
+PASS  一覧でも blocked/unregistered として見える
+PASS  一覧の blocked 行が**文面**を持つ(電話が理由コードを生で出さずに済む)
+PASS  ★一覧の文面と、送信を断った時の文面が同一(出所が1つ)
+PASS  ?limit= は**会話の件数**として効く(file の件数ではない)
+PASS  ★埋まったら読むのをやめる(全部は開かない)
+PASS  ★新しい方が全部 sdk-cli でも cli の会話が返る(edith の分布の再現)
+PASS  ★その為に雑音を読み飛ばした事が計器に出る
+PASS  ★陽性対照: sdk-cli は一覧に出ない(混ぜない)
+PASS  ?scope=registered は登録簿に居る会話だけを返す
+PASS  知らない scope は既定(all)に落ちる
+PASS  一覧の行が metadataIncomplete を名乗る
+PASS  ★§3-T 3: 頭が新しければ祖先が `limit` の1枠を取る(行が消えない)
+PASS  ★§3-T 1: 祖先の行に**頭の** lastPrompt が出る
+PASS  ★§3-T 1: 祖先の行の updatedAt は**頭の** mtime(祖先の古い時刻ではない)
+PASS  ★§3-T 陰性対照: 祖先の file 自身は古いまま(材料が動いていない)
+PASS  ★§3-T 2: 頭そのものの file は行として出ない(枝が別会話として湧かない)
+PASS  ★§3-T 2 陽性対照: 頭を持たない普通の会話は出る(全部落とす実装で緑にならない)
+PASS  ★§3-T 4: 頭の file が無い会話は祖先の値で行が残る(消さない)
+PASS  ★§3-T 4b: 行の cwd / project は**祖先のまま**(枝の記録の cwd に化けない)
+PASS  ★§3-T 4b: 題も祖先のまま(メタを丸ごと頭から採っていない)
+PASS  ★§3-T 5: /history が**頭**を読む(fork の後の番が出る)
+PASS  ★§3-T 5: 頭の file が無ければ祖先を読む(500 にも空にもしない)
+PASS  ★§3-T 5 陰性対照: 頭を持たない会話は今まで通り自分の転写を読む
+PASS  ★§3-T 罠2: 頭を直接引くと**頭の**中身が返る(取り違えていない)
+PASS  ★§3-T 罠1: scope=registered でも祖先の行に**頭の**現在が出る
+PASS  ★§3-T 罠1 陽性対照: その時も頭そのものは行として出ない
+PASS  13-D 土台: 一覧に tmux 経路の行が居る(赤なら以下の行の検査は空)
+PASS  ★行の `display.route` は **`row.live`** から組む(行を丸ごと渡していない)
+PASS  13-D 土台: 発言の在る行が居る(`subtitleOf` の枝を分ける材料)
+PASS  ★行の `display.subtitle` は **行そのもの**から組む(`live` ではない)
+PASS  ★一覧の `display.scan` は **走査の計器**から組む(行ではない = 会話ごとに配らない)
+PASS  13-D 土台: 履歴に user の行が居る
+PASS  ★履歴の `display.who` は **`entry.role`** から組む(entry を丸ごと渡していない)
+PASS  13-D 土台: 文面の出る gap が1件来る
+PASS  ★gap の `display.notice` は **`why`** から組む(item を丸ごと渡していない)
+PASS  13-D 土台: 古い印で張り直すと SSE が gap を1本返す
+PASS  ★SSE の gap にも `display.notice` が載る(呼び口4箇所を口1つで賄っている)
+PASS  13-D 土台: 選択待ちの画面が1枚来る
+PASS  ★poll の `display.choice` は **画面の本体**から組む(poll の本文ではない)
+PASS  ★★画面が変わっていない poll は `choice` も `null`(電話が持つ選択待ちの面を消さない)
+PASS  13-Z 土台: 登録された会話の画面が1枚来る(登録先の %28 から撮れている)
+PASS  ★★配信は登録簿を毎 tick 読み直す(付け替えに追随して %29 の選択画面になる)
+PASS  13-D 土台: SSE の screen が1件来る(選択待ち)
+PASS  ★SSE の `screen` にも `display.choice` が載る(poll と同じ材料・同じ関数)
+PASS  ★`POST …/messages` の `display` は **その応答の status と本文**から組む
+PASS  ★`POST …/interrupt` の `display` も同じ
+PASS  ★`POST …/choice` の `display` も同じ
+PASS  13-D 土台: 行列の取り消しが 200 で返る(409 だと下の対照が効かない)
+PASS  ★`DELETE …/queue` の `display` も同じ
+PASS  13-D 土台: poll が message を1件運ぶ
+PASS  ★poll の message も `display.who` を **`role`** から組む
+PASS  13-D 土台: SSE も同じ追記を message として運ぶ
+PASS  ★SSE の message にも `display.who` が載る(口は `sendEvent` の1つだけ)
+PASS  ★二重起動は落ちる(半端に上がらない)
+PASS  ★その理由が一行で出る(ポートが埋まっている事+確かめ先)
+PASS  ★陽性対照: 二重起動は listening を名乗らない
+PASS  ★先に上がっている方は無傷
+PASS  ★ログに 1リクエスト1行が残っている
+PASS  送信の行に method / パスの型 / 結果コードが揃う
+PASS  ★ストリームの行に経路が乗る(§3-W が刺さった当の欄)
+PASS  ★poll の行が道として畳まれ、経路の欄も埋まっている(`(other)` に落ちていない)
+PASS  ★陰性対照: 表に無い道は `(other)` のまま(表が何でも飲み込む形になっていない)
+PASS  ★送った本文がログに出ていない
+PASS  ★sessionId は先頭8文字だけ(全部は出ない)
+PASS  ★問い合わせ文字列がログに出ていない
+PASS  ★409 の行に理由が乗る(理由の欄が空の拒否が1本も無い)
+PASS  壊れた本文の 400 も理由を名乗る(生の例外文は使わずに)
+PASS  ★死の順序(孫): ワーカー経路で受理される
+PASS  ★死の順序(孫): 死んだ事は `worker_closed` として届く
+PASS  ★実測: 親が書いた最後の行は worker_closed より**前**(平坦な取りこぼしは無い)
+PASS  ★実測: 孫が pipe を握ったまま worker_closed が届く(死の合図は close ではない)
+PASS  ★死の後に届いた本文も ring から**失われない**(栞で必ず拾える)
+PASS  ★死の順序(改行なし): ワーカー経路で受理される
+PASS  ★改行なし: その手前の行はちゃんと届いている(子は確かに書いた)
+PASS  ★改行なし: 死んだ事は届く
+PASS  ★空振り防止: 同じ当て方で、改行付きで届いた `result` は**捉えられる**
+PASS  ★実測: 改行の無い最後の行も ring に**載る**(死の間際に buf を流す)
+PASS  ★実測: その行は `worker_closed` より**前**に載る(畳んだ後に本文が生えない)
+PASS  停止測定用の SSE が開いている(この接続が close を塞ぐ)
+PASS  ★SSE を張ったままでも SIGTERM で降りる(launchd の 20 秒 SIGKILL を毎回払わない)
+
+E2E: pass=285 fail=0
+
+=== 0. 配備の錠を取る(= 二重配備を構造的に不可能にする) ===
+ssh: connect to host 10.0.0.0 port 22: Operation timed out

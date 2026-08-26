@@ -614,6 +614,50 @@ struct ConversationView: View {
         // the composer sentence and the card ended up contradicting each other once already.
         if let choice = viewModel.visibleChoice {
             VStack(alignment: .leading, spacing: 6) {
+                // ★危険度の帯(2026-08-26)。**押せる物は1つも変えていない** ——
+                //   何が押せるかは `choice.canPress` と `choice.buttons` が今まで通り決める。
+                //   ここが変えるのは「読む前に押す」を止めるだけの視覚の重さ。
+                //   ★`unmatched` では何も描かない。サーバが空の notice を返すのは、
+                //     「当たらなかった」を「安全です」と言い換える材料を渡さない為で、
+                //     ここで独自に「問題ありません」を足したら、その設計を電話側が壊す事になる。
+                // ★unmatched でも1行出す(2026-08-26、Codex の反論を採用)。
+                //   帯が出ない事そのものが「安全」の合図として読まれるので、沈黙をやめて
+                //   「検査していない」と明言する。ただし色は付けず地味に置く ——
+                //   全ての要求に色帯が出ると、本物の danger が埋もれる。
+                if !choice.risk.notice.isEmpty {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: choice.risk.isDanger
+                              ? "exclamationmark.triangle.fill"
+                              : (choice.risk.isCaution ? "arrow.up.forward.app" : "questionmark.circle"))
+                            .font(.caption)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(choice.risk.notice)
+                                .font(.caption.weight(.semibold))
+                                .fixedSize(horizontal: false, vertical: true)
+                            // 何が怖いかを人の言葉で。id は出さない(機械用の語を人に読ませない)。
+                            ForEach(choice.risk.signals, id: \.id) { sig in
+                                Text("・\(sig.why)")
+                                    .font(.caption2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                    .foregroundStyle(choice.risk.isDanger ? RCTheme.danger
+                                     : (choice.risk.isCaution ? RCTheme.caution : Color.secondary))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 7)
+                    .background(
+                        // unmatched は**地の色を付けない**。色帯は「読め」の合図で、
+                        // 毎回出す物ではない。文だけ置いて、色は本物に取っておく。
+                        (choice.risk.isDanger ? RCTheme.danger
+                         : (choice.risk.isCaution ? RCTheme.caution : Color.clear)).opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    )
+                    .accessibilityIdentifier("conversation.choiceRisk")
+                    .accessibilityValue(choice.risk.tier)
+                }
+
                 ForEach(Array(choice.head.enumerated()), id: \.offset) { _, line in
                     Text(line)
                         .font(.caption.weight(.semibold))

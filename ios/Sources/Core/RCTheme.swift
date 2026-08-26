@@ -49,6 +49,29 @@ enum RCTheme {
         }
     }()
 
+    /// 承認の危険度(2026-08-26)。**押せる物は変えない** —— 読む前に押すのを止めるだけの色。
+    /// 直値を画面へ置かず此処に集める理由は他のトークンと同じ: 5案の切替が効かなくなる。
+    static let danger: Color = {
+        switch variant {
+        case .claudeWarm:   return Color(red: 0xF2 / 255.0, green: 0x7A / 255.0, blue: 0x6E / 255.0)
+        case .lightMinimal: return Color(red: 0xC4 / 255.0, green: 0x28 / 255.0, blue: 0x20 / 255.0)
+        case .graphite:     return Color(red: 0xFF / 255.0, green: 0x7B / 255.0, blue: 0x72 / 255.0)
+        case .glassDark:    return Color(red: 0xFF / 255.0, green: 0x8A / 255.0, blue: 0x80 / 255.0)
+        case .glassLight:   return Color(red: 0xC0 / 255.0, green: 0x2A / 255.0, blue: 0x22 / 255.0)
+        }
+    }()
+
+    /// 外へ出る操作(戻せるが他人から見える)。danger より弱い段。
+    static let caution: Color = {
+        switch variant {
+        case .claudeWarm:   return Color(red: 0xE8 / 255.0, green: 0xB3 / 255.0, blue: 0x39 / 255.0)
+        case .lightMinimal: return Color(red: 0x9A / 255.0, green: 0x6B / 255.0, blue: 0x00 / 255.0)
+        case .graphite:     return Color(red: 0xE3 / 255.0, green: 0xB3 / 255.0, blue: 0x41 / 255.0)
+        case .glassDark:    return Color(red: 0xF5 / 255.0, green: 0xC2 / 255.0, blue: 0x4E / 255.0)
+        case .glassLight:   return Color(red: 0x8F / 255.0, green: 0x63 / 255.0, blue: 0x00 / 255.0)
+        }
+    }()
+
     /// 持ち出しバッジ等の第二アクセント。
     static let violet: Color = {
         switch variant {

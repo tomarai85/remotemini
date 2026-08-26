@@ -148,6 +148,17 @@ const CASES = {
     [CHOICE_SCREEN],
     [{ screen: "CHOICE", choice: { head: [], options: [], keys: [], digest: "d", kind: "hard-stop" } }],
     [{ screen: "CHOICE", choice: null }],
+    // ★危険語に当たる画面(2026-08-26)。これが無いと `risk.signals[]` が永久に空になり、
+    //   `ChoiceRiskSignal` の鍵名を**一度も突き合わせないまま緑**になる。
+    //   検体は「その枝を通る物」でなければ、突き合わせは空集合の一致に化ける。
+    // ★`CHOICE_SCREEN` から**派生**させる(2026-08-26)。独立に書くと、錨を潰す変異
+    //   (`.harness/wire-key-agreement-controls.sh` の「入力が痩せる」)が効かなくなる ——
+    //   片方が痩せてももう片方が同じ鍵を出してしまい、対照が「植えても緑」になる。
+    //   実際に一度そうなった。危険度の枝を通す為に**文字列だけ**を差し替える。
+    [{ ...CHOICE_SCREEN,
+       choice: CHOICE_SCREEN.choice
+         ? { ...CHOICE_SCREEN.choice, head: ["Run: rm -rf /tmp/x ?"] }
+         : CHOICE_SCREEN.choice }],
     [{ screen: "SENDABLE" }],
     [null],
   ],
@@ -269,18 +280,39 @@ function objects(value) {
 
 /**
  * `at` が指す入れ子を取り出す。
- *   `""`          返り値そのもの(配列なら要素を均す)
- *   `options[]`   その鍵の配列の要素
- *   `paneFault`   その鍵の入れ子1つ(null なら0件 = 枝を通っていないだけ)
+ *   `""`               返り値そのもの(配列なら要素を均す)
+ *   `options[]`        その鍵の配列の要素
+ *   `paneFault`        その鍵の入れ子1つ(null なら0件 = 枝を通っていないだけ)
+ *   `risk.signals[]`   ★2段以上(2026-08-26)。`.` で降り、最後の段だけ `[]` を解釈する。
+ *
+ * ★2段を足した理由: 承認の危険度が `risk.signals[]` という2段目に居る。ここを
+ *   「書き方を知らない」で落とすと、**新しい型を突き合わせ表に載せられない** ——
+ *   載せられないと `PHONE_ONLY` 側へ逃がす事になり、鍵名のズレを見る目が1つ減る。
+ *   計器が届かない場所を作らない方が、例外を1つ作るより安い。
  */
 function pluck(value, at) {
   if (at === "") return objects(value);
-  const arr = /^([A-Za-z_]\w*)\[\]$/.exec(at);
-  if (arr) return Array.isArray(value?.[arr[1]]) ? objects(value[arr[1]]) : [];
-  const one = /^([A-Za-z_]\w*)$/.exec(at);
-  assert.ok(one, `at の書き方を知らない: ${at}`);
-  const v = value?.[one[1]];
-  return Array.isArray(v) ? [] : objects(v);
+  const segs = at.split(".");
+  let cur = [value];
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    const arr = /^([A-Za-z_]\w*)\[\]$/.exec(seg);
+    const one = /^([A-Za-z_]\w*)$/.exec(seg);
+    assert.ok(arr || one, `at の書き方を知らない: ${at}`);
+    const key = (arr || one)[1];
+    const next = [];
+    for (const v of cur) {
+      const got = v?.[key];
+      if (arr) {
+        if (Array.isArray(got)) next.push(...got);
+      } else if (!Array.isArray(got)) {
+        if (got !== undefined && got !== null) next.push(got);
+      }
+    }
+    cur = next;
+  }
+  // 最後に object だけ残す(途中の段で配列を均してあるので、ここは要素の型を見るだけ)
+  return cur.filter((v) => v && typeof v === "object" && !Array.isArray(v));
 }
 
 function callAll(name) {
@@ -450,6 +482,9 @@ const PAIRS = [
   { swift: "ChoiceView", builders: ["choiceView"], at: "" },
   { swift: "ChoiceOption", builders: ["choiceView"], at: "options[]" },
   { swift: "ChoiceButton", builders: ["choiceView"], at: "buttons[]" },
+  // 2026-08-26: 承認の危険度。**許可は変えず表示の重さだけ**を運ぶ枝(`src/risk.mjs`)。
+  { swift: "ChoiceRisk", builders: ["choiceView"], at: "risk" },
+  { swift: "ChoiceRiskSignal", builders: ["choiceView"], at: "risk.signals[]" },
   { swift: "SessionsResponse.PaneFault.Display", builders: ["paneFaultView"], at: "" },
   { swift: "ResultDisplay", builders: ["sendResult", "interruptResult", "choiceResult", "clearQueueResult"], at: "" },
   // ---- 一覧(2026-08-08 / 監査 S8-25 で封筒を `src/wire.mjs` へ切り出して測れるようにした)

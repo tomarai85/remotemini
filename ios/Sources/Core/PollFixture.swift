@@ -184,7 +184,16 @@ final class PollFetchingFixture: PollFetching {
                     ChoiceOption(n: 3, label: "No, tell Claude what to do differently"),
                 ],
                 buttons: [],
-                digest: "fixture-hard-stop"
+                digest: "fixture-hard-stop",
+                // ★直値だがサーバと縛られている: `fixture-labels-producible.test.mjs` が
+                //   この head/options を `choiceView` に食わせ直し、出た risk と此処が
+                //   一致する事を要求する。ズレたら赤くなるので、写しが古くならない。
+                risk: ChoiceRisk(
+                    tier: "danger",
+                    notice: "This action is hard to undo. Read it before you tap.",
+                    signals: [ChoiceRiskSignal(id: "recursive-delete", why: "ファイルを再帰的に消します")],
+                    version: 1
+                )
             ))
         case .choiceKeys:
             return PollDisplay(choice: ChoiceView(
