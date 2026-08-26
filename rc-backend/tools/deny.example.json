@@ -1,0 +1,22 @@
+[
+  {
+    "id": "no-history-rewrite",
+    "pattern": "git\\s+push\\b[^\\n]*\\s(--force\\b|--force-with-lease\\b|-f\\b)",
+    "why": "他人が既に持っている履歴を上書きします"
+  },
+  {
+    "id": "no-recursive-delete",
+    "pattern": "\\brm\\s+(-[a-zA-Z]*[rR][a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*[rR])\\b",
+    "why": "ファイルを再帰的に消します"
+  },
+  {
+    "id": "no-hard-reset",
+    "pattern": "\\bgit\\s+reset\\s+--hard\\b",
+    "why": "未 commit の変更が消えます"
+  },
+  {
+    "id": "no-service-unload",
+    "pattern": "\\blaunchctl\\s+(unload|bootout|remove)\\b",
+    "why": "常設サービスを止めます"
+  }
+]

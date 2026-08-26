@@ -1,1 +1,66 @@
-[codex-quick TIMEOUT 400s — do NOT treat as PASS; proceed on own judgment and log it]
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a03e8f-9320-7620-82a5-b9f57a66235d
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Design decision. No file access; everything inline. Terse, concrete answer only.
+
+MEASURED FACT (just now, real photo through the real production path): a phone attaches a JPEG to a Node server on the owner's own Mac. The server validates the format by magic bytes, writes it 0600 into a private directory, and types the path into a terminal pane so an AI coding agent can read it. I just verified that a real GPS-tagged photo arrives byte-identical: 11 GPS EXIF fields survive, including latitude 65 deg 40 min N. Nothing strips metadata today.
+
+CONTEXT THAT MATTERS:
+- Single user. The Mac is HIS OWN machine. The photo is HIS OWN photo. Nothing leaves the tailnet.
+- BUT the agent reading the file is an LLM that can be prompt-injected, and it can run shell commands and network calls. Whatever is in the file is readable by it.
+- The stated use case is screenshots of on-device bugs. Screenshots have no GPS. Camera photos do.
+- The server already re-encodes HEIC to JPEG via `sips`. PNG and JPEG pass through untouched.
+
+QUESTIONS, answer each in 2-4 sentences max:
+1. Given the owner's own machine and own photo, is stripping EXIF actually worth doing, or is it ceremony? Argue the side you actually believe.
+2. If stripping is right, WHERE: on the phone before upload, or on the server after receipt? What breaks in each.
+3. `sips` can re-encode but I am not certain it drops GPS. If I re-encode every image to strip metadata, I lose: orientation (photo appears rotated), color profile, and I add CPU per upload. Is a full re-encode the right hammer, or should I surgically remove only the GPS IFD and keep the rest?
+4. Orientation specifically: if I strip EXIF wholesale, a portrait photo taken on a phone will render sideways to the agent. Does that matter for the stated use case, and what is the minimal correct handling?
+5. What OTHER metadata in a phone photo would you strip before handing it to a promptable LLM, that I have not mentioned?
+2026-08-26T14:53:16.838503Z ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit
+2026-08-26T14:53:17.293417Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-26T14:53:17.316659Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-26T14:54:10.742621Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-26T14:54:10.896737Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Network is unreachable (os error 51), url: wss://chatgpt.com/backend-api/codex/responses
+2026-08-26T14:54:11.192044Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Network is unreachable (os error 51), url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 2/5
+2026-08-26T14:54:11.644246Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Network is unreachable (os error 51), url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 3/5
+2026-08-26T14:54:12.574277Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Network is unreachable (os error 51), url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 4/5
+2026-08-26T14:54:14.338207Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Network is unreachable (os error 51), url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 5/5
+2026-08-26T14:54:17.695484Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: Network is unreachable (os error 51), url: wss://chatgpt.com/backend-api/codex/responses
+warning: Falling back from WebSockets to HTTPS transport. stream disconnected before completion: Network is unreachable (os error 51)
+codex
+1. Stripping location metadata is worth doing. The privacy boundary is not “owner versus Mac,” but “private data versus a promptable agent capable of exfiltration”; GPS provides no value for bug screenshots, so removing it is cheap defense in depth.
+
+2. Strip on the server immediately before creating the agent-visible file. Phone-side stripping reduces exposure earlier but adds platform-specific processing and may alter uploads; server-side stripping leaves the original briefly present, so keep it private, hand only a sanitized copy to the agent, then delete the original.
+
+3. Do not re-encode every image merely to remove metadata. Use a metadata-aware scrubber that removes selected EXIF/XMP fields while preserving compressed pixels, orientation, and ICC color profile; verify the output contains no GPS pointers or embedded metadata-bearing thumbnails.
+
+4. Orientation matters because sideways images reduce the agent’s ability to inspect the bug. Minimally, preserve the orientation field; if metadata must be removed wholesale, read orientation first, rotate/flip the pixels accordingly, then set orientation to normal or omit it.
+
+5. Also strip capture timestamps, device make/model and serial identifiers, owner/artist fields, software names, comments/descriptions, XMP/IPTC data, MakerNotes, unique image IDs, face-region data, and embedded thumbnails. Retain only what rendering needs: dimensions, normalized orientation, and preferably the ICC profile.
+tokens used
+21,719
+1. Stripping location metadata is worth doing. The privacy boundary is not “owner versus Mac,” but “private data versus a promptable agent capable of exfiltration”; GPS provides no value for bug screenshots, so removing it is cheap defense in depth.
+
+2. Strip on the server immediately before creating the agent-visible file. Phone-side stripping reduces exposure earlier but adds platform-specific processing and may alter uploads; server-side stripping leaves the original briefly present, so keep it private, hand only a sanitized copy to the agent, then delete the original.
+
+3. Do not re-encode every image merely to remove metadata. Use a metadata-aware scrubber that removes selected EXIF/XMP fields while preserving compressed pixels, orientation, and ICC color profile; verify the output contains no GPS pointers or embedded metadata-bearing thumbnails.
+
+4. Orientation matters because sideways images reduce the agent’s ability to inspect the bug. Minimally, preserve the orientation field; if metadata must be removed wholesale, read orientation first, rotate/flip the pixels accordingly, then set orientation to normal or omit it.
+
+5. Also strip capture timestamps, device make/model and serial identifiers, owner/artist fields, software names, comments/descriptions, XMP/IPTC data, MakerNotes, unique image IDs, face-region data, and embedded thumbnails. Retain only what rendering needs: dimensions, normalized orientation, and preferably the ICC profile.
