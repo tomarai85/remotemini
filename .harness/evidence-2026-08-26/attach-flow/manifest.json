@@ -1,0 +1,35 @@
+[
+  {
+    "attachments" : [
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "06B25020-1F7A-40DD-8B42-26C8B6254476",
+        "deviceName" : "iPhone-dogfood",
+        "exportedFileName" : "C6F7BDB6-F582-446C-AF20-C9EBF72C6F84.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "03-photo-picker_0_CF463846-3246-47B3-A0F4-8F4330AD6994.png",
+        "timestamp" : 1787754313.489
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "06B25020-1F7A-40DD-8B42-26C8B6254476",
+        "deviceName" : "iPhone-dogfood",
+        "exportedFileName" : "F5349FB3-889F-4D46-B186-FB3207915B35.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "02-conversation-with-attach-button_0_443D17E5-F8A0-4D61-8AE6-572ED441E3C9.png",
+        "timestamp" : 1787754309.399
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "06B25020-1F7A-40DD-8B42-26C8B6254476",
+        "deviceName" : "iPhone-dogfood",
+        "exportedFileName" : "D5367834-B868-4A33-8194-CE295E836F25.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "01-sessions_0_ABC9D9F6-0819-4CE3-B808-820CBE7E8198.png",
+        "timestamp" : 1787754306.742
+      }
+    ],
+    "testIdentifier" : "AttachButtonUITests/testCaptureTheAttachFlowForHumanEyes()",
+    "testIdentifierURL" : "test://com.apple.xcode/RemoteMini/RemoteMiniUITests/AttachButtonUITests/testCaptureTheAttachFlowForHumanEyes"
+  }
+]

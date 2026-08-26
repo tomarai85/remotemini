@@ -1,0 +1,1 @@
+[codex-quick TIMEOUT 400s — do NOT treat as PASS; proceed on own judgment and log it]
