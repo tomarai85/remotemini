@@ -1,0 +1,30 @@
+==> 1. generate project
+    作業木の汚れ(deploy-dirt rc=1):
+ M Sources/Screens/List/ListView.swift
+?? Sources/Core/RCListStyle.swift
+    版: 8e91b9e-dirty
+    番号: 64
+==> 1b. 机から既定の接続先を貰って刻む
+    種: 刻んだ(指紋 919c6e09057e0de1)。URL も鍵も此処には出さない
+==> 2. locate the wildcard provisioning profile
+    profile expires 2027-06-06T04:04:42Z
+==> 3. locate the signing identity
+==> 4. build (unsigned)
+==> 5. sign
+    signed: /Users/tomtim/Infra/mobile-work/ios/build/signed/RemoteMini.app
+    通知の行き先: remotemini:// (焼き上がった app に在る)
+    種: 焼き上がった app にも同じ物が入っている(指紋 919c6e09057e0de1)
+    ⚠ 変異を全部回した後に、其れが読む file が動いている = 記録は**古い**
+      閉じる手: bash ios/tools/signout-notice-control.sh(約12分)
+==> 6. install
+00:50:41  Acquired tunnel connection to device.
+00:50:41  Enabling developer disk image services.
+00:50:41  Acquired usage assertion.
+App installed:
+• bundleID: com.tomarai.remotemini
+• installationURL: file:///private/var/containers/Bundle/Application/2693B61A-1D73-4316-844A-04E50760F4DA/RemoteMini.app/
+• launchServicesIdentifier: unknown
+• databaseUUID: 58074AB1-025E-4C5B-9742-152DFD52509E
+• databaseSequenceNumber: 8044
+• options: 
+==> installed (attempt 1)

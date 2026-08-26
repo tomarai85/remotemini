@@ -1,0 +1,82 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a03ca8-8a21-78d3-aff2-48601eb7cff1
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Review a small bash+python shim. No file access; everything inline. Terse, concrete defects only.
+
+CONTEXT: A Node server calls a script $RC_FLEET_ACCOUNT with no args to observe which of several Claude accounts is active, and with one arg to switch. The original script only exists on a machine that is gone. The replacement machine has a different tool, `cswap`, with `cswap list --json` and `cswap switch <num|email>`. I wrote a shim translating cswap's JSON into the legacy text format the server's parser expects:
+  現用: <name>            (or 「現用: (未設定)」)
+  優先順 (.order):
+  ->  1. name   トークン:有
+      2. name   トークン:欠
+Parser regex on each row: /^\s*(->)?\s*(\d+)\.\s+(.*?)\s+トークン:(有|欠)$/
+
+SHIM BEHAVIOUR:
+- exec cswap switch "$1" when given an arg.
+- else: raw=$(cswap list --json); pipe into python3 that reads accounts[], uses a['email'] as name, a['number'] as order, active = bool(a['active']) or number == d['activeAccountNumber'], and prints 有 unless usageStatus is one of no_token/missing_token/token_missing (then 欠).
+- Deliberate choice: cswap often reports usageStatus='keychain_unavailable' meaning the key could NOT BE READ, not that a token is absent. I map that to 有, reasoning that mapping it to 欠 makes the phone UI say 'this account cannot be switched to' which is a FALSE refusal; the real failure should surface at switch time instead.
+- Non-zero exit on: cswap missing, list failing, empty output, unparseable JSON, accounts not a list, row not an object, number not an int.
+
+QUESTIONS:
+1. Is the keychain_unavailable -> 有 choice defensible, or does it create a worse failure than the false refusal it avoids?
+2. Can any real email or account name break the row regex or the fixed-width '%s %2d. %s   トークン:%s' formatting (e.g. names with spaces, unicode, very long, leading '->')?
+3. `exec cswap switch "$1"` — any injection or arg-confusion risk given $1 comes from an HTTP request body (server validates name length<=64 and rejects leading '-')?
+4. Anything that could make this silently return a WRONG-but-parseable listing rather than failing?
+2026-08-26T06:01:14.572415Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-26T06:01:14.647831Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-26T06:01:15.093299Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+1. `keychain_unavailable -> 有` is defensible as an intentional fail-open policy, provided `cswap switch` returns non-zero on failure and does not damage the currently active account. It is still semantically inaccurate: “有” becomes “not known to be absent,” not “token confirmed.” If switching is non-atomic, fail-open could be worse.
+
+2. Normal emails, spaces, Unicode, `%`, long values, and leading `->` are safe. `%s` does not truncate, and the regex captures them. Structural control characters are unsafe: `\n` can create extra rows, while `\r` or other line controls can break parsing. Validate `email` as a single-line string. Negative numbers also produce rows the regex cannot parse; require positive integers.
+
+3. No shell injection: quoting makes `$1` exactly one argument. Rejecting leading `-` prevents ordinary option injection. Remaining risks are application-level ambiguity:
+
+   - Numeric email/name is interpreted as an account number.
+   - Empty strings or control characters may confuse `cswap`.
+   - `PATH` determines which `cswap` executes, though HTTP input cannot influence that directly.
+
+4. Wrong-but-parseable cases include:
+
+   - `bool(a['active'])`: strings such as `"false"` and `"0"` are truthy.
+   - Unknown, misspelled, differently cased, or missing `usageStatus` values become `有`.
+   - Conflicting per-account `active` values and `activeAccountNumber` can print multiple arrows.
+   - A string-valued `activeAccountNumber` will not equal an integer account number.
+   - Duplicate, zero, negative, or unsorted account numbers are not rejected.
+   - Non-string or empty `email` values may print plausible garbage such as `None`.
+   - Embedded newlines can inject additional parseable rows.
+
+Validate exact types, positive unique numbers, single-line non-empty emails, known status values, and exactly one consistent active account.
+tokens used
+17,281
+1. `keychain_unavailable -> 有` is defensible as an intentional fail-open policy, provided `cswap switch` returns non-zero on failure and does not damage the currently active account. It is still semantically inaccurate: “有” becomes “not known to be absent,” not “token confirmed.” If switching is non-atomic, fail-open could be worse.
+
+2. Normal emails, spaces, Unicode, `%`, long values, and leading `->` are safe. `%s` does not truncate, and the regex captures them. Structural control characters are unsafe: `\n` can create extra rows, while `\r` or other line controls can break parsing. Validate `email` as a single-line string. Negative numbers also produce rows the regex cannot parse; require positive integers.
+
+3. No shell injection: quoting makes `$1` exactly one argument. Rejecting leading `-` prevents ordinary option injection. Remaining risks are application-level ambiguity:
+
+   - Numeric email/name is interpreted as an account number.
+   - Empty strings or control characters may confuse `cswap`.
+   - `PATH` determines which `cswap` executes, though HTTP input cannot influence that directly.
+
+4. Wrong-but-parseable cases include:
+
+   - `bool(a['active'])`: strings such as `"false"` and `"0"` are truthy.
+   - Unknown, misspelled, differently cased, or missing `usageStatus` values become `有`.
+   - Conflicting per-account `active` values and `activeAccountNumber` can print multiple arrows.
+   - A string-valued `activeAccountNumber` will not equal an integer account number.
+   - Duplicate, zero, negative, or unsorted account numbers are not rejected.
+   - Non-string or empty `email` values may print plausible garbage such as `None`.
+   - Embedded newlines can inject additional parseable rows.
+
+Validate exact types, positive unique numbers, single-line non-empty emails, known status values, and exactly one consistent active account.

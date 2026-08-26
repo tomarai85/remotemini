@@ -36,6 +36,9 @@ RC_DEPLOY_MARK="/Users/athenas/.rc-backend/deploy-in-progress" \
 RC_DEPLOY_LOCK="/Users/athenas/.rc-backend/deploy.lock" \
 RC_JOB_LABEL="com.fleet.rc-backend" \
 RC_REMOTE_LOG_DIR="/Users/athenas/Library/Logs/rc-backend" \
-RC_COLDBOOT_PLIST="$HOME/Library/LaunchAgents/com.fleet.rc-backend.plist" \
+# ★`$HOME` を書かない(2026-08-26 実測)。この殻は Jervis で走るので `$HOME` は
+# **手元で展開され**、/Users/tomtim/... を Friday 上で探しに行って永久に NG を出していた。
+# 宛先は向こうの絶対パスで書く。
+RC_COLDBOOT_PLIST="/Users/athenas/Library/LaunchAgents/com.fleet.rc-backend.plist" \
 RC_COLDBOOT_USER="athenas" \
 exec bash "$HERE/deploy-to-edith.sh" "$@"

@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 1,
+  "activeAccountNumber": 3,
+  "accounts": [
+    {
+      "number": 1,
+      "email": "mail-redacted@example.invalid",
+      "organizationName": "mail-redacted@example.invalid's Organization",
+      "organizationUuid": "cf9f09c7-e342-42c9-96ea-6021d714c1d0",
+      "isOrganization": true,
+      "active": false,
+      "usageStatus": "keychain_unavailable",
+      "usage": null,
+      "lastGoodUsage": {
+        "fiveHour": {
+          "pct": 41.0,
+          "resetsAt": "2026-08-26T08:19:59.711462+00:00",
+          "countdown": "2h 19m",
+          "clock": "03:19"
+        },
+        "sevenDay": {
+          "pct": 51.0,
+          "resetsAt": "2026-08-30T14:59:59.711485+00:00",
+          "countdown": "4d 8h",
+          "clock": "Aug 30 09:59",
+          "expectedPct": 37.5,
+          "aheadOfPace": false,
+          "projectedExhaustionAt": "2026-08-28T18:32:08Z",
+          "willLastToReset": false
+        },
+        "scoped": [
+          {
+            "pct": 15.0,
+            "resetsAt": "2026-08-30T14:59:59.711735+00:00",
+            "countdown": "4d 8h",
+            "clock": "Aug 30 09:59",
+            "expectedPct": 37.5,
+            "aheadOfPace": false,
+            "projectedExhaustionAt": "2026-09-10T03:01:18Z",
+            "willLastToReset": true,
+            "name": "Fable"
+          }
+        ]
+      },
+      "lastGoodFetchedAt": "2026-08-26T06:00:11Z",
+      "lastGoodAgeSeconds": 41.3
+    },
+    {
+      "number": 2,
+      "email": "mail-redacted@example.invalid",
+      "organizationName": "mail-redacted@example.invalid's Organization",
+      "organizationUuid": "0dd867d8-1117-454f-bf63-331cd0835632",
+      "isOrganization": true,
+      "active": false,
+      "usageStatus": "keychain_unavailable",
+      "usage": null,
+      "lastGoodUsage": {
+        "fiveHour": {
+          "pct": 100.0,
+          "resetsAt": "2026-08-15T23:09:59.626767+00:00",
+          "countdown": "0m",
+          "clock": "Aug 15 18:09"
+        },
+        "sevenDay": {
+          "pct": 74.0,
+          "resetsAt": "2026-08-16T07:59:59.626793+00:00",
+          "countdown": "0m",
+          "clock": "Aug 16 02:59",
+          "expectedPct": 92.4,
+          "aheadOfPace": false,
+          "projectedExhaustionAt": "2026-08-18T01:50:38Z",
+          "willLastToReset": true
+        },
+        "scoped": [
+          {
+            "pct": 43.0,
+            "resetsAt": "2026-08-16T07:59:59.627037+00:00",
+            "countdown": "0m",
+            "clock": "Aug 16 02:59",
+            "expectedPct": 92.4,
+            "aheadOfPace": false,
+            "projectedExhaustionAt": "2026-08-24T09:07:36Z",
+            "willLastToReset": true,
+            "name": "Fable"
+          }
+        ]
+      },
+      "lastGoodFetchedAt": "2026-08-15T19:17:04Z",
+      "lastGoodAgeSeconds": 902628.8
+    },
+    {
+      "number": 3,
+      "email": "mail-redacted@example.invalid",
+      "organizationName": "mail-redacted@example.invalid's Organization",
+      "organizationUuid": "1450c732-df01-4035-b842-8cd42fb31974",
+      "isOrganization": true,
+      "active": true,
+      "usageStatus": "keychain_unavailable",
+      "usage": null,
+      "lastGoodUsage": {
+        "fiveHour": {
+          "pct": 18.0,
+          "resetsAt": "2026-08-26T07:50:00.449103+00:00",
+          "countdown": "1h 49m",
+          "clock": "02:50"
+        },
+        "sevenDay": {
+          "pct": 23.0,
+          "resetsAt": "2026-08-28T14:00:00.449123+00:00",
+          "countdown": "2d 7h",
+          "clock": "Aug 28 09:00",
+          "expectedPct": 66.7,
+          "aheadOfPace": false,
+          "projectedExhaustionAt": "2026-09-10T20:58:12Z",
+          "willLastToReset": true
+        },
+        "scoped": [
+          {
+            "pct": 5.0,
+            "resetsAt": "2026-08-28T14:00:00.449319+00:00",
+            "countdown": "2d 7h",
+            "clock": "Aug 28 09:00",
+            "expectedPct": 66.7,
+            "aheadOfPace": false,
+            "projectedExhaustionAt": "2026-11-22T22:03:42Z",
+            "willLastToReset": true,
+            "name": "Fable"
+          }
+        ]
+      },
+      "lastGoodFetchedAt": "2026-08-26T06:00:11Z",
+      "lastGoodAgeSeconds": 41.3
+    },
+    {
+      "number": 4,
+      "email": "mail-redacted@example.invalid",
+      "organizationName": "mail-redacted@example.invalid's Organization",
+      "organizationUuid": "0d54896a-7f52-4e6a-a2fc-56f75ddb8d6c",
+      "isOrganization": true,
+      "active": false,
+      "usageStatus": "keychain_unavailable",
+      "usage": null,
+      "lastGoodUsage": {
+        "fiveHour": {
+          "pct": 6.0,
+          "resetsAt": "2026-08-15T13:39:59.890599+00:00",
+          "countdown": "0m",
+          "clock": "Aug 15 08:39"
+        },
+        "sevenDay": {
+          "pct": 7.0,
+          "resetsAt": "2026-08-21T08:59:59.890619+00:00",
+          "countdown": "0m",
+          "clock": "Aug 21 03:59",
+          "expectedPct": 16.7,
+          "aheadOfPace": false,
+          "projectedExhaustionAt": "2026-08-31T01:32:24Z",
+          "willLastToReset": true
+        },
+        "scoped": [
+          {
+            "pct": 0.0,
+            "name": "Fable"
+          }
+        ]
+      },
+      "lastGoodFetchedAt": "2026-08-15T13:02:15Z",
+      "lastGoodAgeSeconds": 925116.9
+    }
+  ],
+  "unclaimedCredentials": [
+    "20260815T044038-d64fb8aed27e-96d7ab"
+  ]
+}

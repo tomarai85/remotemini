@@ -92,6 +92,12 @@
     <string>/Users/athenas/.rc-backend/api.key</string>
     <key>RC_DEPLOY_MARK</key>
     <string>/Users/athenas/.rc-backend/deploy-in-progress</string>
+    <!-- ★口座の観測先(2026-08-26)。この機体に fleet-account は無く、後継は cswap。
+         出力形式が違うので tools/fleet-account-cswap.sh が翻訳して渡す。
+         無指定だと $HOME/fleet-tools/fleet-account を探して ENOENT で 500 を返し、
+         アプリの口座欄が必ずエラーになる(移設直後の実測)。 -->
+    <key>RC_FLEET_ACCOUNT</key>
+    <string>/Users/athenas/rc-backend/tools/fleet-account-cswap.sh</string>
   </dict>
 
   <key>LimitLoadToSessionType</key>

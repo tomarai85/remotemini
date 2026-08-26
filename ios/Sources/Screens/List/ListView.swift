@@ -32,6 +32,9 @@ struct ListView: View {
     private let archivedLister: ArchivedListing
 
     /// rename の面の状態。alert 1枚 + 結果の1行。
+    @AppStorage("RCListStyle") private var listStyleRaw: String = RCListStyle.current.rawValue
+    private var listStyle: RCListStyle { RCListStyle(rawValue: listStyleRaw) ?? .current }
+
     @State private var renameTarget: SessionRow?
     @State private var renameText = ""
     @State private var renameNotice: String?
@@ -226,7 +229,7 @@ struct ListView: View {
             NavigationLink {
                 ConversationView(viewModel: makeConversationViewModel(for: row))
             } label: {
-                SessionRowView(row: row, nowMs: Date().timeIntervalSince1970 * 1000)
+                SessionRowView(row: row, nowMs: Date().timeIntervalSince1970 * 1000, style: listStyle)
             }
             // 行の操作(長押し = iOS の標準の置き場)。名前(A1)・保管(§9-1)・戻し(§9-2)。
             .contextMenu {
@@ -262,7 +265,8 @@ struct ListView: View {
             // List 側の標準装飾(区切り線・行背景)は全部降ろす。
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 10))
+            .listRowInsets(EdgeInsets(top: listStyle.listRowVerticalInset, leading: 16,
+                                      bottom: listStyle.listRowVerticalInset, trailing: 10))
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -464,6 +468,9 @@ struct ListView: View {
 private struct SessionRowView: View {
     let row: SessionRow
     let nowMs: Double
+    /// 2026-08-26: 選定用。寸法と動きだけがここで分岐する(色・地・glass は不変)。
+    var style: RCListStyle = .current
+    @State private var appeared = false
 
     /// 2026-08-14 の UI 作り直し(Tom「UIも論外」)。北極星 = Claude の公式アプリの
     /// 会話一覧: **状態の点 + 題名 + 一行の内容 + 相対時刻**だけが前に出て、
@@ -476,13 +483,13 @@ private struct SessionRowView: View {
     ///   再組成しているのではなく、既に型で届いた分類に表示名を与えている —— 
     ///   「文字列を読み直して判断しない」規約と両立する。
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: style.rowSpacing) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 // 本家 RC の識別意匠(teardown §2): 机で開いている会話は
                 // **コンピュータのアイコン + 緑の点**。それ以外は点だけ。
                 statusMark
                 Text(row.displayTitle)
-                    .font(.body.weight(.semibold))
+                    .font(style.titleFont)
                     .lineLimit(1)
                 Spacer(minLength: 8)
                 Text(RelTime.relTime(row.updatedAt, nowMs: nowMs))
@@ -492,7 +499,7 @@ private struct SessionRowView: View {
             Text(row.display.subtitle) // server-computed (brief §3-a) -- rendered as-is, never reassembled
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
+                .lineLimit(style.subtitleLines)
                 .padding(.leading, 24)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 // §9-2: 機体の名乗り。押す前に「今どちらの機体に居るか」が読める事が先。
@@ -527,10 +534,18 @@ private struct SessionRowView: View {
             }
             .padding(.leading, 24)
         }
-        .padding(14)
+        .padding(style.cardPadding)
         // 面はカードが持つ(List の行背景は clear)。描き方の正本は RCCard —
         // choice 行だけ橙で名指しする理由もあちらに書いてある。
         .modifier(RCCard(emphasized: row.display.route.kind == .choice))
+        // ★入場の動き(案 C のみ)。持たない案では opacity も offset も 1/0 に固定され、
+        //   animation 自体を張らない —— 「動かない」を「動きが 0 秒」で代用しない。
+        .opacity(style.animatesEntry ? (appeared ? 1 : 0) : 1)
+        .offset(y: style.animatesEntry ? (appeared ? 0 : 14) : 0)
+        .onAppear {
+            guard style.animatesEntry, !appeared else { appeared = true; return }
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { appeared = true }
+        }
     }
 
     /// 机で開いている会話の印。アイコンは SF Symbols の desktopcomputer(本家の意匠)。
