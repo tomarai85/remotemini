@@ -13,7 +13,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync } from "node:child_process";
-import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow } from "./sessions.mjs";
+import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords } from "./sessions.mjs";
 import { accountBody, gapItem, healthzBody, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho } from "./wire.mjs";
 import { parseFleetAccount, selectionMessage, selectionProblem } from "./account.mjs";
 import { JsonlTail, formatPollCursor, pollDecision, resumeDecision } from "./tail.mjs";
@@ -51,6 +51,7 @@ import {
 } from "./view.mjs";
 import { redact } from "./redact.mjs";
 import { attachRequestLog, markResult, noteBody, SESSION_ROUTE_RE } from "./reqlog.mjs";
+import { digestOf, digestLine, actionRequired, attentionOf } from "./digest.mjs";
 
 const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
@@ -1304,13 +1305,28 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { archived: body.archived });
     }
 
+    /**
+     * この会話の転写がどの file に在るか。
+     *
+     * ★§2.18-4b: fork の後、本文も返事も**枝の file** に書かれる。祖先を読むと電話には
+     *   fork より前しか出ず、送った筈の一言が消えて見える。引き先を頭へ付け替える
+     *   (変異 P13)。頭が無い / 頭の file が見つからない = 祖先のまま = 何も失わない。
+     *
+     * ★2026-08-26 に関数へ括った。digest がこの解決を要る様になった時、同じ1行を
+     *   2箇所へ書き写した —— 変異 P13 の的が2箇所に当たって**見張りが外れた**。
+     *   1つの規則は1箇所に置く(写しは必ず片方だけ古くなる)。
+     */
+    const transcriptTarget = () => {
+      const headId = readBranchHead(HEADS_DIR, sessionId);
+      return (headId && headId !== sessionId && findSessionFile(headId)) || file;
+    };
+
     if (action === "history" && req.method === "GET") {
       const limit = Math.min(Number(url.searchParams.get("limit") || 50), 500);
       // ★§2.18-4b: fork の後、本文も返事も**枝の file** に書かれる。祖先を読むと電話には
       //   fork より前しか出ず、送った筈の一言が消えて見える。引き先を頭へ付け替える
       //   (変異 P13)。頭が無い / 頭の file が見つからない = 祖先のまま = 何も失わない。
-      const headId = readBranchHead(HEADS_DIR, sessionId);
-      const target = (headId && headId !== sessionId && findSessionFile(headId)) || file;
+      const target = transcriptTarget();
       if (!target) return json(res, 200, { history: [] }); // まだ何も言っていない会話
       try {
         const h = readHistoryFromPath(target, limit);
@@ -1321,6 +1337,47 @@ const server = createServer(async (req, res) => {
         return json(res, 200, historyBody({ entries: h.history, truncated: h.truncated }));
       } catch (e) {
         if (e.code === "ENOENT") return json(res, 200, { history: [], truncated: false });
+        return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", errno: errnoOf(e) });
+      }
+    }
+
+    // ★「留守中に何が起きたか」を1画面ぶんで返す(2026-08-26)。研究で判った実際の
+    //   使われ方(移動中に短く覗く)に、生の流れは合っていない。知りたいのは1行の判断
+    //   —— **今すぐノートを開く必要があるか**。
+    //   ★`attention` は転写ではなく**生の画面**から取る。転写からの推測は当たり外れが
+    //     混ざり、混ざった物で「待っています」と言い切ると一番肝心な判断が汚れる。
+    if (action === "digest" && req.method === "GET") {
+      const minutes = Math.min(Math.max(Number(url.searchParams.get("minutes") || 60), 1), 24 * 60);
+      const nowMs = Date.now();
+      const sinceMs = nowMs - minutes * 60000;
+      const target = transcriptTarget();
+
+      // 画面は在れば読む。読めない事は**異常ではなく状態**なので、そのまま unknown で運ぶ。
+      let attention = "unknown";
+      let screen = null;
+      try {
+        const r = resolvePane();
+        if (r.pane) { screen = screenOf(r.pane); attention = attentionOf(screen); }
+      } catch { /* 画面が読めない = unknown のまま。ここで 500 にしない */ }
+
+      if (!target) {
+        const d = digestOf([], { sinceMs, nowMs, reachedStart: true });
+        const act = actionRequired(attention, d);
+        return json(res, 200, { digest: d, attention, action: act, line: digestLine(d, act) });
+      }
+      try {
+        // ★`readHistoryFromPath` は表示用に均した項目を返すが、digest は**時刻**が要る。
+        //   生のレコードを読むのは此処だけなので、上限は digest 側の定数に合わせる。
+        const raw = readRawRecords(target, sinceMs);
+        const d = digestOf(raw.records, { sinceMs, nowMs, reachedStart: raw.reachedStart });
+        const act = actionRequired(attention, d);
+        return json(res, 200, { digest: d, attention, action: act, line: digestLine(d, act) });
+      } catch (e) {
+        if (e.code === "ENOENT") {
+          const d = digestOf([], { sinceMs, nowMs, reachedStart: true });
+          const act = actionRequired(attention, d);
+          return json(res, 200, { digest: d, attention, action: act, line: digestLine(d, act) });
+        }
         return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", errno: errnoOf(e) });
       }
     }

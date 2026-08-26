@@ -966,8 +966,8 @@ MUT = [
   "      if (hm) meta = { ...meta, lastPrompt: hm.lastPrompt, turns: hm.turns };",
   "      if (hm) meta = { ...meta, ...hm };"),
  ("P13 /history の引き先を祖先へ戻す(fork の後の番が電話に出ない)", SRV,
-  "      const target = (headId && headId !== sessionId && findSessionFile(headId)) || file;",
-  "      const target = file;"),
+  "      return (headId && headId !== sessionId && findSessionFile(headId)) || file;",
+  "      return file;"),
  ("P14 only を広げない(scope=registered でだけ静かに畳めなくなる)", SRV,
   """  let scope = only;
   if (only && heads) {
