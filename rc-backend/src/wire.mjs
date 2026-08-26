@@ -253,3 +253,28 @@ export function accountRow(parsed, a) {
     display: { blocked: problem === null ? null : selectionMessage(problem) },
   };
 }
+
+/**
+ * `POST /api/sessions/<id>/attach` の封筒。2026-08-26。
+ *
+ * ★ハンドラの中に literal で書かない。書くと鍵名を**実行して測れない**ので、
+ *   電話の `Decodable` と突き合わせられない(監査 S8-25 と同じ判断)。
+ *   実際、突き合わせの検査は「新しい Decodable 型がどちらの箱にも入っていない」で
+ *   これを掴んだ —— 逃がすのではなく、測れる形にするのが正しい直し方。
+ *
+ * ★**絶対パスの欄を持たない。** 置き場は API に出さない(出すと動かせなくなる)。
+ * ★`injected` を `stored` と分けて持つ。「置けた」と「入力欄に載った」は別の事実で、
+ *   混ぜると、机に窓が無い時に「送れました」と言って利用者を入力欄の前で迷わせる。
+ */
+export function attachBody(stored, injected, injectReason, swept) {
+  return {
+    attachmentId: stored.id,
+    bytes: stored.bytes,
+    format: stored.format,
+    converted: stored.converted,
+    injected,
+    // 載らなかった理由。載った時は null(空文字にしない —— 空文字は「理由が在るが空」に読める)
+    injectReason: injected ? null : (injectReason ?? "unknown"),
+    swept,
+  };
+}

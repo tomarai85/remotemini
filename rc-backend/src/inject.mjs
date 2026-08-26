@@ -920,6 +920,26 @@ export class TmuxInjector {
    *   (途中で降りると入力欄に本文が残り、次の送信に混ざる = §2.18 の決め事1)。
    * @returns {Promise<{sent:boolean, state:string, delivered:("verified"|"unverified"|null), reason:(string|null), waited?:object}>}
    */
+  /**
+   * 本文を1回打つだけ。**Enter は送らない。** 2026-08-26 新設。
+   *
+   * なぜ `send` と別にするか: `send` は「載ったのを見届けて Enter まで押す」1本の仕事で、
+   * 添付が要るのは**その手前だけ** —— パスを入力欄へ差し込み、送るかどうかは人が決める。
+   * `send` を流用して Enter だけ抜くと、あちらが持っている確認の段(載ったか / 割り込みが
+   * 入ったか)まで一緒に外れる。仕事が違うので関数を分ける。
+   *
+   * ★引数は `-l --` の後ろに置く。`--` が無いと、`-` で始まる文字列が tmux の旗として
+   *   読まれる。ここに来るのはサーバが作った絶対パスだけだが、**呼び手が変わった日に
+   *   効く防御**なので形として持たせる。
+   */
+  typeLiteral(pane, text) {
+    if (typeof text !== "string" || text === "") throw new Error("empty-literal");
+    // 改行が混ざれば「Enter を送らない」という約束が破れる。ここで断る。
+    if (/[\r\n]/.test(text)) throw new Error("newline-in-literal");
+    this.tmux.run(["send-keys", "-t", pane, "-l", "--", text]);
+    return { typed: text.length };
+  }
+
   async send(pane, text, { signal } = {}) {
     try {
       return await this.mutex.run(pane, () => this.#sendExclusive(pane, text), { signal });

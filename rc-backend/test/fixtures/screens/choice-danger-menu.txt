@@ -1,0 +1,50 @@
+
+ ▐▛███▜▌   Claude Code v2.1.220
+▝▜█████▛▘  Haiku 4.5 · Claude Max
+  ▘▘ ▝▝    /Users/tomtim
+
+ ⚠ 1 MCP server needs authentication · run /mcp
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Apply destructive change
+   Claude wants to run: rm -rf ./build && git push --force origin main
+
+     1. Yes, run it            rm -rf ./build
+     2. No, stop here          nothing is executed
+     3. Explain first          show what it would delete
+     4. Always allow           do not ask again for this command
+   ❯ 5. Cancel ✔               keep everything as it is
+
+   ○ Effort not supported for Haiku
+
+   Enter to set as default · s to use this session only · Esc to cancel

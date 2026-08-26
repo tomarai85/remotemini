@@ -14,7 +14,7 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync } from "node:child_process";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords } from "./sessions.mjs";
-import { accountBody, gapItem, healthzBody, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho } from "./wire.mjs";
+import { accountBody, gapItem, healthzBody, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
 import { parseFleetAccount, selectionMessage, selectionProblem } from "./account.mjs";
 import { JsonlTail, formatPollCursor, pollDecision, resumeDecision } from "./tail.mjs";
 import { MetaCache, readMetaFromPath } from "./listing.mjs";
@@ -52,11 +52,17 @@ import {
 import { redact } from "./redact.mjs";
 import { attachRequestLog, markResult, noteBody, SESSION_ROUTE_RE } from "./reqlog.mjs";
 import { digestOf, digestLine, actionRequired, attentionOf } from "./digest.mjs";
+import { storeImage, pathOf, sweepOld, ATTACH_MAX_BYTES } from "./attach.mjs";
 
 const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
 const CLAUDE_WORK = process.env.RC_CLAUDE_WORK || join(HOME, "fleet-tools", "claude-work");
 const FLEET_ACCOUNT = process.env.RC_FLEET_ACCOUNT || join(HOME, "fleet-tools", "fleet-account");
+/**
+ * 添付の置き場。★同期の木の**外**に置く(deploy の `--delete` に巻き込まれない為)。
+ * `~/.rc-backend/` は鍵と登録簿が既に住んでいる場所で、配備台本が明示的に触らない。
+ */
+const ATTACH_DIR = process.env.RC_ATTACH_DIR || join(HOME, ".rc-backend", "attachments");
 /**
  * 外部台本を諦める時刻。**電話から見える道に居ないので緩い**(2026-08-08)。
  *
@@ -1020,6 +1026,25 @@ function tooLarge(req, res, e) {
   return json(res, 413, { error: `Request body too large (limit ${e.limit} bytes)` });
 }
 
+/**
+ * ★バイナリ用。`readBody` は utf8 文字列に潰すので画像には使えない
+ *   (通しても中身が壊れ、壊れた事は形式判定でしか分からない = 診断が1段遠くなる)。
+ *   上限の扱い・閉じ方は `readBody` と**同じ規約**にしてある。
+ */
+async function readBodyBytes(req, limit) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on("data", (c) => {
+      size += c.length;
+      if (size > limit) { req.pause(); reject(new BodyTooLarge(limit)); return; }
+      chunks.push(c);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 async function readBody(req, limit = 64 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -1341,6 +1366,53 @@ const server = createServer(async (req, res) => {
       }
     }
 
+    // ★電話の写真をこの機械へ置き、エージェントが読める形にする(2026-08-26)。
+    //   研究の1位 —— **電話でしか出来ない用途**(手の中の端末で起きているバグを撮って送る)。
+    //
+    // ★応答に**絶対パスを出さない**(Codex 2026-08-26)。出すと内部構造が API に固まり、
+    //   置き場を動かせなくなる。電話が必要なのは「送れた」事と id だけ。
+    // ★Enter は打たない。パスを**文へ差し込むだけ**で、送るかどうかは人が決める
+    //   (既存の送信経路が本文と Enter を分けているのと同じ規約)。
+    if (action === "attach" && req.method === "POST") {
+      let buf;
+      try {
+        buf = await readBodyBytes(req, ATTACH_MAX_BYTES);
+      } catch (e) {
+        if (e instanceof BodyTooLarge) return tooLarge(req, res, e);
+        return json(res, 400, { error: "ATTACH_READ_FAILED" });
+      }
+      let stored;
+      try {
+        stored = storeImage(buf, { baseDir: ATTACH_DIR });
+      } catch (e) {
+        // ★理由を語彙で返す。「失敗しました」だけだと、電話の持ち主は
+        //   撮り直せばよいのか諦めるのかが分からない。
+        const code = String(e.message || "");
+        const known = ["too-large", "empty-body", "unknown-format", "too-many-pixels"];
+        if (known.includes(code)) return json(res, 400, { error: "ATTACH_REJECTED", reason: code });
+        return json(res, 500, { error: "ATTACH_FAILED", reason: "store-failed" });
+      }
+      // 置けた物の在り処は**サーバの中だけ**で解決し、pane へ差し込む文だけを作る。
+      const abs = pathOf(ATTACH_DIR, stored.id, stored.ext);
+      let injected = false;
+      let injectReason = null;
+      try {
+        const r = resolvePane();
+        if (r.pane) {
+          // 本文だけ。Enter は送らない。
+          injector.typeLiteral(r.pane, abs);
+          injected = true;
+        } else {
+          injectReason = r.reason || "no-pane";
+        }
+      } catch (e) {
+        injectReason = "inject-failed";
+      }
+      // 掃除はここで安く回す(別 job を増やさない)。消すのは形の合う古い物だけ。
+      const swept = sweepOld(ATTACH_DIR, Date.now());
+      return json(res, 200, attachBody(stored, injected, injectReason, swept.removed));
+    }
+
     // ★「留守中に何が起きたか」を1画面ぶんで返す(2026-08-26)。研究で判った実際の
     //   使われ方(移動中に短く覗く)に、生の流れは合っていない。知りたいのは1行の判断
     //   —— **今すぐノートを開く必要があるか**。
@@ -1611,6 +1683,34 @@ const server = createServer(async (req, res) => {
           route: "worker", reason: "not-tmux",
         });
       }
+      // ★危険な承認は**1タップで通さない**(2026-08-26、Codex の裁定)。
+      //
+      //   端末ごとの認証は、実際の脅威 —— 気が散った本人の誤タップと、注入された
+      //   LLM の破壊的要求 —— を1ミリも防がない。防ぐのは「その操作に束ねた承認」。
+      //   だから 30 分の書き込みモードのような**再利用できる権限**は作らず、
+      //   **この画面のこの指紋にだけ**効く第2手を要求する。
+      //
+      //   束縛が指紋なのが肝: 構えた後に画面が変われば指紋も変わり、既存の指紋検査が
+      //   そのまま断る。「危ない画面で構えて、別の画面で押す」が構造的に作れない。
+      //
+      //   ★判定は**今の画面**から取る。要求本文の言い分は見ない —— 見ると、
+      //   注入された側が「これは危険ではない」と名乗って段を下げられる。
+      const nowScreen = screenOf(r.pane);
+      const nowRisk = choiceView(nowScreen).risk;
+      if (nowRisk?.tier === "danger") {
+        const confirm = typeof body.confirm === "string" ? body.confirm.trim() : "";
+        if (confirm !== digest) {
+          return json(res, 409, {
+            error: "This action is hard to undo. Confirm it deliberately before it is sent.",
+            route: "tmux", pane: r.pane, reason: "danger-confirm-required",
+            // 何が危ないかを一緒に返す。電話が独自に文を作ると、判定と文言が2箇所に散る。
+            risk: nowRisk,
+            // 構え直す時に添える値。指紋そのものなので、別の画面では使えない。
+            digest,
+          });
+        }
+      }
+
       const out = await injector.choice(r.pane, key, { digest });
       if (!out.sent) {
         return json(res, 409, {

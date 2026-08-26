@@ -169,6 +169,12 @@ const CASES = {
   ],
   interruptResult: [[200, { interrupted: true, stopped: true }], [409, {}], [400, {}]],
   choiceResult: [[200, { accepted: true, applied: true }], [400, {}], [409, {}], [404, {}]],
+  // 2026-08-26。**両方の枝**を通す —— 載った時と載らなかった時で `injectReason` の
+  // 値が変わるので、片方だけだとその鍵を一度も測らないまま緑になる。
+  attachBody: [
+    [{ id: "a", bytes: 1, format: "png", converted: false }, true, null, 0],
+    [{ id: "a", bytes: 1, format: "heic", converted: true }, false, "tmux-unavailable", 2],
+  ],
   clearQueueResult: [[200, { dropped: 2 }], [400, {}]],
   paneFaultView: [["panes-unreadable"], ["tmux-unavailable"], ["名乗れない理由"]],
   buildListing: [[LISTING_ENTRIES], [[]]],
@@ -233,6 +239,7 @@ const MODULE_OF = {
   sendResult: ["view", "src/view.mjs"],
   interruptResult: ["view", "src/view.mjs"],
   choiceResult: ["view", "src/view.mjs"],
+  attachBody: ["wire", "src/wire.mjs"],
   clearQueueResult: ["view", "src/view.mjs"],
   paneFaultView: ["blocked", "src/blocked.mjs"],
   buildListing: ["sessions", "src/sessions.mjs", ".map((e) => ("],
@@ -484,6 +491,14 @@ const PAIRS = [
   { swift: "ChoiceButton", builders: ["choiceView"], at: "buttons[]" },
   // 2026-08-26: 承認の危険度。**許可は変えず表示の重さだけ**を運ぶ枝(`src/risk.mjs`)。
   { swift: "ChoiceRisk", builders: ["choiceView"], at: "risk" },
+  // 2026-08-26: 添付の応答。★絶対パスの欄が両側に無い事も、この突き合わせが見張る。
+  {
+    swift: "AttachClient.Envelope", builders: ["attachBody"], at: "",
+    mode: "phone-subset",
+    // `swept` は掃除の観測値。電話は描かない(何本消えたかは机の家事で、
+    // 利用者が写真を送った結果ではない)。`scan` を電話が読まないのと同じ判断。
+    serverOnly: ["swept"],
+  },
   { swift: "ChoiceRiskSignal", builders: ["choiceView"], at: "risk.signals[]" },
   { swift: "SessionsResponse.PaneFault.Display", builders: ["paneFaultView"], at: "" },
   { swift: "ResultDisplay", builders: ["sendResult", "interruptResult", "choiceResult", "clearQueueResult"], at: "" },
@@ -595,6 +610,10 @@ const IGNORED = {};
  *   `.harness/wire-vocabulary-agreement-controls.sh`)。
  */
 const UNPAIRED = {
+  "AttachClient.RejectEnvelope":
+    "断りの形。組むのは `attachBody` ではなく各ルートの `json(res, 400, …)` で、"
+    + "同じ2鍵(`reason` / `code`)を複数のルートが別々に出す。1つの builder に"
+    + "紐付けると、紐付けなかった側の断りが 測り漏れる",
   "ArchiveClient.Wire": "保管の応答(`{archived}` / 400 の `{error}`)。`src/server.mjs` の "
     + "archive 分岐が `json(res, 200, { archived })` を直に書く(builder ではない)。"
     + "★測る対 = `test/titles.test.mjs`(台帳の往復・transcript 削除機構の不在)と "
@@ -805,6 +824,10 @@ test("`phone-subset` の宣言が、緩める言い訳になっていない", ()
     assert.equal(new Set(p.serverOnly).size, p.serverOnly.length, `${p.swift}: serverOnly に重複`);
   }
   // 部分集合を許した組を**並び順ごと**に固定する。増える時は此処が赤くなり、理由を書く手が要る。
+  // ★2026-08-26 に `AttachClient.Envelope` が1つ増えた。理由: `swept`(掃除で何本消えたか)は
+  //   机の家事の観測値で、利用者が写真を送った結果ではない。電話に描く物が無い。
+  //   ここが並び順ごと固定なのは、増える時に**必ず人が理由を書く手**を通す為。
   assert.deepEqual(PAIRS.filter((p) => p.mode === "phone-subset").map((p) => p.swift),
-    ["SessionsResponse", "SessionRow", "PollResponse", "MessageItem", "GapItem", "AccountClient.Wire"]);
+    ["AttachClient.Envelope", "SessionsResponse", "SessionRow", "PollResponse",
+     "MessageItem", "GapItem", "AccountClient.Wire"]);
 });

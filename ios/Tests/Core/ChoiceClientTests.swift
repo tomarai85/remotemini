@@ -31,7 +31,7 @@ final class ChoiceClientTests: XCTestCase {
 
         _ = await ChoiceClient(session: MockURLProtocol.makeSession())
             .choose(baseURL: baseURL, apiKey: "correct-fixture-key",
-                    sessionID: "sess-abc-123", key: "2", digest: "d-aaa")
+                    sessionID: "sess-abc-123", key: "2", digest: "d-aaa", confirm: nil)
 
         XCTAssertEqual(MockURLProtocol.requestedURLs.last?.path, "/api/sessions/sess-abc-123/choice")
         XCTAssertEqual(MockURLProtocol.requestedMethods.last, "POST")
@@ -49,7 +49,7 @@ final class ChoiceClientTests: XCTestCase {
 
         _ = await ChoiceClient(session: MockURLProtocol.makeSession())
             .choose(baseURL: baseURL, apiKey: "k", sessionID: "s",
-                    key: "escape", digest: "sha256:0f1e2d")
+                    key: "escape", digest: "sha256:0f1e2d", confirm: nil)
 
         let raw = try XCTUnwrap(MockURLProtocol.requestedBodies.last ?? nil, "a body was sent")
         let sent = try XCTUnwrap(try JSONSerialization.jsonObject(with: raw) as? [String: Any])
@@ -70,7 +70,7 @@ final class ChoiceClientTests: XCTestCase {
         MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.acceptedBody.utf8))]
 
         _ = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d", confirm: nil)
 
         XCTAssertEqual(MockURLProtocol.requestedTimeouts, [BackendSession.writeTimeout])
         XCTAssertGreaterThan(BackendSession.writeTimeout, BackendSession.interactiveTimeout)
@@ -98,7 +98,7 @@ final class ChoiceClientTests: XCTestCase {
         ]
 
         let attempt = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa", confirm: nil)
 
         XCTAssertEqual(attempt.serverDigest, "d-bbb")
         guard case .display(let display) = attempt.outcome else {
@@ -121,11 +121,11 @@ final class ChoiceClientTests: XCTestCase {
 
         MockURLProtocol.stubQueue = [.init(statusCode: 409, body: Data(body("digest-mismatch").utf8))]
         let mismatch = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-old")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-old", confirm: nil)
 
         MockURLProtocol.stubQueue = [.init(statusCode: 409, body: Data(body("choice-already-sent").utf8))]
         let already = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-old")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-old", confirm: nil)
 
         XCTAssertEqual(mismatch, already, "the refusal vocabulary may not reach the outcome")
         XCTAssertEqual(mismatch.serverDigest, "d-same")
@@ -140,11 +140,11 @@ final class ChoiceClientTests: XCTestCase {
 
         MockURLProtocol.stubQueue = [.init(statusCode: 409, body: Data(body("d-bbb").utf8))]
         let b = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa", confirm: nil)
 
         MockURLProtocol.stubQueue = [.init(statusCode: 409, body: Data(body("d-ccc").utf8))]
         let c = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa", confirm: nil)
 
         XCTAssertNotEqual(b, c)
         XCTAssertEqual(b.outcome, c.outcome, "…and it is the fingerprint alone that separates them")
@@ -157,7 +157,7 @@ final class ChoiceClientTests: XCTestCase {
         MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.acceptedBody.utf8))]
 
         let attempt = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa", confirm: nil)
 
         XCTAssertNil(attempt.serverDigest)
         guard case .display(let display) = attempt.outcome else {
@@ -176,7 +176,7 @@ final class ChoiceClientTests: XCTestCase {
         ]
 
         let attempt = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa", confirm: nil)
 
         XCTAssertNil(attempt.serverDigest)
     }
@@ -191,7 +191,7 @@ final class ChoiceClientTests: XCTestCase {
         ]
 
         let attempt = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa", confirm: nil)
 
         XCTAssertEqual(attempt.outcome, .contractViolation(ResponseContractViolation(status: 409, code: nil)))
         XCTAssertEqual(attempt.serverDigest, "d-bbb", "the screen's identity is not collateral damage of an unreadable body")
@@ -208,7 +208,7 @@ final class ChoiceClientTests: XCTestCase {
         ]
 
         let attempt = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "wrong", sessionID: "s", key: "1", digest: "d-aaa")
+            .choose(baseURL: baseURL, apiKey: "wrong", sessionID: "s", key: "1", digest: "d-aaa", confirm: nil)
 
         XCTAssertEqual(attempt.outcome, .unauthorized)
         XCTAssertNil(attempt.serverDigest, "a rejected key observed nothing about the screen")
@@ -220,7 +220,7 @@ final class ChoiceClientTests: XCTestCase {
         ]
 
         let attempt = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "gone", key: "1", digest: "d-aaa")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "gone", key: "1", digest: "d-aaa", confirm: nil)
 
         XCTAssertEqual(attempt.outcome, .sessionNotFound)
     }
@@ -230,11 +230,11 @@ final class ChoiceClientTests: XCTestCase {
     func testTheTwo404MeaningsAreNotCollapsedNegativeControl() async {
         MockURLProtocol.stubQueue = [.init(statusCode: 404, body: Data(#"{"code":"SESSION_NOT_FOUND"}"#.utf8))]
         let gone = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d", confirm: nil)
 
         MockURLProtocol.stubQueue = [.init(statusCode: 404, body: Data(#"{"code":"NO_SUCH_ROUTE"}"#.utf8))]
         let badPath = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d", confirm: nil)
 
         XCTAssertNotEqual(gone, badPath)
         XCTAssertEqual(badPath.outcome, .contractViolation(ResponseContractViolation(status: 404, code: "NO_SUCH_ROUTE")))
@@ -250,7 +250,7 @@ final class ChoiceClientTests: XCTestCase {
         MockURLProtocol.stubQueue = []
 
         let attempt = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa", confirm: nil)
 
         XCTAssertEqual(attempt.outcome, .unreachable)
         XCTAssertNil(attempt.serverDigest)
@@ -262,7 +262,7 @@ final class ChoiceClientTests: XCTestCase {
         let client = ChoiceClient(session: MockURLProtocol.makeSession())
 
         let task = Task {
-            await client.choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d")
+            await client.choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d", confirm: nil)
         }
         try? await Task.sleep(for: .milliseconds(50))
         task.cancel()
@@ -277,11 +277,11 @@ final class ChoiceClientTests: XCTestCase {
     func testCancelledIsNotCollapsedIntoUnreachableNegativeControl() async {
         MockURLProtocol.injectedError = URLError(.cancelled)
         let cancelled = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d", confirm: nil)
 
         MockURLProtocol.stubQueue = []
         let unreachable = await ChoiceClient(session: MockURLProtocol.makeSession())
-            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d")
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d", confirm: nil)
 
         XCTAssertNotEqual(cancelled, unreachable)
     }
@@ -295,4 +295,26 @@ final class ChoiceClientTests: XCTestCase {
     {"sent":true,"key":"1","applied":"verified",
      "display":{"kind":"ok","text":"押しました(画面が変わったのを確認)。"}}
     """#
+
+    // MARK: - 危険な承認の第2手(2026-08-26)
+
+    /// ★`confirm` が nil の時、**鍵ごと本文に出さない**。要らない画面に欄を作ると、
+    /// 「いつも空で送っている物」になり、載っている事の意味が薄れる。
+    func testConfirmIsAbsentFromTheBodyWhenNotArmed() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.acceptedBody.utf8))]
+        _ = await ChoiceClient(session: MockURLProtocol.makeSession())
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa", confirm: nil)
+        let body = String(data: MockURLProtocol.requestedBodies.last.flatMap { $0 } ?? Data(), encoding: .utf8) ?? ""
+        XCTAssertFalse(body.contains("confirm"), "要らない画面にも欄が出た: \(body)")
+    }
+
+    /// ★構えた時は**指紋そのもの**を送る。別の値にすると「何に対する確認か」が
+    /// 線の上で失われ、構えた画面と押した画面がずれても気付けない。
+    func testConfirmCarriesTheDigestItself() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.acceptedBody.utf8))]
+        _ = await ChoiceClient(session: MockURLProtocol.makeSession())
+            .choose(baseURL: baseURL, apiKey: "k", sessionID: "s", key: "1", digest: "d-aaa", confirm: "d-aaa")
+        let body = String(data: MockURLProtocol.requestedBodies.last.flatMap { $0 } ?? Data(), encoding: .utf8) ?? ""
+        XCTAssertTrue(body.contains("\"confirm\":\"d-aaa\""), body)
+    }
 }

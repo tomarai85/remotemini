@@ -34,6 +34,10 @@ struct ConversationClients {
     let interrupt: Interrupting
     let choice: ChoiceSending
     let clearQueue: QueueClearing
+    /// 2026-08-26。★既定を持たせる —— 既存の呼び手(検体を含む)を全部書き換えずに
+    /// 済ませる為だが、**本番の `live` では必ず本物を渡す**。既定に頼ったまま出荷すると
+    /// 「送ったのに何も起きない」が黙って出る。
+    var attach: Attaching = AttachClient()
 
     /// 本番。`ListView` の行から会話画面を作る経路だけが使う。
     ///
@@ -47,7 +51,8 @@ struct ConversationClients {
             send: SendClient(),
             interrupt: InterruptClient(),
             choice: ChoiceClient(),
-            clearQueue: ClearQueueClient()
+            clearQueue: ClearQueueClient(),
+            attach: AttachClient()
         )
     }
 }
