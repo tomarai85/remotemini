@@ -23,6 +23,12 @@
   ★起動する会話は `bypass permissions on` で立つ(この機体の既定。2026-08-25 実測)。
     電話から打つ相手がその状態である事は Tom が知っておくべき性質。
 
+  ★3本目 phone-window-notify.sh(2026-08-26 追加)= 「窓は在るが中が固まっている」を
+    Tom へ届ける段。ensure-phone-window は窓の**有無**で冪等を取るので(上限画面の窓が
+    増え続けるのを防ぐ為に正しい)、窓が在って中が答えを待っている状態はあちらから
+    正常に見える。検出は phone-window-health.sh、通知はこの3本目が持つ。
+    ★自動で答えはしない。押す物が描画方式の勧誘か破壊的操作の確認かを機械は見分けられない。
+
   ★この注釈の中にハイフン2連続を書けない(XML コメントの規則)。
 
   INSTALL:
@@ -40,7 +46,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>/bin/bash /Users/athenas/rc-backend/tools/ensure-work-session.sh; exec /bin/bash /Users/athenas/rc-backend/tools/ensure-phone-window.sh</string>
+    <string>/bin/bash /Users/athenas/rc-backend/tools/ensure-work-session.sh; /bin/bash /Users/athenas/rc-backend/tools/ensure-phone-window.sh; exec /bin/bash /Users/athenas/rc-backend/tools/phone-window-notify.sh</string>
   </array>
 
   <key>WorkingDirectory</key>

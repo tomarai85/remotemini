@@ -803,6 +803,12 @@ LOCAL_CTLS=(
     test/tunnel-observer-controls.sh
                                      # ★2026-08-26。外からトンネルを叩く観測者。偽の HTTP を
                                      #   127.0.0.1 に立てるだけで本物の tailnet に触らない。
+    test/phone-window-health-controls.sh
+                                     # ★2026-08-26。窓は在るのに中が固まっている状態を捕まえる。
+                                     #   本物の tmux に別名の session を立てて回す(本番の work には触らない)。
+    test/phone-window-notify-controls.sh
+                                     # ★2026-08-26。↑の赤を Tom へ届ける段。偽の health と偽の通知先で
+                                     #   回すので、鳴らし過ぎと鳴らな過ぎの両方を陰性で押さえている。
                                      #   17 本のうち 9 本が「緑しか出せない計器」を潰す陰性。
 )
 # ── ★ここに**わざと入れていない**物(消えた訳ではない)────────────────────────
