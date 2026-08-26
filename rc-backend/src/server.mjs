@@ -53,6 +53,7 @@ import { redact } from "./redact.mjs";
 import { attachRequestLog, markResult, noteBody, SESSION_ROUTE_RE } from "./reqlog.mjs";
 import { digestOf, digestLine, actionRequired, attentionOf } from "./digest.mjs";
 import { storeImage, pathOf, sweepOld, ATTACH_MAX_BYTES } from "./attach.mjs";
+import { loadRules, checkDeny, denyMessage } from "./deny.mjs";
 
 const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
@@ -63,6 +64,12 @@ const FLEET_ACCOUNT = process.env.RC_FLEET_ACCOUNT || join(HOME, "fleet-tools", 
  * `~/.rc-backend/` は鍵と登録簿が既に住んでいる場所で、配備台本が明示的に触らない。
  */
 const ATTACH_DIR = process.env.RC_ATTACH_DIR || join(HOME, ".rc-backend", "attachments");
+
+/**
+ * 机が持つ拒否規則の置き場。★同期ツリーの外(配備の delete 旗に巻き込まれない)。
+ * 無ければ規則ゼロ = この層が在る前と挙動が変わらない。
+ */
+const DENY_FILE = process.env.RC_DENY_FILE || join(HOME, ".rc-backend", "deny.json");
 /**
  * 外部台本を諦める時刻。**電話から見える道に居ないので緩い**(2026-08-08)。
  *
@@ -1483,6 +1490,23 @@ const server = createServer(async (req, res) => {
       }
       const text = typeof body.text === "string" ? body.text.trim() : "";
       if (!text) return json(res, 400, { error: "text required" });
+
+      // ★机の拒否規則(2026-08-26)。**電話が何を送っても効く唯一の層**。
+      //   生の打鍵注入は万能権限なので、電話側の確認やエンドポイント単位の権限では
+      //   原理的に迂回される(Codex 2026-08-26)。止めるなら打つ直前のここ。
+      //   ★毎回読み直す。プロセスに抱えると、Tom が規則を足しても再起動まで効かない
+      //     —— 「書いたのに効かない」はこの repo が何度も踏んだ型。
+      const loaded = loadRules(DENY_FILE);
+      const hit = checkDeny(text, loaded.rules);
+      if (hit.denied) {
+        return json(res, 409, {
+          error: denyMessage(hit),
+          reason: "denied-by-desk",
+          // どの規則かは返す(直せない断りは、ただの壁)。規則の一覧は返さない。
+          rule: hit.id,
+          route: "tmux",
+        });
+      }
 
       const found = resolvePane();
 
