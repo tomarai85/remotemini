@@ -44,7 +44,7 @@ set -u
 
 PORT="${1:-}"
 case "$PORT" in
-    ''|*[!0-9]*) echo "usage: <tailscale serve status --json> | $0 <port>" >&2; exit 2 ;;
+    ''|*[!0-9]*) echo "usage: <tailscale serve status --json> | $0 <手元のポート> [serve の入口ポート=443]" >&2; exit 2 ;;
 esac
 if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
     echo "usage: port は 1..65535: $PORT" >&2; exit 2
@@ -62,6 +62,25 @@ case "$SPORT" in
 esac
 if [ "$SPORT" -lt 1 ] || [ "$SPORT" -gt 65535 ]; then
     echo "usage: serve port は 1..65535: $SPORT" >&2; exit 2
+fi
+
+# ★引数の順を取り違えた時に**黙って別の入口の答えを返さない**(2026-08-26 に足した)。
+#   踏んだ形: `serve-decision.sh 9443` と撃った。第1引数は**手元**のポートなので、これは
+#   「serve 443 を見て、宛先が 127.0.0.1:9443 か」を聞いた事になる。443 は実際 Funnel されて
+#   いるので `funneled` という**それらしい 1 語**が返り、9443 の答えだと読み違えた。
+#   fail-closed なので害は出なかったが、**安全判定が別の質問に黙って答える**のは、この台本が
+#   一番やってはいけない事(呼び手は 1 語しか見ないので、どの入口の話か区別が付かない)。
+#   条件を「第2引数が無い」+「第1引数が TLS の入口として有名なポート」に絞ってあるので、
+#   手元が本当に 443 な人は入口を明示すれば素通りする = 逃げ道の在る fail-closed。
+if [ "$#" -lt 2 ]; then
+    case "$PORT" in
+        443|8443|9443|10000)
+            echo "usage: 第1引数は**手元**のポート、第2引数が serve の入口ポート。" >&2
+            echo "       ${PORT} は入口側に見えるので、答えを出さずに止めた。" >&2
+            echo "       入口 ${PORT} を見たいなら:  $0 <手元のポート> ${PORT}" >&2
+            echo "       手元が本当に ${PORT} なら:  $0 ${PORT} 443" >&2
+            exit 2 ;;
+    esac
 fi
 
 JQ=""
