@@ -795,6 +795,15 @@ LOCAL_CTLS=(
                                      # ★据えた初回に1件捕まえた —— ただし**検査ではなく対照の**
                                      #   前提の誤り(`SessionsListingFixture.swift` を消せば
                                      #   `RC_UI_FIXTURE` が消えると踏んだが、同じ綴りは他に3 file 在る)。
+    test/fleet-account-cswap-controls.sh
+                                     # ★2026-08-26。cswap を fleet-account 形式へ翻訳する層。
+                                     #   偽 cswap + 録った実出力(test/fixtures-cswap-list.json)で
+                                     #   回るので、この機体でも Friday でも同じ答えになる。
+                                     #   出口は**本物の parser**(src/account.mjs)で受ける。
+    test/tunnel-observer-controls.sh
+                                     # ★2026-08-26。外からトンネルを叩く観測者。偽の HTTP を
+                                     #   127.0.0.1 に立てるだけで本物の tailnet に触らない。
+                                     #   17 本のうち 9 本が「緑しか出せない計器」を潰す陰性。
 )
 # ── ★ここに**わざと入れていない**物(消えた訳ではない)────────────────────────
 # `test/verdict-mutants.sh` = `test/mutation-verdict-controls.sh` の陰性対照
