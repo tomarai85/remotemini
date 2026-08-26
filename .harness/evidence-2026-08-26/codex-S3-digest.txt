@@ -1,0 +1,110 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a03cec-d831-7f60-a3f6-caedcca27fb1
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Design review. No file access; everything inline. Terse, concrete defects only.
+
+CONTEXT: a phone client watches a terminal AI coding agent running on a Mac. Today the phone streams every event (assistant text, each tool call) as a raw feed. Research finding: real usage is "check in from the commute / during lunch", i.e. light supervision, and no competing product offers a summary — they all stream the firehose. So I am adding a digest endpoint answering "what happened while I was away".
+
+DATA AVAILABLE: an append-only JSONL transcript per session. Each line is a record; the ones that matter are {type:"user"|"assistant", message:{role, content}, timestamp:"ISO"}. `content` is either a string or an array of blocks; text blocks have {type:"text",text}, tool invocations have {type:"tool_use", name, input}. There is an existing normalizer producing flat entries {role:"user"|"assistant"|"tool", text} but it DROPS timestamps. Reading is a bounded backward scan from EOF (the file can be large).
+
+PROPOSED digestOf(records, {sinceMs, nowMs}) -> {
+  window:{fromIso,toIso,minutes},
+  counts:{user,assistant,tool},
+  tools:[{name,n}] top few by frequency,
+  files:[paths touched, from tool_use inputs of file-ish tools],
+  lastAssistant: trimmed tail of the most recent assistant text,
+  waiting: boolean (transcript ends on something that looks like a question),
+  truncated: boolean (the backward scan hit its budget before reaching sinceMs)
+}
+
+QUESTIONS:
+1. What is the single most misleading thing this digest could tell a distracted person, and how do I structurally prevent it? I care most about a digest that looks complete but isn't.
+2. `truncated` is a boolean. Is that enough, or does a partial digest need to refuse to render some fields entirely?
+3. `waiting` inferred from transcript shape is a guess. The server separately has a RELIABLE screen classifier (it reads the live terminal pane and emits SENDABLE / CHOICE / etc). Should `waiting` come only from that and never from the transcript? What breaks if the pane is unreadable?
+4. Counting "files touched" from tool_use inputs means trusting a model-authored field. Any way that misleads, and should paths be shown at all on a small screen?
+5. What field am I missing that a person deciding "do I need to open my laptop right now" would actually want?
+2026-08-26T07:15:50.735660Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-26T07:15:50.870600Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-26T07:15:51.572101Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+1. 最大の誤解は、部分取得なのに「指定期間の完全な集計」に見えることです。特に `tool:0` やファイルなしが危険です。`truncated` を補足フラグにせず、構造を分けます。
+
+```ts
+coverage:
+  | { status: "complete"; requestedFromIso: string }
+  | { status: "partial"; requestedFromIso: string; observedFromIso: string; reason: "scan_budget" }
+```
+
+2. booleanだけでは不十分です。`partial` 時は期間全体を必要とする `counts`、`tools`、`files` を非表示にするか、明示的に `lowerBound` として返すべきです。`lastAssistant` は末尾が取得できているため表示可能です。`window.fromIso` に要求時刻を偽装せず、実際の観測開始時刻も返してください。
+
+3. 現在の待機状態は画面分類器を正とすべきです。ただしbooleanではなく、次のような状態にします。
+
+```ts
+attention: {
+  state: "none" | "input" | "choice" | "permission" | "unknown";
+  observedAt: string;
+}
+```
+
+paneが読めない場合は必ず `unknown`。 transcript推測を `false` の代替にしてはいけません。残すなら別フィールドの低信頼ヒントにします。
+
+4. tool入力は「触った証拠」ではなく「触ろうとした指定」です。失敗・取消・相対パス・ディレクトリ指定・shell内の複数パスで誤ります。検証できないなら `filesTouched` ではなく `fileTargets` と命名。小画面では「対象候補 7件」と上位2〜3件だけを折りたたみ表示するのが妥当です。
+
+5. 足りないのは「今すぐ対応が必要か」と理由です。
+
+```ts
+actionRequired: {
+  level: "none" | "soon" | "now" | "unknown";
+  reason?: "choice" | "permission" | "error" | "input";
+  summary?: string;
+}
+```
+
+件数より、`選択待ち`、`権限待ち`、`エラー停止`、`まだ実行中` が、ノートPCを開く判断に直結します。
+tokens used
+13,291
+1. 最大の誤解は、部分取得なのに「指定期間の完全な集計」に見えることです。特に `tool:0` やファイルなしが危険です。`truncated` を補足フラグにせず、構造を分けます。
+
+```ts
+coverage:
+  | { status: "complete"; requestedFromIso: string }
+  | { status: "partial"; requestedFromIso: string; observedFromIso: string; reason: "scan_budget" }
+```
+
+2. booleanだけでは不十分です。`partial` 時は期間全体を必要とする `counts`、`tools`、`files` を非表示にするか、明示的に `lowerBound` として返すべきです。`lastAssistant` は末尾が取得できているため表示可能です。`window.fromIso` に要求時刻を偽装せず、実際の観測開始時刻も返してください。
+
+3. 現在の待機状態は画面分類器を正とすべきです。ただしbooleanではなく、次のような状態にします。
+
+```ts
+attention: {
+  state: "none" | "input" | "choice" | "permission" | "unknown";
+  observedAt: string;
+}
+```
+
+paneが読めない場合は必ず `unknown`。 transcript推測を `false` の代替にしてはいけません。残すなら別フィールドの低信頼ヒントにします。
+
+4. tool入力は「触った証拠」ではなく「触ろうとした指定」です。失敗・取消・相対パス・ディレクトリ指定・shell内の複数パスで誤ります。検証できないなら `filesTouched` ではなく `fileTargets` と命名。小画面では「対象候補 7件」と上位2〜3件だけを折りたたみ表示するのが妥当です。
+
+5. 足りないのは「今すぐ対応が必要か」と理由です。
+
+```ts
+actionRequired: {
+  level: "none" | "soon" | "now" | "unknown";
+  reason?: "choice" | "permission" | "error" | "input";
+  summary?: string;
+}
+```
+
+件数より、`選択待ち`、`権限待ち`、`エラー停止`、`まだ実行中` が、ノートPCを開く判断に直結します。

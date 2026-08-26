@@ -248,3 +248,69 @@ function toolNames(content) {
       return `⚙ ${b.name}`;
     });
 }
+
+/**
+ * digest 用に**生のレコード**を後方から読む。2026-08-26 新設。
+ *
+ * ★`readHistoryFromPath` と分けた理由: あちらは表示用に均した項目を返し、**時刻を落とす**。
+ *   digest は「いつからいつまで」が本題なので時刻が要る。均した物に時刻を足すと、
+ *   表示側の期待(rolelとtextだけ)を壊すか、digest が表示用の丸めを引き継ぐかの
+ *   どちらかになる。生を読む口を別に持つ方が、両方の意味が濁らない。
+ *
+ * ★`reachedStart` を返すのが肝。**遡り切れたかは呼び手にしか分からない**ので、
+ *   digest 側が「読めた範囲で N 件」を「N 件」と言わずに済む唯一の材料。
+ *
+ * @param {string} path
+ * @param {number} sinceMs これより古い行に届いたら止めてよい
+ * @returns {{records: object[], reachedStart: boolean, scanned: number}}
+ */
+export const DIGEST_SCAN_MAX = 12 * 1024 * 1024;
+
+export function readRawRecords(path, sinceMs, opts = {}) {
+  const fd = openSync(path, "r");
+  try {
+    let oldestSeen = Infinity;
+    const r = readLinesBackward(opts.io ?? nodeIo, fd, {
+      chunk: opts.chunk,
+      // ★予算は履歴の既定(1MB)より広く取る。実測(2026-08-26、この repo の実会話):
+      //   **2時間ぶんが 1.9MB**。1MB のままだと digest は常に `scan-budget` で不完全になり、
+      //   「正直だが役に立たない」に落ちる。digest は行を溜めずに数えるだけなので、
+      //   広げても持つのは走査中の buffer と該当レコードだけ。
+      //   ★それでも上限は残す —— 無制限にすると、長い会話1本でサーバが死ぬ形に変わる。
+      maxBytes: opts.maxBytes ?? DIGEST_SCAN_MAX,
+      // ★止める条件は「窓より古い行を1本見た」。件数で止めると、窓の中がまだ在るのに
+      //   打ち切って、しかもそれを reachedStart では表せない。
+      done: (lines) => {
+        for (const ln of lines) {
+          const t = tsOf(ln);
+          if (t !== null && t < oldestSeen) oldestSeen = t;
+        }
+        return Number.isFinite(sinceMs) && oldestSeen < sinceMs;
+      },
+    });
+    const records = [];
+    for (const ln of r.lines) {
+      const o = parseLine(ln);
+      if (o) records.push(o);
+    }
+    // 窓の先頭より前まで見えた = 遡り切れた。ファイルの先頭に届いた場合も同じ。
+    const covered = r.reachedStart || (Number.isFinite(sinceMs) && oldestSeen < sinceMs);
+    return { records, reachedStart: covered, scanned: r.scanned };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function parseLine(ln) {
+  const t = String(ln).trim();
+  if (!t) return null;
+  try { const o = JSON.parse(t); return o && typeof o === "object" ? o : null; } catch { return null; }
+}
+
+function tsOf(ln) {
+  // 全部 JSON.parse すると重い。時刻だけ先に安く見る。
+  const m = /"timestamp":"([^"]+)"/.exec(String(ln));
+  if (!m) return null;
+  const t = Date.parse(m[1]);
+  return Number.isFinite(t) ? t : null;
+}

@@ -1,0 +1,182 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a03cf8-4f53-7c83-b4f3-337377a46440
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Design review. No file access; everything inline. Terse, concrete defects only.
+
+CONTEXT: single-user private iOS app + Node server on the owner's own Mac, reachable only inside a Tailscale tailnet over TLS on a nonstandard port, bearer-token auth (64 hex chars, baked into the app build). The server drives a terminal AI coding agent (Claude Code) running in a tmux pane, by literally sending keystrokes into that pane. Today the phone can only send free text.
+
+GOAL: let the phone send a PHOTO/SCREENSHOT to the agent. Research says this is the single highest-value missing feature because it is the only genuinely mobile-only use case: the bug is on the phone in your hand, and you want the agent to see it without walking to the desk.
+
+MECHANISM CONSTRAINT (this is the crux): the agent is driven by keystrokes into a tmux pane. It cannot receive a binary upload. The only way to give it an image is to WRITE THE FILE somewhere on the Mac and then type a path (or an @-reference) into the pane. So the server must accept an upload, persist it, and inject a path string.
+
+PROPOSED:
+- POST /api/sessions/:id/attach, multipart or raw body, max ~10MB, content-type restricted to image/png|jpeg|heic.
+- Server writes to ~/.rc-backend/attachments/<sessionId>/<random>.<ext>, mode 0600.
+- Server then injects the absolute path into the pane as text (not pressing Enter; the existing send path already separates text from Enter).
+- Response returns the path it wrote and the bytes.
+- Retention: delete files older than N days on a timer.
+
+QUESTIONS:
+1. What is the worst thing that can go wrong here that I have not listed? Assume the attacker model is: the tailnet is mostly trusted, but the AGENT ITSELF is not fully trusted (it is an LLM that can be prompt-injected by content it reads, including the image or its filename).
+2. Writing a file into the user's home directory from an HTTP request — what specific path/name validation is mandatory, and is a random name enough?
+3. Injecting a path as keystrokes into a live terminal pane: what characters or sequences in the generated path could break out of "just text"? The path is server-generated, not user-supplied — does that fully close it?
+4. Content-type is claimed by the client. Should the server sniff bytes instead, and does it matter here given the agent will read the file?
+5. Is per-session directory scoping right, or should attachments be scoped to the pane's working directory so the agent can use a relative path? Trade-offs.
+6. Anything about HEIC specifically that will bite (the phone's default format)?
+2026-08-26T07:28:21.996307Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-26T07:28:22.007481Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-26T07:28:22.638170Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+最大の問題は、これが「画像アップロード」ではなく、実質的に「LLMへの非信頼入力＋Mac上のファイル書込み＋端末入力」の複合境界になることです。
+
+1. 最悪のケース
+
+- 画像内の視覚的プロンプトインジェクションで、Claude Codeが秘密情報の読取り・外部送信・破壊的コマンドを実行する。画像の再エンコードでは防げません。
+- `sessionId` のパストラバーサルやシンボリックリンク競合により、任意場所への書込み／retention処理による誤削除が起きる。
+- agentとserverが同じUnixユーザーなら、`0600`もセッション別ディレクトリもagentに対する防御にはなりません。agentは添付を変更・削除・監視できます。
+- 同時送信でパス文字列と別の入力が混ざる、またはpaneがClaudeではなくshell/確認画面になっている状態で入力される。
+- 圧縮後10MBでも、展開後の巨大画像、壊れた画像、デコーダ脆弱性でCPU・メモリ・ディスクを消費する。
+
+2. 必須のパス対策
+
+`sessionId`をパスに直接連結しないでください。認証済みセッションをDB/メモリ上で引き、内部生成した固定形式のstorage IDへ変換します。
+
+最低限必要なのは：
+
+- 元ファイル名を完全に無視
+- CSPRNGで128bit以上のhex basename
+- 拡張子は検証済み実形式から決定
+- base directoryは`0700`
+- `open`は`O_CREAT | O_EXCL | O_NOFOLLOW`相当、mode `0600`
+- 親ディレクトリを含めsymlinkを拒否
+- canonical pathがbase配下であることを確認
+- upload中にもサイズ制限、ユーザー／セッション総容量制限
+- cleanupは通常ファイルだけをunlinkし、symlinkを辿らない
+
+ランダム名だけでは、親ディレクトリのトラバーサル、symlink、cleanup事故を防げません。
+
+3. tmuxへの文字入力
+
+危険なのは改行、CR、ESC、制御文字、tab、backspace、空白、引用符、`; | & $ \` < > ( ) * ?`、先頭`-`などです。server生成でも、base pathや`sessionId`由来なら安全ではありません。
+
+- パス全体を安全なASCII文字だけにする
+- shell文字列を組み立てず、`spawn/execFile`のargvを使う
+- `tmux send-keys -l -- "$text"`相当、またはbufferのliteral pasteを使う
+- pane単位で送信を直列化し、文字列の混在を防ぐ
+- paneがClaude入力状態であることを確認
+- Enterは絶対に同時送信しない
+
+完全にserver管理された安全文字列でも、「現在のpane状態」までは保証しません。
+
+4. Content-Type
+
+必ずbyte sniffと実デコードを行うべきです。クライアント申告はヒントにすぎません。
+
+推奨は、magic判定→デコード成功確認→最大ピクセル数確認→JPEG/PNGへ再エンコードです。これで偽装形式、polyglot、メタデータ、いくつかのパーサ問題を減らせます。ただし画像内のプロンプトインジェクションは残ります。
+
+5. 配置場所
+
+中央のセッション別ディレクトリ＋絶対パスが基本的に正しいです。
+
+cwd配下は、cwd変更、Gitへの混入、agentによる上書き、cleanupによるrepo破壊が起きやすいです。agent sandboxがhome配下を読めない場合だけ、worktree内の専用 `.attachments/` をgitignoreした上で使います。任意のcwd直下には置かないでください。
+
+セッション分離は整理には有効ですが、同一Unixユーザーのagentに対するセキュリティ境界ではありません。
+
+6. HEIC
+
+HEICはそのまま渡さず、サーバー側でJPEGまたはPNGへ変換するのが安全です。
+
+注意点：
+
+- `image/heic`以外にHEIFや`application/octet-stream`で届くことがある
+- agent側の画像対応が不安定
+- EXIF orientationを反映しないと回転する
+- Display P3/HDRの色が変わる
+- GPS、日時、端末情報などのメタデータを含む
+- 複数フレーム、depth、auxiliary imageを含む場合がある
+- 圧縮サイズとは別に最大ピクセル数を制限する必要がある
+
+最終APIは絶対パスを返さず、`attachmentId`、保存サイズ、検出形式だけ返す方が内部構造を固定化しません。
+tokens used
+16,874
+最大の問題は、これが「画像アップロード」ではなく、実質的に「LLMへの非信頼入力＋Mac上のファイル書込み＋端末入力」の複合境界になることです。
+
+1. 最悪のケース
+
+- 画像内の視覚的プロンプトインジェクションで、Claude Codeが秘密情報の読取り・外部送信・破壊的コマンドを実行する。画像の再エンコードでは防げません。
+- `sessionId` のパストラバーサルやシンボリックリンク競合により、任意場所への書込み／retention処理による誤削除が起きる。
+- agentとserverが同じUnixユーザーなら、`0600`もセッション別ディレクトリもagentに対する防御にはなりません。agentは添付を変更・削除・監視できます。
+- 同時送信でパス文字列と別の入力が混ざる、またはpaneがClaudeではなくshell/確認画面になっている状態で入力される。
+- 圧縮後10MBでも、展開後の巨大画像、壊れた画像、デコーダ脆弱性でCPU・メモリ・ディスクを消費する。
+
+2. 必須のパス対策
+
+`sessionId`をパスに直接連結しないでください。認証済みセッションをDB/メモリ上で引き、内部生成した固定形式のstorage IDへ変換します。
+
+最低限必要なのは：
+
+- 元ファイル名を完全に無視
+- CSPRNGで128bit以上のhex basename
+- 拡張子は検証済み実形式から決定
+- base directoryは`0700`
+- `open`は`O_CREAT | O_EXCL | O_NOFOLLOW`相当、mode `0600`
+- 親ディレクトリを含めsymlinkを拒否
+- canonical pathがbase配下であることを確認
+- upload中にもサイズ制限、ユーザー／セッション総容量制限
+- cleanupは通常ファイルだけをunlinkし、symlinkを辿らない
+
+ランダム名だけでは、親ディレクトリのトラバーサル、symlink、cleanup事故を防げません。
+
+3. tmuxへの文字入力
+
+危険なのは改行、CR、ESC、制御文字、tab、backspace、空白、引用符、`; | & $ \` < > ( ) * ?`、先頭`-`などです。server生成でも、base pathや`sessionId`由来なら安全ではありません。
+
+- パス全体を安全なASCII文字だけにする
+- shell文字列を組み立てず、`spawn/execFile`のargvを使う
+- `tmux send-keys -l -- "$text"`相当、またはbufferのliteral pasteを使う
+- pane単位で送信を直列化し、文字列の混在を防ぐ
+- paneがClaude入力状態であることを確認
+- Enterは絶対に同時送信しない
+
+完全にserver管理された安全文字列でも、「現在のpane状態」までは保証しません。
+
+4. Content-Type
+
+必ずbyte sniffと実デコードを行うべきです。クライアント申告はヒントにすぎません。
+
+推奨は、magic判定→デコード成功確認→最大ピクセル数確認→JPEG/PNGへ再エンコードです。これで偽装形式、polyglot、メタデータ、いくつかのパーサ問題を減らせます。ただし画像内のプロンプトインジェクションは残ります。
+
+5. 配置場所
+
+中央のセッション別ディレクトリ＋絶対パスが基本的に正しいです。
+
+cwd配下は、cwd変更、Gitへの混入、agentによる上書き、cleanupによるrepo破壊が起きやすいです。agent sandboxがhome配下を読めない場合だけ、worktree内の専用 `.attachments/` をgitignoreした上で使います。任意のcwd直下には置かないでください。
+
+セッション分離は整理には有効ですが、同一Unixユーザーのagentに対するセキュリティ境界ではありません。
+
+6. HEIC
+
+HEICはそのまま渡さず、サーバー側でJPEGまたはPNGへ変換するのが安全です。
+
+注意点：
+
+- `image/heic`以外にHEIFや`application/octet-stream`で届くことがある
+- agent側の画像対応が不安定
+- EXIF orientationを反映しないと回転する
+- Display P3/HDRの色が変わる
+- GPS、日時、端末情報などのメタデータを含む
+- 複数フレーム、depth、auxiliary imageを含む場合がある
+- 圧縮サイズとは別に最大ピクセル数を制限する必要がある
+
+最終APIは絶対パスを返さず、`attachmentId`、保存サイズ、検出形式だけ返す方が内部構造を固定化しません。
