@@ -1,3 +1,9 @@
+import os from "node:os";
+
+// ★機体名を直書きしない(2026-08-26)。文言に "edith" と焼いてあった為、
+//   Friday へ移設した後もアプリが「edith」と名乗り、Tom に配備先を誤認させた。
+//   実行時に自分の名前を測る。
+const DESK = os.hostname().replace(/\.local$/, "");
 // `fleet-account` の**人向け出力**を構造に直す暫定アダプター。
 //
 // ★暫定である事の意味(2026-08-14):
@@ -164,7 +170,7 @@ const SELECTION_MESSAGES = {
   whitespace: "The name contains whitespace (indistinguishable from list padding).",
   "listing-unreadable": "The account list is unreadable, so switching is unavailable (fleet-account's output format may have changed).",
   "unknown-account": "That account is not in the list.",
-  "no-token": "That account's token is missing on edith.",
+  "no-token": `That account's token is missing on ${DESK}.`,
 };
 
 /** 理由コードを人の読む1文にする。★覆い漏れは `unknownSelectionMessage` に落ちる(検査が押さえる)。 */
@@ -187,8 +193,8 @@ export function unknownSelectionMessage(reason) {
 export const PARSE_STATUSES = ["ok", "no-current-line", "no-order-header", "unreadable-rows"];
 
 const PARSE_STATUS_MESSAGES = {
-  "no-current-line": "fleet-account on edith returned an unexpected shape (the first line is not 「現用:」). Switching is unavailable.",
-  "no-order-header": "fleet-account on edith returned an unexpected shape (the 「優先順 (.order):」 header is missing). Switching is unavailable.",
+  "no-current-line": `fleet-account on ${DESK} returned an unexpected shape (the first line is not 「現用:」). Switching is unavailable.`,
+  "no-order-header": `fleet-account on ${DESK} returned an unexpected shape (the 「優先順 (.order):」 header is missing). Switching is unavailable.`,
   "unreadable-rows": "Account list rows were unreadable (fleet-account's output format may have changed). A partial list is withheld rather than shown.",
 };
 

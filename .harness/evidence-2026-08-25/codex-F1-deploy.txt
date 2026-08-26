@@ -1,0 +1,68 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a03a97-e30b-7b62-b876-eadf95a56407
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Post-deployment review. No file access; all facts inline. Terse; list concrete defects only.
+
+WHAT WAS DONE: moved a Node service (rc-backend) from a dead mac mini to a live one (host B, user athenas, uid 501).
+- Tree deployed via a staged deploy script (staging dir -> unit tests + e2e ON host B -> swap -> kickstart). DEPLOYED-REV=864e963 matches a git commit.
+- LaunchAgent com.fleet.rc-backend: RunAtLoad, KeepAlive, LimitLoadToSessionType [Aqua,Background], ProcessType Standard, ExitTimeOut 10. Service listens 127.0.0.1:8787 only.
+- Exposure: tailscale serve --https=9443 -> 127.0.0.1:8787, tailnet-only (443 on this host is a different project, funneled publicly; deliberately untouched).
+- Verified from a third machine: GET /healthz -> 200 {ok:true,pid:43793,version:864e963}; pid equals the launchd job pid. GET /api/sessions without key -> 401; with 'authorization: Bearer <64-char key>' -> 200 with 1 session.
+- A second LaunchAgent com.fleet.rc-phone-window (StartInterval 60) keeps a tmux session 'work' plus a window running a wrapper that starts Claude Code TUI, which registers its tmux pane into ~/.rc-backend/panes/<id>.json so the phone can inject keystrokes.
+- Cold-boot chain verified on host B: FileVault Off, autoLoginUser=athenas, plist present, RunAtLoad true, KeepAlive true, autorestart 1, sleep 0.
+- KNOWN OPEN: the TUI window can block on a Claude Code first-run prompt before registering; the phone cannot answer it because unregistered sessions do not appear in the list.
+
+QUESTIONS:
+1. Any way this setup silently degrades where healthz still returns 200 but the phone is useless? Name the specific failure.
+2. The API key is a 64-char shared secret over a tailnet-only TLS listener. What is the realistic residual risk, given the same host publicly funnels a different service on 443?
+3. Two LaunchAgents, one KeepAlive and one StartInterval 60, both touching the same state dir. Any race or wedge condition?
+4. Anything about the cold-boot chain that is actually NOT proven by those 7 checks?
+2026-08-25T20:23:48.782350Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-25T20:23:49.500554Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-25T20:23:49.827598Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+1. Yes. `/healthz` only proves the backend process. Claude can stop at the first-run prompt before writing its pane registration; the phone then sees no usable session indefinitely while health remains 200. Stale pane JSON can also list a dead or wrong tmux pane.
+
+2. Brute-force risk is negligible if the 64 characters are random. The realistic risk is bearer-token theft or compromise of any permitted tailnet device. Public Funnel on 443 does not expose 9443, but compromise of that public service could pivot locally—especially if it shares the user, filesystem permissions, or secrets. Key theft effectively grants keystroke injection as `athenas`.
+
+3. `StartInterval` is not a health watchdog. A blocked Claude TUI still looks like a live window, so the 60-second job may never repair it. Also, direct non-atomic JSON writes can race backend reads, and pane death between listing and injection creates a TOCTOU failure. Atomic rename, stale-entry validation, and tmux-target verification were not established.
+
+4. The checks prove configuration, not an actual unattended cold boot. They do not prove:
+
+   - auto-login succeeds after power restoration;
+   - the per-user launchd domain loads both agents;
+   - Tailscale, its authentication, and Serve configuration recover;
+   - networking is available when the agents start;
+   - Claude credentials/keychain and first-run state are usable;
+   - `sleep 0` applies to the relevant power profile or prevents manual sleep/logout.
+
+Only a real power-cycle-to-phone-injection test proves the complete chain.
+tokens used
+15,133
+1. Yes. `/healthz` only proves the backend process. Claude can stop at the first-run prompt before writing its pane registration; the phone then sees no usable session indefinitely while health remains 200. Stale pane JSON can also list a dead or wrong tmux pane.
+
+2. Brute-force risk is negligible if the 64 characters are random. The realistic risk is bearer-token theft or compromise of any permitted tailnet device. Public Funnel on 443 does not expose 9443, but compromise of that public service could pivot locally—especially if it shares the user, filesystem permissions, or secrets. Key theft effectively grants keystroke injection as `athenas`.
+
+3. `StartInterval` is not a health watchdog. A blocked Claude TUI still looks like a live window, so the 60-second job may never repair it. Also, direct non-atomic JSON writes can race backend reads, and pane death between listing and injection creates a TOCTOU failure. Atomic rename, stale-entry validation, and tmux-target verification were not established.
+
+4. The checks prove configuration, not an actual unattended cold boot. They do not prove:
+
+   - auto-login succeeds after power restoration;
+   - the per-user launchd domain loads both agents;
+   - Tailscale, its authentication, and Serve configuration recover;
+   - networking is available when the agents start;
+   - Claude credentials/keychain and first-run state are usable;
+   - `sleep 0` applies to the relevant power profile or prevents manual sleep/logout.
+
+Only a real power-cycle-to-phone-injection test proves the complete chain.

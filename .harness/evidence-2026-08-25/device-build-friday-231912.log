@@ -1,0 +1,102 @@
+==> 1. generate project
+    作業木の汚れ(deploy-dirt rc=1):
+ M tools/build.sh
+    版: 6d628cd-dirty
+    番号: 63
+==> 1b. 机から既定の接続先を貰って刻む
+    種: 刻んだ(指紋 919c6e09057e0de1)。URL も鍵も此処には出さない
+==> 2. locate the wildcard provisioning profile
+    profile expires 2027-06-06T04:04:42Z
+==> 3. locate the signing identity
+==> 4. build (unsigned)
+==> 5. sign
+    signed: /Users/tomtim/Infra/mobile-work/ios/build/signed/RemoteMini.app
+    通知の行き先: remotemini:// (焼き上がった app に在る)
+    種: 焼き上がった app にも同じ物が入っている(指紋 919c6e09057e0de1)
+    変異20本の全走行: 記録と現在のバイトが一致
+==> 6. install
+23:19:25  Acquired tunnel connection to device.
+23:19:25  Enabling developer disk image services.
+ERROR: The developer disk image could not be mounted on this device. (com.apple.dt.CoreDeviceError error 12040 (0x2F08))
+       DeviceIdentifier = EC0FCBEE-745C-5755-A82C-A9743434A62B
+       ----------------------------------------
+           The developer disk image could not be mounted on this device. (com.apple.dt.CoreDeviceError error 12040 (0x2F08))
+           DDIPath = /Library/Developer/DeveloperDiskImages/iOS_DDI
+           DeviceIdentifier = EC0FCBEE-745C-5755-A82C-A9743434A62B
+           Options = {
+               MountedBundlePath = "file:///Library/Developer/DeveloperDiskImages/iOS_DDI/";
+               UseCredentials = 0;
+           }
+           NSURL = file:///Library/Developer/DeveloperDiskImages/iOS_DDI/
+           DeviceFusing = prod
+           DDIBuildUpdate = 17F113 (developerTools)
+       ----------------------------------------
+               Error mounting image: 0xe80000e2 (kAMDMobileImageMounterDeviceLocked: The device is locked.) (com.apple.mobiledevice error -402652958 (0xE80000E2))
+               LineNumber = 2127
+               FunctionName = AMDeviceRemoteMountPersonalizedBundle
+       ----------------------------------------
+                   Failed to mount image: 0xe80000e2 (kAMDMobileImageMounterDeviceLocked: The device is locked.) (com.apple.mobiledevice error -402652958 (0xE80000E2))
+                   LineNumber = 2049
+                   FunctionName = -[PersonalizedImage mountImage:]
+       ----------------------------------------
+                       Failed to mount /Library/Developer/DeveloperDiskImages/iOS_DDI/Restore/022-21793-062.dmg: 0xe80000e2 (kAMDMobileImageMounterDeviceLocked: The device is locked.) (com.apple.mobiledevice error -402652958 (0xE80000E2))
+                       LineNumber = 1725
+                       FunctionName = -[PersonalizedImage mountRemoteImage:serverTicket:imageDigest:trustCacheURL:error:]
+    install attempt 1 failed; the tunnel drops intermittently -- retrying
+23:19:29  Acquired tunnel connection to device.
+23:19:29  Enabling developer disk image services.
+ERROR: The developer disk image could not be mounted on this device. (com.apple.dt.CoreDeviceError error 12040 (0x2F08))
+       DeviceIdentifier = EC0FCBEE-745C-5755-A82C-A9743434A62B
+       ----------------------------------------
+           The developer disk image could not be mounted on this device. (com.apple.dt.CoreDeviceError error 12040 (0x2F08))
+           Options = {
+               MountedBundlePath = "file:///Library/Developer/DeveloperDiskImages/iOS_DDI/";
+               UseCredentials = 0;
+           }
+           NSURL = file:///Library/Developer/DeveloperDiskImages/iOS_DDI/
+           DeviceFusing = prod
+           DDIPath = /Library/Developer/DeveloperDiskImages/iOS_DDI
+           DDIBuildUpdate = 17F113 (developerTools)
+           DeviceIdentifier = EC0FCBEE-745C-5755-A82C-A9743434A62B
+       ----------------------------------------
+               Error mounting image: 0xe80000e2 (kAMDMobileImageMounterDeviceLocked: The device is locked.) (com.apple.mobiledevice error -402652958 (0xE80000E2))
+               FunctionName = AMDeviceRemoteMountPersonalizedBundle
+               LineNumber = 2127
+       ----------------------------------------
+                   Failed to mount image: 0xe80000e2 (kAMDMobileImageMounterDeviceLocked: The device is locked.) (com.apple.mobiledevice error -402652958 (0xE80000E2))
+                   FunctionName = -[PersonalizedImage mountImage:]
+                   LineNumber = 2049
+       ----------------------------------------
+                       Failed to mount /Library/Developer/DeveloperDiskImages/iOS_DDI/Restore/022-21793-062.dmg: 0xe80000e2 (kAMDMobileImageMounterDeviceLocked: The device is locked.) (com.apple.mobiledevice error -402652958 (0xE80000E2))
+                       FunctionName = -[PersonalizedImage mountRemoteImage:serverTicket:imageDigest:trustCacheURL:error:]
+                       LineNumber = 1725
+    install attempt 2 failed; the tunnel drops intermittently -- retrying
+23:19:34  Acquired tunnel connection to device.
+23:19:34  Enabling developer disk image services.
+ERROR: The developer disk image could not be mounted on this device. (com.apple.dt.CoreDeviceError error 12040 (0x2F08))
+       DeviceIdentifier = EC0FCBEE-745C-5755-A82C-A9743434A62B
+       ----------------------------------------
+           The developer disk image could not be mounted on this device. (com.apple.dt.CoreDeviceError error 12040 (0x2F08))
+           DeviceIdentifier = EC0FCBEE-745C-5755-A82C-A9743434A62B
+           DeviceFusing = prod
+           DDIBuildUpdate = 17F113 (developerTools)
+           Options = {
+               MountedBundlePath = "file:///Library/Developer/DeveloperDiskImages/iOS_DDI/";
+               UseCredentials = 0;
+           }
+           DDIPath = /Library/Developer/DeveloperDiskImages/iOS_DDI
+           NSURL = file:///Library/Developer/DeveloperDiskImages/iOS_DDI/
+       ----------------------------------------
+               Error mounting image: 0xe80000e2 (kAMDMobileImageMounterDeviceLocked: The device is locked.) (com.apple.mobiledevice error -402652958 (0xE80000E2))
+               FunctionName = AMDeviceRemoteMountPersonalizedBundle
+               LineNumber = 2127
+       ----------------------------------------
+                   Failed to mount image: 0xe80000e2 (kAMDMobileImageMounterDeviceLocked: The device is locked.) (com.apple.mobiledevice error -402652958 (0xE80000E2))
+                   FunctionName = -[PersonalizedImage mountImage:]
+                   LineNumber = 2049
+       ----------------------------------------
+                       Failed to mount /Library/Developer/DeveloperDiskImages/iOS_DDI/Restore/022-21793-062.dmg: 0xe80000e2 (kAMDMobileImageMounterDeviceLocked: The device is locked.) (com.apple.mobiledevice error -402652958 (0xE80000E2))
+                       LineNumber = 1725
+                       FunctionName = -[PersonalizedImage mountRemoteImage:serverTicket:imageDigest:trustCacheURL:error:]
+    install attempt 3 failed; the tunnel drops intermittently -- retrying
+install failed 3 times -- unlock the phone, confirm it is on the same network, retry

@@ -73,7 +73,7 @@ final class AccountFixture: AccountReading, AccountAdvancing, AccountSelecting {
         case .refuses:
             // ★断りは副作用の**前**に返る = `index` を動かさない。此処を動かすと、
             //   「断られたのに画面だけ切り替わる」実装が検査で緑になる。
-            return .failure(.refused("That account's token is missing on edith."))
+            return .failure(.refused("That account's token is missing on fixture-desk."))
         case .listingUnreadable:
             return .failure(.refused("The account list is unreadable, so switching is unavailable."))
         case .backendFails:
@@ -124,7 +124,7 @@ final class AccountFixture: AccountReading, AccountAdvancing, AccountSelecting {
                     hasToken: hasToken,
                     active: offset == index,
                     selectable: hasToken,
-                    blocked: hasToken ? nil : "That account's token is missing on edith."
+                    blocked: hasToken ? nil : "That account's token is missing on fixture-desk."
                 )
             },
             ok: true,

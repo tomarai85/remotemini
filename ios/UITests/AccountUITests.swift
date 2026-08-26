@@ -175,7 +175,7 @@ final class AccountUITests: XCTestCase {
         let blockedRow = element(app, "settings.account.row.sdgs")
         XCTAssertTrue(blockedRow.exists, "選べない行が一覧から消えている")
         XCTAssertFalse(blockedRow.isEnabled, "選べない行が押せてしまう")
-        XCTAssertTrue(blockedRow.label.contains("token is missing on edith"),
+        XCTAssertTrue(blockedRow.label.contains("token is missing on fixture-desk"),
                       "選べない理由が行に出ていない(label: \(blockedRow.label))")
     }
 

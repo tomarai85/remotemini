@@ -368,7 +368,9 @@ print(name.rstrip("."))
   case "$SEED_HOST" in
     *.invalid) echo "検査用の名前(.invalid)を実機へ焼こうとしている" >&2; exit 1 ;;
   esac
-  SEED_URL="https://$SEED_HOST"
+  # ★入口が 443 でない机が在る(2026-08-25)。Friday は 443 を別 PJ が Funnel で公開して
+  #   いるので rc-backend は 9443 に載っている。既定は空 = 443 のままなので既往は不変。
+  SEED_URL="https://$SEED_HOST${RC_SEED_PORT:+:$RC_SEED_PORT}"
 
   # 刻んで、其の場で**読み戻して**照合する。黙って効かない形(鍵の名前が変わった /
   # 生成先が動いた)は読み戻さないと焼いて電話に入れた後にしか判らない。
