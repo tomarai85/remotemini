@@ -19,7 +19,13 @@ DERIVED="$HERE/build"
 mkdir -p "$DERIVED"
 SIM_NAME="${SIM_NAME:-iPhone-dogfood}"
 BUNDLE="com.tomarai.remotemini"
-OUT_DIR="$HERE/../.harness/evidence-2026-08-05"
+# ★日付をべた書きしない(2026-08-27)。2026-08-05 に焼いた定数が3週間そのまま残り、
+#   撮った画が毎回「3週間前の日付の dir」へ落ちていた。日付入りの dir に**別の日の画**が
+#   混ざると、後から証拠を引く時にどちらの版か判らなくなる —— 日付は名前の意味そのもの。
+#   ★既存の evidence-2026-08-05/(22 ファイル)は動かさない。WORKLOG や HANDOFF が
+#   その path で成果物を指しているので、動かすと文書側の参照が全部腐る。
+#   再現目的で古い dir へ入れたい時だけ RC_SHOTS_OUT で上書きする。
+OUT_DIR="${RC_SHOTS_OUT:-$HERE/../.harness/evidence-$(date +%Y-%m-%d)}"
 mkdir -p "$OUT_DIR"
 
 STATES=("$@")
