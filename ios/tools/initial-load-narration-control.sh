@@ -1,5 +1,8 @@
 #!/bin/bash
-# controls-for: Sources/Core/WaitEscalation.swift Sources/Screens/List/ListView.swift
+# controls-for: ../ios/Sources/Core/WaitEscalation.swift ../ios/Sources/Screens/List/ListView.swift
+# ★宣言先は **rc-backend からの相対**で解決される(この台本が ios/ に在っても同じ)。
+#   2026-08-27、最初 `Sources/...` と書いて門に「宣言先が実在しない」と言われた ——
+#   宣言が外れた対照は、その file だけを直す commit で静かに回らない。
 #
 # initial-load-narration-control.sh — 「注意の限界を超えた待ちで表現が切り替わる」を、
 # 戻したら赤になる形で押さえる。2026-08-27 新設。
