@@ -242,6 +242,21 @@ export function attentionFromScreen(state) {
  * `classifyScreen` は `activity` を独立に出すので、そちらが `observed` の時だけ
  * `none` を名乗ってよい —— composer が在る事は「待っている」の証拠にならない。
  */
+/**
+ * digest の応答の**封筒**。2026-08-26 に切り出した。
+ *
+ * ★なぜ関数にしたか: `server.mjs` に **3 箇所 直書き**されていた。直書きの封筒は
+ *   `wire-key-agreement` の突き合わせ表に載せられない —— 表は「builder を呼んで出た鍵名」と
+ *   電話の `Decodable` を比べるので、呼べる物が無いと**電話側の型が永久に未検証**になる。
+ *   実際 2026-08-26 に `DigestEnvelope` を足した所、門が
+ *   「新しい Decodable 型がどちらの箱にも入っていない」で止めた。正しい指摘だった。
+ *
+ * ★形はここが正本。3 箇所は此処を呼ぶ。
+ */
+export function digestBody(d, attention, action) {
+  return { digest: d, attention, action, line: digestLine(d, action) };
+}
+
 export function attentionOf(screen) {
   const s = attentionFromScreen(screen?.screen);
   if (s === "input" && screen?.activity === "observed") return "none";

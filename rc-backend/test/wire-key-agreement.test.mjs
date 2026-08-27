@@ -41,6 +41,7 @@ import * as blocked from "../src/blocked.mjs";
 import * as wire from "../src/wire.mjs";
 import * as sessions from "../src/sessions.mjs";
 import * as registry from "../src/registry.mjs";
+import * as digest from "../src/digest.mjs";
 import { parseFleetAccount } from "../src/account.mjs";
 import { buildListing, unreadableRow } from "../src/sessions.mjs";
 import { registryOnlySessions } from "../src/registry.mjs";
@@ -133,6 +134,25 @@ const ACCOUNT_PARSED = {
 };
 
 /** 枝を割る為の入力。**返り値ではなく枝の数で選ぶ** —— 1本しか通さない表は側Aを痩せさせる。 */
+// 2026-08-26: digest の検体。**手で組んでいない** —— Friday の上で `digestOf` を
+// 実際に走らせた出力(`scratchpad/gen-digest-fixtures.sh`)。
+const DIGEST_COMPLETE = {
+  complete: true, incompleteReason: null,
+  window: { requestedFromIso: "2026-08-26T11:00:00.000Z", observedFromIso: "2026-08-26T11:01:00.000Z",
+            toIso: "2026-08-26T12:00:00.000Z", minutes: 60 },
+  counts: { user: 1, assistant: 1, tool: 1 },
+  tools: [{ name: "Read", n: 1 }],
+  fileTargets: ["/a/b.txt"], fileTargetsTotal: 1,
+  lastAssistant: "done", lastAt: "2026-08-26T11:02:00.000Z",
+};
+const DIGEST_INCOMPLETE = {
+  complete: false, incompleteReason: "scan-budget",
+  window: { requestedFromIso: "2026-08-26T11:00:00.000Z", observedFromIso: null,
+            toIso: "2026-08-26T12:00:00.000Z", minutes: 60 },
+  counts: null, tools: null, fileTargets: null, fileTargetsTotal: null,
+  lastAssistant: "done", lastAt: "2026-08-26T11:02:00.000Z",
+};
+
 const CASES = {
   routeLabel: [
     [{ route: "tmux", screen: "CHOICE", limited: true }],
@@ -176,6 +196,13 @@ const CASES = {
     [{ id: "a", bytes: 1, format: "heic", converted: true }, false, "tmux-unavailable", 2],
   ],
   clearQueueResult: [[200, { dropped: 2 }], [400, {}]],
+  // 2026-08-26: 留守中の要約。★**読めた窓と読めなかった窓の両方**を通す ——
+  //   読めなかった時は `counts`/`tools`/`fileTargets` が **null** で来るので、
+  //   片方だけだと電話が `null` を受ける形を一度も突き合わせない。
+  digestBody: [
+    [DIGEST_COMPLETE, "input", { level: "soon", reason: "input" }],
+    [DIGEST_INCOMPLETE, "unknown", { level: "unknown", reason: "screen-unreadable" }],
+  ],
   paneFaultView: [["panes-unreadable"], ["tmux-unavailable"], ["名乗れない理由"]],
   buildListing: [[LISTING_ENTRIES], [[]]],
   registryOnlySessions: [[REGISTRY_ARGS], [{ ...REGISTRY_ARGS, panes: [] }]],
@@ -240,6 +267,7 @@ const MODULE_OF = {
   interruptResult: ["view", "src/view.mjs"],
   choiceResult: ["view", "src/view.mjs"],
   attachBody: ["wire", "src/wire.mjs"],
+  digestBody: ["digest", "src/digest.mjs"],
   clearQueueResult: ["view", "src/view.mjs"],
   paneFaultView: ["blocked", "src/blocked.mjs"],
   buildListing: ["sessions", "src/sessions.mjs", ".map((e) => ("],
@@ -262,7 +290,7 @@ const MODULE_OF = {
   // 行の方は分解しないので既定の目印で本文に届く(`accountRow(parsed, a)`)。
   accountRow: ["wire", "src/wire.mjs"],
 };
-const MODULES = { view, blocked, wire, sessions, registry };
+const MODULES = { view, blocked, wire, sessions, registry, digest };
 
 /** 入れ子を含めた鍵の道を集める(`options[].n` の形)。 */
 function keyPaths(value, prefix, out) {
@@ -486,6 +514,20 @@ function phoneTypes() {
  */
 const PAIRS = [
   { swift: "RouteLabel", builders: ["routeLabel"], at: "" },
+  // 2026-08-26: 留守中の要約。封筒は `digest.mjs` の `digestBody`(それまで
+  // `server.mjs` に **3 箇所 直書き**されていて、呼べる物が無いので突き合わせ表に
+  // 載せられなかった。門が「新しい Decodable がどちらの箱にも入っていない」で止めて発覚)。
+  { swift: "DigestEnvelope", builders: ["digestBody"], at: "" },
+  { swift: "DigestEnvelope.Digest", builders: ["digestBody"], at: "digest",
+    mode: "phone-subset",
+    // 電話が読まない鍵は**1つ残らず名前で書く**(「読まなくてよい」にすると、
+    // 読むべき鍵を落とした日も同じ緑になる)。
+    serverOnly: ["tools", "lastAt"] },
+  { swift: "DigestEnvelope.Digest.Window", builders: ["digestBody"], at: "digest.window",
+    mode: "phone-subset",
+    serverOnly: ["requestedFromIso", "observedFromIso", "toIso"] },
+  { swift: "DigestEnvelope.Digest.Counts", builders: ["digestBody"], at: "digest.counts" },
+  { swift: "DigestEnvelope.Action", builders: ["digestBody"], at: "action" },
   { swift: "ChoiceView", builders: ["choiceView"], at: "" },
   { swift: "ChoiceOption", builders: ["choiceView"], at: "options[]" },
   { swift: "ChoiceButton", builders: ["choiceView"], at: "buttons[]" },
@@ -827,7 +869,15 @@ test("`phone-subset` の宣言が、緩める言い訳になっていない", ()
   // ★2026-08-26 に `AttachClient.Envelope` が1つ増えた。理由: `swept`(掃除で何本消えたか)は
   //   机の家事の観測値で、利用者が写真を送った結果ではない。電話に描く物が無い。
   //   ここが並び順ごと固定なのは、増える時に**必ず人が理由を書く手**を通す為。
+  // ★2026-08-26 に digest の2つが増えた。理由を1つずつ書く:
+  //   `DigestEnvelope.Digest` … `tools`(道具の内訳)と `lastAt`(最後の記録の時刻)を
+  //     電話は描かない。前者は 1 画面に入らないので `line` に畳んで机が文にする。
+  //     後者は**通知側の指紋の材料**(`digest-notify.sh`)であって、人が読む値ではない。
+  //   `DigestEnvelope.Digest.Window` … 3 つの ISO 時刻は `minutes` に畳んである。
+  //     電話が描くのは「何分の窓か」だけで、絶対時刻は**時計のずれた 2 台の間で
+  //     意味が揺れる**(Friday は 2026-08-26 に JST→CDT が動いた実績が在る)。
   assert.deepEqual(PAIRS.filter((p) => p.mode === "phone-subset").map((p) => p.swift),
-    ["AttachClient.Envelope", "SessionsResponse", "SessionRow", "PollResponse",
+    ["DigestEnvelope.Digest", "DigestEnvelope.Digest.Window",
+     "AttachClient.Envelope", "SessionsResponse", "SessionRow", "PollResponse",
      "MessageItem", "GapItem", "AccountClient.Wire"]);
 });

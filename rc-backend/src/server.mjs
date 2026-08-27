@@ -51,7 +51,7 @@ import {
 } from "./view.mjs";
 import { redact } from "./redact.mjs";
 import { attachRequestLog, markResult, noteBody, SESSION_ROUTE_RE } from "./reqlog.mjs";
-import { digestOf, digestLine, actionRequired, attentionOf } from "./digest.mjs";
+import { digestOf, digestLine, actionRequired, attentionOf, digestBody } from "./digest.mjs";
 import { storeImage, pathOf, sweepOld, ATTACH_MAX_BYTES } from "./attach.mjs";
 import { loadRules, checkDeny, denyMessage } from "./deny.mjs";
 import { createIdemStore, validKey, IDEM_REFUSAL } from "./idem.mjs";
@@ -1452,7 +1452,7 @@ const server = createServer(async (req, res) => {
       if (!target) {
         const d = digestOf([], { sinceMs, nowMs, reachedStart: true });
         const act = actionRequired(attention, d);
-        return json(res, 200, { digest: d, attention, action: act, line: digestLine(d, act) });
+        return json(res, 200, digestBody(d, attention, act));
       }
       try {
         // ★`readHistoryFromPath` は表示用に均した項目を返すが、digest は**時刻**が要る。
@@ -1460,12 +1460,12 @@ const server = createServer(async (req, res) => {
         const raw = readRawRecords(target, sinceMs);
         const d = digestOf(raw.records, { sinceMs, nowMs, reachedStart: raw.reachedStart });
         const act = actionRequired(attention, d);
-        return json(res, 200, { digest: d, attention, action: act, line: digestLine(d, act) });
+        return json(res, 200, digestBody(d, attention, act));
       } catch (e) {
         if (e.code === "ENOENT") {
           const d = digestOf([], { sinceMs, nowMs, reachedStart: true });
           const act = actionRequired(attention, d);
-          return json(res, 200, { digest: d, attention, action: act, line: digestLine(d, act) });
+          return json(res, 200, digestBody(d, attention, act));
         }
         return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", errno: errnoOf(e) });
       }
