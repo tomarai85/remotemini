@@ -28,26 +28,42 @@ ok(){ printf '  \033[32mgreen\033[0m  %s\n' "$1"; PASS=$((PASS+1)); }
 bad(){ printf '  \033[31mRED\033[0m    %s -- %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
 
 run_rule_tests(){
-  ( cd "$IOS" && timeout 500 xcodebuild test -project RemoteMini.xcodeproj -scheme RemoteMini \
+  local tree="$1"
+  ( cd "$tree" && timeout 500 xcodebuild test -project RemoteMini.xcodeproj -scheme RemoteMini \
       -destination "$DEST" -only-testing:RemoteMiniTests/WaitEscalationTests ) >/dev/null 2>&1
 }
 
 echo "initial-load narration controls"
 
 # --- (1) 規則 -------------------------------------------------------------
-if run_rule_tests; then ok "規則: 本物は緑"; else bad "規則" "本物が赤(先に単体を直す事)"; fi
+if run_rule_tests "$IOS"; then ok "規則: 本物は緑"; else bad "規則" "本物が赤(先に単体を直す事)"; fi
 
-BK="$RULE.control-backup"
-cp "$RULE" "$BK"
+# ★2026-08-27 に作り直した。**変異を本物の木へ当てない**。
+#   最初の版は実 file を `sed -i` で書き換えて後から書き戻していた。1回でも書き戻しに
+#   失敗すれば、壊れた実装が作業木に残る —— 実際に残り、次の `git add -A` で index に
+#   載った(commit は門が止めたので履歴は無事)。**検査が製品を壊す道を、検査の中に
+#   作ってはいけない。** 今は木ごと複製して、複製の側だけを変異させる。
+MUT="$(mktemp -d)/ios"
+mkdir -p "$MUT"
+cp -R "$IOS/." "$MUT/" 2>/dev/null
+# 生成物は要らない(重いだけ)。無ければ黙って続ける。
+rm -rf "$MUT/build" "$MUT/RemoteMini.xcodeproj/project.xcworkspace/xcuserdata" 2>/dev/null
+MUT_RULE="$MUT/Sources/Core/WaitEscalation.swift"
 # 変異: 何秒経っても `.normal` を返す = 「切り替えを消した」旧状態。
-/usr/bin/sed -i "" 's|elapsedSeconds >= attentionLimitSeconds ? .abnormal : .normal|.normal|' "$RULE"
-if grep -q 'elapsedSeconds >= attentionLimitSeconds' "$RULE"; then
+/usr/bin/sed -i "" 's|elapsedSeconds >= attentionLimitSeconds ? .abnormal : .normal|.normal|' "$MUT_RULE"
+if grep -q 'elapsedSeconds >= attentionLimitSeconds' "$MUT_RULE"; then
   bad "変異" "変異を当てられなかった(探し文が実装とずれている)"
 else
-  if run_rule_tests; then bad "変異" "切り替えを消しても緑 = この検査は何も測っていない"
+  if run_rule_tests "$MUT"; then bad "変異" "切り替えを消しても緑 = この検査は何も測っていない"
   else ok "変異(切り替えを消す)で赤 — 規則の対照は効いている"; fi
 fi
-cp "$BK" "$RULE"; rm -f "$BK"
+rm -rf "$(dirname "$MUT")"
+# ★本物の木が変異していない事を、この台本自身が最後に確かめる(書き戻し漏れの再発防止)。
+if grep -q 'elapsedSeconds >= attentionLimitSeconds ? .abnormal : .normal' "$RULE"; then
+  ok "本物の木は無傷(変異は複製にしか当てていない)"
+else
+  bad "本物の木" "★実 file に変異が残っている。`git checkout HEAD -- $RULE` で戻す事"
+fi
 
 # --- (2) 画面が規則を使っているか -----------------------------------------
 if grep -q 'WaitEscalation.stage' "$VIEW"; then
