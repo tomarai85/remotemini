@@ -140,7 +140,11 @@ function authorized(req) {
 // ---- セッション走査(fs 層) ----------------------------------------------
 // 読んだメタは dev/ino/size/mtime を鍵に覚える。追記されれば鍵が変わるので、
 // 「変わっていないファイルは二度読まない」が自動的に成り立つ(嘘のキャッシュにならない)。
+// 上限は走査ごとに `ensureCapacity()` が観測値から引き上げる。ここは冷えた初回の下限。
+// ★2026-08-27 まで固定 4000 で、本番の実体 10,303 を下回っていた = ヒット率 0 が既定だった。
 const metaCache = new MetaCache({ max: 4000 });
+// キャッシュが連続で効かなかった回数。吠える条件は `scanSessions` の末尾。
+let coldScans = 0;
 
 /**
  * 一覧の材料を集める。**全部読まない**(実測 2026-08-02: 全部読むと 1,644本 /
@@ -235,22 +239,26 @@ function scanSessions({ only = null, limit = 0, heads = null } = {}) {
   //     MBP  1,644本 3.0GB(最大の会話 280MB)→ **1,059 ms**(1本 0.64 ms)
   //   tail 読みは1本あたり最大 TAIL_MAX=1MB で頭打ちなので、file 数に比例するだけ。
   //   1秒を「一覧の最悪値」として飲む。飲めなくなったら `examined` が先に上がって見える。
+  // ★上限の引き上げは**読む前**。読み終えてから上げても、その回は既に全部捨てた後で
+  //   効かない(Codex 2026-08-27)。件数はこの時点で確定している(`found` は sort 済み)。
+  metaCache.beginScan();
+  metaCache.ensureCapacity(found.length);
   const entries = [];
   const unreadable = [];
   let read = 0;
   let cached = 0;
   let examined = 0;
+  let complete = true; // 途中で読むのを止めたら偽 = 掃除してはいけない
   for (const { p, slug, sessionId, st, sortMs, head } of found) {
     // 出す物が揃ったら**そこで読むのをやめる**。揃う前に file を使い切ったら全部見た事になる。
-    if (limit > 0 && entries.length + unreadable.length >= limit) break;
+    if (limit > 0 && entries.length + unreadable.length >= limit) { complete = false; break; }
     examined += 1;
-    const key = MetaCache.keyOf(st);
-    let meta = metaCache.get(key);
+    let meta = metaCache.get(st);
     if (meta === null) {
       try {
         meta = readMetaFromPath(p);
         read += 1;
-        metaCache.set(key, meta);
+        metaCache.set(st, meta);
       } catch (e) {
         if (e.code === "ENOENT") continue; // 走査中に消えた = 普通の入れ替わり、黙って良い
         // ★読めない会話を黙って消さない(行の形は sessions.mjs の `unreadableRow`)。
@@ -274,13 +282,12 @@ function scanSessions({ only = null, limit = 0, heads = null } = {}) {
     //   見える / 見えないの判定も**祖先**で決める。枝は `-p` 起動なので必ず `sdk-cli` で、
     //   枝で判定すると畳んだ会話が全部消える。
     if (head) {
-      const hkey = MetaCache.keyOf(head.st);
-      let hm = metaCache.get(hkey);
+      let hm = metaCache.get(head.st);
       if (hm === null) {
         try {
           hm = readMetaFromPath(head.p);
           read += 1;
-          metaCache.set(hkey, hm);
+          metaCache.set(head.st, hm);
         } catch {
           hm = null; // 枝が読めない = 祖先の値のまま出す。行は消さない
         }
@@ -291,7 +298,25 @@ function scanSessions({ only = null, limit = 0, heads = null } = {}) {
     }
     entries.push({ sessionId, projectSlug: slug, mtimeMs: sortMs, meta });
   }
-  return { entries, unreadable, files: found.length, read, cached, examined };
+  const swept = metaCache.sweep({ complete });
+  // ★計器は「効いていない」を**自分から言う**。旧形は `cached` を応答に載せていたのに、
+  //   0 が数週間続いても誰も読まなかった(2026-08-27 に初めて読んで発覚)。在るだけの
+  //   計器は読まれない。冷えた初回は当然 0 なので黙り、**連続で効かない時だけ**吠える。
+  if (examined > 0) {
+    const hitRate = examined === 0 ? 1 : cached / examined;
+    if (hitRate < 0.05 && examined >= 200) {
+      coldScans += 1;
+      if (coldScans >= 2 && coldScans % 10 === 2) {
+        console.error(`[rc-backend] 一覧のキャッシュが効いていません(${coldScans}回連続): `
+          + `examined=${examined} cached=${cached} read=${read} 上限=${metaCache.max} `
+          + `占有=${metaCache.size} 追出し=${metaCache.evictions}`);
+      }
+    } else {
+      coldScans = 0;
+    }
+  }
+  return { entries, unreadable, files: found.length, read, cached, examined, swept,
+           cacheMax: metaCache.max, cacheSize: metaCache.size, cacheCapped: metaCache.capped };
 }
 
 function findSessionFile(sessionId) {
@@ -1207,7 +1232,12 @@ const server = createServer(async (req, res) => {
       });
       // 何本見て何本開いたかを毎回名乗る。★「速い」を主張する側が計器を持たないと、
       // 遅くなった時に「気のせい」で片付く(この置き換え自体、測って初めて見つかった)。
-      const scanBody = { scope: requestedScope, limit, files: scan.files, read: scan.read, cached: scan.cached, examined: scan.examined };
+      // ★キャッシュの効きも一緒に出す。2026-08-27 まで `cached` だけは載っていたのに、
+      //   0 が数週間続いても誰も読まなかった。読まれなかったのは、それが「効いていない」
+      //   を意味すると判る文脈(上限と占有)が隣に無かったからでもある。
+      const scanBody = { scope: requestedScope, limit, files: scan.files, read: scan.read,
+        cached: scan.cached, examined: scan.examined, swept: scan.swept,
+        cacheMax: scan.cacheMax, cacheSize: scan.cacheSize, cacheCapped: scan.cacheCapped };
       // 封筒の形と、その形である理由は `src/wire.mjs`(単体から実行して鍵名を採れる場所)。
       // ここは観測値を渡すだけ。
       return json(res, 200, sessionsBody({ sessions: listing, scan: scanBody, paneFault }));

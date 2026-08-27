@@ -229,115 +229,32 @@ export function readMetaFromPath(path, opts = {}) {
 
 /**
  * 読んだ結果を覚える。同じ木を2回読まない。
- *
- * ★2026-08-27 に作り直した。旧形(版を鍵にした素朴な LRU)は **本番で一度も効いて
- *   いなかった**。friday 実測、5要求連続で `files=10303 read=10303 cached=0`、毎回 470ms。
- *   理由は2つ在って、どちらか片方だけ直しても戻る:
- *
- *   1. **上限 4000 < 走査対象 10303**。走査は毎回頭から回るので、LRU は
- *      「次に要る物を必ず直前に捨てる」= 構造的にヒット率 0。上限を 40000 にする実験で
- *      470ms -> 60ms / cached 0 -> 10303 を観測(= 原因の確定)。
- *   2. **鍵に size と mtime が入っていた**ので、追記される度に**別の entry が増え**、
- *      古い版が残り続ける。上限を上げるだけでは、書き込みの多い機体で余白が版に
- *      食い潰されて同じ雪崩が戻る(Codex 2026-08-27。私はこれを見落としていた)。
- *
- *   新形は **生きた file の同一性 `dev+ino`** を鍵にし、指紋(size/mtime)は値に持つ:
- *   - 指紋が変われば値を**置き換える** = 1 file 1 entry。版は積み上がらない。
- *   - `beginScan()` で世代を進め、走査を**最後まで**回れた時だけ `sweep()` で
- *     今回見なかった entry を落とす。消えた file を永久に抱えない。
- *   - `ensureCapacity()` は**読む前**に呼ぶ。読み終えてから上げても、その回は既に
- *     全部捨てた後なので効かない(Codex 指摘)。下げないのは、部分走査や同時要求で
- *     上限が上下すると、その度に雪崩が起きるから(高水位)。
- *
- *   ★依然として残る限界(誠実に書いておく): 鍵ではなく値になっただけで、
- *   `Math.round(mtimeMs)` の丸め幅の中で**同じ長さに書き直された** file は
- *   「変わっていない」と読まれる。transcript が追記専用である限り起きないが、
- *   「古い値が返る事は原理的に無い」と言い切るのは誤り(Codex 2026-08-27)。
+ * 鍵に dev/ino を入れるのは、同じパスが別のファイルに差し替わった時に
+ * 前の中身を返さない為(`tail.mjs` の世代判定と同じ理由)。
  */
 export class MetaCache {
-  constructor({ max = 2000, ceiling = Number(process.env.RC_META_CACHE_CEILING) || 60000 } = {}) {
+  constructor({ max = 2000 } = {}) {
     this.max = max;
-    this.floor = max; // 走査で上げた上限を、ここより下へは戻さない
-    this.ceiling = Math.max(ceiling, max); // これ以上は伸ばさない(RAM の天井)
-    this.capped = false; // 天井に当たっているか = 遅くなる事を承知の状態
-    this.map = new Map(); // id -> { size, mtime, meta, seen }
-    this.epoch = 0;
-    this.evictions = 0;
+    this.map = new Map();
   }
 
-  /** 生きた file の同一性。同じパスが別 file に差し替わっても取り違えない。 */
-  static idOf(st) {
-    return `${st.dev}-${st.ino}`;
-  }
-
-  /** 版の指紋。旧 API 互換(検査が鍵の性質を測っている)。 */
   static keyOf(st) {
     return `${st.dev}-${st.ino}-${st.size}-${Math.round(st.mtimeMs)}`;
   }
 
-  /** 走査の開始。以後 `get`/`set` で触れた entry だけが「今回見た」になる。 */
-  beginScan() {
-    this.epoch += 1;
-    return this.epoch;
+  get(key) {
+    if (!this.map.has(key)) return null;
+    const v = this.map.get(key);
+    this.map.delete(key); // 触った物を末尾へ(素朴な LRU)
+    this.map.set(key, v);
+    return v;
   }
 
-  /**
-   * 走査対象の件数が判った時点で上限を引き上げる。**読む前に**呼ぶ事。
-   * 余白は版の入れ替わりではなく、走査中に増える file の分だけで足りる
-   * (指紋は値に持つので、追記は entry を増やさない)。
-   */
-  ensureCapacity(filesSeen) {
-    const want = Math.ceil(filesSeen * 1.25) + 64;
-    // ★天井。上限を corpus に追従させると RAM は corpus に比例して伸びる ——
-    //   これは実在する運用上の罠なので、黙って伸ばし続けない(Codex 2026-08-27)。
-    //   天井に当たった時に起きるのは**遅くなる事だけ**で、行が消える事は無い
-    //   (キャッシュは読みを省くだけで、一覧の内容には関与しない)。だから
-    //   「静かに会話を落とす」より「うるさく遅くなる」を選ぶ。
-    if (want > this.ceiling) {
-      this.capped = true;
-      this.max = this.ceiling;
-      return this.max;
-    }
-    this.capped = false;
-    if (want > this.max) this.max = want;
-    return this.max;
-  }
-
-  /** 指紋が一致した時だけ中身を返す。触れた事は(不一致でも)今回見たとして記録する。 */
-  get(st) {
-    const v = this.map.get(MetaCache.idOf(st));
-    if (!v) return null;
-    v.seen = this.epoch; // 版違いでも「この file は生きている」= sweep の対象外
-    if (v.size !== st.size || v.mtime !== Math.round(st.mtimeMs)) return null;
-    return v.meta;
-  }
-
-  set(st, meta) {
-    const id = MetaCache.idOf(st);
-    this.map.set(id, { size: st.size, mtime: Math.round(st.mtimeMs), meta, seen: this.epoch });
-    while (this.map.size > this.max) {
-      this.map.delete(this.map.keys().next().value);
-      this.evictions += 1;
-    }
-    return meta;
-  }
-
-  /**
-   * 今回の走査で見なかった entry を落とす。
-   * ★`complete` が偽(= `limit` で途中で読むのを止めた)時は**掃かない**。
-   *   見ていないだけの生きた file を落とすと、次の要求でそこを読み直す事になり、
-   *   直そうとしている雪崩を自分で作る。
-   */
-  sweep({ complete } = { complete: false }) {
-    if (!complete) return 0;
-    let dropped = 0;
-    for (const [id, v] of this.map) {
-      if (v.seen !== this.epoch) {
-        this.map.delete(id);
-        dropped += 1;
-      }
-    }
-    return dropped;
+  set(key, value) {
+    if (this.map.has(key)) this.map.delete(key);
+    this.map.set(key, value);
+    while (this.map.size > this.max) this.map.delete(this.map.keys().next().value);
+    return value;
   }
 
   get size() {
