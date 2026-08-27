@@ -24,6 +24,8 @@ struct AccountBar: View {
     var listViewModel: ListViewModel? = nil
     /// 保管の面の束(§9-1)。一覧 → 設定への通路が此処しか無いので相乗りする。
     var archiveDeps: SettingsView.ArchiveDeps? = nil
+    /// 机が引っ越した時の逃げ道。受けて設定画面へ渡すだけ(判断は持たない)。
+    var onReseed: (() async -> Void)? = nil
 
     @Environment(\.scenePhase) private var scenePhase
     /// 一覧と**同じ器**(`ForegroundResume`)。背面への出入りは `.inactive` を挟んで
@@ -34,7 +36,7 @@ struct AccountBar: View {
 
     var body: some View {
         NavigationLink {
-            SettingsView(accountViewModel: viewModel, baseURL: baseURL, listViewModel: listViewModel, archiveDeps: archiveDeps)
+            SettingsView(accountViewModel: viewModel, baseURL: baseURL, listViewModel: listViewModel, archiveDeps: archiveDeps, onReseed: onReseed)
         } label: {
             label
         }

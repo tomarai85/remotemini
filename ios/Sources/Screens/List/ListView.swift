@@ -37,6 +37,8 @@ struct ListView: View {
 
     /// 初回の待ちが始まった時刻。★`@State` なので `ListView` が作られた瞬間に決まる ——
     /// 初回取得の `.task` が走り出すのと同じ生存期間で、ここが計りたい待ちの起点。
+    /// 机が引っ越した時の逃げ道。`RootView` が本物の `AppState` を握っている時だけ入る。
+    var onReseed: (() async -> Void)? = nil
     @State private var initialWaitStartedAt = Date()
     @State private var renameTarget: SessionRow?
     @State private var renameText = ""
@@ -53,7 +55,8 @@ struct ListView: View {
         archiver: SessionArchiving,
         returner: ReturnRequesting,
         archivedLister: ArchivedListing,
-        onUnauthorized: @escaping () -> Void
+        onUnauthorized: @escaping () -> Void,
+        onReseed: (() async -> Void)? = nil
     ) {
         _viewModel = StateObject(wrappedValue: viewModel())
         _accountViewModel = StateObject(wrappedValue: accountViewModel())
@@ -64,6 +67,7 @@ struct ListView: View {
         self.returner = returner
         self.archivedLister = archivedLister
         self.onUnauthorized = onUnauthorized
+        self.onReseed = onReseed
     }
 
     var body: some View {
@@ -104,7 +108,8 @@ struct ListView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 AccountBar(viewModel: accountViewModel, baseURL: baseURL, listViewModel: viewModel,
-                           archiveDeps: .init(apiKey: apiKey, lister: archivedLister, archiver: archiver))
+                           archiveDeps: .init(apiKey: apiKey, lister: archivedLister, archiver: archiver),
+                           onReseed: onReseed)
             }
         }
         .refreshable { await viewModel.refresh() } // pull-to-refresh (brief §3-d trigger #2)

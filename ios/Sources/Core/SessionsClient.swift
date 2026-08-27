@@ -99,6 +99,24 @@ struct SessionsClient: SessionsListing {
         } catch let urlError as URLError where urlError.code == .cancelled {
             return .failure(.cancelled)
         } catch {
+            // ★2026-08-27: DEBUG に限り**なぜ届かなかったか**を1行出す。
+            //   `.unreachable` は「網の何かが駄目」を1語に畳むので、外から見ると
+            //   名前解決の失敗・接続拒否・時間切れ・証明書の不一致が**全部同じ顔**になる。
+            //   実機で「Can't reach the desk」しか出ない時、それを分ける手が他に無い
+            //   (URLSession の失敗は os_log 側で、`devicectl --console` は print しか拾えない)。
+            //   ★値は**分類だけ**。URL も鍵も本文も出さない。
+            // ★`#if DEBUG` に**しない**。実機の束は `-configuration Release` で焼くので
+            //   (`tools/build.sh` の device 経路)、DEBUG 限定にすると**実機でだけ消える** ——
+            //   実機でしか出ない不具合を診る為の行が、実機で存在しない。
+            //   同じ理由で `RootView` の `root flow:` も条件の外に在る(先例)。
+            //   出すのは**分類だけ**: URL も鍵も本文も出さない。
+            let why: String
+            if let u = error as? URLError {
+                why = "URLError(\(u.code.rawValue) \(u.code)) host=\(u.failingURL?.host ?? "-") port=\(u.failingURL?.port.map(String.init) ?? "-")"
+            } else {
+                why = "\(type(of: error))"
+            }
+            print("sessions fetch unreachable: \(why)")
             return .failure(.unreachable)
         }
 
