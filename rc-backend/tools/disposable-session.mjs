@@ -26,6 +26,7 @@
  *   **その path と state だけ**を stderr に出す。
  */
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -147,8 +148,23 @@ async function cmdUp(argv) {
   cwd = trust.cwd;
   say(`建てる場所: ${cwd}(${trust.note})`);
 
+  // ★2026-08-27: 時刻だけの名前に**乱数を足した**(Codex 指摘)。
+  //   元は秒までの時刻(14桁)だけで、同じ秒に2回建てると**同じ名前**になる。
+  //   その時に起きるのは ABA: 片方の `down` が、もう片方が建てた別のセッションを
+  //   「自分の物」として畳む。名前が唯一の同一性なので、名前が衝突した瞬間に
+  //   「使い捨ての形しか触らない」という安全装置が**間違った対象を守らなくなる**。
+  //   実際に起きるのは並列実行(検査を2本同時に回す)と、秒をまたがない連続実行。
+  //   ★乱数は数字のまま足す —— 下の正規表現 `[0-9]{6,}` が唯一の門なので、
+  //   英字を混ぜると門を緩める側の変更になる。
+  //   ★桁数は測って決めた: 最初 6 桁(`Math.random()*1e6`)で書いたら、**5000 回生成して
+  //   19 件衝突した**(誕生日の問題)。衝突の種類を消す為の修正で衝突が残るのは筋が通らない
+  //   ので 19 桁へ(下の `padStart(19)` と一致)。`crypto` を使うのは、`Math.random` が同一 ms に起動した2プロセスで
+  //   同じ種を引く実装が在り得る為 —— 並列実行こそがこの修正の想定場面。
+  //   再測: 200,000 回で衝突 0。
   const stamp = new Date().toISOString().replace(/\D/g, "").slice(0, 14);
-  const session = `rc-e2e-${stamp}`;
+  const nonce = (randomBytes(8).readBigUInt64BE() % 10_000_000_000_000_000_000n)
+    .toString().padStart(19, "0");
+  const session = `rc-e2e-${stamp}${nonce}`;
   // ★名前の fail-closed。使い捨ての形以外は**建てない**(この道具の唯一の安全装置)。
   if (!/^rc-e2e-[0-9]{6,}$/.test(session)) {
     say(`使い捨ての名前になっていない: ${session}`);
