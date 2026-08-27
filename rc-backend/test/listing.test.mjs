@@ -255,14 +255,111 @@ test("鍵は dev/ino/size/mtime で変わる(同じパスの別ファイルを�
   assert.notEqual(k, MetaCache.keyOf({ ...base, mtimeMs: 5 }), "同じ長さの書き直しも別物");
 });
 
-test("上限を超えたら古い物から落ちる", () => {
+// st の作り方をここに1つだけ置く。検査ごとに手で組むと、鍵に効く欄を書き忘れた検査が
+// 「たまたま緑」になる。
+const stOf = (ino, { size = 10, mtimeMs = 1000, dev = 1 } = {}) => ({ dev, ino, size, mtimeMs });
+
+test("上限を超えたら古い物から落ちる(占有は無限に増えない)", () => {
   const c = new MetaCache({ max: 2 });
-  c.set("a", 1);
-  c.set("b", 2);
-  assert.equal(c.get("a"), 1); // a を触る = 新しい扱い
-  c.set("c", 3);
-  assert.equal(c.size, 2);
-  assert.equal(c.get("b"), null, "触っていない b が落ちる");
-  assert.equal(c.get("a"), 1);
-  assert.equal(c.get("c"), 3);
+  c.set(stOf(1), "a");
+  c.set(stOf(2), "b");
+  c.set(stOf(3), "c");
+  assert.equal(c.size, 2, "上限を超えて溜め込まない");
+  assert.ok(c.evictions >= 1, "追い出した事を自分で数えている");
+});
+
+test("同じパスが別 file に差し替わっても中身を取り違えない", () => {
+  const c = new MetaCache({ max: 10 });
+  c.set(stOf(1), "元の中身");
+  assert.equal(c.get(stOf(2)), null, "ino が違えば別物(前の中身を返さない)");
+  assert.equal(c.get({ ...stOf(1), dev: 9 }), null, "dev が違えば別物");
+});
+
+test("追記されたら中身は返さない(版が違う)", () => {
+  const c = new MetaCache({ max: 10 });
+  c.set(stOf(1, { size: 10 }), "古い");
+  assert.equal(c.get(stOf(1, { size: 20 })), null, "size が伸びた = 読み直す");
+  assert.equal(c.get(stOf(1, { mtimeMs: 2000 })), null, "書き直された = 読み直す");
+});
+
+// ★ここから下は 2026-08-27 の欠陥を捕まえる為の対照。
+//   本番(friday)で `files=10303 read=10303 cached=0` が毎回出ていたのに、既存の検査は
+//   全部緑だった —— 鍵の性質と LRU の追い出しは測っていたが、**キャッシュが効くか**を
+//   一度も測っていなかったから。名前が主張する対象(キャッシュ)と assert している集合
+//   (LRU の機械)がずれていた典型。
+
+test("★周回走査の2周目は1本も読まない(これが効かないと一覧は毎回全件読みに戻る)", () => {
+  const N = 500;
+  const c = new MetaCache({ max: 8 }); // 走査対象より遥かに小さい上限から始める
+  const files = Array.from({ length: N }, (_, i) => stOf(i + 1));
+  const scan = () => {
+    c.beginScan();
+    c.ensureCapacity(files.length); // ★読む前に上げる
+    let read = 0, hit = 0;
+    for (const st of files) {
+      if (c.get(st) === null) { c.set(st, `meta-${st.ino}`); read += 1; } else hit += 1;
+    }
+    c.sweep({ complete: true });
+    return { read, hit };
+  };
+  const first = scan();
+  assert.equal(first.read, N, "1周目は当然全部読む");
+  const second = scan();
+  assert.equal(second.read, 0, "2周目は1本も読まない");
+  assert.equal(second.hit, N, "全部キャッシュから出る");
+});
+
+test("★追記され続けても entry は file 数を超えない(版が積み上がらない)", () => {
+  // Codex 2026-08-27 が指摘した罠。旧形は鍵に size/mtime が入っていたので、
+  // 1本の file が書き換わる度に **entry が1つ増え**、余白を版が食い潰して
+  // 上限を上げただけの修正が無効化された。
+  const c = new MetaCache({ max: 1000 });
+  const ino = 7;
+  for (let gen = 1; gen <= 200; gen += 1) {
+    const st = stOf(ino, { size: gen * 10, mtimeMs: 1000 + gen });
+    if (c.get(st) === null) c.set(st, `gen-${gen}`);
+  }
+  assert.equal(c.size, 1, "200回書き換わっても entry は1つ");
+  assert.equal(c.get(stOf(ino, { size: 2000, mtimeMs: 1200 })), "gen-200", "最新の版が返る");
+});
+
+test("★上限は下がらない(部分走査や同時要求で上下すると、その度に雪崩が起きる)", () => {
+  const c = new MetaCache({ max: 100 });
+  const wide = c.ensureCapacity(5000);
+  assert.ok(wide >= 5000, "走査対象を必ず上回る");
+  assert.equal(c.ensureCapacity(3), wide, "小さい走査を見ても下げない");
+  assert.equal(c.ensureCapacity(0), wide, "空の走査でも下げない");
+});
+
+test("★天井に当たっても行は消えない(遅くなるだけ)と、当たった事を名乗る", () => {
+  const c = new MetaCache({ max: 10, ceiling: 1000 });
+  // 余白の式 = ceil(files * 1.25) + 64。走査中に増える file の分だけ。
+  assert.equal(c.ensureCapacity(50), Math.ceil(50 * 1.25) + 64, "天井の下では観測値どおり伸びる");
+  assert.ok(c.ensureCapacity(50) > 50, "必ず走査対象を上回る(これが 0% ヒットの原因だった)");
+  assert.equal(c.capped, false);
+  assert.equal(c.ensureCapacity(10000), 1000, "天井を超えて伸ばさない");
+  assert.equal(c.capped, true, "当たった事を自分から名乗る(静かに劣化しない)");
+  // 天井に当たった状態でも読み書きは正しく働く = 一覧の内容には関与しない
+  c.beginScan();
+  c.set(stOf(1), "meta");
+  assert.equal(c.get(stOf(1)), "meta", "遅くなるだけで、値が壊れたり消えたりはしない");
+});
+
+test("★途中で読むのを止めた走査では掃除しない(見ていないだけの file を捨てない)", () => {
+  const c = new MetaCache({ max: 100 });
+  c.beginScan();
+  c.set(stOf(1), "a");
+  c.set(stOf(2), "b");
+  c.sweep({ complete: true });
+  assert.equal(c.size, 2, "今回見た物は残る");
+
+  c.beginScan();
+  c.get(stOf(1)); // 1 だけ見て打ち切った、という形
+  assert.equal(c.sweep({ complete: false }), 0, "打ち切った走査は1件も落とさない");
+  assert.equal(c.size, 2, "見ていない 2 が生き残る");
+
+  c.beginScan();
+  c.get(stOf(1));
+  assert.equal(c.sweep({ complete: true }), 1, "最後まで回れた時だけ、見なかった物を落とす");
+  assert.equal(c.get(stOf(2)), null, "消えた file を永久に抱えない");
 });

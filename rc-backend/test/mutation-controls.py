@@ -386,18 +386,24 @@ MUT = [
  # M70-M73 = 2026-08-02。edith で実際に踏んだ「一覧が空」の欠陥の周り。
  # 机(MBP)では `cli` が 1本目に来るので**4つとも素通りする**。守っているのは
  # e2e 12-b に足した edith 分布の再現(新しい方が全部 `sdk-cli`)の側。
+ # ★2026-08-27: 打ち切りに `complete = false` が付いた(キャッシュの掃除条件)ので、
+ #   探し文をその行に付け替えた。見張っている欠陥は変わらない —— `limit` が
+ #   「会話の件数」から「開く file の上限」へ戻ると edith 分布で一覧が空になる。
  ("M70 `limit` を「開く file の上限」に戻す(edith で一覧が空に戻る)", SRV,
-  'if (limit > 0 && entries.length + unreadable.length >= limit) break;',
-  'if (limit > 0 && examined >= limit) break;'),
+  'if (limit > 0 && entries.length + unreadable.length >= limit) { complete = false; break; }',
+  'if (limit > 0 && examined >= limit) { complete = false; break; }'),
  ("M71 走査側の絞り込みを外す(出さない会話が枠を食って本命が押し出される)", SRV,
   '    if (!isPhoneVisible(meta)) continue;\n',
   ''),
  ("M72 「電話に出す会話」の定義を広げる(adapter の非対話ログが一覧に混ざる)", SES,
   'export const isPhoneVisible = (meta) => meta?.entrypoint === "cli";',
   'export const isPhoneVisible = (meta) => meta?.entrypoint != null;'),
+ # ★2026-08-27: 封筒にキャッシュの効き(上限/占有/天井)を足したので探し文を付け替えた。
+ #   見張っている欠陥は同じ = `examined` が消えると「埋まって止めた」と「全部見た」の
+ #   区別が外から付かなくなる。
  ("M73 何本開いたかを外に出さない(「埋まって止めた」と「全部見た」が区別できない)", SRV,
-  'cached: scan.cached, examined: scan.examined }',
-  'cached: scan.cached }'),
+  'cached: scan.cached, examined: scan.examined, swept: scan.swept,',
+  'cached: scan.cached, swept: scan.swept,'),
 
  # M74-M76 = 2026-08-02。「配達できた」を「相手が答えた」と読ませない為の層。
  # 出所は自分の道具に踏まれた事: edith で 4/4 delivered=verified / exit 0 が出たのに、
