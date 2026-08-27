@@ -12,7 +12,8 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSy
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
-import { spawn as nodeSpawn, execFileSync } from "node:child_process";
+import { spawn as nodeSpawn, execFileSync, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords } from "./sessions.mjs";
 import { accountBody, gapItem, healthzBody, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
 import { parseFleetAccount, selectionMessage, selectionProblem } from "./account.mjs";
@@ -1113,11 +1114,25 @@ async function readBody(req, limit = 64 * 1024) {
  *   自己申告ではなく、symlink を読み直した結果を電話へ返す為 —— exit 0 は
  *   「命令が通った」であって「今この口座に成っている」ではない(Codex 指摘 2026-08-14)。
  */
-function readFleetAccount() {
-  const raw = execFileSync(FLEET_ACCOUNT, [], {
+// ★2026-08-27: `execFileSync` から非同期へ。**読み取りは事象ループを止めてはいけない**。
+//
+//   実測(friday 本番): `fleet-account-cswap.sh` は 1回 **180ms** かかる。同期で呼ぶと
+//   その間 Node は他の要求を1つも処理できない —— `healthz` は単独 **0.4ms** なのに、
+//   `/api/account` の最中に投げると **164ms**(390倍)返って来なかった。
+//   そして電話は `/api/account` を **アプリを開くたび・前面へ戻るたび**に
+//   `/api/sessions` と**同時に**撃つ(`AccountBar.swift` の `.task` / `.onChange(scenePhase)`)。
+//   = Tom が開く瞬間ちょうど、机が 180ms 凍る。一覧を 533ms から 104ms へ削った後では、
+//   この凍結の方が大きい。
+//
+//   ★書き込み側(`select` / `--next` の実行そのもの)は同期のまま残してある。あちらは
+//   人が押して結果を待っている操作で頻度が低く、順序の意味も違う(実行と読み直しの間に
+//   別の要求が割り込む形を、測らずに作らない)。**残っている的として明記する**。
+const execFileAsync = promisify(execFile);
+async function readFleetAccount() {
+  const { stdout } = await execFileAsync(FLEET_ACCOUNT, [], {
     encoding: "utf8", timeout: FLEET_ACCOUNT_TIMEOUT_MS, killSignal: "SIGKILL",
   });
-  return { raw, parsed: parseFleetAccount(raw) };
+  return { raw: stdout, parsed: parseFleetAccount(stdout) };
 }
 
 const server = createServer(async (req, res) => {
@@ -1245,7 +1260,7 @@ const server = createServer(async (req, res) => {
 
     if (path === "/api/account" && req.method === "GET") {
       try {
-        const { raw, parsed } = readFleetAccount();
+        const { raw, parsed } = await readFleetAccount();
         return json(res, 200, accountBody(parsed, { raw }));
       } catch (e) {
         return json(res, 500, { error: `fleet-account failed: ${e.message}` });
@@ -1267,7 +1282,7 @@ const server = createServer(async (req, res) => {
         // ★白名簿(今の一覧に在る)と**名前の不変条件**の両方を通す。片方では足りない ——
         //   `--next` という名の口座が `.order` に在れば、白名簿だけでは
         //   「切替」ではなく「次へ送る」が走る(台本の `case "$1"`、Codex 指摘)。
-        const before = readFleetAccount();
+        const before = await readFleetAccount();
         const problem = selectionProblem(before.parsed, want);
         // ★`code` は**使わない**。あれは電話が画面を移す為の凍らせた語彙で
         //   (`test/recovery-codes.test.mjs`)、断り理由を同じ鍵で流すと遷移の判断が壊れる。
@@ -1277,7 +1292,7 @@ const server = createServer(async (req, res) => {
           encoding: "utf8", timeout: FLEET_ACCOUNT_TIMEOUT_MS, killSignal: "SIGKILL",
         });
         // 観測し直して返す。頼んだ名前を返すと、切替が効かなかった日に画面だけが嘘を吐く。
-        const after = readFleetAccount();
+        const after = await readFleetAccount();
         return json(res, 200, accountBody(after.parsed, { raw: after.raw }));
       } catch (e) {
         return json(res, 500, { error: `fleet-account <name> failed: ${e.message}` });
@@ -1291,7 +1306,7 @@ const server = createServer(async (req, res) => {
         execFileSync(FLEET_ACCOUNT, ["--next"], {
           encoding: "utf8", timeout: FLEET_ACCOUNT_TIMEOUT_MS, killSignal: "SIGKILL",
         });
-        const after = readFleetAccount();
+        const after = await readFleetAccount();
         return json(res, 200, accountBody(after.parsed, { raw: after.raw }));
       } catch (e) {
         return json(res, 500, { error: `fleet-account --next failed: ${e.message}` });
