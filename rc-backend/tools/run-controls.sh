@@ -195,6 +195,16 @@ LOCAL_CTLS=(
                                      # 実際に起きた: add の後に直して add し直さず commit、
                                      # 門 12/12 緑・履歴は壊れた版。使い捨ての git repo を
                                      # 立てて測るので、本物の木を汚さない
+    ios/tools/initial-load-narration-control.sh # ★2026-08-27 新設と同時に登録。
+                                     # 「注意の限界(既定10秒)を超えた待ちで表現が切り替わる」を、
+                                     # 戻したら赤になる形で押さえる。規則(`WaitEscalation`)を
+                                     # 変異させて赤になる事と、`ListView` が実際にその規則を
+                                     # 呼んでいる事の**両方**を測る —— 規則だけ緑でも、画面が
+                                     # 呼んでいなければ 20 秒は無言のままだから。
+                                     # ★通常段のスピナーにラベルが付いたら赤にする(HIG 逐語
+                                     # "Avoid labeling a spinning progress indicator." の一線)。
+                                     # ★弱い所: 画面側は grep の錨なので「呼んでいるが結果を
+                                     # 捨てている」は捕まらない。UI 検査は未着手。
     ios/tools/sim-device-control.sh   # ★2026-08-26 新設と同時に登録。測る相手は
                                      # `ios/tools/sim-device.sh` =「対照が **どの機へ
                                      # install しに行くか**」。此処が緩んでいた間、対照を

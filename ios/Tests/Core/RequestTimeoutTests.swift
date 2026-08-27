@@ -50,7 +50,20 @@ final class RequestTimeoutTests: XCTestCase {
     func testInteractiveTimeoutIsShorterThanThePollTimeout() {
         // これが逆転したら分割の意味が消える(= 空白画面の待ちが縮まない)。
         XCTAssertLessThan(BackendSession.interactiveTimeout, BackendSession.pollTimeout)
-        XCTAssertEqual(BackendSession.interactiveTimeout, 8)
+        // ★2026-08-27 更新。8 のままだった此の1行は **2026-08-26 12:04 の `4825681` から
+        //   赤だった** —— あの commit が 8 -> 20 へ上げた時に此処を直しておらず、commit 文の
+        //   「単体 962/962 緑」は node 側の数字で、Swift 側は誰も回していなかった。
+        //   値そのものは正しい: 初回起動の TLS ハンドシェイクが実測 6030ms かかり、
+        //   8 秒枠では**初めて開いた時だけ必ず失敗する**。20 はその為に払った代償で、
+        //   下限は `TimeoutBudgetTests`(>= 15、握手の余地)が別に押さえている。
+        //   ★此処が literal を pin し続ける理由: 上限側の漂流(45 まで許す `TimeoutBudget`
+        //   だけでは 40 秒に伸びても緑)を止める錨。数字を動かす時は**両方**を直す。
+        XCTAssertEqual(BackendSession.interactiveTimeout, 20)
+        // ★20 秒の間ずっと無言でいる訳ではない事は `WaitEscalation` が別に押さえている
+        //   (既定 10 秒で表現を切り替える)。この2つは片方だけ動かすと嘘になる:
+        //   切替の閾値が待ちの上限を超えたら、切替は一度も起きない。
+        XCTAssertLessThan(WaitEscalation.attentionLimitSeconds, BackendSession.interactiveTimeout,
+                          "表現の切替が待ちの上限より後なら、その切替は永久に起きない")
     }
 
     func testWriteTimeoutStaysAtThePollLength() {
