@@ -463,6 +463,58 @@ ctl_no_sudo_advice(){
   return "$rc"
 }
 
+# 14. 機体が消えている時、そう名指しするか。
+#     2026-08-27 の実物: 既定の宛先が譲渡済みの edith を指したまま残っていて、機体が
+#     死んでいるのに「destination cannot host the mirror root」= 書き込み権限の話として
+#     報告していた。読んだ人間は MIRROR_ROOT を変えに行く —— 直す場所が違う。
+#     ssh が返らない事と、返ったが書けない事は、別の名前で出る必要が在る。
+ctl_dead_host_named_as_such(){
+  local script="$1" line; line="$(setup_env)"
+  local tmp lh rh wd sid slug; read -r tmp lh rh wd sid slug <<<"$line"
+  # 死んだ機体 = 何を渡しても返らない ssh。権限は一切いじらない(= 書ける根のまま)ので、
+  # 「書けない」経路と混ざらない。
+  printf '#!/bin/bash\nexit 255\n' > "$tmp/fake/ssh"
+  chmod +x "$tmp/fake/ssh"
+  local rc=0 out
+  out="$(run_rm "$script" "$tmp" "$lh" "$rh" out --dir "$wd" --dest deadhost 2>&1)"
+  case "$out" in
+    *"not reachable"*) : ;;
+    *) echo "    (機体が死んでいるのに、そう言っていない)" >&2; rc=1;;
+  esac
+  case "$out" in
+    *"cannot host the mirror root"*)
+      echo "    (ssh が返らないのに mirror root の問題として報告している)" >&2; rc=1;;
+  esac
+  rm -rf "$tmp"
+  return "$rc"
+}
+
+# 15. 「訊けなかった」を「依頼なし」と言わないか。
+#     電話から戻しを依頼する鎖(REQ 9-2)は、MBP 側の `requests` が宛先へ訊きに行く形。
+#     旧形は ssh の失敗を `|| true` で握り潰していたので、宛先が落ちている時に
+#     「戻しの依頼はありません」= 静けさとして報告していた。押した人には区別が付かない。
+ctl_requests_unreachable_is_not_silence(){
+  local script="$1" line; line="$(setup_env)"
+  local tmp lh rh wd sid slug; read -r tmp lh rh wd sid slug <<<"$line"
+  local rc=0 out
+  # まず正常に持ち出す(state file を作る為)。
+  run_rm "$script" "$tmp" "$lh" "$rh" out --dir "$wd" --session "$sid" --dest fakehost >/dev/null 2>&1 \
+    || { echo "    (前提の out が失敗した)" >&2; rm -rf "$tmp"; return 1; }
+  # 宛先が落ちた。
+  printf '#!/bin/bash\nexit 255\n' > "$tmp/fake/ssh"; chmod +x "$tmp/fake/ssh"
+  out="$(run_rm "$script" "$tmp" "$lh" "$rh" requests 2>&1)"
+  case "$out" in
+    *"訊けなかった"*) : ;;
+    *) echo "    (宛先へ訊けなかった事を報告していない)" >&2; rc=1;;
+  esac
+  case "$out" in
+    *"戻しの依頼はありません"*)
+      echo "    (訊けていないのに『依頼なし』と断定している)" >&2; rc=1;;
+  esac
+  rm -rf "$tmp"
+  return "$rc"
+}
+
 # ══════════════════════════════════════════════════════════════════
 # 変異体: 新版から **その修正だけ** を外した写しを作る。対照が赤にならなければ、
 # その対照はその欠陥について何も測っていない。
@@ -471,6 +523,34 @@ make_mutant(){
   local which="$1" dst="$2"
   cp "$NEW" "$dst" || return 1
   case "$which" in
+    reqsilence) # ssh の失敗を握り潰す旧形へ戻す
+      python3 - "$dst" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = '''    local req raw
+    raw="$($SSH_BIN -o ConnectTimeout=10 "$dest" \\
+            "cat '$MIRROR_ROOT/$pid/RETURN-REQUESTED' 2>/dev/null; printf '__RM_REACHED__'" 2>/dev/null)"
+    case "$raw" in
+      *__RM_REACHED__) req="${raw%__RM_REACHED__}" ;;
+      *) unreachable+=("$dir  (宛先 $dest に訊けなかった)"); continue ;;
+    esac'''
+new = '''    local req
+    req="$($SSH_BIN -o ConnectTimeout=10 "$dest" "cat '$MIRROR_ROOT/$pid/RETURN-REQUESTED' 2>/dev/null" || true)"'''
+if old not in s: sys.exit(9)
+p.write_text(s.replace(old, new))
+PY
+      ;;
+    noprobe) # 機体の生死を先に見る一手を外す = 2026-08-27 以前の形へ戻す
+      python3 - "$dst" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = '''  local base="$MIRROR_ROOT/$pid"
+  probe_dest "$dest"'''
+new = '''  local base="$MIRROR_ROOT/$pid"'''
+if old not in s: sys.exit(9)
+p.write_text(s.replace(old, new))
+PY
+      ;;
     tilde)   # `~` を単一引用符で括る旧形へ戻す
       python3 - "$dst" <<'PY'
 import pathlib, sys, re
@@ -596,6 +676,8 @@ CONTROLS=(
   "ctl_landing_rejects_garbage|mutant:landing"
   "ctl_roundtrip_mapped|fix"
   "ctl_no_sudo_advice|fix"
+  "ctl_dead_host_named_as_such|mutant:noprobe"
+  "ctl_requests_unreachable_is_not_silence|mutant:reqsilence"
 )
 
 echo "remote-mini root-mapping controls"
