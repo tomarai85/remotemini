@@ -177,6 +177,76 @@ reds=$((reds + 1))
 [ "$rcx" = 3 ] && printf '  rc=3(静かではなく「見られなかった」)  OK\n' \
                || { printf '  ★rc=%s\n' "$rcx"; fail=1; }
 
+echo "=== 8. 自分が壊れた時、**鳴らす1つと鳴らさない2つ**を分ける[本命] ==="
+# ★Codex 2026-08-27 の裁定。此の台本が壊れる入口は3つ在るが、鳴らす価値が在るのは1つ:
+#     鍵が読めない   … 電話も机と話せなくなるので**製品の側から数分で判る**
+#     一覧が取れない … 机が落ちている事なので `health-observer` が既に見ている
+#     判定が落ちた   … **此れだけ**が、他の全部が健康に見えたまま静かに死ぬ
+#   前の2つで鳴らすと 1 つの障害で複数の通知が飛ぶ = 重複の騒音。
+#   ★同じ日に `health-observer` の**偽の**「監視が壊れている」を消したばかりなので、
+#     新しい叫び口は**他の誰も見ていない失敗**に限る。
+
+# 8-a. 鍵が読めない → 鳴らない(rc=3 で黙る)
+reset_all
+mk_api "$(dg input now null)"
+rc_a=$( RC_TEST_NONCE="$NONCE" PATH="$TMP:$PATH" RC_DIGEST_KEY="$TMP/nokey" \
+        RC_DIGEST_STATE="$TMP/state.json" RC_DIGEST_LOG="$TMP/log" \
+        RC_DIGEST_NOTIFY="$TMP/notify" /bin/bash "$DN" </dev/null >/dev/null 2>&1; echo $? )
+reds=$((reds + 1))
+if [ "$rc_a" = 3 ] && [ "$(received)" = 0 ]; then
+    printf '  鍵が読めない → 鳴らない(製品の側から判る)  OK\n'
+else
+    printf '  ★rc=%s / 受信=%s(重複の騒音を出している)\n' "$rc_a" "$(received)"; fail=1
+fi
+
+# 8-b. 一覧が取れない → 鳴らない(health-observer が見ている)
+reset_all
+cat >"$TMP/curl" <<'STUB8'
+#!/bin/bash
+exit 7
+STUB8
+chmod +x "$TMP/curl"
+rc_b=$( RC_TEST_NONCE="$NONCE" PATH="$TMP:$PATH" RC_DIGEST_KEY="$TMP/key" \
+        RC_DIGEST_STATE="$TMP/state.json" RC_DIGEST_LOG="$TMP/log" \
+        RC_DIGEST_NOTIFY="$TMP/notify" /bin/bash "$DN" </dev/null >/dev/null 2>&1; echo $? )
+reds=$((reds + 1))
+if [ "$rc_b" = 3 ] && [ "$(received)" = 0 ]; then
+    printf '  一覧が取れない → 鳴らない(机の生死は別の見張り)  OK\n'
+else
+    printf '  ★rc=%s / 受信=%s\n' "$rc_b" "$(received)"; fail=1
+fi
+
+# 8-c. 判定が落ちた → **1回だけ鳴る**。此れだけが誰も見ていない失敗。
+reset_all
+mk_api "$(dg input now null)"
+# ★`$PY` は一覧の段でも使う。丸ごと壊すと**先に一覧で落ちて判定の段まで届かない**
+#   (実測 2026-08-27: 受信 0 で赤くなり、判定の枝を一度も通っていなかった)。
+#   だから **判定の呼び出しだけ**を落とす —— 判定は `"$PY" - ...`(stdin から読む形)なので、
+#   第1引数が `-` の時だけ失敗させ、`-c`(一覧の段)は本物へ通す。
+cat >"$TMP/brokenpy" <<'BPY'
+#!/bin/bash
+if [ "${1:-}" = "-" ]; then exit 99; fi
+exec /usr/bin/python3 "$@"
+BPY
+chmod +x "$TMP/brokenpy"
+rc_c=$( RC_TEST_NONCE="$NONCE" PATH="$TMP:$PATH" RC_DIGEST_KEY="$TMP/key" \
+        RC_DIGEST_STATE="$TMP/state.json" RC_DIGEST_LOG="$TMP/log" \
+        RC_DIGEST_NOTIFY="$TMP/notify" RC_DIGEST_PY="$TMP/brokenpy" \
+        /bin/bash "$DN" </dev/null >/dev/null 2>&1; echo $? )
+reds=$((reds + 1))
+n_c="$(received)"
+if [ "$rc_c" = 3 ] && [ "$n_c" = 1 ]; then
+    printf '  判定が落ちた → 1回だけ鳴る  OK\n'
+else
+    printf '  ★rc=%s / 受信=%s(期待 rc=3 / 1回)\n' "$rc_c" "$n_c"; fail=1
+fi
+# ★重さを混ぜない —— 製品の生死の文言(監視側が壊れています)を名乗らない。
+if grep -q "監視側が壊れています" "$TMP/received" 2>/dev/null; then
+    printf '  ★製品の生死の文言を名乗っている(便利機能の停止を同じ重さで出している)\n'; fail=1
+else
+    printf '  便利機能の停止として出している(重さを混ぜない)  OK\n'
+fi
+
 echo
 echo "  赤に倒れる入力: ${reds} 件"
 [ "$reds" -lt 2 ] && { echo "  ★対照が空虚"; fail=1; }
