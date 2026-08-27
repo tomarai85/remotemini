@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/tools/rollback-friday.sh
+# controls-for: tools/rollback-friday.sh
 # rollback-friday-control.sh — 戻しが **本当に木を戻す** 事を測る。2026-08-26 新設。
 #
 # ★rsync の戻しは**緑を偽装しやすい**。「rsync が 0 で帰った」も「file が在る」も、

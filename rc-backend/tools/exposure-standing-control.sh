@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/tools/health-observer.sh
+# controls-for: tools/health-observer.sh
 # exposure-standing-control.sh — 常設の見張りが **露出 / 判らない / 安全** を取り違えない事を測る。
 # 2026-08-26 新設。
 #

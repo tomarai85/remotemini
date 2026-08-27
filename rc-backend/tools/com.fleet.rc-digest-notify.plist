@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.fleet.rc-digest-notify  (Friday / athenas 用。2026-08-26 新設)
+  ============================================================================
+  何を持つか: 「**机が Tom の返事を待って止まっている**」を、電話を開かせずに届ける段。
+  動機は実測 — 常駐が `attention=input / action=soon` のまま 60 分座っていた。
+  Tom は待たれている事を知らないので、その時間は丸ごと死ぬ。取り戻すのはその死に時間だけ。
+
+  ★刻みは 150 秒(2.5 分)。Codex 2026-08-26 の裁定:
+    `now` は 2 回続けて同じ指紋で鳴らす = 5 分前後の確認遅れ。
+    `soon` は **回数ではなく実経過 20 分**。同じ画面を 2 回読んでも独立した証拠にならない。
+    刻みを 10 分に伸ばすと `now` の確認遅れが 20 分になり、速い方の意味が消える。
+
+  ★`unknown` は永久に鳴らさない。正直だが役に立たない信号を人に見せると、信号ごと
+    無視される様になる(= 次に本当に要る時に届かない)。
+
+  ★**「直りました」を出さない。** この信号の「直った」は *Tom が返事をした* であって
+    本人が知っている。`com.fleet.rc-phone-window` の 3 本目(phone-window-notify)は
+    「直った時に 1 回鳴らす」規約だが、あちらの信号(窓の固着)は本人が知らないので
+    正しい。**同じ言葉で別の判断をしている**ので、両方に理由を書いてある。
+
+  ★武装について(この job だけの注意):
+    これは **Tom へ実際にメッセージを出す**段。据えた直後から鳴る。
+    `RC_DIGEST_NOTIFY` が指す先が実行できなければ log に残して黙る(fail-closed)。
+    止めたい時は TEARDOWN で job ごと落とす —— 閾値をいじって黙らせると、
+    「検出は生きているのに配達だけ死んでいる」状態が出来て、次に本当に要る時に届かない。
+
+  ★この注釈の中にハイフン2連続を書けない(XML コメントの規則)。
+
+  INSTALL:
+    scp .../com.fleet.rc-digest-notify.plist athenas:/Users/athenas/Library/LaunchAgents/
+    ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-digest-notify.plist'
+  TEARDOWN:
+    ssh athenas 'launchctl bootout gui/501/com.fleet.rc-digest-notify'
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fleet.rc-digest-notify</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/athenas/rc-backend/tools/digest-notify.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/athenas/rc-backend</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/athenas/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/athenas</string>
+    <key>RC_DIGEST_API</key>
+    <string>http://127.0.0.1:8787</string>
+    <key>RC_DIGEST_SOON_MIN</key>
+    <string>20</string>
+    <key>RC_DIGEST_NOW_OBS</key>
+    <string>2</string>
+  </dict>
+
+  <key>LimitLoadToSessionType</key>
+  <array>
+    <string>Aqua</string>
+    <string>Background</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartInterval</key>
+  <integer>150</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/athenas/Library/Logs/rc-backend/rc-digest-notify.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/athenas/Library/Logs/rc-backend/rc-digest-notify.error.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
