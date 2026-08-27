@@ -166,6 +166,13 @@ struct ListView: View {
                             retryButton()
                         }
                         .padding(.top, 40)
+                        // ★`.accessibilityElement(children: .contain)` が要る。
+                        //   識別子だけを `VStack` に付けても、SwiftUI は素の並びを
+                        //   アクセシビリティの要素として公開しないので、UI 検査から
+                        //   **一度も見つけられない**(2026-08-27、UI 検査を書いて初めて
+                        //   判った)。錨を置いた気になって到達不能、は grep の対照では
+                        //   捕まらない型 —— 画を出す検査だけが物を言える。
+                        .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("list.loading.slow")
                     }
                 }
