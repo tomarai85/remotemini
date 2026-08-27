@@ -35,6 +35,9 @@ struct ListView: View {
     @AppStorage("RCListStyle") private var listStyleRaw: String = RCListStyle.current.rawValue
     private var listStyle: RCListStyle { RCListStyle(rawValue: listStyleRaw) ?? .current }
 
+    /// 初回の待ちが始まった時刻。★`@State` なので `ListView` が作られた瞬間に決まる ——
+    /// 初回取得の `.task` が走り出すのと同じ生存期間で、ここが計りたい待ちの起点。
+    @State private var initialWaitStartedAt = Date()
     @State private var renameTarget: SessionRow?
     @State private var renameText = ""
     @State private var renameNotice: String?
@@ -138,10 +141,34 @@ struct ListView: View {
     private var content: some View {
         switch viewModel.phase {
         case .initialLoading:
-            ScrollView {
-                ProgressView()
-                    .padding(.top, 80)
-                    .accessibilityIdentifier("list.loading")
+            // ★注意の限界(既定10秒)までは**何一つ変えない**。実測のサーバ応答は
+            //   0.1-0.3 秒(2026-08-27 friday 本番)なので、普段の起動はこの帯域で終わり、
+            //   見た目は従来と同じ無言のスピナーのまま。
+            //   Apple HIG 逐語 "Avoid labeling a spinning progress indicator." に反しない
+            //   のは此処 —— 文言を足すのではなく、限界を超えた時に**表現ごと**替える。
+            //   判定は `WaitEscalation`(時計を持たない純関数)に置いてあるので、
+            //   規則は UI を起こさずに検べられる。
+            TimelineView(.periodic(from: initialWaitStartedAt, by: 1)) { ctx in
+                ScrollView {
+                    switch WaitEscalation.stage(
+                        elapsedSeconds: ctx.date.timeIntervalSince(initialWaitStartedAt)
+                    ) {
+                    case .normal:
+                        ProgressView()
+                            .padding(.top, 80)
+                            .accessibilityIdentifier("list.loading")
+                    case .abnormal:
+                        // ★スピナーを消す。回り続ける輪を残したまま説明を足すと、
+                        //   「進んでいる」と「止まっている」が同じ画面に同居する。
+                        VStack(spacing: 12) {
+                            faultBanner(headline: WaitEscalation.abnormalHeadline,
+                                        body: WaitEscalation.abnormalBody)
+                            retryButton()
+                        }
+                        .padding(.top, 40)
+                        .accessibilityIdentifier("list.loading.slow")
+                    }
+                }
             }
 
         case .empty:
