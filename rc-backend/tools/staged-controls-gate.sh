@@ -69,6 +69,37 @@ if [ -z "$staged" ] && [ "${1:-}" != "--all-controls" ]; then
     exit 2
 fi
 
+# ★index と作業木がずれている file が在ったら断る(2026-08-26 新設)。
+#
+# なぜ: この門は下で `bash "$c"` = **作業木の版**を走らせる。だが commit に載るのは
+#   **index の版**。同じ file が「staged かつ さらに変更済み」(= `git status` の `MM`)
+#   の時、緑は commit に載らない版を測っている。
+#   ★実際に起きた(2026-08-26): `git add -A` の後に対照台本の実バグを直し、add し直さずに
+#     commit した。門は作業木の直した版で **12/12 緑**、履歴には**直す前の壊れた版**が入った。
+#     気付いたのは後から `git show HEAD:<file>` を疑って読んだからで、門は何も言わなかった。
+#   この repo の一番の禁忌は「**緑が別の物を指している**」なので、ここで止める。
+#
+# ★index を temp に展開してそちらで測る案(Codex 2026-08-26 の B)は採らない:
+#   素の checkout-index には `node_modules` も生成物も `.git` も無い。対照は
+#   `node --test` / `xcodebuild` / `git diff` を使うので、**別の環境を測った別の緑**が
+#   出来るだけ。偽の赤も出る。断る方が安い。
+#
+# ★`git add -p` の部分 staging はこの下で止まる。意図的にそうしている ——
+#   その状態の緑は、その file については必ず嘘だから。抜け道は名前で意図を宣言させる。
+if [ "${RC_ALLOW_MIXED_INDEX:-0}" != "1" ]; then
+    mixed="$(cd "$ROOT" && git status --porcelain 2>/dev/null \
+             | awk '/^(MM|AM|RM|MD|AD)/ {print $NF}')"
+    if [ -n "$mixed" ]; then
+        echo "staged-controls-gate: ★index と作業木がずれている file が在る。commit を止めた。"
+        echo "  この門は**作業木**を走らせるが、commit に載るのは**index**。ずれたままだと"
+        echo "  緑が「載る物」ではなく「手元の物」を証明する事になる(2026-08-26 に実際に起きた)。"
+        printf '    %s\n' $mixed
+        echo "  直し: git add -A (または該当 file を add) してから commit し直す。"
+        echo "  どうしても意図的にずらすなら RC_ALLOW_MIXED_INDEX=1 を明示する事。"
+        exit 2
+    fi
+fi
+
 sel=""; orphan=""; exempt=0
 add_sel() { case " $sel " in *" $1 "*) ;; *) sel="$sel $1" ;; esac; }
 
