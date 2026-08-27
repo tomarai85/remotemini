@@ -130,6 +130,32 @@ export function noteBody(res, obj) {
  * @param {import("node:http").ServerResponse} res
  * @param {{knownPaths?: Set<string>, out?: (line: string) => void, now?: () => Date}} [opt]
  */
+/**
+ * 要求を出した**種類**だけを返す(2026-08-27 新設)。閉じた4語しか返さない。
+ *
+ * ★なぜ要るか(実測 2026-08-27): この記録は「誰が叩いたか」を一切残していなかった。
+ *   その為「Tom はこのアプリを開いたのか」に答えるのに、私は自分の作業記録との
+ *   時刻突き合わせを 6 回やる羽目になった —— しかも **Simulator と実機を最後まで
+ *   区別できなかった**。答えが要る問いに、記録が答えられない状態だった。
+ *
+ * ★**生の User-Agent は決して記録しない。** あれには端末の型番と OS の版が入る。
+ *   §3-U の「行に中身が乗らない」は、本文やパスだけでなく端末の指紋にも掛かる。
+ *   だから分類器は**閉じた語**を返し、呼び出し側は返り値しか書かない。
+ *
+ *   app   iOS の URLSession(実機でも Simulator でも CFNetwork を名乗る)
+ *   tool  curl / node など —— この機体の常駐(digest-notify・health-observer)がこれ
+ *   none  名乗りが無い
+ *   other 上のどれでもない
+ */
+export function clientClass(userAgent) {
+  const ua = String(userAgent || "");
+  if (!ua) return "none";
+  // ★app を先に見る。curl は Darwin を名乗らないので取り違えない。
+  if (/CFNetwork|Darwin/i.test(ua)) return "app";
+  if (/curl|wget|node|undici|python|libwww/i.test(ua)) return "tool";
+  return "other";
+}
+
 export function attachRequestLog(req, res, opt = {}) {
   const out = opt.out || ((line) => console.log(line));
   const now = opt.now || (() => new Date());
@@ -139,6 +165,8 @@ export function attachRequestLog(req, res, opt = {}) {
   const shape = pathShape(rawPath, opt.knownPaths);
   const sid = sessionOf(rawPath);
   const method = methodOf(req.method);
+  // ★分類は要求ごとに1回。生の名乗りはこの行から先へ**出さない**。
+  const client = clientClass((req.headers || {})["user-agent"]);
 
   const st = { route: "", reason: "", emitted: false };
   res[LOG] = st;
@@ -149,7 +177,7 @@ export function attachRequestLog(req, res, opt = {}) {
     const reason = why || st.reason || "-";
     out(
       `[rc-backend] req ${now().toISOString()} ${method} ${shape}` +
-        `${sid ? ` sid=${sid}` : ""} route=${st.route || "-"} code=${code} reason=${reason} ms=${Date.now() - t0}`,
+        `${sid ? ` sid=${sid}` : ""} route=${st.route || "-"} client=${client} code=${code} reason=${reason} ms=${Date.now() - t0}`,
     );
   };
 
