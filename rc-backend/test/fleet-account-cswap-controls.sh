@@ -99,24 +99,54 @@ RC_CSWAP_BIN="$FAKE_DIR/cswap4" bash "$SHIM" >/dev/null 2>&1
 
 # ★Codex 2026-08-26 が名指しした「読めるが間違っている一覧」を1件ずつ弾くか。
 #   細工は python の1行式で渡す(検体を手で書き直さない = 生成元から取る規約を保つ)。
-poison() { # <表示名> <python 式(d を書き換える)>
-    local label="$1" mut="$2" f="$FAKE_DIR/p.json" b="$FAKE_DIR/pc"
+# ★第3引数 = **その細工に答える筈の die の文言**。2026-08-26 に足した。
+#   それまでは `rc != 0` だけを見ていて、**どの守りが答えたかを一度も確かめていなかった**。
+#   `fleet-account-cswap.sh` は 7 箇所の `die()` を**全部 `sys.exit(5)`** に落とすので、
+#   意図した守りの手前で別の理由で落ちても、同じ非ゼロが返って `ok` と読まれる。
+#
+#   ★実測で再現した(2026-08-26): C11 が守っている `isinstance(act, bool)` を**丸ごと消す**と、
+#     `bool("false")` が真になって細工の行が「現用」に化け、**別の守り**
+#     (`現用が2行以上ある`)が代わりに落ちる。C11 は `OK` のまま、合計も PASS 15 / FAIL 0。
+#     **名前の守りが消えた事を、その名前の検査が検出できない**状態だった。
+#     (別セッションの掃き取りが 92 本を走査して名指しした唯一の当たり。実物で裏を取ってから直した)
+#
+#   ★`>/dev/null 2>&1` で stderr を捨てていたのが本体。**捨てた物は測れない。**
+poison() { # <表示名> <python 式(d を書き換える)> <答える筈の die の文言>
+    local label="$1" mut="$2" want="${3:-}" f="$FAKE_DIR/p.json" b="$FAKE_DIR/pc"
     python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); exec(sys.argv[3]); json.dump(d,open(sys.argv[2],"w"))' \
         "$FIX" "$f" "$mut" || { ng "$label" "細工を作れなかった"; return; }
     printf '#!/bin/bash\n[ "$1" = "list" ] && { cat "%s"; exit 0; }\nexit 9\n' "$f" > "$b"
     chmod 755 "$b"
-    if RC_CSWAP_BIN="$b" bash "$SHIM" >/dev/null 2>&1; then
+    local err rc
+    err="$(RC_CSWAP_BIN="$b" bash "$SHIM" 2>&1 >/dev/null)"; rc=$?
+    if [ "$rc" -eq 0 ]; then
         ng "$label" "素通しした = 読めるが間違った一覧が出る"
-    else
+        return
+    fi
+    if [ -z "$want" ]; then
         ok "$label"
+        return
+    fi
+    if printf '%s' "$err" | grep -qF "$want"; then
+        ok "$label"
+    else
+        # ★**落ちた事**ではなく**別の理由で落ちた事**を名指しする。
+        #   これを `ok` に丸めると、名前の守りが消えても緑のままになる。
+        ng "$label" "別の理由で落ちた(期待「${want}」/ 実際「$(printf '%s' "$err" | head -1)」)"
     fi
 }
-poison "C10 ★email の改行で行を偽造できない"          'd["accounts"][0]["email"]="a@b\n->  9. evil@x   トークン:有"'
-poison "C11 ★active の文字列 false を真と読まない"    'd["accounts"][0]["active"]="false"'
-poison "C12 ★number の重複を弾く"                     'd["accounts"][1]["number"]=d["accounts"][0]["number"]'
-poison "C13 ★number が 0 や負を弾く"                  'd["accounts"][0]["number"]=0'
-poison "C14 ★email が空を弾く"                        'd["accounts"][0]["email"]="  "'
-poison "C15 ★現用が2行になる矛盾を弾く"               'd["accounts"][0]["active"]=True; d["accounts"][1]["active"]=True'
+poison "C10 ★email の改行で行を偽造できない"          'd["accounts"][0]["email"]="a@b\n->  9. evil@x   トークン:有"' \
+        "email が単一行の非空文字列でない"
+poison "C11 ★active の文字列 false を真と読まない"    'd["accounts"][0]["active"]="false"' \
+        "active が真偽値でない"
+poison "C12 ★number の重複を弾く"                     'd["accounts"][1]["number"]=d["accounts"][0]["number"]' \
+        "number が重複している"
+poison "C13 ★number が 0 や負を弾く"                  'd["accounts"][0]["number"]=0' \
+        "number が 1 以上の整数でない"
+poison "C14 ★email が空を弾く"                        'd["accounts"][0]["email"]="  "' \
+        "email が単一行の非空文字列でない"
+poison "C15 ★現用が2行になる矛盾を弾く"               'd["accounts"][0]["active"]=True; d["accounts"][1]["active"]=True' \
+        "現用が2行以上ある"
 
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 exit $(( fail > 0 ))
