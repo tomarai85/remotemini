@@ -2276,18 +2276,70 @@ server.listen(PORT, BIND, () => {
   //   デプロイ直後に電話を開いた人がちょうどその1回を踏む —— それは Tom が
   //   「最初の読み込みが異様に長い」と名指しした症状そのものなので、誰も待っていない
   //   今のうちに払っておく。
-  //   ★`listen` を待たせない(await しない)。温めの最中に来た要求は普通に処理される。
-  //     重なった場合に起きるのは「同じ file を2回読む」だけで、正しさには関与しない。
-  //   ★失敗は黙って諦める。温めは最適化であって、起動を落とす理由にならない。
+  //   ★`listen` を待たせない。温めは小分けにして事象ループへ譲るので、その最中に来た
+  //     要求も普通に捌ける(詳細と、そう作り直した経緯は `prewarmListing` の doc)。
+  //   ★失敗は落とさない。温めは最適化であって、起動を落とす理由にならない。
+  //     ただし黙らない —— 読めなかった本数を出す(Codex 2026-08-27:「harmless は強すぎる」)。
   if (process.env.RC_PREWARM !== "0") {
-    setTimeout(() => {
-      const t0 = Date.now();
-      try {
-        const s = scanSessions({ heads: headMap() });
-        console.log(`[rc-backend] 一覧を先に温めた: ${s.files}本 read=${s.read} ${Date.now() - t0}ms`);
-      } catch (e) {
-        console.error(`[rc-backend] 事前の温めに失敗(実害なし。最初の要求が代わりに払う): ${e && e.message}`);
-      }
-    }, 0);
+    prewarmListing();
   }
 });
+
+/**
+ * 一覧のメタキャッシュを、**事象ループを止めずに**温める。
+ *
+ * ★2026-08-27 の第1版は `scanSessions()` を1回呼ぶだけだった。Codex が完了を認めず、
+ *   測ったら正しかった: 走査は全部同期なので、**ポートが開いた後に 489ms(FS が冷えて
+ *   いれば 2537ms)イベントループが止まる**。実測でその窓に投げた `healthz` は 483ms
+ *   待たされた —— 直前に `/api/account` で潰したのと**同じ種類の凍結を、自分で作っていた**。
+ *
+ *   `listen` の前へ動かす案は採らない: その間ポートが無いので、来た電話は「待つ」ではなく
+ *   **接続拒否**になる。500ms 待つより悪い。
+ *
+ *   採ったのは小分け + 譲り。1 slice ごとに `setImmediate` で戻すので、温めの最中に来た
+ *   要求は普通に捌ける(その要求が同じ file を1回読み直すだけで、正しさには関与しない)。
+ *
+ * ★`scanSessions` を呼ばず読み口(`readMetaFromPath`)だけを共有している事の代償を明記:
+ *   走査側の畳み方(fork の頭 / limit / 篩)が変わっても此処は追随しない。だが此処が
+ *   温めるのは**キャッシュだけ**で、鍵は inode + 指紋なので、ずれた時に起きるのは
+ *   「温め損ねる」だけ。**間違った答えを返す道は無い**。
+ */
+function prewarmListing() {
+  const SLICE = 400; // 1 slice = 数十 ms 程度。譲る回数と総時間の釣り合いで決めた
+  const t0 = Date.now();
+  let files;
+  try {
+    files = [];
+    for (const slug of readdirSync(PROJECTS_DIR)) {
+      const dir = join(PROJECTS_DIR, slug);
+      try {
+        for (const f of readdirSync(dir)) if (f.endsWith(".jsonl")) files.push(join(dir, f));
+      } catch { /* 消えた dir は温めを落とさない */ }
+    }
+  } catch (e) {
+    console.warn(`[rc-backend] 一覧の事前温めを開始できません(最初の要求が冷えたまま払う): ${e && e.message}`);
+    return;
+  }
+  let i = 0, read = 0, failed = 0;
+  metaCache.beginScan();
+  metaCache.ensureCapacity(files.length);
+  const step = () => {
+    const end = Math.min(i + SLICE, files.length);
+    for (; i < end; i += 1) {
+      try {
+        const st = statSync(files[i]);
+        if (metaCache.get(st) === null) { metaCache.set(st, readMetaFromPath(files[i])); read += 1; }
+      } catch { failed += 1; } // 消えた / 読めない file は温めの対象外。要求側が改めて扱う
+    }
+    if (i < files.length) { setImmediate(step); return; }
+    // ★掃除はしない。此処は走査ではないので「見なかった = 消えた」と言えない。
+    const ms = Date.now() - t0;
+    if (failed > 0) {
+      console.warn(`[rc-backend] 一覧を先に温めた(${failed}本は読めず、その分は最初の要求が払う): `
+        + `${files.length}本 read=${read} ${ms}ms`);
+    } else {
+      console.log(`[rc-backend] 一覧を先に温めた: ${files.length}本 read=${read} ${ms}ms`);
+    }
+  };
+  setImmediate(step);
+}
