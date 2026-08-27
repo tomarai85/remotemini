@@ -31,10 +31,12 @@ function fakeRes() {
 }
 
 /** 1本の要求を通して、出た行を返す。`body` が在れば `json()` と同じ順で拾わせる。 */
-function run({ url, method = "GET", code = 200, body = null, mark = null, abort = false, paths }) {
+function run({ url, method = "GET", code = 200, body = null, mark = null, abort = false, paths, ua }) {
   const lines = [];
   const res = fakeRes();
-  attachRequestLog({ url, method }, res, {
+  // ★名乗りは渡された時だけ載せる。既定は「名乗り無し」= 今までの 78 件と同じ形。
+  const req = ua === undefined ? { url, method } : { url, method, headers: { "user-agent": ua } };
+  attachRequestLog(req, res, {
     knownPaths: paths,
     out: (l) => lines.push(l),
     now: () => new Date("2026-08-03T12:00:00.000Z"),
@@ -56,7 +58,7 @@ const SID = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
 test("応答1つにつき行は1本(`writeHead` が合図)", () => {
   const l = run({ url: "/api/sessions", paths: KNOWN });
   assert.equal(l.length, 1);
-  assert.match(l[0], /^\[rc-backend\] req 2026-08-03T12:00:00\.000Z GET \/api\/sessions route=- code=200 reason=- ms=\d+$/);
+  assert.match(l[0], /^\[rc-backend\] req 2026-08-03T12:00:00\.000Z GET \/api\/sessions route=- client=none code=200 reason=- ms=\d+$/);
 });
 
 test("★頭を書く前に切れた要求も1本出る(code=0 reason=aborted)", () => {
@@ -79,7 +81,7 @@ test("`writeHead` を2回呼んでも行は増えない(500 が SSE の頭の後
 test("枝が名乗った経路と理由が行に乗る(§3-W が刺さった当の欄)", () => {
   const l = run({ url: `/api/sessions/${SID}/messages`, method: "POST", code: 202,
     body: { accepted: true, route: "tmux", pane: "%7" }, paths: KNOWN });
-  assert.match(l[0], / POST \/api\/sessions\/:id\/messages sid=0a1b2c3d route=tmux code=202 /);
+  assert.match(l[0], / POST \/api\/sessions\/:id\/messages sid=0a1b2c3d route=tmux client=none code=202 /);
 });
 
 test("先に名乗った方が勝つ(500 の生の例外文が語彙に流れない)", () => {
@@ -223,8 +225,46 @@ test("★行に出る欄は決まった5つだけ(新しい欄が黙って増え
   const m = /out\(\n([\s\S]*?)\n\s*\);/.exec(REQLOG_SRC);
   assert.ok(m, "行を書く口が見つからない(形が変わった)");
   const fields = [...new Set([...m[1].matchAll(/\b([a-z]+)=/g)].map((x) => x[1]))].sort();
-  assert.deepEqual(fields, ["code", "ms", "reason", "route", "sid"],
+  // ★`client` は 2026-08-27 に**宣言して**足した欄。この検査が要求する通り、
+  //   「中身が乗らない」の対照(下の3件)を同じ commit で一緒に入れている。
+  assert.deepEqual(fields, ["client", "code", "ms", "reason", "route", "sid"],
     "行の欄が増減した —— 増やすなら『中身が乗らない』の検査も一緒に足す事");
+});
+
+/**
+ * ★2026-08-27 新設。**「誰が叩いたか」の種類だけを残す**事を測る。
+ *
+ * なぜ要るか(実測): この記録は出所を一切残していなかった。その為
+ * 「Tom はこのアプリを開いたのか」に答えるのに、私は自分の作業記録との時刻
+ * 突き合わせを 6 回やる羽目になり、それでも Simulator と実機を区別できなかった。
+ * 答えが要る問いに記録が答えられないのは、計器が無いのと同じ。
+ *
+ * ★同時に**端末の指紋を残さない**事も測る。生の User-Agent には型番と OS の版が
+ *   入るので、§3-U の「行に中身が乗らない」はここにも掛かる。
+ */
+test("★電話と機械が行の上で別の語になる(本命)", () => {
+  const phone = run({ url: "/api/sessions", ua: "RemoteMini/1.0 CFNetwork/1498.700 Darwin/24.0.0" });
+  const robot = run({ url: "/api/sessions", ua: "curl/8.7.1" });
+  assert.match(phone[0], / client=app /, "iOS のアプリが機械と同じ顔で記録されている");
+  assert.match(robot[0], / client=tool /, "常駐(curl)がアプリと同じ顔で記録されている");
+  // ★これが本命。欄そのものを外すと、2 本の行が**区別できない**まま緑になる。
+  assert.notEqual(phone[0].replace(/ms=\d+/, ""), robot[0].replace(/ms=\d+/, ""),
+    "電話と常駐が同じ行になる —— 誰が叩いたか記録から判らない(2026-08-27 の状態)");
+});
+
+test("★生の名乗りは行に出ない(端末の指紋を残さない)", () => {
+  const ua = "RemoteMini/1.0 CFNetwork/1498.700 Darwin/24.0.0 iPhone17,1";
+  const l = run({ url: "/api/sessions", ua });
+  assert.doesNotMatch(l[0], /CFNetwork|Darwin|iPhone17/,
+    "生の User-Agent が行に漏れている(端末の型番と OS の版が記録に残る)");
+  assert.match(l[0], / client=app /, "分類だけは残っている事");
+});
+
+test("知らない名乗りは other へ畳む(開いた語を作らない)", () => {
+  const l = run({ url: "/api/sessions", ua: "SomeNewThing/9 (unknown-vendor-string)" });
+  assert.match(l[0], / client=other /);
+  assert.doesNotMatch(l[0], /SomeNewThing|unknown-vendor/,
+    "知らない名乗りがそのまま行へ流れている");
 });
 
 /**

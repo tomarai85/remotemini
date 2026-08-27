@@ -2363,7 +2363,7 @@ try {
   const reqLines = svlog.split("\n").filter((l) => l.includes("[rc-backend] req "));
   check("★ログに 1リクエスト1行が残っている", reqLines.length >= 10, `req 行=${reqLines.length}`);
   check("送信の行に method / パスの型 / 結果コードが揃う",
-    reqLines.some((l) => / POST \/api\/sessions\/:id\/messages sid=\S+ route=\S+ code=\d+ reason=\S+ ms=\d+$/.test(l)),
+    reqLines.some((l) => / POST \/api\/sessions\/:id\/messages sid=\S+ route=\S+ client=\S+ code=\d+ reason=\S+ ms=\d+$/.test(l)),
     reqLines.filter((l) => l.includes("/messages")).slice(-1)[0] || "(送信の行が無い)");
   check("★ストリームの行に経路が乗る(§3-W が刺さった当の欄)",
     reqLines.some((l) => /\/api\/sessions\/:id\/stream .*route=(tmux|worker) /.test(l)),
