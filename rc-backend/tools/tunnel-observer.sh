@@ -1,8 +1,14 @@
 #!/bin/bash
-# no-operator: repo の外が回す。Jervis の LaunchAgent `com.tomtim.rc-tunnel-observer`
-#   (10分毎)が唯一の操作者で、**配備先ではない機体から**叩く事がこの道具の存在理由。
-#   門から回すと、この repo が載っている機体自身から叩く事になり、測りたい経路
-#   (外 -> tailnet -> 配備先)を通らない = 測っている物が別物になる。
+# 本番の操作者は repo の外に在る: Jervis の LaunchAgent `com.tomtim.rc-tunnel-observer`
+#   (10分毎)。**配備先ではない機体から**叩く事がこの道具の存在理由で、
+#   本物の経路(外 -> tailnet -> 配備先)を本番でだけ通る。
+#
+# ★`no-operator:` の印は 2026-08-27 に外した。`tools/tunnel-observer-control.sh` を
+#   新設して門から回る様になった為 —— 印が「走らせる物が無い」と言い続けると、
+#   **走っている物を走っていないと記録する**事になり、次に読む人が判断を誤る。
+#   対照が測るのは**判定の分岐**(自分の回線が落ちている時に鳴らないか等)で、
+#   偽 curl で駆動する。本物の経路は本番でしか通らない、という上の事実は変わらない。
+#   **同じ道具に「本番の操作者」と「門から回る対照」が両方在ってよい。**
 # tunnel-observer.sh — **外から**トンネル越しに rc-backend を叩く観測者。2026-08-26 新設。
 #
 # なぜ要るか(2026-08-25 実測で開いた穴)
@@ -34,6 +40,40 @@ STATE="${RC_TUNNEL_STATE:-$HOME/.rc-backend/tunnel-state.json}"
 LOG="${RC_TUNNEL_LOG:-$HOME/.rc-backend/tunnel-observer.log}"
 NOTIFY="${RC_TUNNEL_NOTIFY:-$HOME/bin/discord-notify.sh}"
 THRESHOLD="${RC_TUNNEL_THRESHOLD:-3}"
+
+# ---- 自分の回線が生きているかを、tailnet の外で確かめる(2026-08-27 新設)-----------
+# なぜ要るか(実測): この機体(Jervis)は Tom が持ち歩いてテザリングする。回線が不定期に
+#   落ちるのは**仕様**で、実測では 2026-08-26 の 14:00-20:20 に 186 FAIL / 178 OK ——
+#   **ほぼ半分の時間 自分の回線が死んでいた**。閾値 3 回は そんな窓では容易に達する。
+#   その時に鳴るのは「相手が死んだ」ではなく「**私が届かない**」であって、別の事実。
+#
+# ★此の機体が言えるのは「私が届かない」までで、「相手が死んだ」とは**原理的に言えない**
+#   (Codex 2026-08-27)。だから鳴らす前に、自分の egress が生きている事を確かめる。
+#
+# ★確かめ方(Codex の指定):
+#   ・**tailnet の外**の、**2 箇所**へ TCP/TLS を張る。片方でも通れば egress は生きている。
+#   ・**やらない事**: gateway だけ / DNS だけ / 別の tailnet peer / 任意の公開サイト。
+#     前3つは egress を証明しないし、最後は相手の都合で落ちて偽の「回線が死んだ」を作る。
+#   ・両方塞がれていたら **unknown**。unknown を「回線が生きている」に倒さない。
+# ★`:-` ではなく `-`。`:-` は**空文字にも既定を当てる**ので、
+#   「確かめる術が無い」構成(= 意図的に確認先を外した機体)を選べなくなる。
+#   空を渡せる事が、unknown を**意図して選べる**という意味を持つ。
+SELF_URLS="${RC_TUNNEL_SELF_URLS-https://www.apple.com/library/test/success.html https://api.anthropic.com/}"
+SELF_TIMEOUT="${RC_TUNNEL_SELF_TIMEOUT:-8}"
+
+# 0 = 自分の回線は生きている / 1 = 自分が落ちている / 2 = 判らない
+self_link_state() {
+    local u ok=0 tried=0
+    for u in $SELF_URLS; do
+        tried=$((tried + 1))
+        if curl -s -o /dev/null -m "$SELF_TIMEOUT" --max-redirs 2 "$u" 2>/dev/null; then
+            ok=1; break
+        fi
+    done
+    [ "$tried" -eq 0 ] && return 2
+    [ "$ok" -eq 1 ] && return 0
+    return 1
+}
 TIMEOUT="${RC_TUNNEL_TIMEOUT:-12}"
 DRY=0; REPORT=0
 case "${1:-}" in
@@ -170,8 +210,39 @@ if [ "$st" = up ]; then
 fi
 
 log "ng(code=${code:-none} curl rc=$crc)— 連続 $fails"
+
+# ★鳴らす直前にだけ自分の回線を確かめる。毎回撃つと、健康な時に外へ 10 分ごとの余計な
+#   要求を出す事になる —— 見張りは見張られる物より軽くあるべき。
 if [ "$fails" -eq "$THRESHOLD" ] && [ "$DRY" = 0 ] && [ -x "$NOTIFY" ]; then
-    # ★閾値に**丁度**達した回だけ鳴らす(超えている間ずっと鳴らすと経路ごと黙らされる)
-    "$NOTIFY" "rc-backend のトンネルに届きません: $URL($((fails*${RC_TUNNEL_EVERY_S:-600}/60)) 分)" >/dev/null 2>&1
+    self_link_state; sls=$?
+    case "$sls" in
+        1)
+            # ★自分が落ちている。**相手の失敗の記録は消さない** —— 回線が戻った次の回に
+            #   まだ届かなければ、その時に鳴る(閾値は既に超えているので次の一致で鳴る)。
+            log "★鳴らさない: 自分の回線が落ちている(観測者の側)。相手の生死は判らない"
+            printf '%s\n' "$(date +%s)" > "${RC_TUNNEL_OFFLINE_MARK:-$STATE.observer-offline}" 2>/dev/null || true
+            ;;
+        2)
+            # 確かめる術が塞がれている。**「生きている」に倒さない**が、黙りもしない ——
+            # 判らない事を判らないと言った上で、相手の失敗は事実なので鳴らす。
+            log "自分の回線を確かめられない(unknown)。相手に届かない事実として鳴らす"
+            "$NOTIFY" "rc-backend のトンネルに届きません: $URL($((fails*${RC_TUNNEL_EVERY_S:-600}/60)) 分 / 観測者の回線は未確認)" >/dev/null 2>&1
+            ;;
+        *)
+            # 自分の回線は生きていて、相手に届かない = 言ってよい。
+            /bin/rm -f "${RC_TUNNEL_OFFLINE_MARK:-$STATE.observer-offline}" 2>/dev/null || true
+            "$NOTIFY" "rc-backend のトンネルに届きません: $URL($((fails*${RC_TUNNEL_EVERY_S:-600}/60)) 分)" >/dev/null 2>&1
+            ;;
+    esac
+elif [ "$fails" -gt "$THRESHOLD" ] && [ "$DRY" = 0 ] && [ -x "$NOTIFY" ] \
+     && [ -f "${RC_TUNNEL_OFFLINE_MARK:-$STATE.observer-offline}" ]; then
+    # ★前回は自分の回線が落ちていて鳴らせなかった。回線が戻ったなら**その場で鳴らす** ——
+    #   自分が落ちている間に相手も死んでいた場合を、永久に取り逃がさない為(Codex 裁定2)。
+    self_link_state
+    if [ $? -eq 0 ]; then
+        log "回線が戻った。まだ相手に届かないので、抑えていた分を鳴らす"
+        /bin/rm -f "${RC_TUNNEL_OFFLINE_MARK:-$STATE.observer-offline}" 2>/dev/null || true
+        "$NOTIFY" "rc-backend のトンネルに届きません: $URL($((fails*${RC_TUNNEL_EVERY_S:-600}/60)) 分 / 観測者の回線が戻った後も届かない)" >/dev/null 2>&1
+    fi
 fi
 exit 1
