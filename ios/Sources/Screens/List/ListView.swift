@@ -465,7 +465,10 @@ struct ListView: View {
     }
 }
 
-private struct SessionRowView: View {
+// ★`private` を外した(2026-08-27)。判定(`statusWord` / `statusColor`)を検査が
+//   直接叩く為で、**判定を写さない**という一線を守る唯一の形。
+//   写した検査は、写しが本体とずれた日に「検査は緑、画面は嘘」を作る。
+struct SessionRowView: View {
     let row: SessionRow
     let nowMs: Double
     /// 2026-08-26: 選定用。寸法と動きだけがここで分岐する(色・地・glass は不変)。
@@ -581,7 +584,15 @@ private struct SessionRowView: View {
     /// Brief §3-a: distinct visual treatment per `kind`, `choice` carrying the
     /// strongest emphasis (the only state where Enter on the desk side becomes an
     /// approval/charge).
-    private var statusColor: Color {
+    private var statusColor: Color { SessionRowView.statusColor(for: row) }
+
+    /// ★view の外から呼べる形にした(2026-08-27)。判定は**1箇所のまま**で、
+    ///   検査が同じ関数を叩ける様にしただけ —— 検査用に判定を写すと、
+    ///   写しが本体とずれた日に「検査は緑、画面は嘘」が作れる。
+    static func statusColor(for row: SessionRow) -> Color {
+        // ★札と色は**同じ判定**から出す。札が「返事が要る」なのに色が緑だと、
+        //   一瞥では緑しか見えず、急ぎが半分しか伝わらない。
+        if row.requiresOwnerInput == true { return .orange }
         switch row.display.route.kind {
         case .choice: return .orange
         case .tmux: return .green
@@ -592,9 +603,24 @@ private struct SessionRowView: View {
     }
 
     /// 人の言葉。`nil` = 静かな状態(章を付けるほどの事ではない)。
-    private var statusWord: String? {
+    ///
+    /// ★**枠は1つ**(2026-08-27)。§9-4 の「常設の状態帯は同時に1枠だけ」と同じ判断で、
+    ///   1つの行が2つの急ぎを言うのは「帯3段」の縮小版になる。
+    ///   `choice` は「返事が要る」の**理由の1つ**であって、別の札ではない。
+    ///
+    /// ★判定は机が持つ(`requiresOwnerInput`)。以前は `route.kind == .choice` だけを
+    ///   見ていたが、実測すると生きた 2 本とも `route = null` で**一度も出ていなかった**。
+    ///   一方 digest は同じ会話を「待っている」と判定していた —— 開くまで知れない、が
+    ///   まさに取り戻したい死に時間だった(2026-08-26 に 60 分観測)。
+    ///
+    /// ★`nil`(古いサーバ / 判らない)は札を出さない。**判らない事を急ぎに見せない**。
+    private var statusWord: String? { SessionRowView.statusWord(for: row) }
+
+    /// ★view の外から呼べる形にした(2026-08-27)。理由は `statusColor` と同じ。
+    static func statusWord(for row: SessionRow) -> String? {
+        if row.requiresOwnerInput == true { return "Needs your input" }
         switch row.display.route.kind {
-        case .choice: return "Needs input"
+        case .choice: return "Needs your input"   // 机が古くて印を出さない版への保険
         case .tmux: return "On desktop"
         case .worker: return nil
         case .blocked: return "Unavailable"

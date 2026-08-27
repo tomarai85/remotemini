@@ -14,6 +14,7 @@ import { anomalyMessage, parseStatusMessage, selectionMessage, selectionProblem 
 import { paneFaultView } from "./blocked.mjs";
 import { redact } from "./redact.mjs";
 import { choiceView, gapNotice, routeLabel, scanLine, subtitleOf, whoOf } from "./view.mjs";
+import { attentionOf } from "./digest.mjs";
 
 /**
  * 一覧の1行。`row` は生産者3つ(buildListing / registryOnlySessions / unreadableRow)の
@@ -32,9 +33,31 @@ export function sessionRow(row, live, machine) {
     // kind: "desk" | "checkout"。checkout は MBP から持ち出されて来ている仕事で、
     // returnRequestedAt が非 null なら「戻し待ち(MBP が開いた時に実行される)」。
     machine: machine ?? { kind: "desk", checkoutId: null, returnRequestedAt: null },
+    // ★「Tom の返事を待っている」を**一覧にも**載せる(2026-08-27)。
+    //
+    //   なぜ要るか(実測): 会話の画面は digest を取って「待っている」を出すが、
+    //   **一覧は `route.kind === "choice"` の時だけ**「Needs input」を出していた。
+    //   実測すると生きた 2 本とも `route = null` で、あの札は一度も出ていない。
+    //   一方 digest は同じ会話を `attention=input` と判定していた ——
+    //   つまり **Tom は開くまで待たれている事を知れない**。開くまでの時間こそ、
+    //   この機能が取り戻そうとしている死に時間そのもの(2026-08-26 に 60 分観測)。
+    //
+    // ★**判定器を2つ持たない。** `attentionOf` は digest と同じ物を呼ぶ。
+    //   電話側で `screen` から推測すると、机と電話で「待っている」の定義が分かれ、
+    //   必ず片方だけ腐る(`AccountClient` の `blocked` と同じ判断)。
+    //
+    // ★N+1 を作らない。一覧は既に `live` に `screen`/`activity` を持っているので、
+    //   1 行あたりの追加の往復は**ゼロ**。
+    //
+    // ★`unknown` は **false**。読めなかった事を「待っている」に倒すと、
+    //   正直だが役に立たない札が並び、Tom は札そのものを見なくなる(Codex 2026-08-26)。
+    requiresOwnerInput: OWNER_INPUT_STATES.has(attentionOf(live)),
     display: { route: routeLabel(live), subtitle: subtitleOf(row) },
   };
 }
+
+/** 「Tom の返事が要る」と言ってよい attention。`unknown`/`none` は含めない。 */
+const OWNER_INPUT_STATES = new Set(["choice", "input"]);
 
 /**
  * `GET /api/sessions` の封筒。

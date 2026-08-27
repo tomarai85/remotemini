@@ -97,6 +97,22 @@ struct SessionRow: Decodable, Equatable {
     /// (machine を知らない版)との互換 — 無ければ「机の仕事」として描く。
     let machine: Machine?
 
+    /// 「机が Tom の返事を待っている」(2026-08-27)。
+    ///
+    /// ★**判定は机が持つ。** サーバは digest と**同じ `attentionOf`** で決めて此処へ載せる。
+    ///   電話側で `route` や画面から推測すると、机と電話で「待っている」の定義が分かれ、
+    ///   必ず片方だけ腐る(`AccountClient` の `blocked` と同じ判断)。
+    ///
+    /// ★なぜ要るか(実測 2026-08-26): 会話を開けば digest が「待っている」と言うが、
+    ///   一覧は `route.kind == .choice` の時だけ札を出していた。生きた 2 本とも
+    ///   `route = null` で、あの札は一度も出ていない。**開くまで待たれている事を
+    ///   知れない**のでは、取り戻したい死に時間がそのまま残る(60 分観測)。
+    ///
+    /// ★Optional は古いサーバとの互換。無ければ「待っていない」ではなく
+    ///   **「判らない」**なので、札を出さない側へ倒す(`unknown` を急かしに使わない、
+    ///   という 2026-08-26 の裁定と同じ)。
+    let requiresOwnerInput: Bool?
+
     struct RowDisplay: Decodable, Equatable {
         let route: RouteLabel
         /// Server-computed (`subtitleOf` in `view.mjs`). Rendered as-is -- brief
