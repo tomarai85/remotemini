@@ -77,12 +77,35 @@ KEY_WARN_DAYS="${RC_HEALTH_KEY_WARN_DAYS:-45}"
 #   足しても**1台あたり最大5通**で、元の6通より少ない。
 KEY_STEPS="${RC_HEALTH_KEY_STEPS:-45 14 7 1}"
 
-MODE="probe"; DRY=0
+# ---- 公開面への相乗りを見張る(2026-08-26 新設)------------------------------------
+# 何を問うか: 「**公開されている入口の下に、机(127.0.0.1:$EXP_PORT)へ向く経路が在るか**」。
+# なぜ此処か(Codex 2026-08-26 の裁定1): `tailscale serve status` は**この機体でしか**
+#   権威ある値を読めない。机の外(Jervis)から見に行く案は、回線が不定期に落ちる度に
+#   「到達できない」を「露出しているかもしれない」に翻訳してしまう = 安全の警報を
+#   回線障害から作る事になる。
+# ★間隔は KEY_* と違って**毎回**測る。serve の設定は1コマンドで変わるので、
+#   日に1回では「変わって・使われて・戻った」を丸ごと見逃す。読むのは local なので安い。
+EXP_CHECK="${RC_HEALTH_EXP_CHECK:-$ROOT/tools/funnel-exposure-check.sh}"
+EXP_PORT="${RC_HEALTH_EXP_PORT:-8787}"
+EXP_TS="${RC_HEALTH_EXP_TS:-/Applications/Tailscale.app/Contents/MacOS/Tailscale}"
+EXP_MARK="${RC_HEALTH_EXP_MARK:-$STATE.exposure}"
+# 「測れなかった」が続いた時に鳴らす回数。**露出そのものより緩く、生存より厳しい** ——
+# これは「保証を失った」であって「壊れた」でも「安全」でもない(Codex 裁定2)。
+EXP_BLIND_THRESHOLD="${RC_HEALTH_EXP_BLIND_THRESHOLD:-2}"
+
+
+MODE="probe"; DRY=0; EXPOSURE_ONLY=0
 for a in "$@"; do
     case "$a" in
         --inject-fail) MODE="fail" ;;
         --inject-ok)   MODE="ok" ;;
         --dry-run)     DRY=1 ;;
+        # ★露出の節だけを叩く口(2026-08-26)。対照の為に足した ——
+        #   関数を sed で切り出して eval する駆動は、本文の書式が少し変わるだけで
+        #   黙って何も走らなくなる(実際そうなり、対照が「鳴らない」と赤を出した。
+        #   あれは実装の欠陥ではなく**駆動の欠陥**で、区別が付かないのが一番悪い)。
+        #   本物の口を1つ開ける方が、測る物と測られる物が一致する。
+        --exposure-only) EXPOSURE_ONLY=1 ;;
         *) echo "不明な引数: $a" >&2; exit 2 ;;
     esac
 done
@@ -322,6 +345,80 @@ check_key_expiry() {
     return 0
 }
 check_key_expiry
+
+# ── 公開面への相乗り ───────────────────────────────────────────────
+# 記録 `$EXP_MARK` の中身 = "<最後の判定> <連続で測れなかった回数>"。
+#   判定 = safe / exposed / blind。
+#
+# ★通知の設計(Codex 2026-08-26 の裁定2、そのまま採った):
+#   - **露出(exit 1)は閾値を置かずに即時**。生存の様に「3回続いたら」ではない ——
+#     生存は揺れるが、公開設定は揺れない。1回でも見えたらそれは事実。
+#   - **測れない(exit 3)は別の事象**として、緩めの閾値で鳴らす。これは「露出している」
+#     でも「安全」でもなく **「保証を失った」**。同じ通知に混ぜると、どちらの意味でも
+#     読めない警報になる。
+#   - 安全(exit 0)へ戻ったら記録だけ更新して黙る(復旧の連呼をしない)。
+#
+# ★此の監視が答えない事を、先に書いておく(Codex 裁定4):
+#   **見張りは事後にしか気付かない。** 経路を足して・使って・消す、が観測の隙間に収まれば
+#   何も残らない。ここは防止ではなく検出で、防止は別の層(机が鍵を要求する事、
+#   `rc-backend-launch.sh` が `funneled` の入口へ自分から乗らない事)が受け持つ。
+check_exposure() {
+    local now verdict prev_v prev_blind out rc
+    now="$(date +%s)"
+    prev_v="safe"; prev_blind=0
+    if [ -f "$EXP_MARK" ]; then
+        read -r prev_v prev_blind _rest < "$EXP_MARK" 2>/dev/null || true
+        case "${prev_blind:-}" in ''|*[!0-9]*) prev_blind=0 ;; esac
+        case "${prev_v:-}" in safe|exposed|blind) ;; *) prev_v="safe" ;; esac
+    fi
+
+    if [ ! -x "$EXP_CHECK" ]; then
+        log "公開面を測れない(台本が無い/実行できない: $EXP_CHECK)"
+        notify_monitor_broken "公開面を測る台本が無い" >/dev/null
+        printf '%s %s\n' "blind" "$((prev_blind + 1))" > "$EXP_MARK" 2>>"$LOG"
+        return 0
+    fi
+    if [ ! -x "$EXP_TS" ]; then
+        # ★tailscale の実体が無い = この機体では測れない。**安全と言わない。**
+        log "公開面を測れない(tailscale が無い: $EXP_TS)"
+        printf '%s %s\n' "blind" "$((prev_blind + 1))" > "$EXP_MARK" 2>>"$LOG"
+        [ "$((prev_blind + 1))" -ge "$EXP_BLIND_THRESHOLD" ] \
+            && notify_monitor_broken "公開面を測れない(tailscale が無い)" >/dev/null
+        return 0
+    fi
+
+    out="$("$EXP_TS" serve status --json 2>/dev/null | "$EXP_CHECK" "$EXP_PORT" 2>/dev/null)"
+    rc=$?
+    case "$rc" in
+        0)
+            [ "$prev_v" != "safe" ] && log "公開面: 机へ向く経路は無い(前回は $prev_v)"
+            printf '%s %s\n' "safe" "0" > "$EXP_MARK" 2>>"$LOG"
+            ;;
+        1)
+            # ★閾値を置かない。1回でも見えたら事実。
+            log "★★公開面が机へ繋がっている: $out"
+            printf '%s %s\n' "exposed" "0" > "$EXP_MARK" 2>>"$LOG"
+            if [ "$DRY" -eq 1 ]; then
+                echo "公開面が机(127.0.0.1:$EXP_PORT)へ繋がっています: $out"
+            elif [ -x "$NOTIFY" ]; then
+                "$NOTIFY" "★公開面が机へ繋がっています($out)。生きた端末の操縦面が公開インターネットに出ます。" >/dev/null 2>&1 || \
+                    log "★露出を検出したが通知を出せなかった"
+            else
+                log "★露出を検出したが出し先が実行できない: $NOTIFY"
+            fi
+            ;;
+        *)
+            # 3 = 読めない / それ以外も「判らない」に倒す。**安全と混ぜない。**
+            log "公開面を測れなかった(rc=$rc)= 保証を失った"
+            printf '%s %s\n' "blind" "$((prev_blind + 1))" > "$EXP_MARK" 2>>"$LOG"
+            [ "$((prev_blind + 1))" -ge "$EXP_BLIND_THRESHOLD" ] \
+                && notify_monitor_broken "公開面を測れない(rc=$rc)" >/dev/null
+            ;;
+    esac
+    return 0
+}
+check_exposure
+[ "$EXPOSURE_ONLY" -eq 1 ] && exit 0
 
 # ── 1回叩く ───────────────────────────────────────────────────────
 # 本体は捨てずに見る: 200 を返すだけの別物(tailscale の受け口や proxy)を「生きている」と
