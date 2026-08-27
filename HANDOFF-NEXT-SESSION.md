@@ -103,7 +103,9 @@
 > - A4 計器→設定「計器」節(一覧の錨は list.root の accessibilityValue へ)
 > - A5 常設状態帯を1枠(届かない > 劣化 > 送信待ち。操作の答えの帯は帰属の為に畳まない)
 > - B1 保管(swipe/長押し→外す、設定「保管した会話」で戻す。削除機構は構造的に不在)
-> - B2 機体バッジ + 戻し依頼 + `remote-mini.sh requests --run`(全鎖を edith と実往復で実測)
+> - B2 機体バッジ + 戻し依頼 + `remote-mini.sh requests --run`(当時は edith と実往復で実測。
+>   その機体は 2026-08-20 に譲渡済 → **2026-08-27 に friday で測り直し済**。持ち出しの既定も
+>   friday へ変更した。詳細は `~/.claude/skills/remote-mini/SKILL.md` の「実証済み」)
 > - C2 「⚙ Task: <description>」
 >
 > ★**Codex が実バグを1つ掴んだ**: 新 route 3本が SESSION_ROUTE_RE の白名簿に無く
