@@ -1,0 +1,104 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work/ios
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a044bd-bbe9-7190-aed7-297ae9ec8b44
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Safety review of two verification tools I just repaired. Name the failure mode I have not seen.
+
+CONTEXT
+An iPhone app talks to a personal 'desk' server (rc-backend) running on a Mac mini on a private
+tailnet. Two shell tools exist to verify the phone's REAL product code (Swift SendClient /
+InterruptClient, compiled standalone) against the LIVE production server:
+  live-send-check.sh      -- stands up a disposable Claude TUI session, sends a message through
+                             the phone's own SendClient, then counts the message in the real
+                             transcript file (not the server's own claim), with a negative
+                             control (a body that was never sent must count 0).
+  live-interrupt-check.sh -- same, but interrupts a generating session; negative control A is
+                             'interrupt again, must NOT say verified'; negative control B is a
+                             bogus API key which must return 401.
+
+Both had been dead for 7 days and nobody noticed, in FOUR independent ways:
+  1. default URL pointed at a machine given away on 2026-08-20
+  2. default URL had no port; the new host serves a DIFFERENT app on 443 (returns 404)
+  3. the Swift driver did not compile: the product's SendClient gained a required sendId:
+     (idempotency key) parameter and the driver was never updated
+  4. every remote call ran bare 'node' over ssh; the new host's non-interactive PATH has no
+     homebrew, so every step failed with command not found
+
+I fixed all four. Both now run green end to end against production, negative controls included.
+
+THE DISPOSABLE SESSION
+A helper creates tmux sessions named only 'rc-e2e-<digits>' and tears them down, removing its
+own registry entry by exact match and verifying absence. The claim is that it structurally
+cannot touch the owner's real working sessions.
+
+ASK
+1. These tools SEND and INTERRUPT on a live production server that also runs the owner's real
+   work. What failure modes could make them touch a real session despite the naming convention?
+   Specifically: what happens if the tool dies between 'up' and 'down'?
+2. Is 'resolve the remote node path at runtime by asking the host' better or worse than a
+   configured constant, given that the constant is exactly what rotted here?
+3. Four independent rots in one tool, all invisible because nobody ran it. What is the cheap
+   structural fix that makes a verification tool announce its own death, short of running it on
+   every commit (it costs real API tokens and ~90 seconds)?
+2026-08-27T19:41:21.233156Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-27T19:41:21.273537Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-27T19:41:21.881429Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+未確認の代表的な失敗モードは、**crash-orphan と識別子再利用による ABA/TOCTOU** です。
+
+1. 命名規則だけでは実セッションを構造的に保護できません。
+
+- `up` 後にプロセスが死亡すると、`SIGKILL`、停電、SSH切断などでは `trap` が動かず、tmux セッションとregistryが残ります。
+- 後日の実行で同じ数字名が再利用されると、古いcleanupが新しいセッションを削除したり、新しい実行が古いセッションを自分のものと誤認したりします。
+- 空変数、引用漏れ、正規表現化、registryの誤読、並列実行でも別セッションを選択できます。
+- Send/Interrupt側に「対象不明ならcurrent/latestへフォールバック」があれば、tmux名が安全でも実作業セッションへ到達します。
+- Interruptがセッション単位でなくプロセスやサーバー全体に作用する実装でも同様です。
+
+対策は、ランダムUUID名に加えて、作成時に発行した所有権nonce/capabilityをSend・Interrupt・Downすべてで必須にすることです。欠落・不一致・曖昧さは必ずfail closed。さらに `trap`、TTL lease、期限切れ回収、単一実行lockを組み合わせます。所有権証明なしのprefix cleanupは禁止です。
+
+2. runtime解決の方がよいですが、無検証の `command -v node` は不十分です。
+
+非対話PATHでは今回と同じく見つからず、逆に想定外のNodeを拾う可能性もあります。候補パスを探索し、実体パスとNode major versionを検証し、その実行内で固定して表示する方式がよいです。configured constantより腐りにくく、誤解決時には停止できます。
+
+3. 安価な構造的修正は、外部監視付きの定期canaryです。
+
+- 毎日: URL/port/server identity、Swift standalone compile、SSH上のNode解決だけを確認する無料preflight
+- 週1回または毎晩: 実トークンを使う完全E2E
+- 外部dead-man monitorへ成功heartbeatを送信し、失敗だけでなく「予定時刻まで成功報告がない」場合も通知
+
+ツール自身は、自分が起動されなくなったことを通知できません。外部スケジューラと欠測監視が必要です。
+tokens used
+14,934
+未確認の代表的な失敗モードは、**crash-orphan と識別子再利用による ABA/TOCTOU** です。
+
+1. 命名規則だけでは実セッションを構造的に保護できません。
+
+- `up` 後にプロセスが死亡すると、`SIGKILL`、停電、SSH切断などでは `trap` が動かず、tmux セッションとregistryが残ります。
+- 後日の実行で同じ数字名が再利用されると、古いcleanupが新しいセッションを削除したり、新しい実行が古いセッションを自分のものと誤認したりします。
+- 空変数、引用漏れ、正規表現化、registryの誤読、並列実行でも別セッションを選択できます。
+- Send/Interrupt側に「対象不明ならcurrent/latestへフォールバック」があれば、tmux名が安全でも実作業セッションへ到達します。
+- Interruptがセッション単位でなくプロセスやサーバー全体に作用する実装でも同様です。
+
+対策は、ランダムUUID名に加えて、作成時に発行した所有権nonce/capabilityをSend・Interrupt・Downすべてで必須にすることです。欠落・不一致・曖昧さは必ずfail closed。さらに `trap`、TTL lease、期限切れ回収、単一実行lockを組み合わせます。所有権証明なしのprefix cleanupは禁止です。
+
+2. runtime解決の方がよいですが、無検証の `command -v node` は不十分です。
+
+非対話PATHでは今回と同じく見つからず、逆に想定外のNodeを拾う可能性もあります。候補パスを探索し、実体パスとNode major versionを検証し、その実行内で固定して表示する方式がよいです。configured constantより腐りにくく、誤解決時には停止できます。
+
+3. 安価な構造的修正は、外部監視付きの定期canaryです。
+
+- 毎日: URL/port/server identity、Swift standalone compile、SSH上のNode解決だけを確認する無料preflight
+- 週1回または毎晩: 実トークンを使う完全E2E
+- 外部dead-man monitorへ成功heartbeatを送信し、失敗だけでなく「予定時刻まで成功報告がない」場合も通知
+
+ツール自身は、自分が起動されなくなったことを通知できません。外部スケジューラと欠測監視が必要です。

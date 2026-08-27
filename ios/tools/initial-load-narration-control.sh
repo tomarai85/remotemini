@@ -12,9 +12,13 @@
 #   (1) **規則** — `WaitEscalation` が 10 秒で段を変えるか。純関数なので単体で測れる。
 #   (2) **画面が規則を使っているか** — 規則がいくら正しくても、`ListView` が呼んで
 #       いなければ画面は無言のまま。ここは grep の錨で押さえる。
-#       ★錨が弱い事を承知で書く: 呼び出しの有無しか見ておらず、「呼んでいるが結果を
-#       捨てている」は捕まらない。それを捕まえるには UI 検査(`RC_WAIT_ESCALATE_S=1` で
-#       起こして `list.loading.slow` を探す)が要る —— 未着手として WORKLOG に出す。
+#       ★錨が弱い: 呼び出しの有無しか見ておらず、「呼んでいるが結果を捨てている」は
+#       捕まらない。**その欠けは 2026-08-27 に塞いだ** —— `UITests/InitialWaitUITests.swift`
+#       が `RC_WAIT_ESCALATE_S` で閾値を縮めて起こし、`list.loading.slow` が実際に描かれる事と、
+#       閾値の手前では描かれない事(陰性対照)の両方を測る。走らせ方:
+#         . tools/sim-device.sh && xcodebuild test ... -only-testing:RemoteMiniUITests/InitialWaitUITests
+#       ★この注記が「未着手」のまま残っていた所為で、後日の計画が同じ仕事を再提案した
+#       (2026-08-27、計画1周分)。**塞いだ穴の注記は、塞いだ commit で一緒に直す。**
 #
 # ★変異で自分を検める。変異しても緑なら、この台本は何も測っていない。
 set -uo pipefail
