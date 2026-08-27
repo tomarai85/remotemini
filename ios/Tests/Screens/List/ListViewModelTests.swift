@@ -40,7 +40,10 @@ final class ListViewModelTests: XCTestCase {
             updatedAt: "2026-08-05T09:00:00.000Z",
             fromRegistryOnly: nil,
             display: .init(route: .init(kind: .tmux, short: "s", text: "t", screen: ""), subtitle: "s"),
-            machine: nil
+            machine: nil,
+            // ★nil = 机が印を出さなかった(古い版)。**false と混ぜない** ——
+            //   「言わなかった」と「待っていないと言った」は別の事実。
+            requiresOwnerInput: nil
         )
     }
 

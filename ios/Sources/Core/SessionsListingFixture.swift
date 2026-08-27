@@ -166,8 +166,12 @@ struct SessionsListingFixture: SessionsListing {
             machine: .init(kind: "checkout", checkoutId: "fixture-co", returnRequestedAt: nil)),
     ]
 
+    /// ★`requiresOwnerInput` の既定は **nil**(2026-08-27)。既定を `false` にすると、
+    ///   「机が印を出さなかった」と「机が待っていないと言った」が同じ顔になる ——
+    ///   古いサーバとの互換で Optional にした意味が消える。
     private static func row(id: String, title: String, kind: RouteLabel.Kind, short: String, text: String, screen: String,
-                            machine: SessionRow.Machine? = nil) -> SessionRow {
+                            machine: SessionRow.Machine? = nil,
+                            requiresOwnerInput: Bool? = nil) -> SessionRow {
         SessionRow(
             id: id,
             title: title,
@@ -177,7 +181,8 @@ struct SessionsListingFixture: SessionsListing {
                 route: RouteLabel(kind: kind, short: short, text: text, screen: screen),
                 subtitle: "fixture subtitle"
             ),
-            machine: machine
+            machine: machine,
+            requiresOwnerInput: requiresOwnerInput
         )
     }
 }
