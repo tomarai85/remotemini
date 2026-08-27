@@ -71,10 +71,20 @@ try: d=json.load(sys.stdin)
 except Exception: sys.exit(3)
 for s in (d.get("sessions") or []):
     i=s.get("id")
-    if i: print(i)' 2>/dev/null)" || true
-if [ -z "$sessions" ]; then
+    if i: print(i)' 2>/dev/null)"; srn=$?
+
+# ★「取れなかった」と「0 件だった」を分ける(2026-08-26 に自分の diff を読み返して足した)。
+#   0 件は起こり得る —— 常駐が落ちてから `ensure-phone-window` が作り直すまでの間、
+#   `cli` の会話は本当に 0 になる。それを「監視が壊れている」と言うのは誤診で、
+#   誤診は次に本当に壊れた日に読まれなくなる。
+#   ★取れなかった側(rc != 0)は今まで通り exit 3。**静かと正常を同じ顔にしない**。
+if [ "$srn" != 0 ]; then
     log "会話の一覧が取れなかった(= 監視が壊れている。静かなのではない)"
     exit 3
+fi
+if [ -z "$sessions" ]; then
+    log "会話が 0 件(壊れてはいない。常駐が立ち上がるまでの間に起こる)"
+    exit 0
 fi
 
 now_epoch="$(date +%s)"

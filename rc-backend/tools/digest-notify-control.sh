@@ -144,6 +144,30 @@ else
     printf '  復旧の通知は出さない  OK\n'
 fi
 
+echo "=== 6b. 会話が **0 件**は壊れていない(rc=0)。取れないのと区別する[誤診の負] ==="
+# ★0 件は起こり得る —— 常駐が落ちてから ensure-phone-window が作り直すまでの間。
+#   それを「監視が壊れている」と言うのは誤診で、誤診は次に本当に壊れた日に読まれなくなる。
+cat >"$TMP/curl" <<STUB
+#!/bin/bash
+echo called >> "$TMP/api-called"
+u="\${!#}"
+case "\$u" in
+    */api/sessions) printf '%s' '{"sessions":[]}' ;;
+    *)              exit 1 ;;
+esac
+STUB
+chmod +x "$TMP/curl"
+reset_all
+rc0=$( RC_TEST_NONCE="$NONCE" PATH="$TMP:$PATH" RC_DIGEST_KEY="$TMP/key" \
+       RC_DIGEST_STATE="$TMP/state.json" RC_DIGEST_LOG="$TMP/log" \
+       RC_DIGEST_NOTIFY="$TMP/notify" /bin/bash "$DN" </dev/null >/dev/null 2>&1; echo $? )
+reds=$((reds + 1))
+if [ "$rc0" = 0 ] && [ "$(received)" = 0 ]; then
+    printf '  0 件は rc=0 で黙る(壊れていると言わない)  OK\n'
+else
+    printf '  ★rc=%s / 受信=%s(0 件を「壊れている」と誤診している)\n' "$rc0" "$(received)"; fail=1
+fi
+
 echo "=== 7. 鳴らない筈だが**黙ってもいけない**: 見られなかったら rc=3 ==="
 reset_all
 rcx=$( RC_TEST_NONCE="$NONCE" PATH="$TMP:$PATH" RC_DIGEST_KEY="$TMP/nokey" \
