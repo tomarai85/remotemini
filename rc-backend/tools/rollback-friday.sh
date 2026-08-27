@@ -80,7 +80,10 @@ valid_name() {
 }
 
 audit() { [ "$DRY" -eq 1 ] && return 0
-    r "printf '%s %s\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" '$1' >> '$AUDIT'" 2>/dev/null || true; }
+    # ★記録に失敗しても戻し自体は止めない(記録が書けないから復旧できない、は本末転倒)。
+    #   ただし**黙らない** —— 記録が無い戻しは後から追えないので、その事実は出す。
+    r "printf '%s %s\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" '$1' >> '$AUDIT'" 2>/dev/null \
+        || echo "  (記録を書けなかった: $AUDIT — この戻しは後から追えない)" >&2; }
 
 # ---- 世代を並べる ---------------------------------------------------------------
 # ★`*.partial` は**数に入れない**。途中で死んだ複製を「戻せる物」として見せるのが
@@ -119,7 +122,18 @@ pin|unpin)
         r "grep -qxF '$want' '$PINS' 2>/dev/null || printf '%s\n' '$want' >> '$PINS'" || exit 2
         echo "固定した(間引きの対象外): $want"
     else
-        r "[ -f '$PINS' ] && grep -vxF '$want' '$PINS' > '$PINS.tmp' && mv '$PINS.tmp' '$PINS'" || true
+        # ★`grep -v` は**残りが0行だと rc=1** を返す。`&& mv` に繋ぐと、固定が1件だけの時に
+        #   何も外さないまま「外した」と表示していた(2026-08-26 実測で捕まえた)。
+        #   `|| true` がそれを握り潰していたので、症状が一切出なかった。
+        #   だから rc に依存しない形で書き、**外れた事を読み直して確かめる**。
+        if ! r "[ -f '$PINS' ] || exit 0
+                grep -vxF '$want' '$PINS' > '$PINS.tmp' 2>/dev/null
+                mv '$PINS.tmp' '$PINS'"; then
+            echo "★固定を外せなかった: $want" >&2; exit 2
+        fi
+        if r "[ -f '$PINS' ] && grep -qxF '$want' '$PINS'"; then
+            echo "★外したと言えない —— まだ固定一覧に居る: $want" >&2; exit 2
+        fi
         echo "固定を外した: $want"
     fi
     audit "$mode $want"; exit 0 ;;
