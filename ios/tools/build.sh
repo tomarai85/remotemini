@@ -320,7 +320,12 @@ if [ "${RC_NO_SEED:-0}" = "1" ]; then
   echo "    ★此の app は初回起動で Base URL と API Key を打たせる。意図した時だけ此の道を通る事" >&2
 else
   step "1b. 机から既定の接続先を貰って刻む"
-  SEED_SSH="${RC_EDITH_HOST:-edith@10.0.0.0}"
+  # ★2026-08-27: 既定を edith から friday(ssh 別名 `athenas`)へ。edith は 2026-08-20 に
+  #   譲渡され艦隊機ではない(同日 tailscale 実測 offline)。この行が古いままだった為、
+  #   `--sim-app` は「机の鍵が読めない」で落ち、**Tom が見る機を直す道が塞がっていた**。
+  #   env 名は `RC_EDITH_HOST` のまま —— 名前は古いが 14 file / 錨 27 本が持っているので、
+  #   改名の代金は機能を1つも増やさずに払う事になる(deploy-to-friday.sh と同じ判断)。
+  SEED_SSH="${RC_EDITH_HOST:-athenas}"
   # BatchMode = 鍵が無い時に**問い合わせずに落ちる**(焼きが人の入力待ちで止まらない)。
   # StrictHostKeyChecking=yes = known_hosts に無い / 変わった相手には繋がない。焼き込む物が
   # 鍵である以上、相手の取り違えは「届かない」より悪い。
@@ -370,7 +375,11 @@ print(name.rstrip("."))
   esac
   # ★入口が 443 でない机が在る(2026-08-25)。Friday は 443 を別 PJ が Funnel で公開して
   #   いるので rc-backend は 9443 に載っている。既定は空 = 443 のままなので既往は不変。
-  SEED_URL="https://$SEED_HOST${RC_SEED_PORT:+:$RC_SEED_PORT}"
+  # ★2026-08-27: 既定の口を足した。edith では入口が 443 だったので port 無しで正しかったが、
+  #   friday の 443 は `~/Personal/resonance-os` が Funnel で公開していて **404 を返す**
+  #   (同日実測)。rc-backend の tailnet 側の入口は 9443(deploy-to-friday.sh の注記と一致)。
+  #   port 無しで焼くと「種は在るのに宛先が違う」app が出来る —— 実際に一度焼いた。
+  SEED_URL="https://$SEED_HOST:${RC_SEED_PORT:-9443}"
 
   # 刻んで、其の場で**読み戻して**照合する。黙って効かない形(鍵の名前が変わった /
   # 生成先が動いた)は読み戻さないと焼いて電話に入れた後にしか判らない。

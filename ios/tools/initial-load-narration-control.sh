@@ -22,7 +22,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IOS="$(cd "$HERE/.." && pwd)"
 RULE="$IOS/Sources/Core/WaitEscalation.swift"
 VIEW="$IOS/Sources/Screens/List/ListView.swift"
-DEST="${RC_SIM_DEST:-platform=iOS Simulator,name=iPhone-dogfood}"
+# ★機の選択は `sim-device.sh` に一本化する。**ここに機名を書かない**。
+#   2026-08-27 に私はここへ `iPhone-dogfood` を既定で焼き、そのまま何度も回した。
+#   `xcodebuild test` は指定した機に app を install するので、**Tom が見る dogfood 機の
+#   中身が種無しの Debug 版に差し替わった**(実測: RCBaseURL が消え RCBuildRev=6b98213-dirty)。
+#   これは 2026-08-26 に対照7本から取り除いたばかりの欠陥の再導入で、
+#   `sim-device.sh` はその再発を止める為に在る門だった —— 私はそれを通さずに書いた。
+. "$(dirname "${BASH_SOURCE[0]}")/sim-device.sh"
+DEST="platform=iOS Simulator,name=$SIM_NAME"
 PASS=0; FAIL=0
 ok(){ printf '  \033[32mgreen\033[0m  %s\n' "$1"; PASS=$((PASS+1)); }
 bad(){ printf '  \033[31mRED\033[0m    %s -- %s\n' "$1" "$2"; FAIL=$((FAIL+1)); }
