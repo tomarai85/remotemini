@@ -2254,4 +2254,25 @@ server.listen(PORT, BIND, () => {
   // 常設のログとしても「どこで待っているか」を答えられない行になる。
   const actual = server.address()?.port ?? PORT;
   console.log(`[rc-backend] listening on http://${BIND}:${actual} (key: ${KEY_FILE})`);
+
+  // ★起動直後の1発目を冷やさない(2026-08-27)。一覧のメタキャッシュは in-process なので
+  //   再起動のたびに空になり、その後の**最初の実要求**が全件読みを払う
+  //   (friday 実測: 冷 0.50s / 温 0.06s)。再起動は実質デプロイ時だけだが、
+  //   デプロイ直後に電話を開いた人がちょうどその1回を踏む —— それは Tom が
+  //   「最初の読み込みが異様に長い」と名指しした症状そのものなので、誰も待っていない
+  //   今のうちに払っておく。
+  //   ★`listen` を待たせない(await しない)。温めの最中に来た要求は普通に処理される。
+  //     重なった場合に起きるのは「同じ file を2回読む」だけで、正しさには関与しない。
+  //   ★失敗は黙って諦める。温めは最適化であって、起動を落とす理由にならない。
+  if (process.env.RC_PREWARM !== "0") {
+    setTimeout(() => {
+      const t0 = Date.now();
+      try {
+        const s = scanSessions({ heads: headMap() });
+        console.log(`[rc-backend] 一覧を先に温めた: ${s.files}本 read=${s.read} ${Date.now() - t0}ms`);
+      } catch (e) {
+        console.error(`[rc-backend] 事前の温めに失敗(実害なし。最初の要求が代わりに払う): ${e && e.message}`);
+      }
+    }, 0);
+  }
 });
