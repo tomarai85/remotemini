@@ -20,6 +20,8 @@ struct SettingsView: View {
     var listViewModel: ListViewModel? = nil
     /// 保管の面の束(§9-1)。nil = 出さない(fixture の面に本物の口を残さない規約の徹底)。
     var archiveDeps: ArchiveDeps? = nil
+    /// 机が引っ越した時に、束の種を蒔き直す口。nil = 出さない(fixture の面に本物の口を残さない)。
+    var onReseed: (() async -> Void)? = nil
 
     struct ArchiveDeps {
         let apiKey: String
@@ -226,6 +228,14 @@ struct SettingsView: View {
                     .font(.callout.monospaced())
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("settings.buildInfo")
+            }
+            if let onReseed {
+                Button("Reconnect to this build's desk") { Task { await onReseed() } }
+                    .accessibilityIdentifier("settings.reseed")
+                Text("Use this if the desk moved to another machine. The saved address is replaced by the one baked into this build.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

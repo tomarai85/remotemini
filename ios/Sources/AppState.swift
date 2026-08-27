@@ -201,6 +201,43 @@ final class AppState: ObservableObject {
         await loadStoredCredentials()
     }
 
+    /// **机が引っ越した時の逃げ道**(2026-08-27 新設)。金庫の中身を捨てて、束に焼かれた
+    /// 種を蒔き直す。
+    ///
+    /// ★なぜ要るか(実機で詰んだ形): 金庫には旧版が蒔いた `edith` の宛先が残っていた。
+    ///   edith は 2026-08-20 に譲渡されて存在しない。`loadStoredCredentials()` は
+    ///   **空の時だけ**種を蒔くので、新しい種は永久に無視され、電話は消えた機体へ
+    ///   話しかけ続ける。実測: `URLError(-1001) host=desk.tailnet.example`。
+    ///   アプリを消して入れ直しても直らない —— iOS の Keychain は削除を跨いで生き残る。
+    ///   そして**アプリには宛先を変える手段が1つも無かった**。それが本当の欠陥。
+    ///
+    /// ★暗黙には絶対にやらない。「手で入れた鍵を種が踏まない」は意図的な不変条件で
+    ///   (`AppStateTests.testAnExistingKeyIsNeverOverwrittenByTheStamp`)、URL の違いだけを
+    ///   根拠に自動で上書きするとその守りが消える。**人が押した時にだけ**走らせる。
+    /// **届かなかった時にだけ**自動で乗り換える。起動時の暗黙上書きとは別物:
+    /// 「保存された宛先が実際に応答しない」+「束に別の宛先が焼かれている」の
+    /// 2つが揃った時だけ走る。片方でも欠けたら何もしない。
+    ///
+    /// ★起動時に URL の違いだけで上書きしないのは意図的な不変条件
+    /// (`testAnExistingKeyIsNeverOverwrittenByTheStamp`)。此処はその条件を満たさない ——
+    /// 手で入れた宛先でも、**現に届いていない**なら、束の宛先を試す方が
+    /// 「詰んだまま何も出来ない」より良い。乗り換えても駄目なら1回で止まる(呼ぶ側が1回だけ呼ぶ)。
+    func reseedIfDeskMoved() async {
+        guard let seed = provisioning.seed, let have = credentials,
+              have.baseURL != seed.baseURL else { return }
+        print("desk moved: stored address did not answer, switching to the baked one")
+        await reseedFromBundle()
+    }
+
+    func reseedFromBundle() async {
+        guard provisioning.seed != nil else { return }
+        try? store.clear()
+        seedLedger.rejectedSeedDigest = nil
+        notices.save(nil)
+        isLoadingCredentials = true
+        await loadStoredCredentials()
+    }
+
     /// 金庫が読めなかった起動の再試行。観測をやり直すだけで、状態は一つも変えない。
     func reloadStoredCredentials() async {
         isLoadingCredentials = true

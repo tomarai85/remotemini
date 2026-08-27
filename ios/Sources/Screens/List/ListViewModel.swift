@@ -187,6 +187,12 @@ final class ListViewModel: ObservableObject {
     /// `refresh()` above so it can be driven directly and deterministically in tests
     /// (`ListViewModelTests`) with a scripted sequence of results, instead of racing
     /// real `Task` cancellation.
+    /// 「保存された宛先へ届かなかった」を**1回だけ**外へ知らせる口(2026-08-27)。
+    /// 机が別の機体へ引っ越した時、電話が古い宛先を握ったまま詰むのを外側が解く為。
+    /// ★1回だけなのは、乗り換えても駄目な時に無限に蒔き直す輪を作らない為。
+    var onUnreachable: (() async -> Void)?
+    private var toldUnreachable = false
+
     func apply(_ result: Result<SessionsResponse, SessionsFetchError>) {
         switch result {
         case .success(let response):
@@ -224,6 +230,10 @@ final class ListViewModel: ObservableObject {
             phase = failurePhase()
 
         case .failure(.unreachable), .failure(.malformedBody), .failure(.notFound):
+            if !toldUnreachable, let tell = onUnreachable {
+                toldUnreachable = true
+                Task { await tell() }
+            }
             // `.notFound` is Sprint 3's addition to the shared `SessionsFetchError`
             // taxonomy (brief §3-c) for Conversation's 404 -- `SessionsClient.fetch`
             // above never actually produces it (`/api/sessions` carries no session id

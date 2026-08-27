@@ -107,12 +107,17 @@ struct RootView: View {
                 .accessibilityIdentifier("root.loading")
         } else if let credentials = appState.credentials {
             ListView(
-                viewModel: ListViewModel(
-                    client: SessionsClient(),
-                    baseURL: credentials.baseURL,
-                    apiKey: credentials.apiKey,
-                    onUnauthorized: { appState.clearCredentials(rejected: credentials) }
-                ),
+                viewModel: {
+                    let vm = ListViewModel(
+                        client: SessionsClient(),
+                        baseURL: credentials.baseURL,
+                        apiKey: credentials.apiKey,
+                        onUnauthorized: { appState.clearCredentials(rejected: credentials) }
+                    )
+                    // 机が引っ越していたら、届かなかった時に1回だけ乗り換える。
+                    vm.onUnreachable = { await appState.reseedIfDeskMoved() }
+                    return vm
+                }(),
                 accountViewModel: AccountViewModel(
                     reader: AccountClient(),
                     advancer: AccountClient(),
@@ -127,7 +132,8 @@ struct RootView: View {
                 archiver: ArchiveClient(),
                 returner: ReturnRequestClient(),
                 archivedLister: SessionsClient(),
-                onUnauthorized: { appState.clearCredentials(rejected: credentials) }
+                onUnauthorized: { appState.clearCredentials(rejected: credentials) },
+                onReseed: { await appState.reseedFromBundle() }
             )
         } else {
             // 2026-08-16(DESIGN §2.100)。ここは以前 `KeyEntryView` を直に出していて、
