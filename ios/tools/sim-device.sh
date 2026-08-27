@@ -28,6 +28,9 @@ RC_CONTROL_SIM_DEFAULT="iPhone-controls"
 SIM_NAME="${SIM_NAME:-$RC_CONTROL_SIM_DEFAULT}"
 
 if [ "$SIM_NAME" = "iPhone-dogfood" ] && [ "${RC_ALLOW_DOGFOOD_SIM:-0}" != "1" ]; then
+    # ★機械が読む合図。散文は訳や語調で揺れるが、これは**契約**として固定する。
+    #   対照はこの語で「拒否は守りが出した物で、ただの墜落ではない」を区別する。
+    echo "RC-SIMDEV-REFUSED-DOGFOOD" >&2
     echo "★対照が dogfood 機を指している: SIM_NAME=$SIM_NAME" >&2
     # ★ここを二重引用にするとバッククォートが**コマンド置換として走る**(2026-08-26 に
     #   実際に xcodebuild が起動し、result bundle まで書かれた)。断り文の中で重い物を
@@ -39,6 +42,7 @@ if [ "$SIM_NAME" = "iPhone-dogfood" ] && [ "${RC_ALLOW_DOGFOOD_SIM:-0}" != "1" ]
 fi
 
 if ! xcrun simctl list devices 2>/dev/null | grep -qF "$SIM_NAME ("; then
+    echo "RC-SIMDEV-NO-DEVICE" >&2
     echo "★simulator の機が無い: $SIM_NAME" >&2
     echo "  作る:  xcrun simctl create \"$SIM_NAME\" \\" >&2
     echo "           com.apple.CoreSimulator.SimDeviceType.iPhone-13-mini \\" >&2

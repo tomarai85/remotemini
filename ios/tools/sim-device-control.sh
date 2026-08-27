@@ -78,8 +78,17 @@ for t in "${TARGETS[@]}"; do
     fi
     : > "$REC"; : > "$REC_SIM"
     # SIM_NAME は**意図的に unset**。既定がどこを指すかを測っている。
-    ( cd "$IOS" && env -u SIM_NAME RC_STUB_REC="$REC" RC_STUB_REC_SIM="$REC_SIM" \
-        PATH="$STUB_DIR:$PATH" timeout 180 /bin/bash "$p" >/dev/null 2>&1 )
+    # ★**門と同じ起動の形**にする: repo の根から **相対 path** で叩く。
+    #   絶対 path で叩くと `${BASH_SOURCE[0]}` が絶対になり、台本が自分で `cd` した後でも
+    #   dirname が効いてしまう = 実際に壊れた形を再現できない。2026-08-26 に此処を
+    #   絶対 path で書いていて、`SIM_NAME: unbound variable` の全台本墜落を見逃した。
+    ( cd "$ROOT" && env -u SIM_NAME RC_STUB_REC="$REC" RC_STUB_REC_SIM="$REC_SIM" \
+        PATH="$STUB_DIR:$PATH" timeout 180 /bin/bash "$t" >/dev/null 2>"$STUB_DIR/run.err" )
+    crash="$(grep -aE "unbound variable|No such file|command not found" "$STUB_DIR/run.err" 2>/dev/null | head -1)"
+    rm -f "$STUB_DIR/run.err"
+    if [ -n "$crash" ]; then
+        printf '  %-38s → ★台本が墜落している: %s\n' "$label" "$crash"; fail=1; continue
+    fi
 
     # 機を変える呼び出しだけを見る(`list` は本物へ通しているので、宛先の証拠にならない)。
     mut="$(grep -aE 'simctl (install|boot|launch|terminate|bootstatus|uninstall|io)' "$REC_SIM" 2>/dev/null || true)"
@@ -101,14 +110,24 @@ for t in "${TARGETS[@]}"; do
     #   いるか」を grep するのは写しの述語で、読み方が変われば黙って緑になる。
     #   代わりに **dogfood を刺して、拒否する事**を振る舞いで測る。守りを外せば赤くなる。
     dogrc=0
-    ( cd "$IOS" && env SIM_NAME="$DOG" RC_STUB_REC="$STUB_DIR/probe.x" RC_STUB_REC_SIM="$STUB_DIR/probe.s" \
-        PATH="$STUB_DIR:$PATH" timeout 180 /bin/bash "$p" >/dev/null 2>&1 ) || dogrc=$?
+    perr="$STUB_DIR/probe.err"
+    ( cd "$ROOT" && env SIM_NAME="$DOG" RC_STUB_REC="$STUB_DIR/probe.x" RC_STUB_REC_SIM="$STUB_DIR/probe.s" \
+        PATH="$STUB_DIR:$PATH" timeout 180 /bin/bash "$t" >/dev/null 2>"$perr" ) || dogrc=$?
     probe_mut="$(grep -aE 'simctl (install|boot|launch)' "$STUB_DIR/probe.s" 2>/dev/null || true)"
-    rm -f "$STUB_DIR/probe.x" "$STUB_DIR/probe.s"
-    if [ "$dogrc" != 0 ] && [ -z "$probe_mut" ]; then
-        printf '  %-38s → dogfood を刺すと拒否(機へ触れず)   OK\n' "$label"
+    # ★★非ゼロで帰った事を「拒否」と読まない。**守りが出した合図**を要求する。
+    #   2026-08-26 に此処を rc だけで判定していて、相対 path 起動で source が空振りし
+    #   `SIM_NAME: unbound variable` で全台本が墜落していたのを、**2秒で全ケース緑**と
+    #   報告した。墜落と拒否は、rc からは区別が付かない。
+    guarded=0
+    grep -qF "RC-SIMDEV-REFUSED-DOGFOOD" "$perr" 2>/dev/null && guarded=1
+    why="$(head -1 "$perr" 2>/dev/null)"
+    rm -f "$STUB_DIR/probe.x" "$STUB_DIR/probe.s" "$perr"
+    if [ "$guarded" = 1 ] && [ "$dogrc" != 0 ] && [ -z "$probe_mut" ]; then
+        printf '  %-38s → dogfood を刺すと守りが拒否           OK\n' "$label"
+    elif [ "$guarded" != 1 ]; then
+        printf '  %-38s → ★守りの合図が無い(墜落か素通り): %s\n' "$label" "${why:-出力なし}"; fail=1
     else
-        printf '  %-38s → ★dogfood を刺しても止まらない(rc=%s)\n' "$label" "$dogrc"; fail=1
+        printf '  %-38s → ★dogfood を刺しても機へ触れた(rc=%s)\n' "$label" "$dogrc"; fail=1
     fi
 done
 
