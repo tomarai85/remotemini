@@ -154,6 +154,13 @@ LOCAL_CTLS=(
                                      # いないか」で、Funnel が 443/8443/10000 しか扱えない以上
                                      # **原理的に真にならない空虚な条件**だった。対照は
                                      # 「赤に倒れる入力が2件以上ある事」自体を検査している
+    tools/mixed-index-control.sh      # ★2026-08-26 新設と同時に登録。測る相手は
+                                     # `staged-controls-gate.sh` =「**緑が commit に載る版を
+                                     # 測っているか**」。門は作業木を走らせ、commit は index を
+                                     # 載せるので、`MM` の時 緑は載らない版を証明する。
+                                     # 実際に起きた: add の後に直して add し直さず commit、
+                                     # 門 12/12 緑・履歴は壊れた版。使い捨ての git repo を
+                                     # 立てて測るので、本物の木を汚さない
     ios/tools/sim-device-control.sh   # ★2026-08-26 新設と同時に登録。測る相手は
                                      # `ios/tools/sim-device.sh` =「対照が **どの機へ
                                      # install しに行くか**」。此処が緩んでいた間、対照を
