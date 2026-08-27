@@ -65,7 +65,17 @@ NODE="${RC_HEALTH_NODE:-$(command -v node || echo /opt/homebrew/bin/node)}"
 #   観測側が落ちると edith は無事なのに `/healthz` へ届かず、**本物の障害と区別が付かない
 #   偽の警報**が出るか、監視ごと黙る。
 KEY_CHECK="${RC_HEALTH_KEY_CHECK:-$ROOT/tools/tailnet-key-expiry.sh}"
-KEY_PEER="${RC_HEALTH_KEY_PEER:-$HOST}"      # 監視している相手。既定 = 叩いている先
+# ★**表示用の名前と、機体を引く名前は型が違う**(Codex 2026-08-26)。
+#   以前は `${RC_HEALTH_KEY_PEER:-$HOST}` と書いて `HOST` を継いでいた。だが `HOST` は
+#   URL を明示した構成では**人が読む札**になる —— 実際 athenas の `observer.conf` は
+#   `RC_HEALTH_HOST="friday(loopback)"` を置いている(URL は loopback で別に指定済み)。
+#   その札を機体名として引きに行くので必ず失敗し、`rc=2` = 「監視が壊れている」を鳴らした。
+#   実測 2026-08-26 11:08、それが本物の障害でない事は同じ log の前後が全部 `ok` である事で判る。
+#
+#   ★狼を2回叫んだ見張りは、3回目に読まれない。だから継承を切る。
+#   **未設定 = 相手が居ない**(単一機体構成)として扱い、鳴らさない。
+#   相手を明示した時だけ、測れない事を「監視が壊れている」と言う —— そちらは正しい。
+KEY_PEER="${RC_HEALTH_KEY_PEER:-}"           # 監視している相手。**空 = 相手が居ない**
 KEY_EVERY="${RC_HEALTH_KEY_EVERY:-86400}"    # 測る間隔(既定 1 日1回。10 分毎に測る物ではない)
 KEY_MARK="${RC_HEALTH_KEY_MARK:-$STATE.key-checked}"
 KEY_WARN_DAYS="${RC_HEALTH_KEY_WARN_DAYS:-45}"
@@ -236,11 +246,27 @@ check_key_expiry() {
         return 0
     fi
 
-    out="$(RC_KEY_WARN_DAYS="$KEY_WARN_DAYS" "$KEY_CHECK" --porcelain --chain "$KEY_PEER" 2>/dev/null)"
+    # ★相手が居ない構成では、相手を引きに行かない。引けば必ず失敗し、その失敗を
+    #   「監視が壊れている」と読む —— 居ない物を測れないのは異常ではない。
+    # ★相手が居ない構成では `--chain` を渡さない。渡せば居ない相手を引きに行って必ず失敗し、
+    #   その失敗を「監視が壊れている」と読む —— 居ない物を測れないのは異常ではない。
+    #   ★判定は**後段の共通の rc=2 に1本化する**。此処にもう1つ置くと二重判定になり、
+    #     片方だけ直しても もう片方が古い文言で鳴る(2026-08-27 に実際にそうなった)。
+    if [ -z "$KEY_PEER" ]; then
+        out="$(RC_KEY_WARN_DAYS="$KEY_WARN_DAYS" "$KEY_CHECK" --porcelain 2>/dev/null)"
+    else
+        out="$(RC_KEY_WARN_DAYS="$KEY_WARN_DAYS" "$KEY_CHECK" --porcelain --chain "$KEY_PEER" 2>/dev/null)"
+    fi
     rc=$?
     if [ "$rc" -eq 2 ]; then
         # ★「測れなかった」を「切れない」と読まない。監視の材料が取れていない = 監視が壊れている。
-        log "鍵の残日数: 少なくとも片方を測れなかった(rc=2)"
+        # ★どちらの構成で失敗したかを残す。相手なしで失敗 = 自分の側すら測れない
+        #   (これは本当に監視が壊れている)。相手ありで失敗 = どちらかが測れない。
+        if [ -z "$KEY_PEER" ]; then
+            log "鍵の残日数: 自分の側を測れなかった(rc=2 / 相手は設定されていない)"
+        else
+            log "鍵の残日数: 少なくとも片方を測れなかった(rc=2 / 相手=$KEY_PEER)"
+        fi
         notify_monitor_broken "鍵の残日数を測れない" >/dev/null
         printf '%s %s %s\n' "$now" "$s_last" "$p_last" > "$KEY_MARK" 2>>"$LOG"
         return 0
@@ -401,7 +427,15 @@ check_exposure() {
             if [ "$DRY" -eq 1 ]; then
                 echo "公開面が机(127.0.0.1:$EXP_PORT)へ繋がっています: $out"
             elif [ -x "$NOTIFY" ]; then
-                "$NOTIFY" "★公開面が机へ繋がっています($out)。生きた端末の操縦面が公開インターネットに出ます。" >/dev/null 2>&1 || \
+                # ★本文は **stdin** で渡す。この file の他の 3 箇所(168 / 321 / 323)が
+                #   全部 stdin なので、此処だけ argv だと**偽の出し先が片方しか実装しない**。
+                #   実際 `test/health-observer-controls.sh` の作り物は `$(cat)` しか読まない ——
+                #   此処に検査を足した人は「鳴っているのに空文字が記録される」を見る事になり、
+                #   実装の欠陥と駆動の欠陥が出力から区別できなくなる。
+                #   (2026-08-26、別セッションの掃き取りが flagged。本物の `~/bin/discord-notify.sh`(repo の外)は
+                #    両方読むので production は壊れていないが、**規約を1箇所だけ破る**のが害)
+                printf '%s' "★公開面が机へ繋がっています($out)。生きた端末の操縦面が公開インターネットに出ます。" \
+                    | "$NOTIFY" >/dev/null 2>&1 || \
                     log "★露出を検出したが通知を出せなかった"
             else
                 log "★露出を検出したが出し先が実行できない: $NOTIFY"

@@ -558,6 +558,58 @@ EOF
       && ok "  ★どの機械から見た話かが文面に載る" \
       || ng "  観測主体が載っていない: $(tail -1 "$FAKE_NOTIFY_LOG")"
 
+
+    echo "  ── 10-m. ★相手が居ない構成で狼を叫ばない(2026-08-26 に実測した誤報)──"
+    # ★何が起きていたか: `KEY_PEER` が `${RC_HEALTH_KEY_PEER:-$HOST}` と書かれていて、
+    #   表示用の `HOST` を機体名として継いでいた。athenas の observer.conf は
+    #   `RC_HEALTH_HOST="friday(loopback)"`(URL は別に loopback を明示)なので、
+    #   その**人が読む札**を引きに行って必ず失敗し、rc=2 =「監視が壊れている」を鳴らした。
+    #   実測 2026-08-26 11:08。前後の行は全部 `ok` なので本物の障害ではない。
+    #
+    # ★測るのは通知の数ではなく **`--chain` を渡したか**。通知の数で見ると、
+    #   偽 tailscale が rc=2 を返す(相手の有無と無関係)だけで赤くなり、
+    #   実装の欠陥と駆動の都合が同じ顔になる —— 実際 3 回誤読した。**渡した引数は嘘をつかない。**
+    #
+    # ★`run()` を通さない。あれは `${TEST_KEY_PEER:-test.example}` と書いていて、
+    #   `:-` は**空文字にも既定を当てる**ので「相手が居ない構成」を作れない。
+    #   `run()` 側を `-` に変えたら既存 78 件が赤くなった(実測)ので、
+    #   既存の仕掛けは1文字も触らず、この検査だけ独立に撃つ。
+    peer_spy="$SB/keycheck-args.log"
+    printf '#!/bin/bash\nprintf "ARGS=[%%s]\\n" "$*" >> "%s"\necho "KEY self 200 2027-01-01"\nexit 0\n' \
+        "$peer_spy" > "$SB/spy-key.sh"
+    chmod +x "$SB/spy-key.sh"
+
+    peer_probe() { # $1 = KEY_PEER に渡す値
+        : > "$peer_spy"
+        /bin/rm -f "$SB/peer-probe.mark" "$SB/peer-probe.json"
+        RC_HEALTH_CONF="$SB/none.conf" \
+        RC_HEALTH_URL="http://127.0.0.1:9/健康" \
+        RC_HEALTH_HOST="test.example" \
+        RC_HEALTH_STATE="$SB/peer-probe.json" \
+        RC_HEALTH_NOTIFY="/usr/bin/true" \
+        RC_HEALTH_LOG="$SB/peer-probe.log" \
+        RC_HEALTH_KEY_CHECK="$SB/spy-key.sh" \
+        RC_HEALTH_KEY_MARK="$SB/peer-probe.mark" \
+        RC_HEALTH_KEY_EVERY=0 \
+        RC_HEALTH_KEY_PEER="$1" \
+        bash "$OBS" --inject-ok >/dev/null 2>&1
+    }
+
+    peer_probe ""
+    if grep -q -- '--chain' "$peer_spy" 2>/dev/null; then
+        ng "★相手が未設定なら居ない相手を引きに行かない — 記録[$(head -1 "$peer_spy")]"
+    else
+        ok "★相手が未設定なら居ない相手を引きに行かない"
+    fi
+
+    # 過剰に黙らせていない事の負の対照 —— 相手を明示したら今まで通り引きに行く。
+    peer_probe "test-peer"
+    if grep -q -- '--chain test-peer' "$peer_spy" 2>/dev/null; then
+        ok "相手を明示すれば今まで通り引きに行く(狼を殺していない)"
+    else
+        ng "相手を明示しても引きに行かない — 記録[$(head -1 "$peer_spy" 2>/dev/null)]"
+    fi
+
     unset TEST_KEY_CHECK TEST_TAILSCALE TEST_KEY_PEER FAKE_SELF_DAYS FAKE_PEER_DAYS FAKE_TS_SKELETON
 fi
 
