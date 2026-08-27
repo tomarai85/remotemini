@@ -60,6 +60,12 @@ struct SessionsListingFixture: SessionsListing {
         /// 「banner を単独で見せる」面で、再試行のボタンを持たない(brief §4)。
         /// 旅程で最も起きる失敗(一覧が出ない)の唯一の的が、一度も測れていなかった。
         case fetchFailure = "list-fetchfail"
+        /// ★2026-08-27。**返って来ない**面。`list-fetchfail`(即座に失敗)とは別物で、
+        /// あちらは `.retryable` へ落ちるが此方は `.initialLoading` に留まり続ける ——
+        /// 「机が黙っている」= Tom が「最初の読み込みが異様に長い」と言った状態そのもの。
+        /// これが無いと `WaitEscalation` の異常段(`list.loading.slow`)へ UI 検査から
+        /// 到達する道が1本も無い(既存の面はどれも即座に決着してしまう)。
+        case hanging = "list-hanging"
     }
 
     let state: State
@@ -72,6 +78,14 @@ struct SessionsListingFixture: SessionsListing {
         case .unauthorized:
             return .failure(.unauthorized)
         case .fetchFailure:
+            return .failure(.unreachable)
+        case .hanging:
+            // ★寝るのであって回さない。`while true` は検査機の CPU を焼き、
+            //   同時に走る他の UI 検査を巻き込んで遅くする(その遅さは「不安定な検査」に見える)。
+            //   `Task.sleep` は取り消しに従うので、`refresh()` の再入で普通に畳まれる。
+            //   起きた後に `.unreachable` を返すのは、検査が終わった後の面を
+            //   「永久に読み込み中」で残さない為 —— 実機で誤って触れた時に手が無くなる。
+            try? await Task.sleep(nanoseconds: 600_000_000_000) // 10 分
             return .failure(.unreachable)
         case .normal:
             return .success(Self.response(sessions: Self.sampleRows, paneFault: nil, fetchCount: n))
