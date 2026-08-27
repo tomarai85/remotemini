@@ -153,3 +153,52 @@ test("★★重複は1回目と同じ status で返す(届いている物を失�
   assert.match(near, /json\(res, 202/, "重複を 202 以外で返している");
   assert.doesNotMatch(near, /json\(res, 200/, "200 で返す枝が残っている");
 });
+
+
+// ============================================================================================
+// 再起動で忘れるのは **意図的な設計**であって、直すべき穴ではない(2026-08-27 に固定)
+//
+// ★経緯を残す価値が在るので書く: このセッションは `const m = new Map()` という機構だけを
+//   読んで「机の再起動を跨いだ再送が二重注入する欠陥」と報告し、DESIGN.md にも「守りの穴」
+//   として書いた。**その6行上に理由が在った**。読まなかったのはこちらの落ち度。
+//
+//   `server.mjs` の `const idem = createIdemStore()` の直上:
+//     「file に落とさないのは、落とせば『何をいつ送ったか』の跡が机に残るから ——
+//       この repo が明示的に選んでいる『打った物を残さない』線を越える。
+//       再起動で忘れるが、忘れて困るのは『再起動を跨いだ再送』だけで、
+//       それは電話から見て別の送信として扱われる方が正しい。」
+//
+//   つまり永続化しないのは privacy 側の裁定で、再起動跨ぎの扱いも裁定済み。
+//   ★固定しないと、次に読む者が同じ順序で誤読して persist を足しかねない ——
+//   この線引きを**再検討せずに**越える形で。検査を赤にすれば、越えるなら意図的になる。
+// ============================================================================================
+
+test("★再起動を跨いだ再送は意図的に新しい送信として通す(忘却は設計であって穴ではない)", () => {
+  const before = S();
+  assert.deepEqual(before.begin("restart01", "同じ本文"), { go: true });
+  before.done?.("restart01", { ok: true });
+
+  // 新しい store = 机を落として上げた後。**前の記憶を引き継がない**のが正しい。
+  const after = S();
+  assert.deepEqual(after.begin("restart01", "同じ本文"), { go: true },
+    "再起動後の store が前の送信を覚えている —— 永続化が入った。" +
+    "それは『打った物を残さない』線を越える変更なので、越えるなら意図的にやり、" +
+    "server.mjs の裁定コメントごと書き換える事");
+});
+
+test("記憶は file へ出ない(打った物の跡を机に残さない線)", () => {
+  const src = readFileSync(join(process.cwd(), "src", "idem.mjs"), "utf8");
+  assert.doesNotMatch(src, /writeFileSync|appendFileSync|createWriteStream|renameSync/,
+    "idem.mjs が file を書いている —— 指紋と時刻が机に残る");
+});
+
+test("永続化しない理由が呼び出し口に残っている(裁定が消えたら気づく)", () => {
+  const src = readFileSync(join(process.cwd(), "src", "server.mjs"), "utf8");
+  const i = src.indexOf("createIdemStore()");
+  assert.ok(i > 0, "createIdemStore の呼び出しが見つからない");
+  // 呼び出しの**直前**に理由が在る事を測る。離れた場所の一致では意味が無い。
+  const before = src.slice(Math.max(0, i - 700), i);
+  assert.match(before, /打った物を残さない/,
+    "永続化しない理由が呼び出し口から消えた —— 機構だけ読む者が穴と誤読する" +
+    "(2026-08-27 に実際に起きた)");
+});
