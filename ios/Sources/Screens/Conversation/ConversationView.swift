@@ -247,6 +247,21 @@ struct ConversationView: View {
             //   (各 banner の註に実測の経緯)。畳んだのは常設の状態だけ。
             standingStatusSlot
 
+            // 留守中に何が起きたか(2026-08-26)。★**常設の状態帯とは別枠**。
+            //   §9-4 の「常設の状態帯は同時に1枠だけ」は「今どうなっているか」を争う
+            //   帯の話で、これは「留守の間に何が在ったか」= 一度読めば済む物。
+            //   同じ枠を争わせると、届かない / 応答が読めない / 送信待ちのどれかを押し出す。
+            // ★取れなかった時は**何も出さない**。要約が無い事は異常ではないので、
+            //   「要約を取れませんでした」を常設で出すと、直しようの無い帯が居座る。
+            if let d = viewModel.awayDigest, !d.line.isEmpty {
+                Text(d.line)
+                    .font(.caption)
+                    .foregroundStyle(d.shouldUrge ? .orange : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.awayDigest")
+            }
+
             if let banner = viewModel.queueBanner {
                 // 専用の band(sendBanner / interruptBanner と同じ理由 —— 主語を混ぜない)。
                 Text(banner.text)

@@ -112,6 +112,12 @@ final class ConversationViewModel: ObservableObject {
     /// noted in progress.md).
     @Published private(set) var latestGapNotice: String?
 
+    /// 留守中に何が起きたか。**開いた時に1回だけ**取る(2026-08-26)。
+    /// ★常設の状態帯には**しない** —— §9-4 の裁定「常設の状態帯は同時に1枠だけ」は
+    ///   「今どうなっているか」を争う帯の話で、これは「留守の間に何が在ったか」= 一度読めば
+    ///   済む物。同じ枠を争わせると、届かない/読めない/送信待ちのどれかを押し出す。
+    @Published private(set) var awayDigest: SessionDigest?
+
     @Published private(set) var unreadableStage: UnreadableMeter.Stage = .normal
     /// `nil` only before polling has ever started. Seeded to "now" the moment
     /// `startPolling()` runs (brief §3-b's banner always shows a clock time, never a
@@ -482,6 +488,7 @@ final class ConversationViewModel: ObservableObject {
     private let attachClient: Attaching
     private let choiceClient: ChoiceSending
     private let clearQueueClient: QueueClearing
+    private let digestClient: DigestFetching
     /// 打ちかけの置き場(DESIGN §2.53)。**既定値を持たせていない** —— 既定を本物に
     /// すると、`RootView` の UI 検査用の面が黙って実機の `UserDefaults` を触る。
     /// 本番は `ListView` だけが `UserDefaultsDraftStore` を渡す。
@@ -533,6 +540,7 @@ final class ConversationViewModel: ObservableObject {
         self.attachClient = clients.attach
         self.choiceClient = clients.choice
         self.clearQueueClient = clients.clearQueue
+        self.digestClient = clients.digest
         self.draftStore = draftStore
         self.baseURL = baseURL
         self.apiKey = apiKey
@@ -550,6 +558,27 @@ final class ConversationViewModel: ObservableObject {
     func load() async {
         let result = await client.fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: currentLimit)
         applyInitial(result)
+        await loadAwayDigest()
+    }
+
+    /// 留守中の要約を**1回だけ**取る(2026-08-26)。
+    ///
+    /// ★履歴の後に撃つ。前に撃つと、画面が出るまでの待ちに此方の往復が積み上がる ——
+    ///   要約は「開いた時に読める」で十分で、「開くのを待たせて読める」ではない。
+    /// ★**失敗しても画面を壊さない。** 取れなければ `awayDigest` は nil のままで、
+    ///   帯が1本出ないだけ。要約が取れない事は会話が使えない事ではないので、
+    ///   ここで `phase` を触らない(触ると「要約の失敗」が「会話の失敗」に化ける)。
+    /// ★鍵の失効(401)だけは別。あれは会話も含めて全部が使えない状態なので、
+    ///   履歴側と同じ扱いに合流させる。
+    func loadAwayDigest() async {
+        switch await digestClient.fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID) {
+        case .success(let d):
+            awayDigest = d
+        case .failure(.unauthorized):
+            onUnauthorized()
+        case .failure:
+            awayDigest = nil
+        }
     }
 
     func applyInitial(_ result: Result<HistoryResponse, SessionsFetchError>) {
