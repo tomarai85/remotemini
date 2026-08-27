@@ -68,6 +68,7 @@ const MJS_INSTRUMENTS = [
 const SH_INSTRUMENTS = [
   "../ios/tools/live-send-check.sh",
   "../ios/tools/live-interrupt-check.sh",
+  "../ios/tools/live-poll-check.sh",
 ];
 // ★写しでも**一覧からは落とさない**。落とすと TAP から名前ごと消えて「測っていない」が
 //   誰にも見えなくなる(= 黙って範囲が縮む)。skip として名前を残し、理由を言わせる。

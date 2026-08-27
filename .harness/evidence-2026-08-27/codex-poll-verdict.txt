@@ -1,0 +1,74 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work/ios
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a044d0-ff5d-7b13-8af5-a172aa004b19
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Review a new verification script I just wrote. Name what it fails to measure that its name implies.
+
+CONTEXT
+An iPhone app polls a personal server for a conversation's new output. Until today the phone's
+receive path (PollClient) had only ever run against a mock. I wrote live-poll-check.sh, modelled
+on two sibling tools, which:
+  1. compiles the phone's REAL PollClient (product source, not a copy) into a small CLI
+  2. stands up a disposable real TUI session on the production server
+  3. polls once with an empty cursor and a 2000ms wait
+  4. asserts outcome == success (the client's two-pass reader: a loose 'is this readable'
+     check, then a typed decode over the SAME bytes -- both must pass)
+  5. negative control A: bogus API key must yield unauthorized(401)
+  6. negative control B: a nonexistent session id must yield sessionNotFound(404), and
+     explicitly must NOT collapse into 'unreachable' (that would send the user to check
+     their signal for a server-side fact)
+All three pass against production.
+
+WHAT I DELIBERATELY DID NOT PUT IN IT
+'A reply to a message I just sent arrives.' A sibling tool already proves send lands by counting
+the message in the real transcript file. I split the receive layer out on purpose.
+
+ASK
+1. The name says it verifies the receive path. With an EMPTY cursor and one poll, what classes of
+   receive-path defect can this script never catch? Be concrete.
+2. Is polling once with an empty cursor a meaningful assertion at all, or am I mostly testing
+   that an HTTP endpoint returns 200-shaped JSON?
+3. The two negative controls are auth and unknown-session. What third negative control would
+   catch the most likely real regression in this specific path?
+2026-08-27T20:02:23.559752Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-27T20:02:23.566529Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-27T20:02:24.172776Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+1. With an empty cursor and one poll, it cannot catch:
+
+- Non-empty cursor encoding/parsing failures.
+- Cursor advancement bugs: duplicates, skipped output, reordering, or replay.
+- Long-poll wake-up failures when output arrives during the 2000 ms wait.
+- Repeated-poll state bugs: cursor persistence, accumulation, cancellation, retries.
+- Payload-semantic errors: stale output, wrong session’s output, truncated content, or a successful but empty response—unless content is asserted.
+
+2. It is meaningful, but narrowly. It proves the real client can reach production, authenticate, call the endpoint, and decode its current success schema. Without asserting expected output and cursor behavior, it is primarily a live transport/schema smoke test—not verification that new output is received.
+
+3. Use a malformed or invalid non-empty cursor against a valid session and API key. Assert the precise cursor/client error—typically `400`/`invalidCursor`—and explicitly reject both `success` and `unreachable`.
+
+The name overstates the coverage: it verifies an initial live poll, not the stateful receive path. A valid second poll using the returned cursor would add more value than any third negative control.
+tokens used
+13,610
+1. With an empty cursor and one poll, it cannot catch:
+
+- Non-empty cursor encoding/parsing failures.
+- Cursor advancement bugs: duplicates, skipped output, reordering, or replay.
+- Long-poll wake-up failures when output arrives during the 2000 ms wait.
+- Repeated-poll state bugs: cursor persistence, accumulation, cancellation, retries.
+- Payload-semantic errors: stale output, wrong session’s output, truncated content, or a successful but empty response—unless content is asserted.
+
+2. It is meaningful, but narrowly. It proves the real client can reach production, authenticate, call the endpoint, and decode its current success schema. Without asserting expected output and cursor behavior, it is primarily a live transport/schema smoke test—not verification that new output is received.
+
+3. Use a malformed or invalid non-empty cursor against a valid session and API key. Assert the precise cursor/client error—typically `400`/`invalidCursor`—and explicitly reject both `success` and `unreachable`.
+
+The name overstates the coverage: it verifies an initial live poll, not the stateful receive path. A valid second poll using the returned cursor would add more value than any third negative control.
