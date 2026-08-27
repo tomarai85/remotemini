@@ -92,7 +92,19 @@ struct RootView: View {
     @ViewBuilder
     private var normalFlow: some View {
         if appState.isLoadingCredentials {
+            // ★2026-08-27: 識別子を付けた。付ける前は、この1枚目のスピナーだけ名前が無く、
+            //   UI 検査から「今どちらの待ちに居るか」を一度も見られなかった。
+            //
+            //   ★2枚を**1つに融合しない**のが此処の判断。見た目は既に連続している
+            //   (どちらも素の `ProgressView` なので継ぎ目が無い)が、意味は別物:
+            //   此方は Keychain の読みで**網を使わない**、`list.loading` は網の取得。
+            //   識別子まで一緒にすると「鍵で固まった」と「机に届かない」が
+            //   外から区別できなくなる —— 待たされている理由を潰す方向で、
+            //   `WaitEscalation` を入れた判断と正面から衝突する。
+            //   だから **別の名前を与え、連続している事の方を検査で押さえる**
+            //   (`InitialWaitUITests` の連続性の検査 = どの瞬間もどちらか一方は出ている)。
             ProgressView()
+                .accessibilityIdentifier("root.loading")
         } else if let credentials = appState.credentials {
             ListView(
                 viewModel: ListViewModel(
