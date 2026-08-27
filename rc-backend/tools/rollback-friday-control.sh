@@ -128,6 +128,22 @@ left="$(ls -1 "$FAKE/rc-releases" | grep -v '^\.' | wc -l | tr -d ' ')"
 printf '  残り %s 個(固定1 + keep2 = 3 を期待)\n' "$left"
 [ "$left" = 3 ] || { printf '  ★数が合わない\n'; fail=1; }
 
+echo "=== 5b. 固定が**1件だけ**の時に外せる[私が踏んだ形] ==="
+# ★`grep -v` は残りが0行だと rc=1 を返す。`&& mv` に繋いだ実装は、固定が1件だけの時に
+#   何も外さないまま「外した」と表示していた。`|| true` がそれを握り潰し、症状が出なかった。
+build_world
+run_rb --pin "$SNAP" >/dev/null
+if ! grep -qxF "$SNAP" "$FAKE/rc-releases/.pinned" 2>/dev/null; then
+    printf '  ★前提が作れていない(固定できていないので外す検査になっていない)\n'; fail=1
+fi
+out="$(run_rb --unpin "$SNAP")"; rc=$?
+reds=$((reds + 1))
+if [ "$rc" = 0 ] && ! grep -qxF "$SNAP" "$FAKE/rc-releases/.pinned" 2>/dev/null; then
+    printf '  1件だけでも外れた  OK\n'
+else
+    printf '  ★外れていないのに rc=%s(固定一覧: [%s])\n' "$rc" "$(cat "$FAKE/rc-releases/.pinned" 2>/dev/null)"; fail=1
+fi
+
 echo "=== 6. --dry-run は何も変えない[負] ==="
 build_world; mk_curl goodrev
 run_rb --to "$SNAP" --dry-run >/dev/null
