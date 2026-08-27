@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/tools/staged-controls-gate.sh
+# controls-for: tools/staged-controls-gate.sh
 # mixed-index-control.sh — 門が **index と作業木のずれ**で止まる事を測る。2026-08-26 新設。
 #
 # 守る一線: 「**緑が、commit に載る版を測っている**」。

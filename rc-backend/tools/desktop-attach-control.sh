@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/tools/desktop-attach.sh
+# controls-for: tools/desktop-attach.sh
 # desktop-attach-control.sh — 机側の入口が **正しい機体の登録簿**を読む事を測る。2026-08-26 新設。
 #
 # 守る一線: 「**答えが出る**」と「**正しい答えが出る**」を分ける。
