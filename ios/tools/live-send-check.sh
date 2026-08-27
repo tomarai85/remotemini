@@ -27,11 +27,26 @@
 #     運ばない型が、其れを直す為の道具自身に出た。census は `test/live-exit-codes.test.mjs`。
 set -uo pipefail
 
-URL="${RC_LIVE_URL:-https://desk.tailnet.example}"
-# ★`edith` という短い別名は**この機械には無い**(2026-08-05 実測: Host key verification failed)。
+# ★2026-08-27: 既定を edith から friday へ。edith は 2026-08-20 に譲渡され艦隊機ではない。
+#   port が要るのは friday の 443 が別サービス(resonance-os)で 404 を返す為 —— rc-backend の
+#   tailnet 側の入口は 9443(deploy-to-friday.sh の注記と一致、同日実測)。
+#   この既定が古いままだった間、**この道具は起動すらできなかった**(電話の製品コードを
+#   実サーバへ当てる唯一の道具が、7日間使えない状態で放置されていた)。
+URL="${RC_LIVE_URL:-https://desk.tailnet.example:9443}"
+# ★短い別名を使う理由(2026-08-27): `athenas` は ~/.ssh/config に在り、艦隊の他の全経路も
+#   これを使う。機体の解決先(IP か MagicDNS か)を config の1箇所に閉じ込める為で、
+#   逆に `desk.tailnet.example` は known_hosts に無く弾かれる(同日実測)。
 #   Tom の `~/.ssh/config` に Host エントリが入るまでは名前を全部書く方が動く。
-SSH_HOST="${RC_LIVE_SSH:mail-redacted@example.invalid}"
+SSH_HOST="${RC_LIVE_SSH:-athenas}"
 REMOTE_TOOLS="${RC_LIVE_REMOTE:-\$HOME/rc-backend/tools}"
+# ★2026-08-27: 相手の機械の `node` を**実行時に訊く**。パスを焼き込まない。
+#   friday の非対話 ssh の PATH には homebrew が入っておらず(実測: `command -v node` が空、
+#   実体は /opt/homebrew/bin/node)、素の `node` を打つ全ての段が
+#   `command not found` で落ちていた。edith には `~/.zshenv` の手当てが在ったので、
+#   機体が変わって初めて露出した種類の依存。
+#   ★既定値として path を書かないのは、次に機体が変わった時に**また同じ形で腐る**から。
+#   見つからなければ**大声で落ちる**(黙って素の `node` に倒すと、原因が3段先で出る)。
+REMOTE_NODE="${RC_LIVE_NODE:-}"
 KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -43,6 +58,14 @@ while [ $# -gt 0 ]; do
     *) echo "知らない引数: $1" >&2; exit 2 ;;
   esac
 done
+
+if [ -z "$REMOTE_NODE" ]; then
+  REMOTE_NODE="$(ssh "$SSH_HOST" 'command -v node || ls /opt/homebrew/bin/node 2>/dev/null' 2>/dev/null | head -1)"
+fi
+if [ -z "$REMOTE_NODE" ]; then
+  echo "相手の機械($SSH_HOST)で node が見つからない。RC_LIVE_NODE=/path/to/node で渡せる" >&2
+  exit 2
+fi
 
 # ── 判定 ──────────────────────────────────────────────────────────────────────
 # 観測値だけを受け取って終了コードを決める。**実機に一切触らない**ので、対照
@@ -111,7 +134,7 @@ cleanup() {
     PURGE=""
     [ "$VERDICT_OK" = "1" ] && PURGE=" --purge-transcript"
     [ "$VERDICT_OK" = "1" ] || echo "(判定が緑でないので転写は残す)"
-    ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs down '$SESSION' '$SID'$PURGE" 2>&1 |
+    ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs down '$SESSION' '$SID'$PURGE" 2>&1 |
       sed "s#$SID#<会話 id>#g"
   elif [ -n "$SESSION" ]; then
     echo "--keep: セッションを残した(畳むのは人の手)"
@@ -131,7 +154,7 @@ echo "ok: $(/usr/bin/stat -f %z "$BIN") bytes"
 
 echo
 echo "=== 2. edith に使い捨ての本物 TUI を建てる ==="
-UP="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs up")" || { echo "建たなかった"; exit 2; }
+UP="$(ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs up")" || { echo "建たなかった"; exit 2; }
 SESSION="$(printf '%s\n' "$UP" | sed -n 1p)"
 SID="$(printf '%s\n' "$UP" | sed -n 2p)"
 if [ -z "$SESSION" ] || [ -z "$SID" ]; then echo "up の出力が2行ではない"; exit 2; fi
@@ -139,7 +162,7 @@ echo "セッション: $SESSION(会話 id は出さない)"
 
 echo
 echo "=== 3. 送る前の転写の行数 ==="
-BEFORE="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs lines '$SID'" 2>/dev/null || echo 0)"
+BEFORE="$(ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs lines '$SID'" 2>/dev/null || echo 0)"
 BEFORE="${BEFORE:-0}"
 echo "before = $BEFORE 行"
 
@@ -164,9 +187,9 @@ AFTER="$BEFORE"
 HITS=0
 for _ in $(seq 1 20); do
   sleep 3
-  AFTER="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs lines '$SID'" 2>/dev/null || echo 0)"
+  AFTER="$(ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs lines '$SID'" 2>/dev/null || echo 0)"
   AFTER="${AFTER:-0}"
-  HITS="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs contains '$SID' '$BODY'" 2>/dev/null || echo 0)"
+  HITS="$(ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs contains '$SID' '$BODY'" 2>/dev/null || echo 0)"
   HITS="${HITS:-0}"
   [ "$HITS" -gt 0 ] && break
 done
@@ -174,7 +197,7 @@ echo "行数 = $AFTER(送る前 $BEFORE) / 本文の一致 = $HITS 件"
 # ★陰性対照。数える口が壊れて「いつでも1件以上」を返すなら、上の ok は何も測っていない。
 #   送っていない本文が 0 件で返る事を、同じ口で確かめる。
 DECOY="rc-live-send decoy $(date +%Y%m%d-%H%M%S)-not-sent"
-MISS="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs contains '$SID' '$DECOY'" 2>/dev/null || echo -1)"
+MISS="$(ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs contains '$SID' '$DECOY'" 2>/dev/null || echo -1)"
 echo "陰性対照(送っていない本文)= $MISS 件"
 
 echo
@@ -183,7 +206,7 @@ echo "=== 6. 相手が上限で答えられない状態か(赤の意味が変わ
 #   「送れない」と答える。それは**経路の欠陥ではない**のに、下の kind=ok / keepText /
 #   転写の3行が揃って赤くなり、読み手は在りもしない欠陥を探しに行く。8/02 に
 #   `live-inject-check.mjs` が解いた束ねと同じ形。分類器は最初から `limited` を立てている。
-LIMITED="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs limited '$SID'" 2>/dev/null || echo "")"
+LIMITED="$(ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs limited '$SID'" 2>/dev/null || echo "")"
 echo "利用上限の告知 = ${LIMITED:-訊けなかった}"
 
 echo

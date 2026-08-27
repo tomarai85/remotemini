@@ -41,7 +41,18 @@ enum LiveSend {
         let apiKey = input[2]
         let text = input[3]
 
-        let outcome = await SendClient().send(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, text: text)
+        // ★2026-08-27: `sendId` を渡す。2026-08-26 に製品側へ冪等鍵が入った時、
+        //   **この殻だけが取り残されて swiftc が通らなくなっていた** —— 宛先(edith)も
+        //   同じ日に死んでいたので、そもそも誰も走らせず、腐った事に気付けなかった。
+        //   生成規則は製品(`ConversationViewModel.sendIdFor`)と同じ形にする:
+        //   UUID からハイフンを抜いた文字列。ここは1回しか送らないので、
+        //   製品側の「同じ下書きなら同じ id を持ち回す」保持は要らない。
+        //   ★引数の追加に**既定値を付けない**のが正しい(製品側も付けていない):
+        //   既定を付けると、次に鍵を足した人がこの殻を直さずに済んでしまい、
+        //   「殻は緑だが製品と違う物を測っている」に静かに戻る。
+        let sendId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let outcome = await SendClient().send(baseURL: baseURL, apiKey: apiKey,
+                                              sessionID: sessionID, text: text, sendId: sendId)
         switch outcome {
         case .display(let d):
             // `keepText` の**不在**と `false` を潰さない(電話は不在を「残す」と読む)。

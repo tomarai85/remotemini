@@ -141,10 +141,25 @@ if [ "${1:-}" = "--verdict" ]; then
     shift; interrupt_verdict "$@"; exit $?
 fi
 
-URL="${RC_LIVE_URL:-https://desk.tailnet.example}"
-# ★`edith` という短い別名は**この機械には無い**(2026-08-05 実測: Host key verification failed)。
-SSH_HOST="${RC_LIVE_SSH:mail-redacted@example.invalid}"
+# ★2026-08-27: 既定を edith から friday へ。edith は 2026-08-20 に譲渡され艦隊機ではない。
+#   port が要るのは friday の 443 が別サービス(resonance-os)で 404 を返す為 —— rc-backend の
+#   tailnet 側の入口は 9443(deploy-to-friday.sh の注記と一致、同日実測)。
+#   この既定が古いままだった間、**この道具は起動すらできなかった**(電話の製品コードを
+#   実サーバへ当てる唯一の道具が、7日間使えない状態で放置されていた)。
+URL="${RC_LIVE_URL:-https://desk.tailnet.example:9443}"
+# ★短い別名を使う理由(2026-08-27): `athenas` は ~/.ssh/config に在り、艦隊の他の全経路も
+#   これを使う。機体の解決先(IP か MagicDNS か)を config の1箇所に閉じ込める為で、
+#   逆に `desk.tailnet.example` は known_hosts に無く弾かれる(同日実測)。
+SSH_HOST="${RC_LIVE_SSH:-athenas}"
 REMOTE_TOOLS="${RC_LIVE_REMOTE:-\$HOME/rc-backend/tools}"
+# ★2026-08-27: 相手の機械の `node` を**実行時に訊く**。パスを焼き込まない。
+#   friday の非対話 ssh の PATH には homebrew が入っておらず(実測: `command -v node` が空、
+#   実体は /opt/homebrew/bin/node)、素の `node` を打つ全ての段が
+#   `command not found` で落ちていた。edith には `~/.zshenv` の手当てが在ったので、
+#   機体が変わって初めて露出した種類の依存。
+#   ★既定値として path を書かないのは、次に機体が変わった時に**また同じ形で腐る**から。
+#   見つからなければ**大声で落ちる**(黙って素の `node` に倒すと、原因が3段先で出る)。
+REMOTE_NODE="${RC_LIVE_NODE:-}"
 KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -154,6 +169,14 @@ while [ $# -gt 0 ]; do
     *) echo "知らない引数: $1" >&2; exit 2 ;;
   esac
 done
+
+if [ -z "$REMOTE_NODE" ]; then
+  REMOTE_NODE="$(ssh "$SSH_HOST" 'command -v node || ls /opt/homebrew/bin/node 2>/dev/null' 2>/dev/null | head -1)"
+fi
+if [ -z "$REMOTE_NODE" ]; then
+  echo "相手の機械($SSH_HOST)で node が見つからない。RC_LIVE_NODE=/path/to/node で渡せる" >&2
+  exit 2
+fi
 
 IOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
@@ -170,7 +193,7 @@ cleanup() {
     PURGE=""
     [ "$VERDICT_OK" = "1" ] && PURGE=" --purge-transcript"
     [ "$VERDICT_OK" = "1" ] || echo "(判定が緑でないので転写は残す)"
-    ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs down '$SESSION' '$SID'$PURGE" 2>&1 |
+    ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs down '$SESSION' '$SID'$PURGE" 2>&1 |
       sed "s#$SID#<会話 id>#g"
   elif [ -n "$SESSION" ]; then
     echo "--keep: セッションを残した(畳むのは人の手)"
@@ -196,7 +219,7 @@ echo "ok: 送信 $(/usr/bin/stat -f %z "$SEND_BIN") bytes / 割り込み $(/usr/
 
 echo
 echo "=== 2. edith に使い捨ての本物 TUI を建てる ==="
-UP="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs up")" || { echo "建たなかった"; exit 2; }
+UP="$(ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs up")" || { echo "建たなかった"; exit 2; }
 SESSION="$(printf '%s\n' "$UP" | sed -n 1p)"
 SID="$(printf '%s\n' "$UP" | sed -n 2p)"
 if [ -z "$SESSION" ] || [ -z "$SID" ]; then echo "up の出力が2行ではない"; exit 2; fi
@@ -222,7 +245,7 @@ echo "=== 4. 本当に生成中になるまで待つ(当て推量の n 秒では
 BUSY=""
 BUSY_WAITED=0
 for _ in $(seq 1 60); do
-  BUSY="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs busy '$SID'" 2>/dev/null || echo "")"
+  BUSY="$(ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs busy '$SID'" 2>/dev/null || echo "")"
   case "$BUSY" in
     observed*) break ;;
   esac
@@ -233,7 +256,7 @@ case "$BUSY" in
   observed*) echo "生成中を観測(${BUSY_WAITED}s 目 / 材料 = ${BUSY#observed })" ;;
   *)
     # 画面に上限の告知が出ているかは分類器が最初から知っている(`classifyScreen.limited`)。
-    LIM="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs limited '$SID'" 2>/dev/null || echo "")"
+    LIM="$(ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs limited '$SID'" 2>/dev/null || echo "")"
     busy_exhausted_verdict "$BUSY" "$LIM"
     exit $?
     ;;
@@ -251,7 +274,7 @@ echo "=== 6. 陰性対照A: 止まった後にもう一度撃つ(verified の文
 # ★この会話はもう動いていない。同じ口が同じ文を返すなら、上の緑は
 #   「止まったのを見た」ではなく「この口はいつでもそう言う」の意味しか持たない。
 sleep 3
-CTRL_A_BUSY="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs busy '$SID'" 2>/dev/null || echo "")"
+CTRL_A_BUSY="$(ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs busy '$SID'" 2>/dev/null || echo "")"
 echo "撃つ前の状態 = ${CTRL_A_BUSY:-無}"
 CTRL_A_OUT="$(printf '%s\n%s\n%s\n' "$URL" "$SID" "$KEY" | "$INTR_BIN" 2>&1)"
 printf '%s\n' "$CTRL_A_OUT" | sed "s#$SID#<会話 id>#g"
@@ -276,7 +299,7 @@ if printf '%s' "$CTRL_B_OUT" | grep -qF "outcome=unauthorized"; then CTRL_B=401;
 LIMITED=""
 case "$(classify_interrupt_text "$INTR_OUT")" in
   already-done|not-in-flight)
-    LIMITED="$(ssh "$SSH_HOST" "node $REMOTE_TOOLS/disposable-session.mjs limited '$SID'" 2>/dev/null || echo "")" ;;
+    LIMITED="$(ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs limited '$SID'" 2>/dev/null || echo "")" ;;
 esac
 
 interrupt_verdict "$INTR_RC" "$(classify_interrupt_text "$INTR_OUT")" \
