@@ -127,7 +127,9 @@ IOS="$HERE"
 # ★機の既定は tools/sim-device.sh が持つ(2026-08-26)。此処で直に dogfood を既定に
 #   していた間、`xcodebuild test` が対照のたびに **Tom が見る機**へ種なしの Debug 版を
 #   install していた。守りを1箇所へ寄せる —— 既定・dogfood の拒否・機の不在を全部あちらで。
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sim-device.sh"
+# ★$HERE(= ios/、先頭で絶対解決済み)から引く。BASH_SOURCE を此処で引き直すと、
+#   相対 path で起動された時に `cd` 後の評価になって source が空振りする。
+. "$HERE/tools/sim-device.sh"
 BUNDLE_ID="com.tomarai.remotemini"
 # UDID が読めなくても走る(落ち着かせる手順を飛ばすだけ)。此処で止めると、元は
 # 動いていた対照を「測れない」に変えてしまう。
