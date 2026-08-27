@@ -252,6 +252,22 @@ test("★電話と機械が行の上で別の語になる(本命)", () => {
     "電話と常駐が同じ行になる —— 誰が叩いたか記録から判らない(2026-08-27 の状態)");
 });
 
+test("★★検査道具は app と別の語になる(でないと『Tom が使ったか』が永久に判らない)", () => {
+  // ★2026-08-27 に**実際に壊した**。`ios/tools/live-*-check.sh` が建てる殻は電話の
+  //   製品 Swift をそのまま使うので、URLSession が `CFNetwork/… Darwin/…` を名乗り、
+  //   検査を1回回すたびに `client=app` の行が増えていた。
+  //   この計器の唯一の読み方は「私がビルドしていない時間帯に app が出たら、それが Tom」で、
+  //   自分の道具が app を名乗った瞬間にその読み方が死ぬ。
+  // ★UA は実測値をそのまま使う(手で作った文字列だと、実物が変わった日に気付けない):
+  //   `printf ... | rc-live-poll` を UA を echo するサーバへ当てて観測した物。
+  const probe = run({ url: "/api/sessions", ua: "rc-live-poll (unknown version) CFNetwork/3860.600.21 Darwin/25.5.0" });
+  const phone = run({ url: "/api/sessions", ua: "RemoteMini/83 CFNetwork/3860.600.21 Darwin/25.5.0" });
+  assert.match(probe[0], / client=probe /, "検査道具が app を名乗っている = Tom の使用実績を測れない");
+  assert.match(phone[0], / client=app /, "本物のアプリまで probe に落ちた(分けすぎ)");
+  // ★生の名乗りは probe でも行に出さない(道具の名前は指紋ではないが、規則は1つに保つ)。
+  assert.doesNotMatch(probe[0], /CFNetwork|Darwin|rc-live-poll/);
+});
+
 test("★生の名乗りは行に出ない(端末の指紋を残さない)", () => {
   const ua = "RemoteMini/1.0 CFNetwork/1498.700 Darwin/24.0.0 iPhone17,1";
   const l = run({ url: "/api/sessions", ua });

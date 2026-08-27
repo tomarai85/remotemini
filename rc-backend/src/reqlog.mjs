@@ -150,6 +150,15 @@ export function noteBody(res, obj) {
 export function clientClass(userAgent) {
   const ua = String(userAgent || "");
   if (!ua) return "none";
+  // ★検査道具を **app より先に**外す(2026-08-27)。
+  //   `ios/tools/live-*-check.sh` が建てる殻は**電話の製品 Swift をそのまま**使うので、
+  //   URLSession が `CFNetwork/… Darwin/…` を名乗る = 下の分岐で `app` に落ちる。
+  //   それを許すと「私がビルドしていない時間帯に app が出たら、それが Tom」という
+  //   **この計器の唯一の読み方が壊れる** —— 実際に今日壊した(自分の検査 20 件が
+  //   `client=app` として記録され、Tom が使ったのかを区別できなくなった)。
+  //   分ける鍵は UA の頭に出る**実行ファイル名**(実測: `rc-live-poll (unknown version)
+  //   CFNetwork/3860.600.21 Darwin/25.5.0`)。製品は `RemoteMini/<番号>` を名乗るので衝突しない。
+  if (/^rc-live-/i.test(ua)) return "probe";
   // ★app を先に見る。curl は Darwin を名乗らないので取り違えない。
   if (/CFNetwork|Darwin/i.test(ua)) return "app";
   if (/curl|wget|node|undici|python|libwww/i.test(ua)) return "tool";
