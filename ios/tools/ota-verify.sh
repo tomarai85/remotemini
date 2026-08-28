@@ -120,6 +120,88 @@ else
     un "手元に束が無いので版の突合ができない"
 fi
 
+# --- N4 机の上で秘密が他人に見えていないか -------------------------------------
+# ★2026-08-28、敵対レビューが掴んだ本物の欠陥の再発検査。配る path の秘密の一段は
+#   「推測できない」事が守りの全部なのに、初版の `adhoc-ota.sh` は `chmod -R a+rX` を
+#   撃っていた。friday の実アカウントは athenas / tomtim / udagawa の3つで全員 staff、
+#   `/Users/athenas` は drwxr-x--- なので、**秘密の hex は他の2人から一覧できた**。
+#   HTTP の側だけ測っていると此処は永久に見えない —— N1〜N3 は全部 HTTP 層。
+DESK_SSH="${RC_DESK_SSH:-athenas}"
+DESK_DIR="${RC_OTA_DIR:-ota}"
+perm=$(ssh -o ConnectTimeout=15 -o BatchMode=yes "$DESK_SSH" \
+       "stat -f '%Sp' ~/$DESK_DIR 2>/dev/null; find ~/$DESK_DIR -maxdepth 2 \( -perm -g+r -o -perm -o+r \) 2>/dev/null | wc -l" 2>/dev/null)
+top=$(printf '%s\n' "$perm" | sed -n 1p)
+loose=$(printf '%s\n' "$perm" | sed -n 2p | tr -d '[:space:]')
+if [ -z "$top" ]; then
+    un "N4 机の権限を読めない = 秘密が他人に見えていないかは**測れていない**"
+elif [ "$top" = "drwx------" ] && [ "${loose:-1}" = "0" ]; then
+    ok "N4 配る木は所有者だけ($top / 他人が読める物 0 件)"
+else
+    ng "N4 配る木が他人から読める($top / 他人が読める物 ${loose:-?} 件)= 秘密の一段が無意味"
+    say_fix="  直す手: ssh $DESK_SSH 'chmod 700 ~/$DESK_DIR && chmod -R go-rwx ~/$DESK_DIR'"
+    printf '%s\n' "$say_fix"
+fi
+
+# --- N5 **配っているバイト**が其の電話に入る形か -------------------------------
+# ★Codex 2026-08-28 の第1位の指摘。此処まで(N1〜N4 と手元の突合)が全部緑でも、
+#   実際に配られている .ipa の `embedded.mobileprovision` に其の端末の UDID が
+#   入っていなければ、電話は「インストールできません」としか言わない。
+#   ★手元の束を見ても駄目 —— 測るべきは**机から降ってくるバイト**。
+#   置き間違い・古い束の置き去り・署名し直し忘れは、全部此処にしか出ない。
+tmp_ipa="$(mktemp -t rc-ota-check).ipa"
+if curl -s --max-time 90 -o "$tmp_ipa" "$BASE/RemoteMini.ipa" && [ -s "$tmp_ipa" ]; then
+    tmp_dir="$(mktemp -d -t rc-ota-x)"
+    if /usr/bin/unzip -qq -o "$tmp_ipa" "Payload/*/embedded.mobileprovision" "Payload/*/Info.plist" -d "$tmp_dir" 2>/dev/null; then
+        prov="$(find "$tmp_dir" -name embedded.mobileprovision | head -1)"
+        info="$(find "$tmp_dir" -name Info.plist | head -1)"
+        want_udid="${RC_PHONE_UDID:-}"
+        if [ -z "$want_udid" ]; then
+            # 端末の UDID は焼き込まない。**其の場で聞く**(機体が変われば当然変わる)。
+            want_udid="$(xcrun devicectl list devices --json-output /dev/stdout 2>/dev/null \
+                | /usr/bin/python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+for x in (d.get("result",{}).get("devices") or []):
+    h=x.get("hardwareProperties",{})
+    if h.get("deviceType")=="iPhone": print(h.get("udid") or ""); break' 2>/dev/null)"
+        fi
+        n_dev="$(security cms -D -i "$prov" 2>/dev/null | plutil -extract ProvisionedDevices xml1 -o - - 2>/dev/null | grep -c "<string>")"
+        served_num="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$info" 2>/dev/null || echo "?")"
+        if [ -z "$want_udid" ]; then
+            un "N5 電話の UDID を今聞けない(ケーブル/tunnel)。profile に ${n_dev} 台在る事までは判る"
+        elif security cms -D -i "$prov" 2>/dev/null | grep -q "$want_udid"; then
+            ok "N5 配っているバイトの profile に**此の電話**が入っている(profile の端末 ${n_dev} 台 / build $served_num)"
+        else
+            ng "N5 配っているバイトの profile に**此の電話が入っていない**(端末 ${n_dev} 台)= 電話は「インストールできません」しか言わない"
+        fi
+        # 配っている物と manifest が同じ版・同じ id を名乗っているか。
+        # ★**版だけ見ていた**(2026-08-28、Codex の2周目が掴んだ)。向こうの答え:
+        #   「残る最有力は manifest の bundle-identifier か bundle-version が
+        #    束の Info.plist と一致しない事。iOS は全部取れた上で、役に立たない
+        #    文言でインストールを拒む」。id は初版が見ていなかった。
+        #   古い束の置き去りも、bundle id を変えた日の刻み忘れも、此処にしか出ない。
+        served_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$info" 2>/dev/null || echo "?")"
+        if [ -n "$man" ] && [ "$served_num" != "?" ]; then
+            m_num="$(printf '%s' "$man" | grep -A1 "bundle-version" | tail -1 | sed 's/.*<string>\(.*\)<\/string>.*/\1/')"
+            [ "$m_num" = "$served_num" ] \
+              && ok "N5b manifest と束が同じ版を名乗る(build $served_num)" \
+              || ng "N5b manifest は build $m_num と言うのに束は $served_num = 置き間違い"
+        fi
+        if [ -n "$man" ] && [ "$served_id" != "?" ]; then
+            m_id="$(printf '%s' "$man" | grep -A1 "bundle-identifier" | tail -1 | sed 's/.*<string>\(.*\)<\/string>.*/\1/')"
+            [ "$m_id" = "$served_id" ] \
+              && ok "N5c manifest と束が同じ bundle id を名乗る" \
+              || ng "N5c manifest の bundle id が束と違う(manifest=$m_id / 束=$served_id)= iOS は役に立たない文言で拒む"
+        fi
+    else
+        un "N5 配っている .ipa を開けない(壊れた zip か途中で切れた)"
+    fi
+    rm -rf "$tmp_dir"
+else
+    un "N5 配っている .ipa を取って来られない = バイトの中身は測れていない"
+fi
+rm -f "$tmp_ipa"
+
 echo
 echo "緑 $PASS / 赤 $FAIL / 未測定 $UNMEASURED"
 [ "$FAIL" -gt 0 ] && exit 1
