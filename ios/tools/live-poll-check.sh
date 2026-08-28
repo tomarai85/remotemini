@@ -82,16 +82,8 @@ bad(){ printf '  \033[31mNG  \033[0m: %s\n' "$1"; FAIL=$((FAIL+1)); }
 #   先にやった事と同じ理由 —— 判定の分岐は**本物の会話と ssh が要る**位置に埋まっていて、
 #   書いた通りに動くかを一度も測れないまま出荷される。切り出せば、観測値の全通りを
 #   `live-poll-check-control.sh` が机も電話も無しで撃てる。
-# `up` の stdout からセッション名を取る。**1行目だけ**を見て、使い捨ての名前で
-# なければ空を返す(= 呼ぶ側が止まる)。名前で当てに行かない事が此の関数の全部。
-session_from_up() {
-  local first
-  first="$(printf '%s\n' "$1" | sed -n 1p | tr -d '[:space:]')"
-  case "$first" in
-    rc-e2e-*) printf '%s' "$first" ;;
-    *) printf '' ;;
-  esac
-}
+# 名前の決め方は3本で共有する(写しを作らない)。理由は向こうの頭に在る。
+. "$IOS_DIR/tools/disposable-session-name.sh"
 
 judge_cursor_gap() {  # judge_cursor_gap <観測した出力> <期待する印> <題>
   local out="$1" want="$2" what="$3"

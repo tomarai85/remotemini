@@ -121,6 +121,8 @@ if [ "${1:-}" = "--verdict" ]; then
 fi
 
 IOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 名前の決め方は live-* 3本で共有する(写しを作らない)。理由は向こうの頭に在る。
+. "$IOS_DIR/tools/disposable-session-name.sh"
 WORK="$(mktemp -d)"
 BIN="$WORK/rc-live-send"
 SESSION=""
@@ -155,7 +157,11 @@ echo "ok: $(/usr/bin/stat -f %z "$BIN") bytes"
 echo
 echo "=== 2. edith に使い捨ての本物 TUI を建てる ==="
 UP="$(ssh "$SSH_HOST" "$REMOTE_NODE $REMOTE_TOOLS/disposable-session.mjs up")" || { echo "建たなかった"; exit 2; }
-SESSION="$(printf '%s\n' "$UP" | sed -n 1p)"
+# ★素の `sed -n 1p` から検証付きへ(2026-08-28)。1行目が使い捨ての名前で
+#   なければ**空**を返し、此処で止まる —— `up` が想定外の物を出した時に
+#   その文字列を `kill-session` まで運ばない為(fail-closed の1段目)。
+SESSION="$(session_from_up "$UP")"
+[ -n "$SESSION" ] || { echo "up が使い捨ての名前を名乗らない(建った物を特定できないので畳まない)" >&2; exit 2; }
 SID="$(printf '%s\n' "$UP" | sed -n 2p)"
 if [ -z "$SESSION" ] || [ -z "$SID" ]; then echo "up の出力が2行ではない"; exit 2; fi
 echo "セッション: $SESSION(会話 id は出さない)"

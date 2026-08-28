@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: ios/tools/live-poll-check.sh ios/tools/live-poll-main.swift
+# controls-for: ios/tools/live-poll-check.sh ios/tools/live-poll-main.swift ios/tools/disposable-session-name.sh
 #
 # `live-poll-check.sh` の**壊れた cursor の判定だけ**を、観測値の全通りで撃つ。
 #
@@ -55,6 +55,31 @@ chk 1 "網の障害に化けた"               "injected=unreachable" "cursorMal
 chk 1 "401 に化けた"                   "injected=unauthorized(401)" "cursorMalformed"
 chk 1 "空の出力(殻が落ちた)"           "" "cursorMalformed"
 chk 1 "見た事の無い形"                 "outcome=???" "cursorMalformed"
+
+# --- 自分が建てた会話をどう特定するか(crash-orphan / ABA)-----------------------
+# ★守る物: 名前の接頭辞で自分の物を**当てに行かない**事。
+#   `live-poll-check.sh` は初版で `tmux list-sessions | grep '^rc-e2e-' | tail -1` を
+#   使っていた —— 前の走行が SIGKILL や停電で落ちると孤児が残り(2026-08-28 に実在を
+#   確認)、`tail -1` が其れを掴んで cleanup で殺す。Codex 2026-08-27 が名指しした形。
+sess() {  # sess <題> <up の stdout> <期待する名前(空 = 止まるべき)>
+    local title="$1" up="$2" want="$3" got
+    got="$(bash "$TOOL" --verdict-session "$up" 2>&1 | tr -d '\n')"
+    if [ "$got" = "$want" ]; then
+        PASS=$((PASS+1)); printf 'PASS  %-46s → %s\n' "$title" "${got:-(空 = 止まる)}"
+    else
+        FAIL=$((FAIL+1)); printf 'FAIL  %-46s → "%s"(期待 "%s")\n' "$title" "$got" "$want"
+    fi
+}
+
+sess "1行目の名前を取る"            "$(printf 'rc-e2e-9001\nabc-def\n')"      "rc-e2e-9001"
+sess "2行目の会話 id を名前にしない" "$(printf 'rc-e2e-9001\nrc-e2e-9002\n')" "rc-e2e-9001"
+# ★一番危ない足。孤児の名前が出力のどこかに紛れても、1行目でなければ取らない。
+sess "孤児が2行目に居ても取らない"   "$(printf 'work\nrc-e2e-orphan\n')"      ""
+sess "本物の会話名は取らない"        "$(printf 'work\n')"                     ""
+sess "up が何も出さなければ止まる"   ""                                        ""
+sess "空白だけでも止まる"            "$(printf '   \n')"                       ""
+sess "接頭辞が惜しいだけでは取らない" "$(printf 'rc-e2f-9001\n')"              ""
+sess "前後の空白は落として取る"      "$(printf '  rc-e2e-9001  \nid\n')"      "rc-e2e-9001"
 
 echo
 echo "live-poll-check-control: PASS $PASS / FAIL $FAIL"
