@@ -1,0 +1,47 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a04aa1-0122-7680-8985-385511f7b1d9
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Terse adversarial check, English. A fix to test tooling that acts on a production machine.
+
+CONTEXT
+Three instrument scripts (send / interrupt / poll) each create a throwaway Claude Code session on a shared Mac mini, exercise the phone app's real Swift client against it, then tear it down. The same machine also hosts the owner's REAL working session. Tearing down the wrong one would kill his live work.
+
+THE BUG I FIXED TODAY
+The poll script resolved 'the session I just created' by running, over ssh: tmux list-sessions | grep '^rc-e2e-' | tail -1. That is a prefix guess. If a previous run died to SIGKILL / power loss / ssh drop, its trap never ran and an orphan survives with the same prefix — I confirmed an orphan actually existed today. The two sibling scripts did not have this bug: they read line 1 of the creator's stdout, whose contract is 'line 1 = session name, line 2 = session id, nothing else' (diagnostics go to stderr).
+
+THE FIX
+A shared sourced shell file provides session_from_up(): it reads ONLY line 1, trims whitespace, and returns empty unless it matches the disposable prefix rc-e2e-*. Empty makes the caller exit before any teardown. All three scripts now use it. The teardown tool on the server side independently refuses any name that is not a disposable name (second fail-closed layer). The session name itself carries a 19-digit crypto-random nonce, so name reuse (ABA) is not realistic.
+Controls: 18 cases driving the parser directly, including 'orphan name appears on line 2 -> return empty', 'the owner's real session name -> return empty', empty input, whitespace-only, near-miss prefix. Plus all three scripts were run end-to-end against the real machine afterwards and each verified session/registry/transcript absence after teardown.
+
+QUESTIONS
+1. Is there still a path by which one of these scripts acts on a session it did not create? Rank by real probability.
+2. The nonce is in the NAME, which anyone with a login on that machine can read via tmux ls. I documented that it defends against reuse, not against authorization. Is that the right framing, or am I underestimating something?
+3. What failure mode remains around the teardown when the script itself is killed mid-run?
+One short paragraph per question.
+2026-08-28T23:07:41.451633Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-28T23:07:41.847912Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-28T23:07:42.071539Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+1. Remaining wrong-target paths, most to least probable: the creator violates its stdout contract and emits another valid `rc-e2e-*` name on line 1; a bug passes output from the wrong creator invocation; a same-account attacker deliberately replaces the created session under its observed name; accidental nonce collision. Under the stated invariants, an ordinary orphan or concurrent run cannot redirect the script, and the owner’s non-disposable session is protected twice.
+
+2. Your framing is correct. The nonce is a unique identifier providing collision/ABA resistance, not a secret or authorization credential. It offers brief unpredictability before publication, but anyone able to inspect and manipulate that user’s tmux sessions could deliberately reuse it; the prefix guard protects real sessions, not one disposable session from another.
+
+3. `SIGKILL`, host failure, or termination outside the trap’s handled signals can leave the disposable session and associated registry/transcript state orphaned. A kill during teardown can also leave partial cleanup because those deletions are not atomic. The remaining control gap is lifecycle cleanup, best addressed by a server-side lease/TTL reaper or watchdog independent of the invoking script.
+tokens used
+13,078
+1. Remaining wrong-target paths, most to least probable: the creator violates its stdout contract and emits another valid `rc-e2e-*` name on line 1; a bug passes output from the wrong creator invocation; a same-account attacker deliberately replaces the created session under its observed name; accidental nonce collision. Under the stated invariants, an ordinary orphan or concurrent run cannot redirect the script, and the owner’s non-disposable session is protected twice.
+
+2. Your framing is correct. The nonce is a unique identifier providing collision/ABA resistance, not a secret or authorization credential. It offers brief unpredictability before publication, but anyone able to inspect and manipulate that user’s tmux sessions could deliberately reuse it; the prefix guard protects real sessions, not one disposable session from another.
+
+3. `SIGKILL`, host failure, or termination outside the trap’s handled signals can leave the disposable session and associated registry/transcript state orphaned. A kill during teardown can also leave partial cleanup because those deletions are not atomic. The remaining control gap is lifecycle cleanup, best addressed by a server-side lease/TTL reaper or watchdog independent of the invoking script.
