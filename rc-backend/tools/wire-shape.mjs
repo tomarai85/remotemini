@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// no-operator: 本番を鍵付きで叩くので門からは撃てない。形を取り直したい時に人が edith 上で撃つ
+// no-operator: 本番を鍵付きで叩くので門からは撃てない。形を取り直したい時に人が机の上で撃つ
+//   (2026-08-28: 「edith 上で」と書いてあったが、あの機体は 2026-08-20 に譲渡済。今の机は friday)
 /**
  * 本番の応答の**形**だけを取る。値は出さない。
  *
@@ -21,7 +22,7 @@
  *
  * 鍵は argv に置かない(`ps` に出る)。`RC_KEY` 環境変数から取り、出力には一切載せない。
  *
- * 使い方(edith の中で):
+ * 使い方(机の中で。今は friday):
  *   RC_KEY=$(cat ~/.rc-backend/api.key) node tools/wire-shape.mjs /api/sessions
  * 会話ごとの口(`{id}` を書くと**自分で一覧を引いて差し込む**):
  *   RC_KEY=... node tools/wire-shape.mjs '/api/sessions/{id}/history?limit=50'
