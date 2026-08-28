@@ -175,6 +175,19 @@ async function cmdUp(argv) {
     return 1;
   }
 
+  // ★建てる前に置き去りを掃く(2026-08-28)。Codex の助言:「後始末は**呼び出し側から
+  //   独立**して要る —— 台本が SIGKILL で死ぬ形は台本では拾えない」。
+  //   建てる側に入れたのは、全ての呼び手が黙って恩恵を受ける唯一の場所だから
+  //   (3 本の台本に同じ行を写すと、1 本だけ直した日に残り 2 本が古びる)。
+  //   ★既定 60 分。1 走行は数分で終わるので、其れより長く生きている使い捨ては
+  //     誰も見ていない。走行中の物を殺さない為に長く取ってある。
+  //   ★掃除が失敗しても建てるのは続ける —— 掃除は付随であって、此処の目的ではない。
+  try {
+    cmdReap(process.env.RC_DISPOSABLE_REAP_MIN || 60);
+  } catch (e) {
+    say(`注意: 置き去りの掃除でつまずいた(建てるのは続ける): ${String(e?.message || e)}`);
+  }
+
   const before = new Set(readPanes());
   tmux(["new-session", "-d", "-s", session, "-x", "120", "-y", "40", "-c", cwd]);
   const pane = tmux(["list-panes", "-t", `=${session}`, "-F", "#{pane_id}"]).trim().split("\n")[0];
@@ -430,13 +443,97 @@ function cmdDown(session, sessionId, purgeTranscript = false) {
   return bad ? 1 : 0;
 }
 
+/**
+ * 置き去りになった使い捨てを掃く(2026-08-28)。
+ *
+ * ★Codex が名指しした**唯一残った穴**: 呼び出し側が SIGKILL / 停電 / ssh 切断で死ぬと
+ *   `trap` は走らず、tmux セッションと登録簿が残る。台本の側にどんな守りを足しても、
+ *   台本が死ぬ形は台本では拾えない —— 後始末は**呼び出し側から独立**して要る。
+ *   2026-08-28 に実際に出た(別の agent の走行が残した1本。Tom の一覧に
+ *   「New session」の余分な行として出ていた)。
+ *
+ * ★守り: 名前が使い捨ての形(`rc-e2e-<数字>`)でなければ**触らない**。
+ *   `cmdDown` と同じ判定を使うので、Tom の実セッションに届く道が無い。
+ * ★齢で切る。既定 60 分 —— live-* の1走行は数分で終わるので、其れより長く
+ *   生きている使い捨ては、誰も見ていない物だと断じてよい。
+ *   ★走行中の物を殺さない為に既定を長く取ってある。短くするなら根拠を書く事。
+ */
+function cmdReap(minStr) {
+  const minutes = Number(minStr || 60);
+  if (!Number.isFinite(minutes) || minutes < 1) {
+    say(`齢の指定が読めない: ${minStr}`);
+    return 2;
+  }
+  let listed;
+  try {
+    listed = tmux(["list-sessions", "-F", "#{session_name}\t#{session_created}"]);
+  } catch {
+    say("tmux の一覧が取れない(サーバが居ないなら掃く物も無い)");
+    return 0;
+  }
+  const nowSec = Math.floor(Date.now() / 1000);
+  const cutoff = minutes * 60;
+  let swept = 0;
+  let bad = 0;
+  for (const line of listed.split("\n")) {
+    const [name, createdRaw] = line.split("\t");
+    if (!name) continue;
+    // ★此処が全部。形が合わない物は**見なかった事にする**(Tom の `work` 等)。
+    if (!/^rc-e2e-[0-9]{6,}$/.test(name)) continue;
+    const created = Number(createdRaw);
+    if (!Number.isFinite(created)) continue;
+    const age = nowSec - created;
+    if (age < cutoff) continue;
+    tmuxOk(["kill-session", "-t", `=${name}`]);
+    const gone = !tmuxOk(["has-session", "-t", `=${name}`]);
+    say(`置き去り ${name}(齢 ${Math.floor(age / 60)} 分): ${gone ? "畳んだ" : "★まだ居る"}`);
+    if (gone) swept += 1;
+    else bad += 1;
+  }
+  // 登録簿の側: プロセスが死んでいる登録は一覧に出ないが、file は残る。
+  // ★消すのは**中身の pid が死んでいる物だけ**。生きている物には触らない。
+  let stale = 0;
+  try {
+    for (const f of readdirSync(PANE_DIR)) {
+      if (!f.endsWith(".json")) continue;
+      const p = join(PANE_DIR, f);
+      let j;
+      try {
+        j = JSON.parse(readFileSync(p, "utf8"));
+      } catch {
+        continue; // 書き込み途中かもしれない。壊れて見えるだけで消さない
+      }
+      const pid = Number(j?.pid);
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+      try {
+        process.kill(pid, 0);
+        continue; // 生きている
+      } catch (e) {
+        if (e?.code === "EPERM") continue; // 居るが他人の物。触らない
+      }
+      try {
+        unlinkSync(p);
+        stale += 1;
+      } catch {
+        bad += 1;
+      }
+    }
+  } catch {
+    // PANE_DIR が読めない = 登録が無いのとは別。黙って 0 にしない為に言う。
+    say("注意: 登録簿の dir が読めない(登録が無いのとは別の事)");
+  }
+  say(`掃いた: セッション ${swept} 本 / 死んだ登録 ${stale} 件`);
+  return bad ? 1 : 0;
+}
+
 const [, , cmd, ...rest] = process.argv;
 let code = 1;
 if (cmd === "up") code = await cmdUp(rest);
+else if (cmd === "reap") code = cmdReap(rest[0]);
 else if (cmd === "lines") code = cmdLines(rest[0] || "");
 else if (cmd === "contains") code = cmdContains(rest[0] || "", rest.slice(1).join(" "));
 else if (cmd === "busy") code = cmdBusy(rest[0] || "");
 else if (cmd === "limited") code = cmdLimited(rest[0] || "");
 else if (cmd === "down") code = cmdDown(rest[0] || "", rest[1] || "", rest.includes("--purge-transcript"));
-else say("使い方: disposable-session.mjs up|lines <id>|contains <id> <本文>|busy <id>|limited <id>|down <session> <id> [--purge-transcript]");
+else say("使い方: disposable-session.mjs up|lines <id>|contains <id> <本文>|busy <id>|limited <id>|down <session> <id> [--purge-transcript]|reap [齢の分数]");
 process.exit(code);
