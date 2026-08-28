@@ -177,6 +177,9 @@ WANT_BLOCKED_ROW=testARowThatCannotBeSelectedStaysVisibleAndDisabledWithItsReaso
 #   其れは切替より新しい世代を持つので世代では捨てられない。錠を分けるのは、
 #   片方の守り(世代)を消しても もう片方(発行を止める)が残る事を別々に測る為。
 WANT_SWITCH_WINDOW=testAForegroundRefreshDuringASwitchDoesNotResurrectTheOldAccount
+# ★A9(2026-08-28)。`apply()` から `.cancelled` の分岐を抜くと此処が赤くなる。
+#   実測で踏んだ本物の欠陥で、直す**前に**赤を出してから直した。
+WANT_CANCELLED_QUIET=testACancelledLoadDoesNotReplaceTheAccountNameWithAFailure
 WANTS="$WANT_RACE $WANT_SWITCH_WINDOW $WANT_REREAD $WANT_VM_NORETRY $WANT_CLIENT_NORETRY $WANT_ONSCREEN $WANT_BLOCKED_ROW"
 
 echo "=== 基準(変異なし)"
@@ -278,6 +281,15 @@ mutate_a8() {
     /usr/bin/sed -i '' '/^        guard !isBusy else { return }$/d' "$VM"
 }
 
+# A9 途中で切れた読み取りを「失敗」として画面へ出す = 口座名の代わりに橙の
+#    「Cancelled」が出る。2026-08-28 に実際に出ていた形(`select`/`advance` は
+#    最初から畳んでいたのに `load` の通る `apply` にだけ分岐が無かった)。
+#    ★探し文は `apply()` の中の `case .failure(.cancelled):` と其の `return` の対だけ。
+#      `select`/`advance` の同名の case は本体が `await load()` なので当たらない。
+mutate_a9() {
+    /usr/bin/perl -0pi -e 's/        case \.failure\(\.cancelled\):\n(?:            \/\/[^\n]*\n)*            return\n//' "$VM"
+}
+
 probe() { # $1=名前 $2=変異関数 $3=対象file $4=赤くなるべき検査 $5=(任意)走らせ方
     local name="$1" fn="$2" target="$3" want="$4" ui="${5:-}"
     restore_all
@@ -332,6 +344,7 @@ probe A4-viewmodel-retries-switch  mutate_a4 "$VM"  "$WANT_VM_NORETRY"
 probe A6-client-retries-switch     mutate_a6 "$CL"  "$WANT_CLIENT_NORETRY"
 probe A5-bar-never-loads           mutate_a5 "$BAR" "$WANT_ONSCREEN" ui
 probe A7-blocked-row-hidden        mutate_a7 "$SV"  "$WANT_BLOCKED_ROW" ui
+probe A9-cancelled-shown-as-failure mutate_a9 "$VM"  "$WANT_CANCELLED_QUIET"
 
 # ---- 復元の確認(想定ではなく観測する)----------------------------------------
 restore_all
