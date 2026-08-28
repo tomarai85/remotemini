@@ -614,6 +614,27 @@ LOCAL_CTLS=(
                                      # ★`.harness/live-interrupt-wording-controls.sh` とは別物:
                                      #   向こうは**掴む文が2つの file で一致しているか**、此処は
                                      #   **掴んだ後にどう裁くか**。同じ台本の別の穴。
+    ../ios/tools/live-poll-check-control.sh # ★2026-08-28。姉家族2本(上)と同じ手で
+                                     # `ios/tools/live-poll-check.sh` の**壊れた cursor の判定**を
+                                     # 観測値の全通り(10 本)で撃つ。実測1秒未満。
+                                     # ★据えた理由が、書いた当日に踏んだ穴そのもの:
+                                     #   `t.not-a-number.x.y` を「形が壊れた cursor」として撃ったら
+                                     #   実測は `epochMismatch` を返した —— `pollDecision` は
+                                     #   **世代の照合を形の照合より先に**やるので、部品が4本在る限り
+                                     #   形の枝に届かない。此処で matcher を緩めて両方通していたら、
+                                     #   「取りこぼしの理由が2つとも同じに見える」を緑で固定していた。
+                                     # ★一番危ない足は「印が消えた」: 200 のまま gap が消えると
+                                     #   電話は取りこぼしを黙って捨て、画面は正常に見えたまま出力が抜ける。
+    test/ota-server-controls.sh      # ★2026-08-28。電話へ束を渡す静的配信
+                                     # (`tools/ota-server.mjs`、friday の com.fleet.rc-ota)の対照。
+                                     # 此の道には**認証が無い**(iOS の installd は独自 header を
+                                     # 送らない)ので、守っているのは秘密の path の一段・一覧を返さない事・
+                                     # ROOT の外へ出ない事・GET と HEAD だけ、の4つしかない。実測2秒。
+                                     # ★据えた時、最初は 15/15 緑で**何も測っていなかった**:
+                                     #   守りを全部外しても緑のまま。原因は **curl が既定で URL の
+                                     #   `..` を送る前に畳む**事で、traversal がサーバへ届いていなかった。
+                                     #   `--path-as-is` を足して測り直し、封じ込め除去で 6 赤・
+                                     #   素朴な startsWith で N3 だけ赤、まで確かめてから据えた。
     ../ios/tools/account-ui-control.sh # ★2026-08-12。口座の表示と切替
                                      # (REQUIREMENTS §4-5 / §5-8)の負の対照(変異4本)。
                                      # 守るのは全部「画面が机と食い違う」形の欠陥で、
