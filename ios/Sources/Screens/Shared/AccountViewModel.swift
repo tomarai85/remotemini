@@ -196,6 +196,22 @@ final class AccountViewModel: ObservableObject {
         case .failure(.unauthorized):
             phase = .failed(reason: "The key was rejected")
             onUnauthorized()
+        case .failure(.cancelled):
+            // ★見せる価値のある失敗ではない。`select`/`advance` は最初から此れを
+            //   畳んでいたのに、`load` が通る此処にだけ分岐が無く、**口座名の代わりに
+            //   橙の「Cancelled」**が出ていた(2026-08-28 実測、赤を再現してから直した)。
+            //
+            //   誰が切るのか: `AccountBar` の `.task { await load() }` は Settings を
+            //   押し開ける `NavigationLink` の上に載っている。**其の口を叩く事其れ自体**が
+            //   飛んでいる読み取りを切る。初回起動の TLS の握手だけで実測 6030ms なので、
+            //   間に合ってしまう。`load` の `guard mine == generation` では防げない ——
+            //   あれが捨てるのは新しい操作に追い越された結果で、此処は追い越しが無い。
+            //
+            //   何もしないのが正しい: 読めていたなら其の一覧が残る(古いが真)。
+            //   一度も読めていないなら `.loading` のまま —— 画面が戻れば `.task` が
+            //   必ずもう一度走るので、自分で治る。`await load()` を此処から呼ばないのは、
+            //   切られ続ける状況で無限に往復させない為。
+            return
         case .failure(let error):
             phase = .failed(reason: Self.message(for: error))
         }

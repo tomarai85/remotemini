@@ -601,6 +601,65 @@ final class AccountViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.isBusy, "切替が終わったのに塞がったまま")
     }
 
+    // MARK: - 途中で切れた読み取り
+
+    /// ★2026-08-28。`select`/`advance` は `.cancelled` を「見せる価値のある失敗ではない」と
+    ///   明示して畳んでいるのに、`load` が使う `apply` にだけ其の分岐が無く、
+    ///   **口座名の代わりに橙色の「Cancelled」**が出ていた。
+    ///
+    ///   誰が切るのか(Reviewer が経路を特定): `AccountBar` の `.task { await load() }` は
+    ///   Settings を押し開ける `NavigationLink` の上に載っている。だから**その口を叩く事
+    ///   其れ自体**が、飛んでいる読み取りを切る。`BackendSession.interactiveTimeout` は 20 秒、
+    ///   初回の TLS の握手だけで実測 6030ms —— 初回起動で叩けば普通に間に合ってしまう。
+    ///
+    ///   `load` の `guard mine == generation` では防げない。あれが捨てるのは**新しい操作に
+    ///   追い越された**結果で、此処は追い越しが無い(世代が進まない)まま自分の Task が
+    ///   切られた場合だから。
+    func testACancelledLoadDoesNotReplaceTheAccountNameWithAFailure() async {
+        let api = StubAccountAPI()
+        api.currentResults = [
+            .success(listing(current: "team", names: ["team", "biz"])),
+            .failure(.cancelled),
+        ]
+        let viewModel = makeViewModel(api)
+
+        await viewModel.load()
+        XCTAssertEqual(viewModel.currentName, "team")
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.currentName, "team",
+                       "途中で切れただけの読み取りが、読めていた口座名を消した")
+        XCTAssertEqual(viewModel.phase, .loaded(listing(current: "team", names: ["team", "biz"])),
+                       "切れた読み取りが .failed へ落ちている(画面には橙の Cancelled が出る)")
+    }
+
+    /// 一度も読めていない時に切られた場合。`.failed` にはしない ——
+    /// 読み込み中のまま置き、次の `.task` の走行に任せる(画面が戻れば必ず走る)。
+    func testACancelledFirstLoadStaysLoadingInsteadOfShowingAFailure() async {
+        let api = StubAccountAPI()
+        api.currentResults = [.failure(.cancelled)]
+        let viewModel = makeViewModel(api)
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.phase, .loading,
+                       "一度も読めていない切断が .failed になった = 初回起動で橙が出る")
+    }
+
+    /// ★対になる検査。`.cancelled` を畳む変更が、**本物の失敗まで飲み込んでいない**事。
+    ///   これが無いと「全部 .loading のまま置く」でも上の2本は緑になる。
+    func testARealFailureStillReachesTheScreen() async {
+        let api = StubAccountAPI()
+        api.currentResults = [.failure(.unreachable)]
+        let viewModel = makeViewModel(api)
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.phase, .failed(reason: "Can't reach the desk"),
+                       "本物の到達不能まで黙らされている")
+    }
+
     // MARK: - 文言
 
     /// 文言は view ではなく此処に在る(SwiftUI を立てずに測れる場所)。
