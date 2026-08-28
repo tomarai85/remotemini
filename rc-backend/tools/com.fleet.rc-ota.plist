@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.fleet.rc-ota  (Friday / athenas。2026-08-28 新設)
+  ============================================================================
+  電話へ**新しい束を渡す**だけの極小の配信。会話の面(com.fleet.rc-backend)とは
+  別プロセスに切ってある。
+
+  ★なぜ在るか
+    Tom「同じ WIFI じゃないといけないの論外」。実測でその通りだった:
+    `xcrun devicectl` の tunnel は USB か同一 LAN の探索(mDNS)の上に建ち、
+    Tailscale は L3 なので mDNS を運ばない。電話が tailnet に居ても
+    (実測 10.0.0.0)devicectl は tunnelState: unavailable を返し、
+    tailnet の IP を直に指すと「そんな端末は無い」で落ちる。
+    だから配布の経路を替えた: Ad Hoc 署名の .ipa を此処が配り、電話は
+    itms-services で取りに来る。Apple へ binary を送らない。
+
+  ★なぜ rc-backend の中に入れないのか
+    此の道は**認証を付けられない**(iOS の installd は独自 header を送らない)。
+    其れを電話の生命線である rc-backend へ足すと、認証を外す分岐が本体に増える。
+    別プロセスなら、壊れても壊れるのは配布だけで会話は生きている。
+
+  ★守り(認証が無い代わりに、此の3つが全部要る)
+    1. 127.0.0.1 にしか bind しない。外へ出る面は tailscale serve の 9443 だけで
+       其れは tailnet 限定(Funnel が使えるのは 443 / 8443 / 10000 のみ)。
+    2. 配る path に**推測できない一段**を噛ませる。Tom の tailnet には今も
+       edith(2026-08-20 に家族さんへ譲渡した機体)が居る = tailnet 限定は
+       「Tom だけ」を意味しない。
+    3. 一覧を返さない / ROOT の外へ出られない / GET と HEAD 以外を受けない。
+       検査 = rc-backend/test/ota-server-controls.sh(守りを外すと 6 本赤くなる事まで実測)。
+
+  ★serve の判定との関係(2026-08-28 に読んで確かめた)
+    tools/serve-decision.sh の述語は各 Web entry の `Handlers["/"]` しか見ない。
+    9443 に `/ota` を足しても判定は `ok` のままで、rc-backend の起動ラッパは
+    毎回の入れ直しでも此の handler を消さない(あの台本は reset を撃たない)。
+
+  INSTALL(私が実行する。可逆なローカル操作 = Tom ゲートではない):
+    scp rc-backend/tools/ota-server.mjs        athenas:/Users/athenas/rc-backend/tools/
+    scp rc-backend/tools/com.fleet.rc-ota.plist athenas:/Users/athenas/Library/LaunchAgents/
+    ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-ota.plist'
+    ssh athenas '/Applications/Tailscale.app/Contents/MacOS/Tailscale serve is not a file server on this
+                 variant; the handler must proxy: serve is added with set path ota to http 127.0.0.1 8788'
+
+  UNINSTALL(全部戻す手):
+    ssh athenas 'launchctl bootout gui/501/com.fleet.rc-ota'
+    ssh athenas '/Applications/Tailscale.app/... serve is removed with set path ota off'
+    ssh athenas 'rm rf /Users/athenas/ota'
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fleet.rc-ota</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/athenas/rc-backend/tools/ota-server.mjs</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/athenas/rc-backend</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/athenas</string>
+    <key>OTA_ROOT</key>
+    <string>/Users/athenas/ota</string>
+    <key>OTA_PORT</key>
+    <string>8788</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/athenas/Library/Logs/rc-backend/rc-ota.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/athenas/Library/Logs/rc-backend/rc-ota.log</string>
+</dict>
+</plist>

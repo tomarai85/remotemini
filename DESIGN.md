@@ -13830,3 +13830,97 @@ disk に在る。★**本文は指紋に入れない** —— この repo が引
 
 実証(両向きとも実測): `attention` の絞りを外す(何でも鳴らす)→ `unknown` のケースが赤 /
 `fire` の枝を殺す(何も鳴らさない)→ `now` 2 回のケースが赤。
+
+
+## §11 束を渡す道(com.fleet.rc-ota) — 2026-08-28
+
+### なぜ在るか
+
+Tom「同じ WIFI じゃないといけないの論外」。実測すると其の通りで、しかも **Xcode の経路では
+原理的に解けない**: `xcrun devicectl` の tunnel は USB か**同一 LAN の探索(mDNS)**の上に建ち、
+Tailscale は L3 なので mDNS を運ばない。電話が tailnet に居ても(実測 10.0.0.0)
+`tunnelState: unavailable` を返し、`--device <tailnet の IP>` は
+「そんな端末は無い」(CoreDeviceError 1000)で落ちる。だから配布の経路その物を替える。
+
+### 形
+
+```
+Jervis                         friday(机)                       Tom の iPhone
+ build.sh --no-install          ~/ota/<秘密の一段>/               (tailnet に居れば
+ adhoc-ota.sh                     RemoteMini.ipa                   何処からでも)
+   Ad Hoc 署名で焼き直す           manifest.plist                     Safari で
+   (get-task-allow=false)         index.html                        導線の頁を開いて tap
+                                       ↑
+                            com.fleet.rc-ota
+                            node tools/ota-server.mjs
+                            127.0.0.1:8788
+                                       ↑
+                            tailscale serve 9443 /ota
+                            (tailnet 限定)
+```
+
+会話の面は `tailscale serve 9443 /` → `127.0.0.1:8787`(rc-backend)のまま。
+**同じ入口の別の path** に載せるので、証明書も host 名も既存の物をそのまま使える。
+
+### 据え方
+
+```
+scp rc-backend/tools/ota-server.mjs         athenas:/Users/athenas/rc-backend/tools/
+scp rc-backend/tools/com.fleet.rc-ota.plist athenas:/Users/athenas/Library/LaunchAgents/
+ssh athenas 'mkdir -p ~/ota && chmod 755 ~/ota'
+ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-ota.plist'
+ssh athenas '/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg --yes --https=9443 --set-path=/ota http://127.0.0.1:8788'
+```
+
+外す時は `launchctl bootout gui/501/com.fleet.rc-ota` と、同じ `--set-path=/ota off`。
+
+★**ファイルを直接 serve できない**。Mac App Store 版の Tailscale は
+`Path serving is not supported on macOS due to sandbox restrictions` を返す(実測)。
+proxy を的にした `--set-path` は通るので、静的配信を別プロセスに切ってある。
+
+★足す前に `tools/serve-decision.sh` の述語を読む事。各 Web entry の `Handlers["/"]` しか
+見ないので `/ota` を足しても起動時の判定は `ok` のまま(実測で確認)。読まずに足すと、
+rc-backend の起動のたびに「他人が居る」の**偽の警告**が出る。
+
+### なぜ rc-backend の中に入れないか
+
+此の道には**認証を付けられない** —— iOS の `installd` は manifest と .ipa を取りに来る時、
+独自の header を送らない。其れを電話の生命線である rc-backend へ足すと、認証を外す分岐が
+本体に1本増える。別プロセスなら、欠陥が出ても壊れるのは配布だけで会話は生きている。
+
+### 守り(認証が無い代わりに、4つ全部が要る)
+
+| 守り | 実測での確かめ方 |
+|---|---|
+| `127.0.0.1` にしか bind しない | `lsof -nP -iTCP:8788 -sTCP:LISTEN` |
+| 外へ出る面は tailnet 限定の 9443 だけ | Funnel が使えるのは 443 / 8443 / 10000 のみ = 構造的に公開できない |
+| 推測できない path の一段(24 桁 hex) | **焼き直しても変えない**。変えると Tom の栞が死ぬ |
+| 一覧を返さない / ROOT の外へ出ない / GET と HEAD のみ | `test/ota-server-controls.sh` |
+
+★秘密の一段が要る理由: **tailnet 限定は「Tom だけ」を意味しない**。実測 2026-08-28、
+Tom の tailnet には今も `edith`(2026-08-20 に家族さんへ譲渡した機体)が居る。
+
+### なぜ TestFlight ではないか
+
+| | Ad Hoc OTA(採った) | TestFlight |
+|---|---|---|
+| Apple へ binary を送る | 送らない | 送る(取り消せない外部送信) |
+| App Store Connect のアプリ登録 | 要らない | 要る(名前が全世界で予約される) |
+| 反映まで | scp が終わった瞬間 | Apple の処理待ち |
+| 束の寿命 | 消すまで | 90 日で消える |
+
+制約は「端末が Ad Hoc profile に登録済みである事」だけ。Tom の iPhone は既に登録済み。
+
+### 実証
+
+`test/ota-server-controls.sh`: 本物 15/15 緑 / **封じ込めを外すと 6 赤 /
+素朴な `startsWith(ROOT)` にすると N3 だけ赤**。どの守りがどの対照に対応しているかまで測れている。
+
+★此の対照は最初 15/15 緑で**何も測っていなかった**。守りを全部外しても緑のまま。
+原因は **curl が既定で URL の `..` を送る前に畳む**事で、traversal がサーバへ届いていなかった。
+`--path-as-is` を足して測り直した。
+
+`ios/tools/ota-verify.sh`: 外(机の LAN の外)から 7/7 緑。
+★`000` は応答ではないので**未測定**に落とす。1.8MB を置いた直後に線が瞬いた走行で、
+「導線の頁が 000」= 赤 と「出鱈目な秘密は通らない(000)」= **緑**を同時に作った ——
+後者は繋がらなかった事を「正しく拒んだ」と読んでいる。N2 は `404` を名指しで要求する。

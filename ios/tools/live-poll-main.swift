@@ -20,20 +20,55 @@ import Foundation
 
 @main
 enum LivePoll {
+    /// ★stdin は一度しか読めない。読んだ物を持っておく —— 初版は `readLines` を
+    ///   2 度呼ぶ形で書きかけ、2 度目が必ず空になる(同じ罠を此処で止める)。
+    static var stdinLines: [String] = {
+        guard let all = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) else { return [] }
+        return all.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+    }()
+
+    static func readAllLines() -> [String] { stdinLines }
+
     static func readLines(_ n: Int) -> [String]? {
-        guard let all = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) else { return nil }
-        let lines = all.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let lines = stdinLines
         guard lines.count >= n else { return nil }
-        return Array(lines.prefix(n)).map { $0.trimmingCharacters(in: .whitespaces) }
+        return Array(lines.prefix(n))
     }
 
     static func main() async {
         guard let input = readLines(3), let baseURL = URL(string: input[0]) else {
-            FileHandle.standardError.write(Data("入力は stdin の3行(URL / 会話 id / 鍵)\n".utf8))
+            FileHandle.standardError.write(Data("入力は stdin の3行(URL / 会話 id / 鍵)、任意で4行目に撃つ cursor\n".utf8))
             exit(2)
         }
         let sessionID = input[1]
         let apiKey = input[2]
+
+        // ★4行目(任意)= **こちらから撃つ cursor**。2026-08-28 に足した。
+        //   無ければ従来通り空 = 「今在る物を全部くれ」。
+        //   在れば **1回だけ**撃って、返って来た物の分岐と gap の理由を出して終わる ——
+        //   壊れた cursor を渡した時の振る舞いを測る為の口で、2回目の往復は測らない。
+        let all = readAllLines()
+        let injected: String? = all.count >= 4 && !all[3].isEmpty ? all[3] : nil
+        if let raw = injected {
+            let one = await PollClient().poll(baseURL: baseURL, apiKey: apiKey,
+                                              sessionID: sessionID,
+                                              cursor: PollCursor(raw: raw), waitMs: 2000)
+            switch one {
+            case .success(let r):
+                // ★gap の**理由だけ**を出す。会話の中身は1文字も出さない。
+                //   理由は閉じた語彙(`GapWhy`)なので、出しても自由文が漏れない。
+                let gaps = r.items.compactMap { item -> String? in
+                    if case .gap(let g) = item { return "\(g.why)" }
+                    return nil
+                }
+                print("injected=success items=\(r.items.count) gaps=\(gaps.joined(separator: ","))")
+                exit(0)
+            default:
+                print("injected=\(one)")
+                exit(1)
+            }
+        }
 
         // ★空の cursor から始める = 「今在る物を全部くれ」。待ちは短くする ——
         //   此の殻が測るのは「読める応答が届くか」であって、長ポーリングの粘りではない
