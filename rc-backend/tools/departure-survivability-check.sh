@@ -1,6 +1,9 @@
 #!/bin/bash
-# no-operator: 渡米前に人が撃つ(PRE-DEPARTURE-2026-08-20.md の最後の手順)。生きた edith と
-#   tailnet が要るので門からは回せない —— 回線が落ちている日の commit が全部止まる
+# no-operator: 人が撃つ。生きた机(friday)と tailnet が要るので門からは回せない
+#   —— 回線が落ちている日の commit が全部止まる。
+#   ★元は「渡米前に1回」(PRE-DEPARTURE-2026-08-20.md)の道具だった。渡米は済み、
+#     edith も譲渡された。今の用途は「**電話の机が留守中に生き延びるか**」で、
+#     撃つ機会は渡米前ではなく「机から離れる前」全般。
 # departure-survivability-check.sh — 「3週間、誰も触らない edith は生き延びるか」を
 # **Jervis から1回で**測る。渡米直前に撃つ。
 #
@@ -18,7 +21,7 @@
 #   (2) job が今この瞬間 動いている事 … plist が正しくても、落ちて再起動を繰り返す形は別問題
 #   (3) 面が 401 を返す事      … 200 は鍵が外れている印。tailnet 内の誰でも読める状態
 #   (4) 空き容量               … 3週間分のログと OS 更新の置き場
-#   (5) 鎖②③を戻す物が在る事 … com.tom.work-tmux と com.edith.rc-phone-window が
+#   (5) 鎖②③を戻す物が在る事 … 電話の窓を戻す job が
 #         launchctl に居るか。①(rc-backend)だけ見て「電話が使える」と読むのが
 #         DESIGN §6 が名指しで警告している誤読。サーバが上がっても、tmux と
 #         その中の会話が戻らなければ「読めるが送れない」で止まる
@@ -53,7 +56,19 @@
 # 出さない物: 会話 id / 機器名 / 鍵。tailnet は**台数と残日数だけ**を出す。
 set -u
 
-HOST="${RC_EDITH_HOST:mail-redacted@example.invalid}"
+# ★2026-08-28: 宛先を edith から friday(ssh 別名 `athenas`)へ。
+#   edith は 2026-08-20 に譲渡され艦隊機ではなく、渡米も済んでいる = **この道具が書かれた
+#   時の機会は過ぎた**。だが測っている9項目(tailnet 鍵の期限 / job の生存 / 401 / 空き容量 …)は
+#   **friday に対してそのまま有効**で、しかも friday は今 電話の机そのものなので、
+#   ここが死ぬと電話も死ぬ。機会ではなく**測っている性質**の方が生きているので、宛先を移す。
+#   env 名 `RC_EDITH_HOST` は据え置き(他の道具と揃える。改名の代金は機能を増やさない)。
+HOST="${RC_EDITH_HOST:-athenas}"
+# ★2026-08-28: job のラベルも**焼き込まない**。宛先だけ friday へ移して
+#   ラベルを edith 時代のまま残していたら、**赤3件が全部誤報**になった
+#   (friday の実体は com.fleet.*、`com.tom.work-tmux` はそもそも存在しない)。
+#   誤報を出す道具は、出さない道具より悪い —— 読む人が赤を無視する様になる。
+JOB_RC="${RC_JOB_BACKEND:-com.fleet.rc-backend}"
+JOB_PHONE="${RC_JOB_PHONE_WINDOW:-com.fleet.rc-phone-window}"
 # 旅程。帰国が延びた時に「余裕がある」と嘘を吐かない為、上書きできる
 TRIP_DAYS="${RC_TRIP_DAYS:-30}"
 
@@ -93,7 +108,12 @@ echo
 # 冷起動の鎖は edith の上の coldboot-chain.sh に**そのまま**やらせて、
 # 出力と終了コードを持ち帰る(判定を此処で作り直さない = 写しを作らない)。
 # ---------------------------------------------------------------------------
-RAW=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" '
+# ★ラベルは**向こうの shell へ渡す**。下の本体は単一引用符なので、この中に `$JOB_RC` と
+#   書いても手元では展開されず、向こうでは未定義 = 空文字になる。空文字で awk の
+#   `$3 == L` を回すと誰にも一致せず、**生きている job を「居ない」と報告する**
+#   (2026-08-28、パラメータ化した直後に自分で作って自分で踏んだ)。
+#   隣接する引用符は bash が1つの引数へ繋ぐので、前置きだけ二重引用符にする。
+RAW=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" "JOB_RC='$JOB_RC'; JOB_PHONE='$JOB_PHONE';"'
     p() { printf "%s=%s\n" "$1" "$2"; }
 
     CB="$HOME/rc-backend/tools/coldboot-chain.sh"
@@ -109,12 +129,11 @@ RAW=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" '
     fi
     p pw_sha "$(shasum -a 256 "$HOME/rc-backend/tools/ensure-phone-window.sh" 2>/dev/null | awk "{print \$1}")"
 
-    p job_rc  "$(launchctl list 2>/dev/null | awk "\$3 == \"com.edith.rc-backend\" { print \$2; exit }")"
-    p job_pid "$(launchctl list 2>/dev/null | awk "\$3 == \"com.edith.rc-backend\" { print \$1; exit }")"
+    p job_rc  "$(launchctl list 2>/dev/null | awk -v L="$JOB_RC" "\$3 == L { print \$2; exit }")"
+    p job_pid "$(launchctl list 2>/dev/null | awk -v L="$JOB_RC" "\$3 == L { print \$1; exit }")"
 
     # 鎖②③を戻す物。値の意味: 空=居ない / - =まだ終了コードが無い(走行中) / 数字=最後の終了コード
-    p tmux_job  "$(launchctl list 2>/dev/null | awk "\$3 == \"com.tom.work-tmux\" { print \$2; exit }")"
-    p phone_job "$(launchctl list 2>/dev/null | awk "\$3 == \"com.edith.rc-phone-window\" { print \$2; exit }")"
+    p phone_job "$(launchctl list 2>/dev/null | awk -v L="$JOB_PHONE" "\$3 == L { print \$2; exit }")"
 
     # 鎖④。生死判定は**本番の /api/sessions にやらせる**(此処で aliveKind を作り直さない)。
     # 鍵は argv にも env にも置かない(ps から見える)。python が鍵ファイルを直接読む。
@@ -254,7 +273,7 @@ sha_line "ensure-phone-window.sh" "$HERE/ensure-phone-window.sh" "$(g pw_sha)"
 echo
 echo "面が上がっている事(冷起動の鎖とは別の問い = 今の状態)"
 if [ -z "$(g job_pid)" ]; then
-    say_bad "com.edith.rc-backend が launchctl に居ない"
+    say_bad "$JOB_RC が launchctl に居ない"
 elif [ "$(g job_rc)" = "0" ]; then
     say_ok "稼働中(最後の終了コード 0)"
 else
@@ -281,8 +300,11 @@ job_line() {   # job_line <表示名> <値> <終了コードの読み方の在�
         *)   say_bad "$1 の最後の終了コードが $2 —— 読み方は $3" ;;
     esac
 }
-job_line "com.tom.work-tmux"          "$(g tmux_job)"  "tmux の session work を作る側"
-job_line "com.edith.rc-phone-window"  "$(g phone_job)" "tools/ensure-phone-window.sh の冒頭の終了コード表"
+# ★`com.tom.work-tmux` の行は落とした(2026-08-28)。あれは edith の端末路
+#   (Blink + mosh + tmux)で `work` セッションを作り直す物で、**friday には存在しない**。
+#   今の電話はアプリ経由で、話す相手は Tom 自身が机で作った会話のペインなので、
+#   再起動後にそれを機械が作り直す必要が無い。無い物を探して赤を出すのは誤報。
+job_line "$JOB_PHONE"  "$(g phone_job)" "tools/ensure-phone-window.sh の冒頭の終了コード表"
 
 # --- 鎖④(今この瞬間、話せる相手が居るか)------------------------------------
 echo
@@ -585,8 +607,27 @@ fi
 #   600 を此処へ書き写すと、向こうの刻みを変えた日に此処が黙って嘘になる。
 #   読めなければ閾値が作れないので **未測定**(既定値へ落として緑にしない)。
 echo
-echo "見張りの側(edith が落ちた事を知らせる監視そのものが生きているか)"
+echo "見張りの側(机が落ちた事を知らせる監視そのものが生きているか)"
 MON_HOST="${RC_MONITOR_HOST:-athenas}"
+# ★2026-08-28: **見張りと見張られる側が同じ機体になった**。此の節は元々
+#   「edith が落ちた事を知らせるのは athenas の監視だけ」という**二機の前提**で書かれている。
+#   edith が譲渡され、机が friday(=athenas)へ移った結果、両方が同じ機体を指す ——
+#   その時この節の緑は「監視が動いている」しか言わず、**肝心の『落ちた時に知らせる』は
+#   構造的に成り立たない**(機体ごと落ちれば見張りも一緒に落ちる)。
+#   緑で通すと、単一障害点を「監視あり」と読み替える事になるので名指しする。
+SELF_WATCH=0
+[ "$MON_HOST" = "$HOST" ] && SELF_WATCH=1
+if [ "$SELF_WATCH" = 1 ]; then
+    # ★赤にしない(2026-08-28、自分で踏んで学んだ)。これは**この走行の結果**ではなく
+    #   topology の性質で、別の機体が現れるまで**毎回必ず**出る。毎回赤い検査は
+    #   読まれなくなる —— 直前に「誤報を出す道具は出さない道具より悪い」と書いた自分が、
+    #   同じ形を別の顔で作りかけた(対照 46 件が一斉に「終了 1」で落ちて気付いた)。
+    #   的としては evidence と handoff に残す。ここは**見落とされない注記**に留める。
+    say_note "★見張りが**見張られる側と同じ機体**に居る($MON_HOST)= 機体ごと落ちれば誰も知らせない"
+    say_note "  元は二機の前提(edith を athenas が見張る)。edith 譲渡で机が friday へ移り、"
+    say_note "  両方が同じ機体を指す様になった。直すには**別の機体**か外部の見張りが要る"
+    say_note "  (下の緑は『監視の常駐が動いている』までで、落ちた時に届くかは別問題)"
+fi
 MON_LABEL="com.fleet.rc-health-observer"
 # ssh は host ごとに1本。edith の1本目と混ぜない = 向こうが落ちても此処までの判定は残る
 MRAW=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$MON_HOST" '

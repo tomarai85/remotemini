@@ -41,7 +41,6 @@ fail=0
 GOOD='cb_rc=0
 job_rc=0
 job_pid=574
-tmux_job=0
 phone_job=0
 alive=1
 alive_total=22
@@ -78,10 +77,15 @@ for a in "$@"; do
         *) dest="$a"; break ;;
     esac
 done
-case "$dest" in
-    *athenas*) cat "$FAKE_MON_ANSWER" ;;
-    *)         cat "$FAKE_SSH_ANSWER" ;;
-esac
+# ★2026-08-28: 宛先では見分けられなくなった。机(HOST)と見張り(MON_HOST)が
+#   **同じ機体**を指す様になった為(edith 譲渡で両方 friday)。
+#   代わりに**問い合わせの中身**で見分ける —— 本体の問い合わせだけが JOB_RC を渡す。
+#   ★宛先で見分ける形に戻すと、二つの ssh が同じ返答を受け取り、58 件が一斉に赤くなる。
+if printf "%s\n" "$@" | grep -q "JOB_RC="; then
+    cat "$FAKE_SSH_ANSWER"
+else
+    cat "$FAKE_MON_ANSWER"
+fi
 EOS
 chmod +x "$T/bin/ssh"
 
@@ -220,6 +224,10 @@ replace() {
     ' || { echo "対照の綴り間違い: $1 は GOOD に無い" >&2; exit 2; }
 }
 
+# 対照が渡すラベル。**実機の名前を書かない** —— 検査したいのは
+# 「渡したラベルで探し、そのラベルで報告するか」であって、今日の艦隊の綴りではない。
+JOB_PHONE_LABEL="com.control.phone-window"
+
 run() {  # run <answer-text> [args...]
     local ans="$1"; shift
     printf '%s\n' "$ans" > "$T/answer"
@@ -227,6 +235,7 @@ run() {  # run <answer-text> [args...]
     OUT=$(FAKE_SSH_ANSWER="$T/answer" FAKE_MON_ANSWER="$T/mon-answer" \
           FAKE_XCRUN_MODE="$XMODE" FAKE_APP_VER="$XVER" FAKE_WANT_NUM="$WANTNUM" \
           FAKE_INV_MODE="$XINV" FAKE_INV_IDS="$XIDS" RC_PHONE_EXPECTED="$XEXP" \
+          RC_JOB_PHONE_WINDOW="$JOB_PHONE_LABEL" \
           RC_PHONE_XCRUN="$XBIN" RC_BUILD_SH="$BSH" PATH="$T/bin:$PATH" bash "$SUT" "$@" 2>&1)
     RC=$?
 }
@@ -261,8 +270,7 @@ probe "I tailscale が無い"       ts_state    "ts_state=absent" 1 "経路そ�
 
 # --- 鎖②③ を戻す job(此処が空なら「読めるが送れない」)---------------------
 # ①(rc-backend)が緑でも②③が死んでいれば電話からは打ち込めない。その差が出るか。
-probe "O phone job が異常終了" phone_job "phone_job=1" 1 "com.edith.rc-phone-window の最後の終了コードが 1"
-probe "Q tmux job が異常終了"  tmux_job  "tmux_job=9"  1 "com.tom.work-tmux の最後の終了コードが 9"
+probe "O phone job が異常終了" phone_job "phone_job=1" 1 "$JOB_PHONE_LABEL の最後の終了コードが 1"
 probe "R phone job が走行中"   phone_job "phone_job=-" 2 "走っている最中に見た"
 
 # --- 鎖④ 今この瞬間 話せる相手が居るか ---------------------------------------
@@ -569,14 +577,16 @@ else ng "CM --help が途中で切れている / コードまで出している"
 # 「異常終了」と「そもそも登録されていない」は別の壊れ方。後者の方が渡米では致命的
 # (再起動の後、鎖を戻す物が誰も居ない)。
 run "$(printf '%s\n' "$GOOD" | grep -v '^phone_job=')" --days 30
-if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q "com.edith.rc-phone-window が launchctl に居ない"; then
+if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q "$JOB_PHONE_LABEL が launchctl に居ない"; then
     ok "V phone job 不在 -> 赤"
 else ng "V phone job 不在: 終了 $RC"; fi
 
-run "$(printf '%s\n' "$GOOD" | grep -v '^tmux_job=')" --days 30
-if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q "com.tom.work-tmux が launchctl に居ない"; then
-    ok "W tmux job 不在 -> 赤"
-else ng "W tmux job 不在: 終了 $RC"; fi
+# ★Q / W(tmux job の異常終了・不在)は 2026-08-28 に**落とした**。
+#   道具側から `com.tom.work-tmux` の行を消したから(実測: friday の launchctl に
+#   そのラベルは存在しない。edith の端末路の名残)。**対照だけ残すと、消えた機能の
+#   不在を「退行」と読む赤が毎回出る** —— 直前に自分で作りかけた「永久に赤い検査」と
+#   同じ形。機能を消したら、その対照も同じ commit で消す。復活させるなら
+#   `launchctl list` に実在を確かめてから。
 
 # --- X: ①が緑でも②③④が死んでいれば赤 -------------------------------------
 # この検査を足した理由そのもの。「サーバが上がった = 電話が使える」と読ませない。

@@ -35,8 +35,15 @@ FDESETUP="${CB_FDESETUP:-/usr/bin/fdesetup}"
 DEFAULTS="${CB_DEFAULTS:-/usr/bin/defaults}"
 PMSET="${CB_PMSET:-/usr/bin/pmset}"
 PLISTBUDDY="${CB_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
-PLIST="${CB_PLIST:-$HOME/Library/LaunchAgents/com.edith.rc-backend.plist}"
-WANT_USER="${CB_USER:-edith}"
+# ★2026-08-28: 既定を **機械から導く**形へ。元は `com.edith.rc-backend.plist` と `edith` が
+#   焼いてあり、friday で回すと「自動ログインが athenas(欲しいのは edith)」「plist が無い」の
+#   **2件が誤報**として赤になった —— 実際の性質(FileVault off / 通電で起動 / 眠らない)は全部緑。
+#   この道具は自分で「走らせる場所 = 見たい機械そのもの」と書いているのに、
+#   期待値だけが特定の機体に固定されていた。
+#   ・自動ログインすべき利用者 = **この検査を走らせている利用者**(単独利用の mini ではこれが正)
+#   ・plist = LaunchAgents の中の `*rc-backend.plist` を**探す**(ラベルは機体で違う)
+PLIST="${CB_PLIST:-$(ls "$HOME/Library/LaunchAgents/"*rc-backend.plist 2>/dev/null | head -1)}"
+WANT_USER="${CB_USER:-$(id -un)}"
 
 broken=0; unmeasured=0; ok=0
 ng()  { echo "★NG   $*" >&2; broken=$((broken+1)); }
