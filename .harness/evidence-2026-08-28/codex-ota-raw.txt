@@ -1,0 +1,29 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a04a9e-4db6-70f2-8c84-f2c5bf1db693
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Terse adversarial check of an Ad Hoc iOS OTA delivery path, English.
+
+Design: Apple-Distribution-signed .ipa + itms-services manifest served from the owner's own Mac mini, on a Tailscale-tailnet-only HTTPS port (Funnel cannot reach it: Funnel only supports 443/8443/10000). A ~100-line node static server binds 127.0.0.1 and is exposed only via 'tailscale serve --set-path=/ota'. No authentication is possible because iOS installd sends no custom headers; the substitutes are tailnet-only exposure, a 24-hex unguessable path segment, owner-only file permissions (700/go-rwx), no directory listing, realpath containment with a separator-aware prefix check, and GET/HEAD only.
+
+Already found and fixed today, do not re-report: (a) traversal controls were green while testing nothing because curl folds '..' before sending — fixed with --path-as-is and proven by mutants; (b) the deploy script chmod'd the tree a+rX, exposing the secret segment to two other local accounts in group staff — fixed to owner-only with a control proven to go red when loosened; (c) an HTTP 000 connection failure was scored as a PASS on a negative control — 000 is now 'unmeasured' and the control demands a literal 404; (d) upload order is now ipa first, manifest last, so a stale bundle cannot be advertised as new; (e) I verified by downloading the served bytes that the embedded provisioning profile contains the registered iPhone's UDID.
+
+Question: what is the single most likely remaining defect that will actually bite when the owner taps the install link, and what is the cheapest check that would catch it BEFORE he taps? One paragraph.
+2026-08-28T23:04:45.094010Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-28T23:04:45.143740Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-28T23:04:45.924844Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+The likeliest remaining defect is a stale or hard-coded manifest whose `bundle-identifier` or `bundle-version` does not exactly match the IPA’s `Payload/*.app/Info.plist`; iOS then fetches everything successfully but rejects installation with an unhelpful error. Cheapest pre-tap check: extract those two values from the served IPA and compare them mechanically with the served manifest, failing deployment on any mismatch.
+tokens used
+12,132
+The likeliest remaining defect is a stale or hard-coded manifest whose `bundle-identifier` or `bundle-version` does not exactly match the IPA’s `Payload/*.app/Info.plist`; iOS then fetches everything successfully but rejects installation with an unhelpful error. Cheapest pre-tap check: extract those two values from the served IPA and compare them mechanically with the served manifest, failing deployment on any mismatch.

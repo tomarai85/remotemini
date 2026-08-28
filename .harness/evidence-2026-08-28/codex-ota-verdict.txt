@@ -1,0 +1,57 @@
+Codex (gpt-5.6-sol xhigh) 2026-08-28 — Ad Hoc OTA 配布の敵対レビュー
+
+指摘(向こうが付けた発生確率の順)と、私が取った手:
+
+1. 配っている .ipa の embedded.mobileprovision に其の iPhone の UDID が入っていない
+   → **実測で潰した**。配っているバイトを tailnet から取って開き、App Store Connect に
+     登録された有効な iPhone(1台)の UDID が profile に入っている事を確認。
+     profile 名 "RemoteMini AdHoc OTA" / 期限 2027-06-07 / profile の端末 1 台。
+   → 再発検査 = ota-verify.sh の N5。手元の束ではなく**机から降ってくるバイト**を開く。
+     ケーブルが無くて端末の UDID を聞けない時は正直に「未測定」を返す(偽の緑にしない)。
+
+2. 最近の iOS は此の経路に Developer Mode を要求する。インストールでなく**起動**まで見ろ
+   → 未確認。Tom の電話は既に開発署名の束を動かしているので有効な筈だが、
+     「筈」であって実測ではない。彼が tap した時に判る。
+
+3. installd が Tailscale 経由で manifest / .ipa を取れない(browser や curl は通るのに)
+   → 未確認。私の curl は通るが、installd は別プロセスで別の経路を使いうる。
+     此処が外れると症状は「頁は開くのにインストールが始まらない」。
+
+4. URL / file 名 / build 番号の使い回しで、古い束や cache が配られる
+   → **一部潰した**。掲載順を「束 → 頁 → manifest」へ変更(manifest が最後)。
+     逆だと manifest が新版を名乗るのに束は旧版、という窓が開く。
+     署名は完全性を証明するが**新しさは証明しない**ので、其の取り違えは検知されない。
+     no-store は元から付いている。N5b が manifest と束の版一致を測る。
+   → 残: URL は固定(秘密の一段を変えない = Tom の栞を守る為)なので、版ごとの
+     不変 URL にはしていない。其の分は N5b の突合で見る。
+
+5. 最小のサーバが installd の期待を外す(Content-Length / MIME / HEAD / redirect / 中断)
+   → Content-Length と MIME は付けている。HEAD は対応済。redirect は出さない。
+     **Range(中断からの再開)は未対応** —— 未確認の弱点として残す。
+     1.8MB なので実害は小さい筈だが、之も「筈」。
+
+認証について: 秘密の path は obscurity ではなく **bearer 認証**である。安い改善は
+Tailscale の ACL/grant で 9443 を所有者の identity/device に限る事。
+   → 妥当な指摘。ただし ACL は tailnet 全体の設定で、他の機体の経路にも影響する。
+     **Tom の判断が要る所として残す**(私の一存で触る範囲を越える)。
+     file の権限は所有者限定へ直した(下記)。
+
+最も偽の自信を与える検査: curl の疎通確認。経路と status しか証明しない
+   → **同意。既に evidence に同じ事を書いてある**。決定的な検査は
+     「其の iPhone で cellular + Tailscale の下で入れて起動し、アプリ内の build 指紋を見る」。
+     其れは Tom が tap するまで測れない。
+
+--- 併せて、同日の敵対レビュー(subagent)が掴んだ本物の欠陥 ---
+
+`adhoc-ota.sh` が置いた直後に `chmod -R a+rX ~/ota` を撃っていた。
+friday の実アカウントは athenas / tomtim / udagawa の3つで全員 staff、
+`/Users/athenas` は drwxr-x---(group に r-x)。つまり**秘密の hex は他の2人から
+`ls` するだけで読め、.ipa も読めた** —— 唯一の守りだと文書に書いた物が、
+同じ機体のローカルからは1つも守っていなかった。
+
+直し: chmod 700 + go-rwx(配るのは athenas 権限の node なので他人に読ませる必要は無い)。
+再発検査 = ota-verify.sh の N4。緩めると赤・戻すと緑まで実演済み。
+
+★教訓: HTTP の側だけ測っていると此処は永久に見えない。N1〜N3 も対照 15 本も、
+全部 127.0.0.1 の応答しか見ていない。守りが file の権限に載っているなら、
+検査も file の権限を見ないといけない。

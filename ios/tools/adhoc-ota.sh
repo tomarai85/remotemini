@@ -235,9 +235,25 @@ fi
 # --- 5. 机へ置く -------------------------------------------------------------
 step "5. 机($DESK_SSH)へ置く"
 ssh -o ConnectTimeout=15 -o BatchMode=yes "$DESK_SSH" "mkdir -p ~/$DESK_DIR/$SECRET"
-scp -q "$STAGE/$IPA" "$STAGE/manifest.plist" "$STAGE/index.html" \
-    "$DESK_SSH:~/$DESK_DIR/$SECRET/"
-ssh -o ConnectTimeout=15 -o BatchMode=yes "$DESK_SSH" "chmod -R a+rX ~/$DESK_DIR"
+# ★掲載の順が意味を持つ(Codex 2026-08-28)。**束を先に、manifest を最後に**。
+#   逆だと「manifest は新しい版を名乗っているのに束はまだ古い」窓が開く ——
+#   其の隙に電話が取りに来ると、電話は新しい版を入れたと信じて古い物を動かす。
+#   署名は**完全性**を証明するが**新しさ**は証明しないので、此の取り違えは検知されない。
+put_one() { scp -q "$1" "$DESK_SSH:~/$DESK_DIR/$SECRET/"; }
+put_one "$STAGE/$IPA"
+put_one "$STAGE/index.html"
+# manifest が最後。之が置かれた瞬間から新しい版が「配られている」事になる。
+put_one "$STAGE/manifest.plist"
+# ★**所有者だけ**にする(2026-08-28、敵対レビューが掴んだ)。初版は `chmod -R a+rX` と
+#   書いていた —— 配信する物だから読ませる、という反射で。之が唯一の守りを潰していた:
+#   配る path の秘密の一段は「推測できない」事が全部なのに、`a+rX` は**同じ機体の
+#   全ローカルアカウントに dir の一覧を許す**。実測 2026-08-28、friday の実アカウントは
+#   athenas / tomtim / udagawa の3つ、全員が staff に居て、`/Users/athenas` は
+#   `drwxr-x---`(= group に r-x)。つまり秘密の hex は他の2人から**そのまま読めた**。
+#   配るのは node(athenas 権限)なので、他人に読ませる必要は最初から無い。
+#   ★守りを1つ足すより、**主張していない守りを主張しない**方が先: 之を直すまで
+#     `ota-delivery.md` の「推測できない path の一段」は嘘だった。
+ssh -o ConnectTimeout=15 -o BatchMode=yes "$DESK_SSH" "chmod 700 ~/$DESK_DIR && chmod -R go-rwx ~/$DESK_DIR"
 echo "    置いた"
 
 step "6. 確かめる(此処は机の LAN に居ない = 同一 WiFi 無しの実証)"
