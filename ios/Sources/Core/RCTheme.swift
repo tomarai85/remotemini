@@ -23,15 +23,32 @@ enum RCTheme {
         case glassDark = "glassdark"
         /// E: Liquid Glass・ライト。
         case glassLight = "glasslight"
+        /// F: Glass 徹底(2026-08-29、Tom「(イマイチなのは)正直全部」「Liquid glass の方が重要」)。
+        /// D と同じ藍系のまま、光彩・透け・丸み・縁を一段深くする。
+        case glassMax = "glassmax"
+        /// G: Glass + 端末の血(同日「ちょっと Linux 感出せると嬉しい」)。
+        /// ガラスは D 相当のまま、全画面 monospaced + 差し色を蛍光緑 + 第二色を teal に。
+        case glassTerm = "glassterm"
+        /// H: D の磨き上げ(対照)。構造は D のまま、縁・光彩・角丸の調整だけでどこまで
+        /// 上がるかを測る — F/G が勝ったとしても、差が構造由来か調整由来かを分離する為に要る。
+        case glassPolish = "glasspolish"
     }
 
     static let variant: Variant = resolveVariant()
 
     private static func resolveVariant() -> Variant {
         #if DEBUG
-        if let raw = ProcessInfo.processInfo.environment["RC_THEME_VARIANT"],
-           let v = Variant(rawValue: raw) {
-            return v
+        // 診断行(RootView の `root flow:` と同じ流儀)。2026-08-29、sim の env 経由で
+        // variant が一度も効いていない事が判明した時に入れた — 「届いていない」と
+        // 「届いたが読めない」を console で見分ける為の計器。DEBUG 限定。
+        if let raw = ProcessInfo.processInfo.environment["RC_THEME_VARIANT"] {
+            if let v = Variant(rawValue: raw) {
+                print("theme variant:\(raw)")
+                return v
+            }
+            print("theme variant unknown:\(raw)")
+        } else {
+            print("theme variant env:absent")
         }
         #endif
         // 既定 = D(Liquid Glass ダーク)。2026-08-17 Tom 裁定(5案の実機スクショ比較から)。
@@ -46,6 +63,9 @@ enum RCTheme {
         case .graphite: return Color(red: 0x7C / 255.0, green: 0x6C / 255.0, blue: 0xFF / 255.0)
         case .glassDark: return Color(red: 0x8B / 255.0, green: 0x7C / 255.0, blue: 0xFF / 255.0)
         case .glassLight: return Color(red: 0x6D / 255.0, green: 0x5C / 255.0, blue: 0xFF / 255.0)
+        case .glassMax: return Color(red: 0x8B / 255.0, green: 0x7C / 255.0, blue: 0xFF / 255.0)
+        case .glassTerm: return Color(red: 0x5C / 255.0, green: 0xE8 / 255.0, blue: 0x7B / 255.0)
+        case .glassPolish: return Color(red: 0x95 / 255.0, green: 0x87 / 255.0, blue: 0xFF / 255.0)
         }
     }()
 
@@ -58,6 +78,8 @@ enum RCTheme {
         case .graphite:     return Color(red: 0xFF / 255.0, green: 0x7B / 255.0, blue: 0x72 / 255.0)
         case .glassDark:    return Color(red: 0xFF / 255.0, green: 0x8A / 255.0, blue: 0x80 / 255.0)
         case .glassLight:   return Color(red: 0xC0 / 255.0, green: 0x2A / 255.0, blue: 0x22 / 255.0)
+        case .glassMax, .glassPolish: return Color(red: 0xFF / 255.0, green: 0x8A / 255.0, blue: 0x80 / 255.0)
+        case .glassTerm:    return Color(red: 0xFF / 255.0, green: 0x7B / 255.0, blue: 0x72 / 255.0)
         }
     }()
 
@@ -69,6 +91,8 @@ enum RCTheme {
         case .graphite:     return Color(red: 0xE3 / 255.0, green: 0xB3 / 255.0, blue: 0x41 / 255.0)
         case .glassDark:    return Color(red: 0xF5 / 255.0, green: 0xC2 / 255.0, blue: 0x4E / 255.0)
         case .glassLight:   return Color(red: 0x8F / 255.0, green: 0x63 / 255.0, blue: 0x00 / 255.0)
+        case .glassMax, .glassPolish: return Color(red: 0xF5 / 255.0, green: 0xC2 / 255.0, blue: 0x4E / 255.0)
+        case .glassTerm:    return Color(red: 0xD9 / 255.0, green: 0xC9 / 255.0, blue: 0x4A / 255.0)
         }
     }()
 
@@ -80,6 +104,8 @@ enum RCTheme {
         case .graphite: return Color(red: 0xB7 / 255.0, green: 0x8C / 255.0, blue: 0xFF / 255.0)
         case .glassDark: return Color(red: 0xC0 / 255.0, green: 0x9A / 255.0, blue: 0xFF / 255.0)
         case .glassLight: return Color(red: 0xA8 / 255.0, green: 0x6B / 255.0, blue: 0xFF / 255.0)
+        case .glassMax, .glassPolish: return Color(red: 0xC0 / 255.0, green: 0x9A / 255.0, blue: 0xFF / 255.0)
+        case .glassTerm: return Color(red: 0x64 / 255.0, green: 0xD8 / 255.0, blue: 0xCB / 255.0)
         }
     }()
 
@@ -91,6 +117,9 @@ enum RCTheme {
         case .graphite: return Color(red: 0x0F / 255.0, green: 0x11 / 255.0, blue: 0x15 / 255.0)
         case .glassDark: return Color(red: 0x0B / 255.0, green: 0x0C / 255.0, blue: 0x14 / 255.0)
         case .glassLight: return Color(red: 0xF1 / 255.0, green: 0xF0 / 255.0, blue: 0xF8 / 255.0)
+        case .glassMax: return Color(red: 0x07 / 255.0, green: 0x08 / 255.0, blue: 0x10 / 255.0)
+        case .glassTerm: return Color(red: 0x06 / 255.0, green: 0x0B / 255.0, blue: 0x09 / 255.0)
+        case .glassPolish: return Color(red: 0x0B / 255.0, green: 0x0C / 255.0, blue: 0x14 / 255.0)
         }
     }()
 
@@ -102,6 +131,9 @@ enum RCTheme {
         case .graphite: return Color(red: 0x1A / 255.0, green: 0x1E / 255.0, blue: 0x26 / 255.0)
         case .glassDark: return Color.white.opacity(0.06)
         case .glassLight: return Color.white.opacity(0.55)
+        case .glassMax: return Color.white.opacity(0.10)
+        case .glassTerm: return Color.white.opacity(0.07)
+        case .glassPolish: return Color.white.opacity(0.08)
         }
     }()
 
@@ -113,6 +145,9 @@ enum RCTheme {
         case .graphite: return Color.white.opacity(0.08)
         case .glassDark: return Color.white.opacity(0.12)
         case .glassLight: return Color.white.opacity(0.65)
+        case .glassMax: return Color.white.opacity(0.16)
+        case .glassTerm: return Color(red: 0x5C / 255.0, green: 0xE8 / 255.0, blue: 0x7B / 255.0).opacity(0.22)
+        case .glassPolish: return Color.white.opacity(0.18)
         }
     }()
 
@@ -121,23 +156,54 @@ enum RCTheme {
         switch variant {
         case .lightMinimal: return 0.05
         case .glassLight: return 0.07
-        case .claudeWarm, .graphite, .glassDark: return 0
+        case .claudeWarm, .graphite, .glassDark, .glassMax, .glassTerm, .glassPolish: return 0
         }
     }()
 
     /// 系全体の明暗。nil にしない — OS 設定で片側だけ検証されないまま出るのを防ぐ。
     static let colorScheme: ColorScheme = {
         switch variant {
-        case .claudeWarm, .graphite, .glassDark: return .dark
+        case .claudeWarm, .graphite, .glassDark, .glassMax, .glassTerm, .glassPolish: return .dark
         case .lightMinimal, .glassLight: return .light
         }
     }()
 
     /// Liquid Glass の面か(カードの描き方が fill から material/glass に替わる)。
-    static let usesGlass: Bool = variant == .glassDark || variant == .glassLight
+    static let usesGlass: Bool = {
+        switch variant {
+        case .glassDark, .glassLight, .glassMax, .glassTerm, .glassPolish: return true
+        case .claudeWarm, .lightMinimal, .graphite: return false
+        }
+    }()
 
-    /// カードの角丸(glass はひと回り丸く — Liquid Glass の意匠は丸みが強い)。
-    static let cardRadius: CGFloat = usesGlass ? 20 : 14
+    /// カードの角丸(glass はひと回り丸く — Liquid Glass の意匠は丸みが強い。
+    /// glassTerm だけ角張らせる = 端末の血)。
+    static let cardRadius: CGFloat = {
+        switch variant {
+        case .glassMax: return 24
+        case .glassPolish: return 22
+        case .glassTerm: return 16
+        case .glassDark, .glassLight: return 20
+        case .claudeWarm, .lightMinimal, .graphite: return 14
+        }
+    }()
+
+    /// 地の光彩の強さ(RCBackdrop が読む)。glass でない variant では 0(描かれない)。
+    /// D=0.32 / E=0.38 は旧実装(colorScheme 分岐)と同値 — 既存2案の見た目を変えない。
+    static let glowStrength: Double = {
+        switch variant {
+        case .glassMax: return 0.50
+        case .glassPolish: return 0.40
+        case .glassTerm: return 0.30
+        case .glassDark: return 0.32
+        case .glassLight: return 0.38
+        case .claudeWarm, .lightMinimal, .graphite: return 0
+        }
+    }()
+
+    /// 全画面の書体の系。glassTerm だけ monospaced(端末の血)。nil = 標準。
+    /// 当て所は RemoteMiniApp の根の1箇所(散らさない — 色と同じ理由)。
+    static let fontDesign: Font.Design? = variant == .glassTerm ? .monospaced : nil
 }
 
 /// 画面の地。glass では柔らかい光彩を敷く — 平色の上の glass は屈折する物が無く
@@ -147,7 +213,7 @@ struct RCBackdrop: View {
         ZStack {
             RCTheme.background.ignoresSafeArea()
             if RCTheme.usesGlass {
-                let glow: Double = RCTheme.colorScheme == .dark ? 0.32 : 0.38
+                let glow: Double = RCTheme.glowStrength
                 Circle().fill(RCTheme.accent.opacity(glow))
                     .frame(width: 420, height: 420).blur(radius: 110)
                     .offset(x: -130, y: -220)
