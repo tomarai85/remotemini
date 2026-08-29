@@ -97,6 +97,11 @@ struct ListView: View {
         //   3面に居る(BuildIdentityUITests が同一ビルドを名乗る事を見張る)。
         .safeAreaInset(edge: .bottom) { staleWarning }
         .navigationTitle("Sessions")
+        // ★大題をやめる(2026-08-29、Tom「Sessions っていうその列が気持ち悪い。もうちょっと上でいい」)。
+        //   大題の様式は **題の為に1帯・工具帯に1帯**を使うので、口座チップが題の上に
+        //   孤立した1行として乗り、画面の上 1/4 が文字2つで埋まっていた(実測の画)。
+        //   inline は題と口座を**同じ帯**に載せる = 行が1つ上がり、帯が1本減る。
+        .navigationBarTitleDisplayMode(.inline)
         // 口座は**脚ではなく上**に置く(2026-08-12、REQUIREMENTS §4-5/§5-8)。脚は既に
         // 鮮度 / 走査行 / 版の3行を載せていて、其処に4行目を足すと**版の名乗りが押し出される** ——
         // 版は「古いビルドで動いていないか」を最も疑う場面で見える必要が在り、
@@ -289,6 +294,22 @@ struct ListView: View {
                     } label: {
                         Label("Return to MacBook…", systemImage: "arrow.uturn.backward.circle")
                     }
+                }
+            }
+            // ★戻しを swipe にも出す(2026-08-29、Tom「MacBook に戻す側のボタンはどこへ
+            //   消えたんですか」)。**消えていなかった** —— 長押しメニューの中に在り、かつ
+            //   持ち出し中の行にしか出ない条件付きだったので、条件を満たす行が無い日は
+            //   画面のどこにも現れない。保管は swipe で見付かるのに戻しは見付からない、が
+            //   非対称の正体。左スワイプ(送り返す向き)に置いて対称にする。
+            //   長押しの側は**残す** —— 見付け方を1つ増やすのであって、移動ではない。
+            .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                if row.isCheckout {
+                    Button {
+                        returnTarget = row
+                    } label: {
+                        Label("Return", systemImage: "arrow.uturn.backward.circle")
+                    }
+                    .tint(RCTheme.violet)
                 }
             }
             // swipe でも外せる(§9-1「Tom が選んで外せ」— 長押しより1動作少ない道)。

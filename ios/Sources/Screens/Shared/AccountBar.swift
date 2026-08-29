@@ -59,6 +59,16 @@ struct AccountBar: View {
         }
     }
 
+    /// 工具帯に載る短い名前。メールなら @ の手前、無ければそのまま。`nil` = 未設定。
+    ///
+    /// ★**表示専用**。切替の引数には決して使わない —— 短縮した名前を `fleet-account` へ
+    ///   渡すと、`.order` に無い名前で断られる(または最悪、別の口座に当たる)。
+    static func short(_ name: String?) -> String {
+        guard let name, !name.isEmpty else { return "(not set)" }
+        if let at = name.firstIndex(of: "@") { return String(name[name.startIndex..<at]) }
+        return name
+    }
+
     @ViewBuilder
     private var label: some View {
         switch viewModel.phase {
@@ -72,7 +82,12 @@ struct AccountBar: View {
         case .loaded(let state):
             HStack(spacing: 4) {
                 if viewModel.isBusy { ProgressView().controlSize(.small) }
-                Text(state.current ?? "(not set)")
+                // ★長い口座名は @ の手前まで(2026-08-29、Tom「場所の話」)。
+                //   `mail-redacted@example.invalid` を全部描くと、工具帯の1マスが画面幅の
+                //   2/3 を占め、題と同じ帯に居られなくなる。**切るのは表示だけ** ——
+                //   切替に使う値は `state.current` のままで、短縮は此処を出ない
+                //   (`AccountBar.short` は純関数で、検査から直に測れる)。
+                Text(Self.short(state.current))
                     .font(.caption.monospaced())
                     .lineLimit(1)
                     .truncationMode(.middle)

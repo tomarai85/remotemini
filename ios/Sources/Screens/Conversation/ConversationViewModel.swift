@@ -298,6 +298,30 @@ final class ConversationViewModel: ObservableObject {
 
     var canInterrupt: Bool { interruptEnabled && !isInterrupting }
 
+    /// 机が**今**動いていると観測できているか(2026-08-29、Tom「作業中断ボタンとか常に
+    /// 押せるけど、これ AI が起動している時しかできないじゃん」)。
+    ///
+    /// ★これは `interruptEnabled` を置き換える物では**ない**。押せる範囲は Tom の裁定
+    /// (「返答待ちであれ作業中であれいつでも干渉できれば」)のまま —— 観測が古い時こそ
+    /// 止めたいので、押せる事は状態に依存させない。これが変えるのは**見た目だけ**:
+    /// 止める物が在りそうな時ははっきり、無さそうな時は淡く描く。
+    ///
+    /// ★`nil` = **観測できていない**(まだ画面を読めていない / 読めない画面)。
+    /// 「動いていない」と混ぜない —— 淡く描いてよいのは「止まっていると**判った**」時だけで、
+    /// 判らない時に淡くすると、一番止めたい局面(机が見えない時)でボタンが引っ込んで見える。
+    var deskIsWorking: Bool? {
+        if let screen {
+            switch screen.classification {
+            case .busy: return true
+            case .sendable, .choice: return false
+            case .unknown, .unrecognized: return nil
+            }
+        }
+        // worker 経路には画面が無い。待ち行列が在る = 机に仕事が積まれている。
+        if let queued = queuedCount { return queued > 0 }
+        return nil
+    }
+
     // MARK: - Reachability (Sprint 6, spec §5-4)
 
     /// Spec §5-4's counter, the same type List uses. Before Sprint 6 this screen had

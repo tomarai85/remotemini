@@ -34,7 +34,16 @@ const GATE = requireOutside(["ios", VIEW]);
 
 // 綴りを組み立てる。この file 自身の中に探している綴りが素で現れると、走査を
 // 自分自身に向けた時に自分を捕まえる(no-linerefs.test.mjs と同じ配慮)。
-const BAR = ".background(" + ".bar)";
+// ★2026-08-29: composer の帯が**系ごとに2つの綴り**になった。glass の系では
+//   `.background(.bar)` を捨て、ガラスの面(material の Rectangle + 髪の毛1本の縁)に
+//   替えた —— Tom「灰色の帯が洗練されていない」。非 glass の系は `.bar` のまま
+//   (`Rectangle().fill(.bar)`)なので、綴りが `.background(` から `.fill(` へ動いた。
+//   守る不変条件は変わらない:**帯は composer だけの物で、「以前を読む」には敷かれない**。
+//   だから検査は綴りを1つ追うのをやめ、**帯を作る2つの手段の両方**を測る。
+const BAR = ".fill(" + ".bar)";
+// glass の系で帯を作る材質。composer 以外にも出る綴り(道具チップ・入力欄)なので
+// **数では押さえない** —— footer に入っていない事だけを測る。
+const GLASS_BAR = ".ultraThin" + "Material";
 const FOOTER_DECL = "private var loadEarlierFooter: some View {";
 
 const source = () => readFileSync(join(REPO, VIEW), "utf8");
@@ -90,6 +99,15 @@ test(`${BAR} は会話画面の何処かに在る`, { skip: GATE.skip }, () => {
     );
 });
 
+// ★同じ錨を glass の系にも張る(2026-08-29)。片方だけ錨が在ると、glass 側の帯を
+//   誰かが消した日に「footer に入っていない」が中身を見ずに緑になる。
+test(`${GLASS_BAR} は会話画面の何処かに在る`, { skip: GATE.skip }, () => {
+    assert.ok(
+        source().includes(GLASS_BAR),
+        `${GLASS_BAR} が会話画面から消えた。glass の系の帯ごと無くなったのか、綴りが変わったのか`,
+    );
+});
+
 // ── 主張 ──────────────────────────────────────────────────────────────────
 test("灰色の帯は composer だけ —— 「以前を読む」には敷かれていない", { skip: GATE.skip }, () => {
     const text = source();
@@ -103,6 +121,14 @@ test("灰色の帯は composer だけ —— 「以前を読む」には敷か�
     // footer 以外の場所に増えた時も気付ける様にする為。
     const count = text.split(BAR).length - 1;
     assert.equal(count, 1, `会話画面の灰色の帯が ${count} 箇所。composer の1つだけである事`);
+    // ★glass の系の帯も同じ線を守る(2026-08-29)。此方は数で押さえない ——
+    //   material は道具チップと入力欄でも使う正当な材質なので、数の主張は必ず腐る。
+    //   測るのは意味の在る1点だけ:**「以前を読む」に面を敷いていない事**。
+    assert.ok(!block.includes(GLASS_BAR), [
+        "「以前を読む」にガラスの面が敷かれている(監査 X-3 の glass 版)。",
+        "  灰色でもガラスでも、面を敷けば其処は「電話の道具」に見える —— 材質が変わっても",
+        "  意味は変わらないので、この線は両方の系で同じ場所に引く。",
+    ].join("\n"));
 });
 
 // ★逃げ道の錨。上の3本が `GATE.skip` で飛べるので、完全な木で**飛んでいない**事を

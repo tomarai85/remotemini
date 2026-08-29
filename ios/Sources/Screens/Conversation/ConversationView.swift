@@ -146,12 +146,25 @@ struct ConversationView: View {
             VStack(spacing: 0) {
                 statusBanners
                 if viewModel.entries.isEmpty {
+                    // ★灰色の1行が余白の中で浮くのをやめる(2026-08-29、Tom「洗練されていない」)。
+                    //   空の面は**製品が壊れている様に見える所**なので、記号 + 一言で
+                    //   「ここに何を書けばいいか」まで言う(空状態は説明の場所であって空白ではない)。
                     ScrollView {
-                        Text("No messages yet")
-                            .font(.headline)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 80)
-                            .frame(maxWidth: .infinity)
+                        VStack(spacing: 10) {
+                            Image(systemName: "text.bubble")
+                                .font(.system(size: 34, weight: .light))
+                                .foregroundStyle(.tertiary)
+                            Text("No messages yet")
+                                .font(.headline)
+                                .foregroundStyle(.secondary)
+                            Text("Type below to start this conversation on the desk.")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 32)
+                        }
+                        .padding(.top, 96)
+                        .frame(maxWidth: .infinity)
                     }
                     .accessibilityIdentifier("conversation.empty")
                 } else {
@@ -247,6 +260,22 @@ struct ConversationView: View {
             //   (各 banner の註に実測の経緯)。畳んだのは常設の状態だけ。
             standingStatusSlot
 
+            // ★机が**今**どうなっているか(2026-08-29)。留守中の要約(下の awayDigest)は
+            //   「留守の間に何が在ったか」で、これは「今」— 別の問い、別の枠。
+            //   ★観測できていない時は**何も出さない**。「Idle」と「読めていない」を
+            //   同じ言葉にすると、机が見えない事故が「静かで正常」に見える。
+            if let working = viewModel.deskIsWorking {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(working ? RCTheme.accent : Color.secondary)
+                        .frame(width: 7, height: 7)
+                    Text(working ? "Working" : "Idle")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("conversation.deskState")
+            }
+
             // 留守中に何が起きたか(2026-08-26)。★**常設の状態帯とは別枠**。
             //   §9-4 の「常設の状態帯は同時に1枠だけ」は「今どうなっているか」を争う
             //   帯の話で、これは「留守の間に何が在ったか」= 一度読めば済む物。
@@ -254,10 +283,16 @@ struct ConversationView: View {
             // ★取れなかった時は**何も出さない**。要約が無い事は異常ではないので、
             //   「要約を取れませんでした」を常設で出すと、直しようの無い帯が居座る。
             if let d = viewModel.awayDigest, !d.line.isEmpty {
+                // ★裸のオレンジの1行をやめる(2026-08-29)。地の上に生の警告色を置くと
+                //   帯が「壊れている」に見え、実際には「留守中の要約」でしかない。
+                //   チップに入れて、色は**文字と縁だけ**に持たせる(面は glass の系のまま)。
                 Text(d.line)
                     .font(.caption)
-                    .foregroundStyle(d.shouldUrge ? .orange : .secondary)
+                    .foregroundStyle(d.shouldUrge ? AnyShapeStyle(RCTheme.caution) : AnyShapeStyle(.secondary))
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .modifier(RCChip(tint: d.shouldUrge ? RCTheme.caution : RCTheme.surfaceStroke))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("conversation.awayDigest")
             }
@@ -413,6 +448,11 @@ struct ConversationView: View {
                         }
                     }
                     .tapTarget()
+                    // ★見た目だけで状態を語る(2026-08-29)。押せる範囲は変えない ——
+                    //   机が動いていると**判った**時だけ濃く、止まっていると**判った**時は淡く、
+                    //   判らない時は中間。「押せない」に見せないのが要点で、
+                    //   `interruptEnabled` の裁定(いつでも干渉できる)はそのまま生きている。
+                    .opacity(viewModel.deskIsWorking == false ? 0.45 : 1)
                 }
                 .disabled(!viewModel.canInterrupt)
                 .accessibilityLabel("Interrupt")
@@ -431,11 +471,29 @@ struct ConversationView: View {
                 .accessibilityIdentifier("conversation.attachButton")
                 .accessibilityLabel("Attach a photo")
 
-                TextField("Message", text: $viewModel.draft, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(1...5)
-                    .disabled(!viewModel.composerEnabled)
-                    .accessibilityIdentifier("conversation.composerField")
+                // ★`.roundedBorder` を使わない(2026-08-29、Tom「黒い箱が洗練されていない」)。
+                //   あの様式は暗い系で**真っ黒な矩形**を描き、ガラスの上に穴が空いた様に見える。
+                //   glass の系では自前のガラス面(material + 淡い縁)に載せ、
+                //   glass でない系は従来通り `.roundedBorder` に落とす(意匠の系を跨がない)。
+                Group {
+                    if RCTheme.usesGlass {
+                        TextField("Message", text: $viewModel.draft, axis: .vertical)
+                            .textFieldStyle(.plain)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .strokeBorder(RCTheme.surfaceStroke, lineWidth: 1)
+                            )
+                    } else {
+                        TextField("Message", text: $viewModel.draft, axis: .vertical)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+                .lineLimit(1...5)
+                .disabled(!viewModel.composerEnabled)
+                .accessibilityIdentifier("conversation.composerField")
 
                 Button {
                     Task { await viewModel.send() }
@@ -448,6 +506,11 @@ struct ConversationView: View {
                         } else {
                             Image(systemName: "arrow.up.circle.fill")
                                 .font(.title2)
+                                // 打てる時だけ色が点く(2026-08-29、Tom「矢印とか、大丈夫なんかねぇ」)。
+                                // 灰色の矢印は「壊れている」に見え、accent の矢印は「押せ」に見える。
+                                // `canSend` は本当に押せるかなので、見た目と能力がここでは一致する。
+                                .foregroundStyle(viewModel.canSend
+                                    ? AnyShapeStyle(RCTheme.accent) : AnyShapeStyle(.tertiary))
                         }
                     }
                     .tapTarget()
@@ -458,7 +521,22 @@ struct ConversationView: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .background(.bar)
+        // ★`.bar` は灰色の帯を敷く(2026-08-29、Tom「洗練されていない」)。glass の系では
+        //   ガラスの面 + 髪の毛1本の縁に替える —— 上の転写が下に透けて、帯が板に見えない。
+        //   ★`bar-is-composer-only` の錨(2026-08-18)は「帯を composer 以外に敷くな」で
+        //   あって「.bar である事」ではない。面の系だけを glass に合わせ、置き場は動かさない。
+        .background {
+            if RCTheme.usesGlass {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .overlay(alignment: .top) {
+                        Rectangle().fill(RCTheme.surfaceStroke).frame(height: 0.5)
+                    }
+                    .ignoresSafeArea(edges: .bottom)
+            } else {
+                Rectangle().fill(.bar).ignoresSafeArea(edges: .bottom)
+            }
+        }
     }
 
     /// The ONLY thing `kind` is allowed to change. The text is always the server's;
