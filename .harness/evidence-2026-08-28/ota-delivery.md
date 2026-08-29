@@ -119,7 +119,33 @@ iOS の `installd` は manifest と .ipa を取りに来る時、独自の heade
   緑 7 / 赤 0 / 未測定 0
 ```
 
-## まだ測っていない事(正直に)
+## ★2026-08-29 追記 — 下の「まだ測っていない」のうち 2 つを測った(Tom の指は「ロック解除」だけだった)
+
+Tom「これって本当に俺がやらないといけないの? 間接的に君が操作できたりしない?」に対して
+能力調査をやり直した結果、**OTA 頁の tap は「同じ Wi-Fi に居ない時」の経路**であって、
+同じ網に居る時は Jervis から入れられる。
+
+| 手順 | 実測(10:13-10:14 CDT) |
+|---|---|
+| 電話は見えるか | `xcrun devicectl list devices` → `Tom’s iPhone … available (paired)` |
+| 配っている束を取る | `curl https://desk.tailnet.example:9443/ota/<秘密>/RemoteMini.ipa` → 1,908,364 B、`CFBundleVersion 89`、`RCBaseURL https://friday…:9443`、Ad Hoc profile 同梱 |
+| install 1回目 | **失敗** `kAMDMobileImageMounterDeviceLocked` — Developer Disk Image の mount は解除中の端末にしか出来ない。**此処だけが物理的に Tom** |
+| Tom がロック解除 → 再試行 | `App installed: com.tomarai.remotemini`(開発署名版の上に Ad Hoc 署名版を**上書きで入れられた** = 前節の「はず」が実測になった) |
+| 起動 | `device process launch` → 端末上 pid 6273 |
+| 電話 → 机 | **1 秒後**に friday の記録へ `client=app` 2 行: `GET /api/sessions 200 ms=115` / `GET /api/account 200 ms=154` |
+| 端末上の版 | `devicectl device info apps` → `Remote Mini 0.1 (89)` |
+
+★**Tom の物理工程が縮んだ**: 「Safari で頁を開く → tap → profile を信頼」から「**ロックを解除して置く**」へ。
+再試行の台本 = 10 秒毎に install を撃ち、通ったら launch(scratchpad の `install-loop.sh`、使い捨て)。
+
+★**残った境界(反証条件つき)**: (1) 同じ Wi-Fi にも USB にも居ない時は此の経路は無い(08-28 の実測どおり
+mDNS が tailnet を越えない) → OTA 頁の出番。(2) ロック中は DDI が mount できない。
+Apple が locked 端末への DDI mount を許すか、Tailscale が mDNS を運ぶ様になれば、それぞれ崩れる。
+
+★**此の 2 行は私の launch が出した物**で「Tom が使った」ではない。使用実績(H-3)の計器は変わらず
+「私のビルド窓の外で `client=app` が出るか」。
+
+## まだ測っていない事(2026-08-28 時点、正直に — 上の追記で 1・2 番目は測り終えた)
 
 - **Tom の iPhone が実際に入れられるか**は測っていない。私は彼の電話で Safari を開けない。
   彼が導線の頁を開いて tap するまで「入る」とは言わない。
