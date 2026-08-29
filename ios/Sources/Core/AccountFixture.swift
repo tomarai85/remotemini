@@ -124,7 +124,16 @@ final class AccountFixture: AccountReading, AccountAdvancing, AccountSelecting {
                     hasToken: hasToken,
                     active: offset == index,
                     selectable: hasToken,
-                    blocked: hasToken ? nil : "That account's token is missing on fixture-desk."
+                    blocked: hasToken ? nil : "That account's token is missing on fixture-desk.",
+                    // 使用量(2026-08-29)。値は friday の実観測から写した形: 1行目 = セッションを
+                    // 使い切った口座(赤の枝)、2行目以降 = 余裕のある口座。トークン欠けの行は
+                    // 「測れていない」(nil)の枝を兼ねる — 3状態(尽きた/余裕/未観測)が1画面に出る。
+                    usage: !hasToken ? nil : (offset == 0
+                        ? AccountUsage(sessionUsedPct: 100, weeklyUsedPct: 13,
+                                       weeklyResetsIn: "5d 19h", willLastToReset: true)
+                        : AccountUsage(sessionUsedPct: Double(8 * (offset + 1)),
+                                       weeklyUsedPct: Double(20 * offset + 5),
+                                       weeklyResetsIn: "2d 3h", willLastToReset: true))
                 )
             },
             ok: true,

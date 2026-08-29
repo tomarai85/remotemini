@@ -20,7 +20,24 @@ struct AccountRow: Equatable, Identifiable {
     /// 実際に踏んだ形(電話が `reason` の英語トークンをそのまま帯に描いていた)。
     let blocked: String?
 
+    /// 使用量(cswap の観測)。`nil` = **測れていない**(空いているでも尽きているでもない)。
+    var usage: AccountUsage? = nil
+
     var id: String { name }
+}
+
+/// 口座1つの使用量(2026-08-29、Tom「CodexBar のような感じで残りの使用量が無い」)。
+/// 机の `cswap list --json` が出す観測で、CodexBar のメニューと同じ真実。
+///
+/// ★pct は**使用率**。画面は 100 - pct を「left」として描く(数値の算術は語彙ではない)。
+/// ★`weeklyResetsIn` は机側の道具が作った文字列("20h 50m")をそのまま描く —
+///   期限の文言を電話で組み立て直すと語彙が2箇所に分かれる(`blocked` と同じ判断)。
+struct AccountUsage: Equatable {
+    let sessionUsedPct: Double?
+    let weeklyUsedPct: Double?
+    let weeklyResetsIn: String?
+    /// この消費の速さのまま行くと、リセットまで持つか。
+    let willLastToReset: Bool?
 }
 
 /// `fleet-account` が名乗る、机の側の口座の状態(REQUIREMENTS §9-3)。
@@ -193,9 +210,19 @@ struct AccountClient: AccountReading, AccountAdvancing, AccountSelecting {
                 let active: Bool
                 let selectable: Bool
                 let display: RowDisplay
+                /// 使用量。机がまだ測れていない間は `null` で来る(鍵は常に在る)。
+                let usage: Usage?
 
                 struct RowDisplay: Decodable {
                     let blocked: String?
+                }
+
+                struct Usage: Decodable {
+                    let usageStatus: String?
+                    let sessionUsedPct: Double?
+                    let weeklyUsedPct: Double?
+                    let weeklyResetsIn: String?
+                    let willLastToReset: Bool?
                 }
             }
 
@@ -216,7 +243,15 @@ struct AccountClient: AccountReading, AccountAdvancing, AccountSelecting {
                     hasToken: $0.hasToken,
                     active: $0.active,
                     selectable: $0.selectable,
-                    blocked: $0.display.blocked
+                    blocked: $0.display.blocked,
+                    usage: $0.usage.map {
+                        AccountUsage(
+                            sessionUsedPct: $0.sessionUsedPct,
+                            weeklyUsedPct: $0.weeklyUsedPct,
+                            weeklyResetsIn: $0.weeklyResetsIn,
+                            willLastToReset: $0.willLastToReset
+                        )
+                    }
                 )
             },
             ok: wire.ok,

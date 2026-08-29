@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords } from "./sessions.mjs";
 import { accountBody, gapItem, healthzBody, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
 import { parseFleetAccount, selectionMessage, selectionProblem } from "./account.mjs";
+import { parseCswapUsage } from "./usage.mjs";
 import { JsonlTail, formatPollCursor, pollDecision, resumeDecision } from "./tail.mjs";
 import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
@@ -1128,6 +1129,41 @@ async function readBody(req, limit = 64 * 1024) {
 //   人が押して結果を待っている操作で頻度が低く、順序の意味も違う(実行と読み直しの間に
 //   別の要求が割り込む形を、測らずに作らない)。**残っている的として明記する**。
 const execFileAsync = promisify(execFile);
+
+// ── 口座の使用量(2026-08-29) ─────────────────────────────────────────────
+// 出典 = `cswap list --json`(friday 実測 0.15s)。/api/account の床(0.14-0.21s)を
+// 守る為に**返してから測る**(stale-while-revalidate): 応答はキャッシュを載せ、
+// 古ければ裏で測り直す。初回だけ usage は null で返る(次の poll で埋まる)。
+// 失敗した日は古い値が残り、`usageAgeSeconds` が齢を正直に語る。
+// keychain unlock は cswap-distribute と同じ理由(unlock は session を跨がない)。
+const USAGE_TTL_MS = Number(process.env.RC_USAGE_TTL_MS || 300_000);
+const USAGE_TIMEOUT_MS = 15_000;
+const USAGE_CMD =
+  'security unlock-keychain -p "" "$HOME/Library/Keychains/claude-code.keychain-db" 2>/dev/null; ' +
+  'PATH="$HOME/.local/bin:$PATH" exec cswap list --json';
+const usageCache = { at: 0, byEmail: null, inflight: null };
+function refreshUsage() {
+  if (usageCache.inflight) return usageCache.inflight;
+  usageCache.inflight = execFileAsync("/bin/bash", ["-c", USAGE_CMD], {
+    encoding: "utf8", timeout: USAGE_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024,
+  })
+    .then(({ stdout }) => {
+      const parsed = parseCswapUsage(stdout);
+      // unreadable は捨てて古い値を保つ(「読めなかった」を「0件」にしない — account.mjs と同じ線)
+      if (parsed.status === "ok") { usageCache.byEmail = parsed.byEmail; usageCache.at = Date.now(); }
+    })
+    .catch(() => {})
+    .finally(() => { usageCache.inflight = null; });
+  return usageCache.inflight;
+}
+function usageForWire() {
+  if (Date.now() - usageCache.at > USAGE_TTL_MS) refreshUsage();
+  return {
+    usageByEmail: usageCache.byEmail,
+    usageAgeSeconds: usageCache.at ? Math.round((Date.now() - usageCache.at) / 1000) : null,
+  };
+}
+
 async function readFleetAccount() {
   const { stdout } = await execFileAsync(FLEET_ACCOUNT, [], {
     encoding: "utf8", timeout: FLEET_ACCOUNT_TIMEOUT_MS, killSignal: "SIGKILL",
@@ -1261,7 +1297,7 @@ const server = createServer(async (req, res) => {
     if (path === "/api/account" && req.method === "GET") {
       try {
         const { raw, parsed } = await readFleetAccount();
-        return json(res, 200, accountBody(parsed, { raw }));
+        return json(res, 200, accountBody(parsed, { raw, ...usageForWire() }));
       } catch (e) {
         return json(res, 500, { error: `fleet-account failed: ${e.message}` });
       }
@@ -1293,7 +1329,7 @@ const server = createServer(async (req, res) => {
         });
         // 観測し直して返す。頼んだ名前を返すと、切替が効かなかった日に画面だけが嘘を吐く。
         const after = await readFleetAccount();
-        return json(res, 200, accountBody(after.parsed, { raw: after.raw }));
+        return json(res, 200, accountBody(after.parsed, { raw: after.raw, ...usageForWire() }));
       } catch (e) {
         return json(res, 500, { error: `fleet-account <name> failed: ${e.message}` });
       }
@@ -1307,7 +1343,7 @@ const server = createServer(async (req, res) => {
           encoding: "utf8", timeout: FLEET_ACCOUNT_TIMEOUT_MS, killSignal: "SIGKILL",
         });
         const after = await readFleetAccount();
-        return json(res, 200, accountBody(after.parsed, { raw: after.raw }));
+        return json(res, 200, accountBody(after.parsed, { raw: after.raw, ...usageForWire() }));
       } catch (e) {
         return json(res, 500, { error: `fleet-account --next failed: ${e.message}` });
       }
