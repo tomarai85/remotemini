@@ -58,8 +58,9 @@ enum RCTheme {
             print("theme variant env:absent")
         }
         #endif
-        // 既定 = D(Liquid Glass ダーク)。2026-08-17 Tom 裁定(5案の実機スクショ比較から)。
-        return .glassDark
+        // 既定 = J(全面ガラス・暗)。2026-08-29 Tom「全部 Glass、Liquid glass っぽいのがいい」
+        // を受けて D から昇格(D は 2026-08-17 裁定の旧既定として variant に残る)。
+        return .glassFull
     }
 
     /// ボタン・リンク・選択の tint。
@@ -242,35 +243,38 @@ struct RCBackdrop: View {
     //   土台のサイズに一切寄与しないので、玉が何個・何 pt でもレイアウトに触れない。
     var body: some View {
         RCTheme.background
-            .ignoresSafeArea()
             .overlay {
                 orbs
             }
+            .ignoresSafeArea()
     }
 
     @ViewBuilder
     private var orbs: some View {
         ZStack {
             if RCTheme.glassRich {
-                // 全面ガラス(J/K): 5玉・多色・強め。ガラスは下に透ける色が有って初めて硝子に
+                // 全面ガラス(J/K): 同族3+1色(indigo/violet/cyan 系)に絞る。5色に散らすと
+                // 虹になって安く見える(2026-08-29 design pass、ui-ux-pro-max の禁則
+                // 「rainbow gradients を避ける」)。ガラスは下に透ける色が有って初めて硝子に
                 // 見えるので、ここが J/K の主役。玉の色はトークンでなく此処の直値 —
                 // 「地の絵」は1枚の絵として調整する物で、意味色(accent/danger)と混ぜない。
                 let glow: Double = RCTheme.glowStrength
                 Circle().fill(Color(red: 0x6D / 255.0, green: 0x5C / 255.0, blue: 1.0).opacity(glow))
-                    .frame(width: 460, height: 460).blur(radius: 90)
-                    .offset(x: -150, y: -280)
-                Circle().fill(Color(red: 0xB0 / 255.0, green: 0x5C / 255.0, blue: 1.0).opacity(glow * 0.85))
-                    .frame(width: 380, height: 380).blur(radius: 85)
-                    .offset(x: 160, y: -80)
-                Circle().fill(Color(red: 0x3C / 255.0, green: 0xC8 / 255.0, blue: 1.0).opacity(glow * 0.75))
-                    .frame(width: 420, height: 420).blur(radius: 90)
-                    .offset(x: -80, y: 240)
-                Circle().fill(Color(red: 1.0, green: 0x5C / 255.0, blue: 0xA8 / 255.0).opacity(glow * 0.5))
-                    .frame(width: 360, height: 360).blur(radius: 95)
-                    .offset(x: 190, y: 520)
-                Circle().fill(Color(red: 0xF5 / 255.0, green: 0xC2 / 255.0, blue: 0x4E / 255.0).opacity(glow * 0.3))
-                    .frame(width: 320, height: 320).blur(radius: 100)
-                    .offset(x: -170, y: 660)
+                    .frame(width: 500, height: 500).blur(radius: 110)
+                    .offset(x: -140, y: -240)
+                Circle().fill(Color(red: 0xA0 / 255.0, green: 0x5C / 255.0, blue: 1.0).opacity(glow * 0.8))
+                    .frame(width: 440, height: 440).blur(radius: 105)
+                    .offset(x: 170, y: 40)
+                Circle().fill(Color(red: 0x3C / 255.0, green: 0xC8 / 255.0, blue: 1.0).opacity(glow * 0.6))
+                    .frame(width: 460, height: 460).blur(radius: 110)
+                    .offset(x: -60, y: 420)
+                Circle().fill(Color(red: 0x8B / 255.0, green: 0x7C / 255.0, blue: 1.0).opacity(glow * 0.5))
+                    .frame(width: 400, height: 400).blur(radius: 110)
+                    .offset(x: 150, y: 700)
+                // 題と状態バーの裏を静める幕。文字は騒がしい地の上に置くと安く見える —
+                // 幕は variant 自身の基調色なので暗(J)でも明(K)でも正しく働く。
+                LinearGradient(colors: [RCTheme.background.opacity(0.9), RCTheme.background.opacity(0.0)],
+                               startPoint: .top, endPoint: .center)
             } else if RCTheme.usesGlass {
                 let glow: Double = RCTheme.glowStrength
                 Circle().fill(RCTheme.accent.opacity(glow))
@@ -294,6 +298,22 @@ extension View {
     func rcThemedSurface() -> some View {
         scrollContentBackground(.hidden)
             .background(RCBackdrop())
+    }
+}
+
+/// チップ(バッジ・機体名乗り等)の面。glass 系はガラス仕立て(material + 色の縁)、
+/// それ以外は従来の淡い塗り。色チップの「ベタ塗り 0.12」はガラスの上では板に見える —
+/// チップも透けて初めて系が揃う(2026-08-29 design pass)。
+struct RCChip: ViewModifier {
+    let tint: Color
+    func body(content: Content) -> some View {
+        if RCTheme.usesGlass {
+            content
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(tint.opacity(0.4), lineWidth: 0.8))
+        } else {
+            content.background(tint.opacity(0.12), in: Capsule())
+        }
     }
 }
 

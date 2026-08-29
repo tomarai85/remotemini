@@ -551,7 +551,7 @@ struct SessionRowView: View {
                         .foregroundStyle(RCTheme.violet)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
-                        .background(RCTheme.violet.opacity(0.12), in: Capsule())
+                        .modifier(RCChip(tint: RCTheme.violet))
                         .accessibilityIdentifier("list.machineBadge")
                 }
                 if let word = statusWord {
@@ -560,7 +560,7 @@ struct SessionRowView: View {
                         .foregroundStyle(statusColor)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
-                        .background(statusColor.opacity(0.12), in: Capsule())
+                        .modifier(RCChip(tint: statusColor))
                 }
                 // 診断の原文は**壊れている行にだけ**出す(2026-08-16、§9-4「一覧の行に
                 // 内部語を並べない」)。健康な行では status の言葉が全てで、原文は
