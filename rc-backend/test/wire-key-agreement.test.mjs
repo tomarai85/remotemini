@@ -153,6 +153,15 @@ const DIGEST_INCOMPLETE = {
   lastAssistant: "done", lastAt: "2026-08-26T11:02:00.000Z",
 };
 
+// 使用量の検体(2026-08-29、friday の実 `cswap list --json` から写した形)。
+const SAMPLE_USAGE = {
+  usageStatus: "ok",
+  sessionUsedPct: 100,
+  weeklyUsedPct: 13,
+  weeklyResetsIn: "5d 19h",
+  willLastToReset: true,
+};
+
 const CASES = {
   routeLabel: [
     [{ route: "tmux", screen: "CHOICE", limited: true }],
@@ -249,7 +258,14 @@ const CASES = {
   // 選ばなかったのは、`pluck` の `at` が1段しか降りられないから —— 2段の道を足すのは
   // 「測る為に測る道具を太らせる」側で、`sessionRow` が既に「行の生産者を直に呼ぶ」形を
   // 取っている(`src/wire.mjs` の `accountBody` は `accounts` に此の関数の返り値をそのまま入れる)。
-  accountRow: ACCOUNT_PARSED.ok.accounts.map((a) => [ACCOUNT_PARSED.ok, a]),
+  accountRow: [
+    ...ACCOUNT_PARSED.ok.accounts.map((a) => [ACCOUNT_PARSED.ok, a]),
+    // usage 付きの枝(2026-08-29)。usage は「測れた机」でだけ生える鍵なので、
+    // 無しの枝だけだと `usage: null` になり、入れ子の鍵が一度も実行に現れない。
+    [ACCOUNT_PARSED.ok, ACCOUNT_PARSED.ok.accounts[0],
+      { [ACCOUNT_PARSED.ok.accounts[0].name]: SAMPLE_USAGE }],
+  ],
+  accountUsage: [[SAMPLE_USAGE]],
 };
 
 /**
@@ -286,7 +302,8 @@ const MODULE_OF = {
   healthzBody: ["wire", "src/wire.mjs", "export function healthzBody({ pid, uptime, version }) {"],
   // 第2引数を分解するので目印を明示する(既定の目印だと `{ raw = "" }` = **引数の分解**を
   // 本文と読んで、鍵が0件になる。②が其れを赤で捕まえるが、先に正しく書く)。
-  accountBody: ["wire", "src/wire.mjs", "export function accountBody(parsed, { raw = \"\" } = {}) {"],
+  accountBody: ["wire", "src/wire.mjs", "export function accountBody(parsed, { raw = \"\", usageByEmail = null, usageAgeSeconds = null } = {}) {"],
+  accountUsage: ["wire", "src/wire.mjs"],
   // 行の方は分解しないので既定の目印で本文に届く(`accountRow(parsed, a)`)。
   accountRow: ["wire", "src/wire.mjs"],
 };
@@ -616,9 +633,12 @@ const PAIRS = [
     // `parseStatus` / `anomalies` = 内部の英語トークン。電話は `display` に畳まれた
     //   日本語しか読まない —— 型から外してあるのは、読める形にすると
     //   「英語のまま画面に出す」道が生えるから(`AccountClient.decodeAccount` の註)。
-    serverOnly: ["account", "anomalies", "parseStatus"],
+    serverOnly: ["account", "anomalies", "parseStatus",
+      // 使用量の観測の齢。電話はまだ読まない(古さの表示を足す時に読み始める)。
+      "usageAgeSeconds"],
   },
   { swift: "AccountClient.Wire.Row", builders: ["accountRow"], at: "" },
+  { swift: "AccountClient.Wire.Row.Usage", builders: ["accountUsage"], at: "" },
   { swift: "AccountClient.Wire.Row.RowDisplay", builders: ["accountRow"], at: "display" },
   { swift: "AccountClient.Wire.Display", builders: ["accountBody"], at: "display" },
 ];

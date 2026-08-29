@@ -225,15 +225,18 @@ export const ACCOUNT_RAW_MAX = 2000;
  *   `display` に置く —— 電話側で日本語を組み立て直すと、語彙が2箇所に分かれて必ずズレる。
  *   `display.status` は正常時 `null`(= 出す物が無い。空文字にすると空の帯が出る)。
  */
-export function accountBody(parsed, { raw = "" } = {}) {
+export function accountBody(parsed, { raw = "", usageByEmail = null, usageAgeSeconds = null } = {}) {
   const ok = parsed.parseStatus === "ok";
   return {
     account: parsed.current ?? "（未設定）", // 出荷済みの版が読む1行。中身は現用名だけ
     current: parsed.current,
-    accounts: parsed.accounts.map((a) => accountRow(parsed, a)),
+    accounts: parsed.accounts.map((a) => accountRow(parsed, a, usageByEmail)),
     ok,
     parseStatus: parsed.parseStatus,
     anomalies: parsed.anomalies,
+    // 使用量の観測の齢(秒)。null = この机はまだ一度も測れていない。電話は齢が古い時に
+    // 「古い」と言えるが、数字を捨てる判断はしない(1時間前の率でも無いよりは判断材料)。
+    usageAgeSeconds,
     display: {
       status: parseStatusMessage(parsed.parseStatus),
       anomalies: parsed.anomalies.map(anomalyMessage),
@@ -266,14 +269,35 @@ function accountRaw(raw) {
  *   「そのアカウントが無い」に見え、本当の理由(トークンが欠けている / 名前が引数に使えない)が
  *   画面から消える。出して、押せなくして、理由を日本語で置く(DESIGN §2.88)。
  */
-export function accountRow(parsed, a) {
+export function accountRow(parsed, a, usageByEmail = null) {
   const problem = selectionProblem(parsed, a.name);
+  const u = usageByEmail ? usageByEmail[a.name] : null;
   return {
     name: a.name,
     hasToken: a.hasToken,
     active: a.active,
     selectable: problem === null,
     display: { blocked: problem === null ? null : selectionMessage(problem) },
+    // 残量(cswap の観測、無ければ null = 「測れていない」。0 と混ぜない — DESIGN の
+    // 「読めなかったと本当に0は別」の口座版)。中身の形は accountUsage が正本。
+    usage: u ? accountUsage(u) : null,
+  };
+}
+
+/**
+ * 口座1つぶんの使用量(2026-08-29、CodexBar と同じ真実を電話へ)。
+ *
+ * ★pct は**使用率**。残りは電話が 100 - pct で描く。
+ * ★`weeklyResetsIn` は cswap が作った文字列("20h 50m")をそのまま運ぶ —
+ *   期限の文言を電話で組み立て直すと語彙が2箇所に分かれる(display と同じ判断)。
+ */
+export function accountUsage(u) {
+  return {
+    usageStatus: u.usageStatus ?? null,
+    sessionUsedPct: u.sessionUsedPct ?? null,
+    weeklyUsedPct: u.weeklyUsedPct ?? null,
+    weeklyResetsIn: u.weeklyResetsIn ?? null,
+    willLastToReset: u.willLastToReset ?? null,
   };
 }
 

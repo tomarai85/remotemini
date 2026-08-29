@@ -153,6 +153,29 @@ struct SettingsView: View {
         .accessibilityIdentifier("settings.account.next")
     }
 
+    /// "Session 0% left · Week 87% left · resets 5d 19h"。測れていない窓は黙って落とす
+    /// (両方 nil なら空文字 = 行ごと出さない)。resets の文字列は机の道具が作った物をそのまま。
+    static func usageLine(_ u: AccountUsage) -> String {
+        var parts: [String] = []
+        if let s = u.sessionUsedPct {
+            parts.append("Session \(Int((100 - s).rounded()))% left")
+        }
+        if let w = u.weeklyUsedPct {
+            var p = "Week \(Int((100 - w).rounded()))% left"
+            if let r = u.weeklyResetsIn, !r.isEmpty { p += " · resets \(r)" }
+            parts.append(p)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// どちらかの窓が実質尽きているか(残り 2% 以下)。切替の判断に一番効く1ビットなので
+    /// 色で名指しする。閾値はゼロ丸め(99.6% 使用 = 表示 0% left)を拾う為の物で、警告ではない。
+    static func usageExhausted(_ u: AccountUsage) -> Bool {
+        if let s = u.sessionUsedPct, s >= 98 { return true }
+        if let w = u.weeklyUsedPct, w >= 98 { return true }
+        return false
+    }
+
     @ViewBuilder
     private func accountRow(_ row: AccountRow) -> some View {
         Button {
@@ -170,6 +193,19 @@ struct SettingsView: View {
                         Text(blocked)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                    }
+                    // 残量(2026-08-29)。切替は残量が見えて初めて判断になる — 同日、現用が
+                    // セッション上限に当たり、電話は limit の文だけを受け取った。
+                    // `nil`(未観測)の時は行を出さない: 「測れていない」を 0% にも 100% にも見せない。
+                    if let usage = row.usage {
+                        let line = Self.usageLine(usage)
+                        if !line.isEmpty {
+                            Text(line)
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(Self.usageExhausted(usage)
+                                    ? AnyShapeStyle(RCTheme.danger) : AnyShapeStyle(.secondary))
+                                .accessibilityIdentifier("settings.account.usage")
+                        }
                     }
                 }
                 Spacer()
