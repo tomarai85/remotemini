@@ -21,6 +21,8 @@
 #   M2 bar-button       ボタンの枝に帯を戻す      -> 主張が赤(錨1は緑のまま)
 #   M3 anchor-truncated 上限の枝の識別子を改名    -> 錨1が赤(主張は緑のまま)
 #   M4 spelling-gone    composer から帯ごと消す   -> 錨2が赤
+#   M5 glass-bar-ceiling  上限の枝にガラスの面を敷く -> 主張が赤(2026-08-29 追加)
+#   M6 glass-spelling-gone ガラスの帯の材質を替える  -> 錨3が赤(2026-08-29 追加)
 #
 #   ★M3 が此処に在る理由: 主張は「入っていない」= 否定なので、切り出しが痩せると
 #   中身を見ずに緑になる。M3 は切り出しを痩せさせた時、主張が**緑のまま**で錨1
@@ -118,7 +120,8 @@ is_red()   { grep -q "^not ok [0-9]* - .*$2" "$1"; }
 is_green() { grep -q "^ok [0-9]* - .*$2" "$1"; }
 
 N_ANCHOR1="切り出しが両端とも合っている"
-N_ANCHOR2="は会話画面の何処かに在る"
+N_ANCHOR2=".fill(.bar) は会話画面の何処かに在る"
+N_ANCHOR3=".ultraThinMaterial は会話画面の何処かに在る"
 N_CLAIM="灰色の帯は composer だけ"
 
 # ---- 変異 ---------------------------------------------------------------------
@@ -128,24 +131,37 @@ import io, os, sys
 p = sys.argv[1]
 s = io.open(p, encoding="utf-8").read()
 mut = os.environ["MUT"]
-BAR = ".background(" + ".bar)"
+# ★2026-08-29: composer の帯が系ごとに2つになった(glass = material の Rectangle /
+# 非 glass = `Rectangle().fill(.bar)`)。植える側も**両方**を植えないと、glass の系で
+# 帯が footer へ戻った日にこの対照が沈黙する —— 変異は守っている物と同じ数だけ要る。
+BAR = ".fill(" + ".bar)"
+GLASS_BAR = ".ultraThin" + "Material"
 if mut == "bar-ceiling":
     a = '                .accessibilityIdentifier("conversation.loadEarlierCeiling")'
     if s.count(a) == 1:
-        s = s.replace(a, "                " + BAR + "\n" + a)
+        s = s.replace(a, "                .background(Rectangle().fill(.bar))\n" + a)
 elif mut == "bar-button":
     a = "            .frame(maxWidth: .infinity)\n\n        case .atCeiling:"
     if s.count(a) == 1:
-        s = s.replace(a, "            .frame(maxWidth: .infinity)\n            " + BAR
-                      + "\n\n        case .atCeiling:")
+        s = s.replace(a, "            .frame(maxWidth: .infinity)\n"
+                      + "            .background(Rectangle().fill(.bar))\n\n        case .atCeiling:")
 elif mut == "anchor-truncated":
     a = "conversation.loadEarlierCeiling"
     if s.count(a) == 1:
         s = s.replace(a, "conversation.ceilingNotice")
 elif mut == "spelling-gone":
-    a = "        " + BAR + "\n"
+    # 非 glass の枝の帯を丸ごと消す。錨②(`.fill(.bar)` が在る)が赤くなるべき所。
+    a = "Rectangle().fill(.bar).ignoresSafeArea(edges: .bottom)"
+    if a in s:
+        s = s.replace(a, "Color.clear", 1)
+elif mut == "glass-bar-ceiling":
+    # ★新規(2026-08-29): glass の系の帯を footer へ戻す。主張の glass 版が赤くなるべき所。
+    a = '                .accessibilityIdentifier("conversation.loadEarlierCeiling")'
     if s.count(a) == 1:
-        s = s.replace(a, "")
+        s = s.replace(a, "                .background(." + "ultraThinMaterial)\n" + a)
+elif mut == "glass-spelling-gone":
+    # glass の帯の材質ごと消す。新しい錨(material が在る)が赤くなるべき所。
+    s = s.replace(GLASS_BAR, "regularMaterial")
 else:
     raise SystemExit("知らない変異: " + mut)
 io.open(p, "w", encoding="utf-8").write(s)
@@ -193,20 +209,22 @@ if [ "$rc" -ne 0 ]; then
     echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
     exit 2
 fi
-for w in "$N_ANCHOR1" "$N_ANCHOR2" "$N_CLAIM"; do
+for w in "$N_ANCHOR1" "$N_ANCHOR2" "$N_ANCHOR3" "$N_CLAIM"; do
     if ! is_green "$BASE_LOG" "$w"; then
         un "基準で緑であるべき検査が居ない: $w(名が変わったか、飛んでいる)"
         echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
         exit 2
     fi
 done
-echo "  基準は緑、狙う3本とも実名で居る"
+echo "  基準は緑、狙う4本とも実名で居る"
 
 echo "=== 変異"
 probe bar-ceiling      bar-ceiling      "$N_CLAIM"   "$N_ANCHOR1"
 probe bar-button       bar-button       "$N_CLAIM"   "$N_ANCHOR1"
 probe anchor-truncated anchor-truncated "$N_ANCHOR1" "$N_CLAIM"
 probe spelling-gone    spelling-gone    "$N_ANCHOR2"
+probe glass-bar-ceiling  glass-bar-ceiling   "$N_CLAIM"    "$N_ANCHOR1"
+probe glass-spelling-gone glass-spelling-gone "$N_ANCHOR3"
 
 # ---- 復元の確認 ---------------------------------------------------------------
 # trap の前に自分で確かめる。trap 任せだと、戻っていない木で「緑」を出せてしまう。
