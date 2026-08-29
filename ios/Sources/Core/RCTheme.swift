@@ -32,6 +32,13 @@ enum RCTheme {
         /// H: D の磨き上げ(対照)。構造は D のまま、縁・光彩・角丸の調整だけでどこまで
         /// 上がるかを測る — F/G が勝ったとしても、差が構造由来か調整由来かを分離する為に要る。
         case glassPolish = "glasspolish"
+        /// J: 全面ガラス・暗(2026-08-29、Tom「全部ベースが同じだから変わらない。全部 Glass がいい」)。
+        /// F の反省 = 調味料の増減では閾値に届かない。地を鮮やかな多色に、縁にキャッチライト、
+        /// 光彩を主役に。ガラスが硝子に見えるのは**下に透ける色**が有る時だけ(RCBackdrop の注釈)。
+        case glassFull = "glassfull"
+        /// K: 全面ガラス・明。Liquid Glass が一番映えるのは明るい地(Apple のデモが明るい理由)。
+        /// Tom は 08-17 に暗を選んだが、全面ガラス化で前提が変わるので明も1枚出して測る。
+        case glassBright = "glassbright"
     }
 
     static let variant: Variant = resolveVariant()
@@ -66,6 +73,8 @@ enum RCTheme {
         case .glassMax: return Color(red: 0x8B / 255.0, green: 0x7C / 255.0, blue: 0xFF / 255.0)
         case .glassTerm: return Color(red: 0x5C / 255.0, green: 0xE8 / 255.0, blue: 0x7B / 255.0)
         case .glassPolish: return Color(red: 0x95 / 255.0, green: 0x87 / 255.0, blue: 0xFF / 255.0)
+        case .glassFull: return Color(red: 0x8B / 255.0, green: 0x7C / 255.0, blue: 0xFF / 255.0)
+        case .glassBright: return Color(red: 0x5B / 255.0, green: 0x4A / 255.0, blue: 0xF5 / 255.0)
         }
     }()
 
@@ -78,8 +87,9 @@ enum RCTheme {
         case .graphite:     return Color(red: 0xFF / 255.0, green: 0x7B / 255.0, blue: 0x72 / 255.0)
         case .glassDark:    return Color(red: 0xFF / 255.0, green: 0x8A / 255.0, blue: 0x80 / 255.0)
         case .glassLight:   return Color(red: 0xC0 / 255.0, green: 0x2A / 255.0, blue: 0x22 / 255.0)
-        case .glassMax, .glassPolish: return Color(red: 0xFF / 255.0, green: 0x8A / 255.0, blue: 0x80 / 255.0)
+        case .glassMax, .glassPolish, .glassFull: return Color(red: 0xFF / 255.0, green: 0x8A / 255.0, blue: 0x80 / 255.0)
         case .glassTerm:    return Color(red: 0xFF / 255.0, green: 0x7B / 255.0, blue: 0x72 / 255.0)
+        case .glassBright:  return Color(red: 0xC0 / 255.0, green: 0x2A / 255.0, blue: 0x22 / 255.0)
         }
     }()
 
@@ -91,8 +101,9 @@ enum RCTheme {
         case .graphite:     return Color(red: 0xE3 / 255.0, green: 0xB3 / 255.0, blue: 0x41 / 255.0)
         case .glassDark:    return Color(red: 0xF5 / 255.0, green: 0xC2 / 255.0, blue: 0x4E / 255.0)
         case .glassLight:   return Color(red: 0x8F / 255.0, green: 0x63 / 255.0, blue: 0x00 / 255.0)
-        case .glassMax, .glassPolish: return Color(red: 0xF5 / 255.0, green: 0xC2 / 255.0, blue: 0x4E / 255.0)
+        case .glassMax, .glassPolish, .glassFull: return Color(red: 0xF5 / 255.0, green: 0xC2 / 255.0, blue: 0x4E / 255.0)
         case .glassTerm:    return Color(red: 0xD9 / 255.0, green: 0xC9 / 255.0, blue: 0x4A / 255.0)
+        case .glassBright:  return Color(red: 0x8F / 255.0, green: 0x63 / 255.0, blue: 0x00 / 255.0)
         }
     }()
 
@@ -104,8 +115,9 @@ enum RCTheme {
         case .graphite: return Color(red: 0xB7 / 255.0, green: 0x8C / 255.0, blue: 0xFF / 255.0)
         case .glassDark: return Color(red: 0xC0 / 255.0, green: 0x9A / 255.0, blue: 0xFF / 255.0)
         case .glassLight: return Color(red: 0xA8 / 255.0, green: 0x6B / 255.0, blue: 0xFF / 255.0)
-        case .glassMax, .glassPolish: return Color(red: 0xC0 / 255.0, green: 0x9A / 255.0, blue: 0xFF / 255.0)
+        case .glassMax, .glassPolish, .glassFull: return Color(red: 0xC0 / 255.0, green: 0x9A / 255.0, blue: 0xFF / 255.0)
         case .glassTerm: return Color(red: 0x64 / 255.0, green: 0xD8 / 255.0, blue: 0xCB / 255.0)
+        case .glassBright: return Color(red: 0xA8 / 255.0, green: 0x6B / 255.0, blue: 0xFF / 255.0)
         }
     }()
 
@@ -120,6 +132,8 @@ enum RCTheme {
         case .glassMax: return Color(red: 0x07 / 255.0, green: 0x08 / 255.0, blue: 0x10 / 255.0)
         case .glassTerm: return Color(red: 0x06 / 255.0, green: 0x0B / 255.0, blue: 0x09 / 255.0)
         case .glassPolish: return Color(red: 0x0B / 255.0, green: 0x0C / 255.0, blue: 0x14 / 255.0)
+        case .glassFull: return Color(red: 0x15 / 255.0, green: 0x17 / 255.0, blue: 0x34 / 255.0)
+        case .glassBright: return Color(red: 0xE7 / 255.0, green: 0xE9 / 255.0, blue: 0xF8 / 255.0)
         }
     }()
 
@@ -134,6 +148,8 @@ enum RCTheme {
         case .glassMax: return Color.white.opacity(0.10)
         case .glassTerm: return Color.white.opacity(0.07)
         case .glassPolish: return Color.white.opacity(0.08)
+        case .glassFull: return Color.white.opacity(0.14)
+        case .glassBright: return Color.white.opacity(0.50)
         }
     }()
 
@@ -148,6 +164,8 @@ enum RCTheme {
         case .glassMax: return Color.white.opacity(0.16)
         case .glassTerm: return Color(red: 0x5C / 255.0, green: 0xE8 / 255.0, blue: 0x7B / 255.0).opacity(0.22)
         case .glassPolish: return Color.white.opacity(0.18)
+        case .glassFull: return Color.white.opacity(0.28)
+        case .glassBright: return Color.white.opacity(0.85)
         }
     }()
 
@@ -156,22 +174,23 @@ enum RCTheme {
         switch variant {
         case .lightMinimal: return 0.05
         case .glassLight: return 0.07
-        case .claudeWarm, .graphite, .glassDark, .glassMax, .glassTerm, .glassPolish: return 0
+        case .glassBright: return 0.08
+        case .claudeWarm, .graphite, .glassDark, .glassMax, .glassTerm, .glassPolish, .glassFull: return 0
         }
     }()
 
     /// 系全体の明暗。nil にしない — OS 設定で片側だけ検証されないまま出るのを防ぐ。
     static let colorScheme: ColorScheme = {
         switch variant {
-        case .claudeWarm, .graphite, .glassDark, .glassMax, .glassTerm, .glassPolish: return .dark
-        case .lightMinimal, .glassLight: return .light
+        case .claudeWarm, .graphite, .glassDark, .glassMax, .glassTerm, .glassPolish, .glassFull: return .dark
+        case .lightMinimal, .glassLight, .glassBright: return .light
         }
     }()
 
     /// Liquid Glass の面か(カードの描き方が fill から material/glass に替わる)。
     static let usesGlass: Bool = {
         switch variant {
-        case .glassDark, .glassLight, .glassMax, .glassTerm, .glassPolish: return true
+        case .glassDark, .glassLight, .glassMax, .glassTerm, .glassPolish, .glassFull, .glassBright: return true
         case .claudeWarm, .lightMinimal, .graphite: return false
         }
     }()
@@ -181,6 +200,7 @@ enum RCTheme {
     static let cardRadius: CGFloat = {
         switch variant {
         case .glassMax: return 24
+        case .glassFull, .glassBright: return 26
         case .glassPolish: return 22
         case .glassTerm: return 16
         case .glassDark, .glassLight: return 20
@@ -193,6 +213,8 @@ enum RCTheme {
     static let glowStrength: Double = {
         switch variant {
         case .glassMax: return 0.50
+        case .glassFull: return 0.80
+        case .glassBright: return 0.55
         case .glassPolish: return 0.40
         case .glassTerm: return 0.30
         case .glassDark: return 0.32
@@ -204,15 +226,52 @@ enum RCTheme {
     /// 全画面の書体の系。glassTerm だけ monospaced(端末の血)。nil = 標準。
     /// 当て所は RemoteMiniApp の根の1箇所(散らさない — 色と同じ理由)。
     static let fontDesign: Font.Design? = variant == .glassTerm ? .monospaced : nil
+
+    /// 全面ガラス系か(J/K)。地の光彩が5玉の多色になり、カードの縁にキャッチライトが載る。
+    /// F(glassMax)との違いは度合いでなく**層の数** — 調味料の増減は「変わらない」と裁定済み
+    /// (Tom 2026-08-29「全部ベースが同じだから変わらない」)。
+    static let glassRich: Bool = variant == .glassFull || variant == .glassBright
 }
 
 /// 画面の地。glass では柔らかい光彩を敷く — 平色の上の glass は屈折する物が無く
 /// ただの灰色に見えるので、地の光彩が glass を glass に見せる当の部品。
 struct RCBackdrop: View {
+    // ★玉は必ず overlay に置く(2026-08-29 実測)。ZStack の「子」として描くと、固定 frame の
+    //   circle(420-460pt)が親 ZStack の幅を画面より広げ、同居する content が引き伸ばされて
+    //   行が画面外へはみ出す(ListView は RCBackdrop を ZStack の子として持つ)。overlay は
+    //   土台のサイズに一切寄与しないので、玉が何個・何 pt でもレイアウトに触れない。
     var body: some View {
+        RCTheme.background
+            .ignoresSafeArea()
+            .overlay {
+                orbs
+            }
+    }
+
+    @ViewBuilder
+    private var orbs: some View {
         ZStack {
-            RCTheme.background.ignoresSafeArea()
-            if RCTheme.usesGlass {
+            if RCTheme.glassRich {
+                // 全面ガラス(J/K): 5玉・多色・強め。ガラスは下に透ける色が有って初めて硝子に
+                // 見えるので、ここが J/K の主役。玉の色はトークンでなく此処の直値 —
+                // 「地の絵」は1枚の絵として調整する物で、意味色(accent/danger)と混ぜない。
+                let glow: Double = RCTheme.glowStrength
+                Circle().fill(Color(red: 0x6D / 255.0, green: 0x5C / 255.0, blue: 1.0).opacity(glow))
+                    .frame(width: 460, height: 460).blur(radius: 90)
+                    .offset(x: -150, y: -280)
+                Circle().fill(Color(red: 0xB0 / 255.0, green: 0x5C / 255.0, blue: 1.0).opacity(glow * 0.85))
+                    .frame(width: 380, height: 380).blur(radius: 85)
+                    .offset(x: 160, y: -80)
+                Circle().fill(Color(red: 0x3C / 255.0, green: 0xC8 / 255.0, blue: 1.0).opacity(glow * 0.75))
+                    .frame(width: 420, height: 420).blur(radius: 90)
+                    .offset(x: -80, y: 240)
+                Circle().fill(Color(red: 1.0, green: 0x5C / 255.0, blue: 0xA8 / 255.0).opacity(glow * 0.5))
+                    .frame(width: 360, height: 360).blur(radius: 95)
+                    .offset(x: 190, y: 520)
+                Circle().fill(Color(red: 0xF5 / 255.0, green: 0xC2 / 255.0, blue: 0x4E / 255.0).opacity(glow * 0.3))
+                    .frame(width: 320, height: 320).blur(radius: 100)
+                    .offset(x: -170, y: 660)
+            } else if RCTheme.usesGlass {
                 let glow: Double = RCTheme.glowStrength
                 Circle().fill(RCTheme.accent.opacity(glow))
                     .frame(width: 420, height: 420).blur(radius: 110)
@@ -225,7 +284,6 @@ struct RCBackdrop: View {
                     .offset(x: -40, y: 430)
             }
         }
-        .ignoresSafeArea()
     }
 }
 
@@ -248,6 +306,19 @@ struct RCCard: ViewModifier {
     func body(content: Content) -> some View {
         if RCTheme.usesGlass {
             glassBody(content)
+                .overlay {
+                    // J/K のみ: 縁のキャッチライト(左上から差す1px の光)。素の glassEffect は
+                    // 暗い地では縁が沈み、板が地に溶ける — 実物の硝子は必ず縁が光を拾う。
+                    if RCTheme.glassRich {
+                        RoundedRectangle(cornerRadius: RCTheme.cardRadius, style: .continuous)
+                            .strokeBorder(
+                                LinearGradient(
+                                    colors: [Color.white.opacity(RCTheme.colorScheme == .dark ? 0.45 : 0.9),
+                                             Color.white.opacity(0.05)],
+                                    startPoint: .topLeading, endPoint: .bottomTrailing),
+                                lineWidth: 1)
+                    }
+                }
         } else {
             content
                 .background(
