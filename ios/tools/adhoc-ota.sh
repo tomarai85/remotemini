@@ -113,6 +113,15 @@ if [ -n "$DIRTY" ]; then
     echo "  見る範囲: $ART_PATHS" >&2
     echo "  確かめる: git diff -- $ART_PATHS" >&2
     echo "  戻す:     git checkout -- $ART_PATHS" >&2
+    # ★**変異の残骸か、意図した編集か**を切り分ける(2026-08-30)。此処が「汚れている」しか
+    #   言えないと、読んだ人は自分の作業まで捨てかねない。残骸なら1コマンドで戻せる事も言う。
+    if bash "$HERE/tools/mutation-residue-check.sh" >/dev/null 2>&1; then
+        echo "  ※変異対照が触る file に差は無い = **あなたの編集**の可能性が高い" >&2
+    else
+        echo "  ※変異対照が触る file に差が在る = **殺された走行の残骸**かもしれない:" >&2
+        bash "$HERE/tools/mutation-residue-check.sh" 2>&1 | sed 's/^/     /' >&2
+        echo "     残骸なら: bash ios/tools/mutation-residue-check.sh --restore" >&2
+    fi
     # ★配る時は逃げ道を置かない(Codex の指摘1)。env で越えられる門は、いずれ
     #   「毎回打つ物」になる。**人の電話に載る**物なので commit か stash を要求する。
     #   手元で形を見たいだけなら `--no-upload` を使う(そちらは越えられる)。
