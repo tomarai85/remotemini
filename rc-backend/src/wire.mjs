@@ -76,11 +76,60 @@ const OWNER_INPUT_STATES = new Set(["choice", "input"]);
  *   一覧が出ない時に出る、旅程で一番踏みそうな画面が、日本語ですらなかった。
  *   `reason` / `detail` は観測値として残す(診断と app.html の互換)。描くのは `display`。
  */
-export function sessionsBody({ sessions, scan, paneFault }) {
+/**
+ * 「机はもっと新しい版を配っている」を電話に言わせる文面(2026-08-30)。
+ *
+ * なぜ要るか — CF-11 と CF-17 が一続きの失敗を作った:
+ *   私は「4件の指摘は反映済み・目視待ち」と報告したが、其の修正は **Tom が持っている
+ *   どの版にも入っていなかった**(commit は署名の3分後)。そして CF-17 で、配布口には
+ *   `client=app` が **path を問わず1本も来ていない**と実測された —— 栞は一度も叩かれていない。
+ *   つまり「新しい版が在る」を伝える経路が、**私が思い出して言う**しか無かった。
+ *   私の記憶は F3 以来ずっと此の系の最弱点なので、構造で置き換える。
+ *
+ * ★どちらか一方でも判らなければ `null`(= 出さない)。推測しない。
+ *   「配っている版が読めない」を「新しいのが在る」に化かすと、栞を叩いても何も変わらず、
+ *   その1回で此の帯は二度と読まれなくなる。
+ * ★比べるのは**配っている版**(manifest)であって承認済みの版ではない。巻き戻った時に
+ *   「105 が在る」と言うのは嘘になる —— 叩いても 96 しか入らない。
+ * ★等しい時・電話の方が新しい時も `null`。差が在る時だけ言う。
+ */
+export function updateNotice(publishedBuild, appBuild) {
+  // ★**全桁が数字**の物だけ通す。`parseInt` は前方一致なので `"96abc"` を 96 として
+  //   受ける —— 電話の版は **User-Agent 由来**(誰でも詐称できる)なので、
+  //   出鱈目な名乗りから作った数字を Tom の画面に出す事になる。
+  //   `reqlog.appBuild()` が読めない時に `"-"` を返すのと同じ、閉じる側の判断。
+  const digits = (v) => (/^\d{1,9}$/.test(String(v ?? "").trim()) ? Number(String(v).trim()) : NaN);
+  const pub = digits(publishedBuild);
+  const mine = digits(appBuild);
+  if (!Number.isSafeInteger(pub) || !Number.isSafeInteger(mine)) return null;
+  if (pub <= 0 || mine <= 0) return null;
+  if (pub <= mine) return null;
+  return `机は新しい版を配っています(手元 ${mine} → 配布 ${pub})。栞から入れ直してください。`;
+}
+
+/**
+ * 帯が指している**配布側の番号**(文字列)か `null`。文面と同じ条件で出す。
+ *
+ * ★何に使うか: 電話が「此の版は後で」を憶える鍵。番号が無いと、憶えられるのは
+ *   「帯を消した」という事実だけになり、**次の版が出ても黙ったまま**になる ——
+ *   壁紙を消す為の仕掛けが、警報そのものを消す。
+ * ★文面から数字を拾わせない。文面は語を直す事が在り、其の度に電話の記憶が壊れる。
+ */
+export function updateBuild(publishedBuild, appBuild) {
+  return updateNotice(publishedBuild, appBuild) === null
+    ? null
+    : String(publishedBuild).trim();
+}
+
+export function sessionsBody({ sessions, scan, paneFault, publishedBuild, appBuild }) {
   return {
     sessions,
     scan,
-    display: { scan: scanLine(scan) },
+    display: {
+      scan: scanLine(scan),
+      update: updateNotice(publishedBuild, appBuild),
+      updateBuild: updateBuild(publishedBuild, appBuild),
+    },
     paneFault: paneFault
       ? { reason: paneFault.reason, detail: paneFault.detail, display: paneFaultView(paneFault.reason) }
       : null,

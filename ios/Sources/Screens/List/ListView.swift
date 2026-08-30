@@ -189,13 +189,20 @@ struct ListView: View {
             }
 
         case .empty:
-            ScrollView {
-                Text("No sessions")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 80)
-                    .frame(maxWidth: .infinity)
-                    .accessibilityIdentifier("list.empty")
+            // ★`.paneFault` には**足さない**。あちらは「banner ALONE」が仕様(brief §4)で、
+            //   帯を重ねると、机が壊れている画面に版の話が混ざる。
+            VStack(spacing: 0) {
+                if let notice = viewModel.updateNotice {
+                    updateBar(notice)
+                }
+                ScrollView {
+                    Text("No sessions")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 80)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityIdentifier("list.empty")
+                }
             }
 
         case .paneFault(let headline, let body, let sessions, _):
@@ -212,7 +219,14 @@ struct ListView: View {
             }
 
         case .list(let sessions, _):
-            rows(sessions, grayedOut: false)
+            // ★帯は一覧の**上**。押す物(会話)より先に目に入る位置でないと、
+            //   「入れ直してください」は毎回スクロールの下で死ぬ。
+            VStack(spacing: 0) {
+                if let notice = viewModel.updateNotice {
+                    updateBar(notice)
+                }
+                rows(sessions, grayedOut: false)
+            }
 
         case .retryable(let priorSessions):
             VStack(spacing: 0) {
@@ -465,6 +479,33 @@ struct ListView: View {
                     .accessibilityIdentifier("list.freshness")
             }
         }
+    }
+
+    /// 版の帯。`noticeBar` と違い**押せる物を1つ持つ**。
+    ///
+    /// ★「後で」を付ける理由(2026-08-30、Codex 査読2巡目): 消せない帯は壁紙になる。
+    ///   「入れれば消える」は反論にならない —— 問題は入れるまでの期間で、
+    ///   CF-17 の実測ではそれが 9 ビルド分続いた。
+    /// ★黙るのは**その版だけ**。次の版が出れば再び出る(記憶の鍵が版番号)。
+    private func updateBar(_ message: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(message)
+                .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("後で") { viewModel.snoozeUpdateNotice() }
+                .font(.caption)
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("list.updateAvailable.snooze")
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .background(.bar)
+        // ★`.contain` が無いと、識別子だけ付けても SwiftUI は素の並びを
+        //   アクセシビリティの要素として公開せず、UI 検査から**一度も見つけられない**
+        //   (2026-08-27 に `list.loading.slow` で実測)。
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("list.updateAvailable")
     }
 
     private func noticeBar(_ message: String, identifier: String) -> some View {

@@ -98,6 +98,33 @@ final class ListViewModel: ObservableObject {
     /// doc for why that is deliberate and what it costs.
     private(set) var reachability = ReachabilityMeter()
     private var lastResponse: SessionsResponse?
+    /// ★既定を持たせるのは、既存の呼び出し 5 箇所を書き換えない為ではない ——
+    ///   **本物の面が既定で本物の記憶を使う**事を型で保証する為。検査だけが差し替える。
+    private let snoozeStore: UpdateSnoozeStoring
+
+    /// 「机は新しい版を配っている」の一行。**文面はサーバが決める**(`wire.mjs` の
+    /// `updateNotice`)ので、此処は運ぶだけ —— 加工すると、電話と机で別の事を言い出す。
+    ///
+    /// ★出す物が無ければ `nil`。**空文字にしない**(帯に空の警告が出る)。
+    /// ★なぜ此の経路が要るか: CF-11 で私は「修正は反映済み」と報告したが、其の修正は
+    ///   Tom が持っているどの版にも入っていなかった。CF-17 の実測では配布口に
+    ///   `client=app` が1本も来ておらず、栞は一度も叩かれていない。
+    ///   「新しい版が在る」を伝える経路が**私が思い出して言う**しか無かった。
+    var updateNotice: String? {
+        UpdateNoticeRule.visibleNotice(
+            notice: lastResponse?.display.update,
+            build: lastResponse?.display.updateBuild,
+            snoozed: snoozeStore.snoozedBuild()
+        )
+    }
+
+    /// 「此の版は後で」。★番号が判らない時は**憶えない** —— 鍵の無い記憶は、
+    ///   何を黙らせたのか誰も判らないまま警報だけを消す。
+    func snoozeUpdateNotice() {
+        guard let build = lastResponse?.display.updateBuild, !build.isEmpty else { return }
+        snoozeStore.snooze(build: build)
+        objectWillChange.send()
+    }
     /// epoch ms of the last *successful* fetch; `0` means "never." Read by the View
     /// via `lastFetchedAtMs` and fed to `Freshness.freshness`, re-evaluated at redraw
     /// time rather than on a timer (brief §2-2/§3-c: no poll loop this sprint).
@@ -108,13 +135,15 @@ final class ListViewModel: ObservableObject {
         baseURL: URL,
         apiKey: String,
         onUnauthorized: @escaping () -> Void,
-        now: @escaping () -> Double = { Date().timeIntervalSince1970 * 1000 }
+        now: @escaping () -> Double = { Date().timeIntervalSince1970 * 1000 },
+        snoozeStore: UpdateSnoozeStoring = UserDefaultsUpdateSnooze()
     ) {
         self.client = client
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.onUnauthorized = onUnauthorized
         self.now = now
+        self.snoozeStore = snoozeStore
     }
 
     /// The single entry point for all **five** refresh triggers. Four are the brief's

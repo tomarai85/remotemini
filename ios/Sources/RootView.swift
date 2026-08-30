@@ -19,7 +19,14 @@ struct RootView: View {
                             client: SessionsListingFixture(state: fixtureState),
                             baseURL: Self.fixtureBaseURL,
                             apiKey: "ui-fixture-key",
-                            onUnauthorized: {}
+                            onUnauthorized: {},
+                            // ★覚えない実装を明示的に渡す。既定の `UserDefaults` を使うと、
+                            //   「後で」を押す検査が **simulator に其れを残し**、後続の検査が
+                            //   黙った帯を見て「出ていない」と読む(2026-08-30 実測で
+                            //   `testTheSameAnchorSeparatesTheTwoFaces` が落ちた)。
+                            //   同じ dir の `draftStore: InMemoryDraftStore()` が
+                            //   DESIGN §2.53 で同じ結論に到達している。
+                            snoozeStore: InMemoryUpdateSnooze()
                         ),
                         // ★fixture の面に本物の口を1つも残さない。`RC_UI_FIXTURE` が
                         //   口座の状態を名乗っていなければ、**回る fixture** に落とす
