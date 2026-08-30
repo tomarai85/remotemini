@@ -516,6 +516,10 @@ OTA_UNDELIVERED_GRACE="${RC_HEALTH_OTA_UNDELIVERED_GRACE:-172800}"
 BAD_EVERY="${RC_HEALTH_BAD_EVERY:-900}"
 # 外の台本に許す時間。配布口の検査は中で ssh を張るので、相手が黙ると此処が返らない。
 OTA_TIMEOUT="${RC_HEALTH_OTA_TIMEOUT:-45}"
+# 台本へ渡す引数。★**自動判定にしない** —— 「材料が無いから局所模式へ落ちる」形にすると、
+#   材料を置き忘れた日に検査が黙って別の物を測り始め、緑の意味が変わる。
+#   どちらを測るかは据えた人が conf に書く。
+OTA_ARGS="${RC_HEALTH_OTA_ARGS:-}"
 PERL_BIN="${RC_HEALTH_PERL:-$(command -v perl 2>/dev/null || echo '')}"
 
 # 記録の中身 = "<最後に測った epoch> <状態> <通知済み 0|1> <続いた回数> <未解決 0|1> <この状態になった epoch>"
@@ -696,7 +700,14 @@ check_ota_fresh() {
         return 0
     fi
 
-    out="$(run_bounded "$OTA_TIMEOUT" "$OTA_CHECK")"; rc=$?
+    # ★引数は**空かどうかで枝を分ける**(配列に入れて展開しない)。macOS の /bin/bash は
+    #   3.2 で、`set -u` の下では空配列の `"${a[@]}"` 自体が落ちる —— 此の file が
+    #   `RESOLVE` で同じ結論に到達している。
+    if [ -n "$OTA_ARGS" ]; then
+        out="$(run_bounded "$OTA_TIMEOUT" "$OTA_CHECK" $OTA_ARGS)"; rc=$?
+    else
+        out="$(run_bounded "$OTA_TIMEOUT" "$OTA_CHECK")"; rc=$?
+    fi
     # ★切られた(rc=142 = SIGALRM)は「測れなかった」であって「古くない」ではない。
     #   下の `*)` が拾うので此処で分岐は要らないが、log に理由を残す。
     [ "$rc" -eq 142 ] && log "ota-freshness: $OTA_TIMEOUT 秒で切った(相手が返らない)"

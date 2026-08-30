@@ -291,6 +291,20 @@ grep -q "rc-log-cap: 状態が unknown → ok" "$d/o.log" \
     && ok "C24 欄数が合わない記録は信じず、未知から見直す" \
     || ng "C24 壊れた記録" "$(grep rc-log-cap "$d/o.log" | tail -1)"
 
+# ── C25 台本へ引数を渡せる(局所模式を明示で選ぶ)────────────────────────
+# ★自動判定にしないので、渡せない実装だと friday は配布口を永久に測れない。
+d="$SB/c25"; mkdir -p "$d"
+printf '#!/bin/bash\n[ "$1" = "--local" ] && exit 0\nexit 1\n' > "$d/needs-arg.sh"; chmod +x "$d/needs-arg.sh"
+run "$d" "${OTAONLY[@]}" RC_HEALTH_OTA_CHECK="$d/needs-arg.sh" RC_HEALTH_OTA_ARGS=--local
+s1="$(state_of "$d/s.json.ota-seen.dry")"
+d="$SB/c25b"; mkdir -p "$d"
+cp "$SB/c25/needs-arg.sh" "$d/" 2>/dev/null
+run "$d" "${OTAONLY[@]}" RC_HEALTH_OTA_CHECK="$d/needs-arg.sh"
+s2="$(state_of "$d/s.json.ota-seen.dry")"
+if [ "$s1" = "ok" ] && [ "$s2" = "rollback" ]; then
+    ok "C25 引数を渡せる(渡すと ok / 渡さないと台本が 1 を返す = 実際に届いている)"
+else ng "C25 引数" "渡した=$s1(ok 期待) 渡さない=$s2(rollback 期待)"; fi
+
 echo ""
 echo "OBSERVER-CAP-OTA-CONTROLS: pass=$pass fail=$fail"
 exit $(( fail > 0 ))
