@@ -30,7 +30,9 @@ ng() { echo "FAIL  $1  ($2)"; fail=$((fail + 1)); }
 SB="$(mktemp -d)"; trap 'rm -rf "$SB"' EXIT
 
 row() {  # row <ISO日時> <client>
-    printf '[rc-backend] req %s GET /api/sessions route=x client=%s code=200 reason=- ms=1\n' "$1" "$2"
+    # ★`build=` を含める(2026-08-30)。本番の行は 2852f6c 以降この形。
+    #   検体が本番の出さない形だと、対照は「本番に無い形」に対して緑になる。
+    printf '[rc-backend] req %s GET /api/sessions route=x client=%s build=- code=200 reason=- ms=1\n' "$1" "$2"
 }
 count_for() { awk -F'\t' -v d="$1" '$1==d {print $2}' "$2" 2>/dev/null; }
 
