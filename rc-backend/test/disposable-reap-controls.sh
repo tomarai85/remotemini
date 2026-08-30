@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# controls-for: rc-backend/tools/disposable-session.mjs
+# controls-for: tools/disposable-session.mjs
 #
 # `reap` の対照。掃除機の検査で一番大事なのは「掃く物を掃く」ではなく
 # **掃いてはいけない物を掃かない**事なので、そちらを先に測る。
