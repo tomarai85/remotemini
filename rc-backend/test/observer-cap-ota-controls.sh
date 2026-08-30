@@ -1,6 +1,10 @@
 #!/bin/bash
-# controls-for: tools/health-observer.sh (check_log_cap / check_ota_fresh)
-#               tools/log-cap-all.sh (生存の印)
+# controls-for: tools/health-observer.sh tools/log-cap-all.sh
+# 見張る場所: health-observer.sh の check_log_cap / check_ota_fresh と、
+#             log-cap-all.sh が書く生存の印。
+# ★宣言の行には **path だけ**を並べる(門は空白で切って path として読むので、
+#   括弧書きの関数名を混ぜると「宣言先が実在しない」と言われ、
+#   宣言が外れた対照は誰にも呼ばれなくなる)。
 #
 # 掃除の job と配布口を見張る2枝の**挙動**対照。
 #
