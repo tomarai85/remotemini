@@ -514,6 +514,9 @@ OTA_UNDELIVERED_GRACE="${RC_HEALTH_OTA_UNDELIVERED_GRACE:-172800}"
 # 通知の再送も、盲の時間を数える刻みも、**測る周期に縛られている**。
 # 壊れている間だけ細かく測れば、両方が同時に直る。直れば元の周期に戻る。
 BAD_EVERY="${RC_HEALTH_BAD_EVERY:-900}"
+# 外の台本に許す時間。配布口の検査は中で ssh を張るので、相手が黙ると此処が返らない。
+OTA_TIMEOUT="${RC_HEALTH_OTA_TIMEOUT:-45}"
+PERL_BIN="${RC_HEALTH_PERL:-$(command -v perl 2>/dev/null || echo '')}"
 
 # 記録の中身 = "<最後に測った epoch> <状態> <通知済み 0|1> <続いた回数> <未解決 0|1> <この状態になった epoch>"
 subject_path() { [ "$DRY" -eq 1 ] && printf '%s.dry' "$1" || printf '%s' "$1"; }
@@ -522,6 +525,10 @@ subject_read() {   # subject_read <file> → S_TS / S_STATE / S_DONE / S_RUN / S
     local now; now="$(date +%s)"
     S_TS=0; S_STATE="unknown"; S_DONE=0; S_RUN=0; S_OPEN=0; S_SINCE=0
     [ -f "$1" ] || return 0
+    # ★欄が 6 でない行は**丸ごと未知に倒す**(Codex の指摘)。欄が1つ増減しただけで
+    #   全部が1つずれ、状態の名前の場所に epoch が入る —— そのずれは出力に出ないので
+    #   気付く道が無い。欄数を検めれば、壊れた記録は「まだ見ていない」に落ちるだけで済む。
+    if [ "$(awk 'NR==1{print NF; exit}' "$1" 2>/dev/null)" != "6" ]; then return 0; fi
     read -r S_TS S_STATE S_DONE S_RUN S_OPEN S_SINCE _rest < "$1" 2>/dev/null || true
     case "${S_TS:-}"    in ''|*[!0-9]*) S_TS=0 ;; esac
     case "${S_RUN:-}"   in ''|*[!0-9]*) S_RUN=0 ;; esac
@@ -550,6 +557,32 @@ subject_write() {  # subject_write <file> <epoch> <状態> <通知済み> <回�
         /bin/rm -f "$tmp"; log "★状態を書けない($f)"
     fi
     return 0
+}
+
+# 外の台本を**時間で殴って**走らせる。返りは stdout、rc はその台本の物(切られたら非 0)。
+# ★これが無いと、配布口の検査(中で ssh を張る)が固まった時に**観測器ごと止まる** ——
+#   止まれば `open=1` の言い残しにも永久に到達しない(2026-08-30、Codex の指摘。
+#   私は「壊れている間は細かく測り直す」で再送を代替したので、
+#   **1回でも到達しない事が有り得る**という穴が致命になる)。
+# ★`timeout(1)` は macOS の既定に無い。perl の `alarm` は在る(切られると rc=142)。
+#   perl も無い環境では**時間を掛けずに走らせる**しか無いので、その事を log に残す ——
+#   黙って無防備になるのが一番悪い。
+# ★出力は**一時 file 経由**で受ける。`$( )` に直接流すと、時間で殺した後も
+#   **孤児になった孫(ssh や sleep)がパイプの書き口を握ったまま**なので、
+#   命令置換が EOF を待って結局最後まで止まる —— 殺せているのに待つ、という
+#   一番判りにくい形になる(2026-08-30 実測: 3 秒で切った筈が 60 秒かかった)。
+run_bounded() {   # run_bounded <秒> <台本> [引数...]
+    local secs="$1"; shift
+    local tf rc
+    tf="$(mktemp 2>/dev/null)" || { "$@" 2>&1; return $?; }
+    if [ -n "$PERL_BIN" ]; then
+        "$PERL_BIN" -e 'alarm shift; exec @ARGV' "$secs" "$@" > "$tf" 2>&1
+    else
+        "$@" > "$tf" 2>&1
+    fi
+    rc=$?
+    cat "$tf"; /bin/rm -f "$tf"
+    return "$rc"
 }
 
 # 出し先へ1通。`notify_monitor_broken` と**時計を分ける**(上の註記)。
@@ -663,7 +696,10 @@ check_ota_fresh() {
         return 0
     fi
 
-    out="$("$OTA_CHECK" 2>&1)"; rc=$?
+    out="$(run_bounded "$OTA_TIMEOUT" "$OTA_CHECK")"; rc=$?
+    # ★切られた(rc=142 = SIGALRM)は「測れなかった」であって「古くない」ではない。
+    #   下の `*)` が拾うので此処で分岐は要らないが、log に理由を残す。
+    [ "$rc" -eq 142 ] && log "ota-freshness: $OTA_TIMEOUT 秒で切った(相手が返らない)"
     grace=0
     case "$rc" in
         0) state="ok" ;;

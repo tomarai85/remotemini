@@ -269,6 +269,28 @@ if [ ! -f "$d/s.json.cap-seen.dry" ] && [ "$(notices "$d" rc-log-cap)" = "0" ]; 
     ok "C22 印を指していない機体では測らず鳴らさない"
 else ng "C22 空の印" "測ってしまった"; fi
 
+# ── C23 固まった台本を時間で切る ★Codex 2巡目 ────────────────────────────
+# 配布口の検査は中で ssh を張る。相手が黙ると此処が返らず、**観測器ごと止まる** ——
+# 止まれば「言い残した通知」の再送にも永久に到達しない。
+d="$SB/c23"; mkdir -p "$d"
+printf '#!/bin/bash\nsleep 60\n' > "$d/hang.sh"; chmod +x "$d/hang.sh"
+t0="$(date +%s)"
+run "$d" "${OTAONLY[@]}" RC_HEALTH_OTA_CHECK="$d/hang.sh" RC_HEALTH_OTA_TIMEOUT=3 RC_HEALTH_OTA_BLIND_S=0
+el=$(( $(date +%s) - t0 ))
+if [ "$el" -lt 30 ] && [ "$(state_of "$d/s.json.ota-seen.dry")" = "unmeasurable" ]; then
+    ok "C23 固まった台本は $el 秒で切られ、測れない扱いになる(観測器を道連れにしない)"
+else ng "C23 時間で切る" "${el}秒 / state=$(state_of "$d/s.json.ota-seen.dry")"; fi
+
+# ── C24 欄が壊れた記録は丸ごと未知に倒す ★Codex 2巡目 ────────────────────
+# 欄が1つずれると状態の名前の場所に epoch が入る。そのずれは出力に出ない。
+d="$SB/c24"; mkdir -p "$d"; mk_hb "$d/hb" "$NOW" "$NOW" 0
+printf 'junk %s ok 0 1 0 %s\n' "$NOW" "$NOW" > "$d/s.json.cap-seen.dry"   # 欄が 7
+run "$d" "${CAPONLY[@]}" RC_HEALTH_CAP_MARK="$d/hb"
+# 未知から見直すので「unknown → ok」の行が出る(壊れた記録を信じない)
+grep -q "rc-log-cap: 状態が unknown → ok" "$d/o.log" \
+    && ok "C24 欄数が合わない記録は信じず、未知から見直す" \
+    || ng "C24 壊れた記録" "$(grep rc-log-cap "$d/o.log" | tail -1)"
+
 echo ""
 echo "OBSERVER-CAP-OTA-CONTROLS: pass=$pass fail=$fail"
 exit $(( fail > 0 ))
