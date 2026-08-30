@@ -26,7 +26,10 @@
 # 古い定義で動き続ける(`kickstart` は再読込ではない。此の repo 自身が
 # `deploy-to-edith.sh` にその事故を記録している)。
 # 根治は「配る側が canonical な plist を置き、変えた時に bootout+bootstrap する」事で、
-# 後から比べる此の検査ではない。だから文面で `有効定義は未確認` と刷る。
+# ★2026-08-30: 其の但し書きは**解消した**。launchd が実際に読み込んでいる
+#   `arguments` を向こうで読み、disk の `ProgramArguments` と比べる様にした。
+#   plist を書き換えて `bootout`+`bootstrap` を忘れると此処が赤くなる
+#   (`kickstart` では定義は読み直されないので、之は起こる方が普通の取り違え)。
 #
 # 使い方:
 #   bash rc-backend/tools/fleet-plist-parity-check.sh
@@ -104,11 +107,66 @@ if [ $rc -ne 0 ] || [ -z "$remote" ]; then
     echo "fleet-plist-parity: 測れない(ssh rc=$rc / 出力が空)。**一致とは言わない**"
     exit 2
 fi
+
+
 if printf '%s\n' "$remote" | grep -q '^LAUNCHCTL fail$'; then
     echo "fleet-plist-parity: 向こうの launchctl が動かない = 登録の有無を測れない。"
     echo "  ★全件を『未登録』と読ませない(それは本番に対する嘘の赤になる)"
     exit 2
 fi
+
+loaded_state() {  # loaded_state <label> → same|differ|na|unknown
+    local v
+    v="$(printf '%s\n' "$LOADED_OUT" | awk -v l="$1" '$1 == "LOADED" && $2 == l {print $3; exit}')"
+    [ -n "$v" ] && printf '%s' "$v" || printf 'unknown'
+}
+
+# ── launchd が**実際に読み込んでいる定義**と disk の plist を比べる(2026-08-30 追加)──
+# なぜ要るか: 此処までの検査は「disk が repo と一致」「job が登録済み」しか言わない。
+#   plist を書き換えて **`bootout`+`bootstrap` を忘れる**と、disk も登録も緑のまま
+#   launchd は**古い定義**で走り続ける —— 検査自身が `有効定義は未確認` と刷っていた盲点。
+#   `kickstart` では定義は読み直されない(再読込は bootout+bootstrap が要る)ので、
+#   之は「うっかり」ではなく**起こる方が普通**の取り違え。
+# ★向こう側で python に読ませる。`launchctl print` の `arguments = { … }` を
+#   sed/awk で切ると引用の層が深くなり、壊れた時に**何が抜けたか出力に出ない**。
+#   plist の側は plistlib が正しく読む。両方を「1行1引数」に正規化してから比べる。
+LOADED_OUT="$("$SSH_BIN" -o ConnectTimeout=15 -o BatchMode=yes "$HOST" 'python3 -' <<'REMOTE_PY' 2>/dev/null
+import glob, os, plistlib, re, subprocess
+
+uid = str(os.getuid())
+for f in sorted(glob.glob(os.path.expanduser("~/Library/LaunchAgents/com.fleet.*.plist"))):
+    label = os.path.basename(f)[:-len(".plist")]
+    try:
+        disk = plistlib.load(open(f, "rb")).get("ProgramArguments")
+    except Exception:
+        print("LOADED %s unreadable" % label); continue
+    try:
+        out = subprocess.run(["launchctl", "print", "gui/%s/%s" % (uid, label)],
+                             capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        print("LOADED %s unreadable" % label); continue
+    m = re.search(r"^\s*arguments = \{\n(.*?)^\s*\}\s*$", out, re.S | re.M)
+    if m is None:
+        # 登録されていない / arguments を持たない(Program 指定など)。
+        # ★「比べられない」を「一致」に丸めない。
+        print("LOADED %s na" % label); continue
+    live = [ln.strip() for ln in m.group(1).splitlines() if ln.strip()]
+    if disk is None:
+        print("LOADED %s na" % label); continue
+    print("LOADED %s %s" % (label, "same" if [str(x) for x in disk] == live else "differ"))
+REMOTE_PY
+)"
+# ★空白だけの応答も「読めなかった」に倒す。中身が無いのに「読めた」と扱うと、
+#   全 label が `unknown` になって**本番に対する嘘の赤**が出る —— 此の file が
+#   `launchctl list | awk` を避けたのと同じ失敗の形(2026-08-30、対照 C15 が掴んだ)。
+if [ -z "$(printf '%s' "$LOADED_OUT" | tr -d '[:space:]')" ]; then
+    # ★「有効定義」の次元だけ測れなかった。disk の一致を根拠に緑を出すと、
+    #   検査の看板(有効定義まで見る)と実際に測った物がずれる —— 其れは読んだ人に嘘をつく。
+    echo "fleet-plist-parity: 向こうで有効定義を読めない(python3 が無い/launchctl が答えない)"
+    echo "  ★disk が一致していても**緑にしない**。此の検査は有効定義まで見ると名乗っている"
+    exit 2
+fi
+
 
 remote_md5()  { printf '%s\n' "$remote" | awk -v n="$1" '$1=="MD5" && $3==n {print $2}'; }
 remote_names(){ printf '%s\n' "$remote" | awk '$1=="MD5" {print $3}'; }
@@ -129,7 +187,15 @@ for name in "${repo_names[@]}"; do
         echo "  NG $name — ずれている(repo=$want friday=$got)"; fail=1; continue
     fi
     if is_reg "$name"; then
-        echo "  ok $name — disk 一致・登録済(★有効定義は未確認)"
+        lst="$(loaded_state "$name")"
+        case "$lst" in
+            same)   echo "  ok $name — disk 一致・登録済・**有効定義 一致**" ;;
+            differ) echo "  NG $name — disk は一致しているが **launchd は古い定義で走っている**"
+                    echo "       (plist を書き換えて bootout+bootstrap を忘れた形。kickstart では読み直されない)"
+                    fail=1; continue ;;
+            *)      echo "  NG $name — 有効定義を読めない($lst)= 測れていない物を緑にしない"
+                    fail=1; continue ;;
+        esac
     else
         echo "  NG $name — 中身は一致しているが **登録されていない**(据えただけで動いていない)"
         fail=1
@@ -178,7 +244,12 @@ if printf '%s\n' "$remote" | awk -v n="$TEMPLATE_ONLY" '$1=="MD5" && $3==n {f=1}
         echo "  NG $TEMPLATE_ONLY — **登録されていない**"; tfail=1
     fi
     if [ "$tfail" -eq 0 ]; then
-        echo "  ok $TEMPLATE_ONLY — 雛形なので byte は比べないが、固定値3つと実行 path は一致・登録済"
+        tlst="$(loaded_state "$TEMPLATE_ONLY")"
+        if [ "$tlst" = "same" ]; then
+            echo "  ok $TEMPLATE_ONLY — 雛形なので byte は比べないが、固定値3つと実行 path は一致・登録済・**有効定義 一致**"
+        else
+            echo "  NG $TEMPLATE_ONLY — 有効定義が disk と違う($tlst)"; fail=1
+        fi
     else fail=1; fi
 else
     echo "  NG $TEMPLATE_ONLY — friday に無い(監視の段が据わっていない)"; fail=1
@@ -193,7 +264,8 @@ if [ "$measured" -eq 0 ]; then
 fi
 
 if [ "$fail" -eq 0 ]; then
-    echo "fleet-plist-parity: 一致 $measured/${#repo_names[@]} + 雛形 1(全部登録済・★有効定義は未確認)"
+    nsame="$(printf '%s\n' "$LOADED_OUT" | awk '$1 == "LOADED" && $3 == "same"' | wc -l | tr -d ' ')"
+    echo "fleet-plist-parity: 一致 $measured/${#repo_names[@]} + 雛形 1(全部登録済・**有効定義 一致** $nsame 本)"
     exit 0
 fi
 echo "fleet-plist-parity: ずれている(配り直しは scp … athenas:~/Library/LaunchAgents/ の後 bootout+bootstrap)"
