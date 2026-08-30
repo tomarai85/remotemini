@@ -142,7 +142,13 @@ final class PollFetchingFixture: PollFetching {
                     seq: 1
                 ))
             ],
-            screen: ScreenBody(classification: classification),
+            // ★`limited` は検体では **false 固定**(2026-08-30)。此処を可変にするには
+            //   `SENDABLE + limited` の状態を `HistoryFetchingFixture.State` に足す事になり、
+            //   readable な状態は今 `busy` / `choice` 系しか無い。
+            //   帯を出すか否かの**判断は純関数**(`ConversationView.limitedNotice`)に置き、
+            //   単体で変異まで押さえた —— 面を1枚増やすより、判断を1つ露出させる方が
+            //   証拠が強く、壊れた時に何が壊れたかが名指しできる。
+            screen: ScreenBody(classification: classification, limited: false),
             display: choiceDisplay(for: state),
             // Queue(v2、2026-08-14): `.busy` だけ送信待ち2件を持つ。作業中の会話に
             // 送信を積む、が此の面の実在する使い方そのもの。他の状態は nil のまま

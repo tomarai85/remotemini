@@ -226,8 +226,21 @@ struct ChoiceButton: Decodable, Equatable {
 struct ScreenBody: Decodable, Equatable {
     let classification: Classification
 
+    /// 机の画面に**上限の告知が出ているか**。`classification` とは独立に立つ ——
+    /// 送れる(`SENDABLE`)のに答えは返らない、が実在する状態。
+    ///
+    /// ★上の註記は此の欄を「この sprint は活動バッジを描かないので modeled しない」と書いていた。
+    ///   **判断は当時正しく、理由が失効した**(2026-08-30)。サーバ側は `rc-backend/src/server.mjs` の `limited は state と独立に出す` の註記に
+    ///   意図をこう書いている ——「電話から見た時『返事が来ない』と『上限に当たっている』は
+    ///   取る行動が全く違うので、理由の見える化そのものが機能」。
+    ///   線は 2026-08-02 から送っていて、電話は復号せず捨てていた。
+    ///
+    /// ★`nil` は「線が何も言わなかった」。`false` に丸めない —— 古い机は此の鍵を持たない。
+    let limited: Bool?
+
     private enum CodingKeys: String, CodingKey {
         case classification = "screen"
+        case limited
     }
 
     /// 4 known values, read off `classifyScreen()`'s own return-type doc comment in
@@ -279,6 +292,10 @@ extension ScreenBody {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         classification = try container.decodeIfPresent(Classification.self, forKey: .classification)
             ?? .unrecognized
+        // ★`decodeIfPresent`。鍵が無い机(2026-08-02 より前の版)は `nil` になる ——
+        //   `false` に丸めると「上限は出ていない」と**断言**する事になり、
+        //   知らない事を知っている事にすり替える。
+        limited = try container.decodeIfPresent(Bool.self, forKey: .limited)
     }
 }
 

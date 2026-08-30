@@ -5,6 +5,24 @@ import PhotosUI
 /// `phase`/`loadEarlierState` -- display only, same split `ListView`/`ListViewModel`
 /// already establishes.
 struct ConversationView: View {
+
+    /// 机の画面に上限の告知が出ている時、送る面に出す一文。出さない時は `nil`。
+    ///
+    /// ★**送信は断らない。** `ConversationViewModel.swift` の既存の裁定(体験側監査 #4 への
+    ///   返答)がこう決めている ——「計器は片側にしか外れず、外れるのは常に『通るのに断る』側」。
+    ///   Codex 2026-08-30 は確認を1回挟む案(soft interlock)を推したが、採らない:
+    ///   今日実際に Tom を止めたのは `limited` ではなく口座のトークン失効(`relogin_required`)で、
+    ///   机は3回とも答えていた。**`limited` の経路で実害が出た観測は無い**ので、
+    ///   推定の上に摩擦を1つ載せるのは既存裁定と釣り合わない。見せる。断らない。
+    ///
+    /// ★`nil`(線が何も言わなかった)と `false` を同じ扱いにする —— どちらも
+    ///   「告知は見えていない」であって、区別が行動を変えない。
+    ///   区別が行動を変えないなら、画面に持ち込まない。
+    static func limitedNotice(_ screen: ScreenBody?) -> String? {
+        guard screen?.limited == true else { return nil }
+        return "The desk shows a usage-limit notice — it will not answer until that clears"
+    }
+
     /// 写真ピッカーの選択。★選ばれた事と送れた事は別なので、状態を分けて持つ。
     @State private var pickedPhoto: PhotosPickerItem?
     @State private var attachBusy = false
@@ -487,6 +505,16 @@ struct ConversationView: View {
                                     .strokeBorder(RCTheme.surfaceStroke, lineWidth: 1)
                             )
                     } else {
+                        // ★上限の告知(2026-08-30、CF-15)。**composer の直ぐ上**に置く ——
+                        //   一覧にも同じ事実は出るが、送るのは此処で、判断が要るのも此処。
+                        //   前の画面で見た事は、次の画面で忘れる。
+                        if let notice = Self.limitedNotice(viewModel.screen) {
+                            Text(notice)
+                                .font(.caption2)
+                                .foregroundStyle(RCTheme.caution)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityIdentifier("conversation.limitedNotice")
+                        }
                         TextField("Message", text: $viewModel.draft, axis: .vertical)
                             .textFieldStyle(.roundedBorder)
                     }
