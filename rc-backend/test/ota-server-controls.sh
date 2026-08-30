@@ -142,6 +142,156 @@ chmod 644 "$ROOT/s3cret/locked.ipa"
 [ "$c_after" = "200" ]  && ok "N7c その後も正常な file を配れる" \
                         || ng "N7c 読めない file の後、正常な file が $c_after"
 
+# --- N8 連打を断る / ただし**本物の導入は絶対に止めない** ----------------------
+# ★此の口には認証を付けられない(iOS の installd は独自の header を送らない)ので、
+#   tailnet に居る誰でも叩ける。DESIGN §12 が「log の上限では押さえられない物」として
+#   名指ししていたのが此処 —— 上限は暴走の**跡**を縛るだけで、暴走そのものは止めない。
+#
+# ★測る順が大事: **止まらない事**を先に測る。「429 が出る」だけを測る検査は、
+#   限界を 1 に落とした実装でも緑になる —— そして其の実装は Tom の導入を殺す。
+STAMP="$(date +%s)"
+FLOOD_ROOT="$T/flood"; mkdir -p "$FLOOD_ROOT/s3cret"
+printf 'MANIFEST\n' > "$FLOOD_ROOT/s3cret/manifest.plist"
+printf 'IPABYTES\n' > "$FLOOD_ROOT/s3cret/RemoteMini.ipa"
+printf '<h1>install</h1>\n' > "$FLOOD_ROOT/s3cret/index.html"
+
+start_flood_srv() {  # $1 = OTA_RATE_PER_MIN
+    OTA_ROOT="$FLOOD_ROOT" OTA_PORT="$FLOOD_PORT" OTA_RATE_PER_MIN="$1" "$NODE" "$SUT" > "$T/flood.log" 2>&1 &
+    FPID=$!
+    for _ in $(seq 1 40); do
+        curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$FLOOD_PORT/s3cret/manifest.plist" && break
+        sleep 0.25
+    done
+}
+stop_flood_srv() { kill "$FPID" 2>/dev/null; wait "$FPID" 2>/dev/null; }
+FLOOD_PORT="${OTA_FLOOD_PORT:-18797}"
+
+# (a) 本物の導入の形。頁 -> manifest -> 束 を3周(installd の再試行を含んだ多めの見積り)。
+start_flood_srv 120
+install_codes=""
+for _ in 1 2 3; do
+    for f in "" "manifest.plist" "RemoteMini.ipa"; do
+        install_codes="$install_codes$(code "http://127.0.0.1:$FLOOD_PORT/s3cret/$f") "
+    done
+done
+stop_flood_srv
+if printf '%s' "$install_codes" | grep -q "429"; then
+    ng "N8 本物の導入(9 要求)が既定の限界で止まった" "$install_codes"
+else
+    ok "N8 本物の導入(9 要求 = 頁/manifest/束 を3周)は既定 120/分で1つも止まらない"
+fi
+
+# (b) 連打は断る。★限界を低く差して測る —— 本物の 120 を超える連打を打つのは
+#     検査としては遅いだけで、測っている物は同じ。
+start_flood_srv 10
+n429=0; n200=0
+for _ in $(seq 1 25); do
+    c="$(code "http://127.0.0.1:$FLOOD_PORT/s3cret/manifest.plist")"
+    [ "$c" = "429" ] && n429=$((n429+1))
+    [ "$c" = "200" ] && n200=$((n200+1))
+done
+srv_alive=no; kill -0 "$FPID" 2>/dev/null && srv_alive=yes
+stop_flood_srv
+[ "$n429" -ge 1 ] && ok "N8b 限界を超えたら 429 を返す(200=$n200 / 429=$n429)" \
+                  || ng "N8b 連打を断る" "429 が1つも出ない(200=$n200)"
+# ★限界 10 に対して期待は **9**。`start_flood_srv` の起動待ちの probe が1枠使うから ——
+#   対照は自分が使った分を勘定に入れる。初版は 10 を期待して赤くなり、
+#   其れは限流の欠陥ではなく**此の検査が自分の足跡を数えていなかった**だけだった。
+[ "$n200" -ge 9 ] && ok "N8c 限界(10)まで通す。起動待ちの probe が1枠使うので残り 9(実測 $n200)" \
+                  || ng "N8c 限界までは通す" "200=$n200(9 未満 = 先頭から断っている)"
+[ "$srv_alive" = "yes" ] && ok "N8d 連打の後も配布口が生きている" \
+                         || ng "N8d 連打で配布口が死んだ" "限流が落とすなら守りになっていない"
+
+# (c) 断る判定が**読み方の判定より前**に居る。無い path の連打も断られる事で測る ——
+#     後ろに居ると、断る為の仕事(path 解決・stat)がそのまま攻撃者の欲しい仕事になる。
+start_flood_srv 5
+miss429=0
+for _ in $(seq 1 15); do
+    [ "$(code "http://127.0.0.1:$FLOOD_PORT/s3cret/no-such-file")" = "429" ] && miss429=$((miss429+1))
+done
+stop_flood_srv
+[ "$miss429" -ge 1 ] && ok "N8e 無い path の連打も断る(判定が path 解決より前に居る)" \
+                     || ng "N8e 判定の位置" "404 を返し続けた = 解決してから断っている"
+
+# (d) ★`X-Forwarded-For` の**先頭を回すだけで素通りできない**事。
+#   此の口は 127.0.0.1 にしか listen せず、唯一の入口は `tailscale serve` の代理なので、
+#   相手は socket からは判らない(実測 2026-08-30: 本番の tailnet 経路で `peer=xff`)。
+#   だが XFF は**客が自分で付けられる** —— 先頭を鍵にすると header を回すだけで
+#   鍵が毎回変わり、限流が丸ごと無効になる。信頼できる代理が1段なら
+#   **自分に一番近い末尾**が其の代理の書いた値で、客には書き換えられない。
+#   ★変異(先頭を鍵に戻す)で実測: 20 回中 **429 が 0** = 完全に素通りできていた。
+start_flood_srv 5
+spoof429=0
+for i in $(seq 1 20); do
+    c="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+         -H "X-Forwarded-For: 10.0.0.$i, 10.0.0.0" \
+         "http://127.0.0.1:$FLOOD_PORT/s3cret/manifest.plist" 2>/dev/null)"
+    [ "$c" = "429" ] && spoof429=$((spoof429+1))
+done
+stop_flood_srv
+[ "$spoof429" -ge 1 ] && ok "N8f XFF の先頭を回しても素通りできない(末尾の hop を鍵にしている / 429=$spoof429)" \
+                      || ng "N8f XFF 偽装で素通り" "429 が0件 = 先頭を鍵にしている(header を回すだけで限流が消える)"
+
+# --- N9 資源を縛る(要求数だけでは足りない)------------------------------------
+# ★2026-08-30、Codex の指摘2。限界 120/分は「1分に何回来られるか」でしかない。
+#   120 本の束 GET を**同時に**張られると socket と file stream が 120 本開き、
+#   しかも socket の timeout は**無活動**でしか切れないので、少しずつ読み続ければ
+#   延々と保持できる。次の窓でさらに 120 本足せる = `EMFILE` で**持ち主まで巻き込める**。
+#   だから重い方(束)だけ、同時本数と絶対の期限で別に縛る。
+# ★測る順は N8 と同じ: **本物の導入が死なない**事を一緒に測る。
+#   束の枠が埋まっている最中でも manifest は取れないといけない。
+N9ROOT="$T/n9"; mkdir -p "$N9ROOT/s"
+head -c 3000000 /dev/urandom > "$N9ROOT/s/RemoteMini.ipa"
+printf 'MANIFEST\n' > "$N9ROOT/s/manifest.plist"
+N9PORT="${OTA_N9_PORT:-18795}"
+OTA_ROOT="$N9ROOT" OTA_PORT="$N9PORT" OTA_MAX_INFLIGHT_IPA=2 "$NODE" "$SUT" > "$T/n9.log" 2>&1 &
+N9PID=$!
+for _ in $(seq 1 40); do
+    curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$N9PORT/s/manifest.plist" && break
+    sleep 0.25
+done
+
+: > "$T/n9codes"
+# ★`wait` を**引数なしで書かない**(2026-08-30、書いて固まった)。引数なしの `wait` は
+#   此の shell の子を**全部**待つので、上で常駐させている検査用サーバ($PID / $N9PID)まで
+#   待ち、永久に返らない。掴んだ curl の pid だけを待つ。
+n9pids=""
+for _ in 1 2 3 4 5 6; do
+    ( curl -s -o /dev/null --limit-rate 20k --max-time 25 -w '%{http_code}\n' \
+        "http://127.0.0.1:$N9PORT/s/RemoteMini.ipa" >> "$T/n9codes" 2>/dev/null ) &
+    n9pids="$n9pids $!"
+done
+sleep 4
+c_man="$(code "http://127.0.0.1:$N9PORT/s/manifest.plist")"
+for pid in $n9pids; do wait "$pid" 2>/dev/null; done
+n503=$(grep -c '^503' "$T/n9codes" 2>/dev/null || echo 0)
+n200=$(grep -c '^200' "$T/n9codes" 2>/dev/null || echo 0)
+c_after="$(code "http://127.0.0.1:$N9PORT/s/RemoteMini.ipa")"
+kill "$N9PID" 2>/dev/null; wait "$N9PID" 2>/dev/null
+
+[ "$n200" -le 2 ] && [ "$n503" -ge 1 ] \
+  && ok "N9 束の同時転送が上限(2)で頭打ちになる(200=$n200 / 503=$n503)" \
+  || ng "N9 束の同時本数を縛る" "200=$n200 / 503=$n503(上限が効いていない)"
+[ "$c_man" = "200" ] \
+  && ok "N9b 束の枠が埋まっている最中でも manifest は返る(本物の導入を殺さない)" \
+  || ng "N9b 枠が埋まった時の manifest" "$c_man"
+[ "$c_after" = "200" ] \
+  && ok "N9c 転送が終われば席が返る(守りが詰まりに化けない)" \
+  || ng "N9c 席が返らない" "$c_after = 数回叩かれただけで以後誰も束を取れない"
+
+# --- N10 限界の値そのものが壊れていたら起動しない ------------------------------
+# ★`Number()` は `NaN` も `Infinity` も通す。どちらでも `arr.length >= RATE_PER_MIN` が
+#   永遠に偽になり、限流が**黙って消えた上に**時刻の配列が無限に伸びる ——
+#   守りが消えるだけでなく、守りの器がそのまま漏れになる。fail-closed に倒す。
+n10bad=0
+for bad in abc Infinity 0 -5; do
+    if OTA_RATE_PER_MIN="$bad" OTA_ROOT="$N9ROOT" OTA_PORT="$N9PORT" "$NODE" "$SUT" >/dev/null 2>&1; then
+        ng "N10 壊れた限界値($bad)で起動した" "限流が黙って消える"
+        n10bad=1
+    fi
+done
+[ "$n10bad" -eq 0 ] && ok "N10 限界値が正の整数でなければ起動しない(abc / Infinity / 0 / 負)"
+
 echo
 echo "ota-server-controls: OK $PASS / NG $FAIL"
 [ "$FAIL" -gt 0 ] && exit 1
