@@ -129,7 +129,7 @@ struct SettingsView: View {
         }
 
         ForEach(state.accounts) { row in
-            accountRow(row)
+            accountRow(row, staleAge: state.usageAgeSeconds)
         }
 
         ForEach(Array(state.anomalyMessages.enumerated()), id: \.offset) { _, message in
@@ -151,6 +151,22 @@ struct SettingsView: View {
         }
         .disabled(accountViewModel.isBusy)
         .accessibilityIdentifier("settings.account.next")
+    }
+
+    /// 観測が古すぎて数字を信じてはいけない境目(秒)。机の TTL は 300s なので、正常なら
+    /// 齢はその前後に収まる。900s(15分)を超えるのは**測り直しが続けて失敗している**時だけ
+    /// (机は失敗すると backoff で 30秒 → 最大 30分 へ間隔を伸ばすので、齢は青天井に伸びる)。
+    ///
+    /// ★2026-08-29、Codex の指摘: 齢を線に載せたのに画面が読まない間、恒久障害(keychain が
+    /// 締まる / 道具が消える / 出力形式が変わる)でも電話は**最後の良い値を今の値として**
+    /// 描き続けていた。口座の切替という実操作の判断材料なので、「古い」を黙るのは
+    /// 「出ない」より危険 —— 閾値を超えたら**数字を消して理由を出す**。
+    static let usageStaleAfterSeconds: Double = 900
+
+    /// `nil`(一度も測れていない)は「古い」ではない —— その時は行そのものが出ない。
+    static func usageTooStale(_ ageSeconds: Double?) -> Bool {
+        guard let ageSeconds else { return false }
+        return ageSeconds > usageStaleAfterSeconds
     }
 
     /// "Session 0% left · Week 87% left · resets 5d 19h"。測れていない窓は黙って落とす
@@ -177,7 +193,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private func accountRow(_ row: AccountRow) -> some View {
+    private func accountRow(_ row: AccountRow, staleAge: Double?) -> some View {
         Button {
             Task { await accountViewModel.select(row.name) }
         } label: {
@@ -198,13 +214,22 @@ struct SettingsView: View {
                     // セッション上限に当たり、電話は limit の文だけを受け取った。
                     // `nil`(未観測)の時は行を出さない: 「測れていない」を 0% にも 100% にも見せない。
                     if let usage = row.usage {
-                        let line = Self.usageLine(usage)
-                        if !line.isEmpty {
-                            Text(line)
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(Self.usageExhausted(usage)
-                                    ? AnyShapeStyle(RCTheme.danger) : AnyShapeStyle(.secondary))
-                                .accessibilityIdentifier("settings.account.usage")
+                        if Self.usageTooStale(staleAge) {
+                            // ★数字を薄く出す案は採らない —— 薄い数字も数字として読まれ、
+                            //   切替の判断に使われる。消して、理由を置く。
+                            Text("Usage unavailable — the desk cannot measure it right now")
+                                .font(.caption2)
+                                .foregroundStyle(RCTheme.caution)
+                                .accessibilityIdentifier("settings.account.usageStale")
+                        } else {
+                            let line = Self.usageLine(usage)
+                            if !line.isEmpty {
+                                Text(line)
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(Self.usageExhausted(usage)
+                                        ? AnyShapeStyle(RCTheme.danger) : AnyShapeStyle(.secondary))
+                                    .accessibilityIdentifier("settings.account.usage")
+                            }
                         }
                     }
                 }

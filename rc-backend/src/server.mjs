@@ -17,7 +17,7 @@ import { promisify } from "node:util";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords } from "./sessions.mjs";
 import { accountBody, gapItem, healthzBody, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
 import { parseFleetAccount, selectionMessage, selectionProblem } from "./account.mjs";
-import { parseCswapUsage } from "./usage.mjs";
+import { parseCswapUsage, usageBackoffMs, usageRefreshDue } from "./usage.mjs";
 import { JsonlTail, formatPollCursor, pollDecision, resumeDecision } from "./tail.mjs";
 import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
@@ -1137,27 +1137,72 @@ const execFileAsync = promisify(execFile);
 // 失敗した日は古い値が残り、`usageAgeSeconds` が齢を正直に語る。
 // keychain unlock は cswap-distribute と同じ理由(unlock は session を跨がない)。
 const USAGE_TTL_MS = Number(process.env.RC_USAGE_TTL_MS || 300_000);
-const USAGE_TIMEOUT_MS = 15_000;
-const USAGE_CMD =
-  'security unlock-keychain -p "" "$HOME/Library/Keychains/claude-code.keychain-db" 2>/dev/null; ' +
-  'PATH="$HOME/.local/bin:$PATH" exec cswap list --json';
-const usageCache = { at: 0, byEmail: null, inflight: null };
+// ★上限は cold の実測から決める(2026-08-29 friday: cold 1.31s / warm 0.12s・0.13s)。
+//   Codex は「1〜2秒に縮めろ」と言ったが、それでは**冷えた1発目が必ず切れる** ——
+//   縮める方向は正しく、値は測ってから決める。8s = cold の約6倍。
+const USAGE_TIMEOUT_MS = Number(process.env.RC_USAGE_TIMEOUT_MS || 8_000);
+// 失敗中の再試行の間隔(指数)。★成功時刻(`at`)と**試行時刻を分ける**のがこの直しの核心:
+//   分けないと、期限切れ後に失敗が続く間**要求のたびに**子プロセスが立つ
+//   (single-flight は同時実行を1本にするだけで、連続実行を止めない)。
+//   実測: `/api/account` は 20-23回/時。恒久障害ならその頻度で `security` を起こし続けていた。
+const USAGE_BACKOFF_BASE_MS = 30_000;
+const USAGE_BACKOFF_MAX_MS = 30 * 60_000;
+// ★絶対パスで起動する(2026-08-29)。`PATH="$HOME/.local/bin:$PATH"` に頼ると、
+//   launchd の環境や `BASH_ENV` の差で**別の cswap**を掴みうる。実在の検証は起動時に1回。
+const CSWAP_BIN = process.env.RC_CSWAP_BIN || join(HOME, ".local", "bin", "cswap");
+const USAGE_KEYCHAIN = process.env.RC_USAGE_KEYCHAIN
+  || join(HOME, "Library", "Keychains", "claude-code.keychain-db");
+// bash を1枚噛ませるのは、**unlock と読みが同じシェルに居る必要がある**からではない
+// (Codex の指摘どおり keychain の状態は共有で、シェル局所ではない)。理由は
+// 「unlock が失敗しても読みは試す」という順接を1コマンドで表せる事だけ。
+// 変数は挟まない —— 全部この場で解決した絶対パスを埋める。
+const USAGE_CMD = `/usr/bin/security unlock-keychain -p "" ${JSON.stringify(USAGE_KEYCHAIN)} 2>/dev/null; `
+  + `exec ${JSON.stringify(CSWAP_BIN)} list --json`;
+
+const usageCache = {
+  at: 0,             // 最後に**成功**した時刻(古さの正本)
+  byEmail: null,
+  inflight: null,
+  lastAttemptAt: 0,  // 最後に**試した**時刻(成否を問わない = backoff の起点)
+  failures: 0,       // 連続失敗回数
+};
+
+// 判定と待ち時間は `usage.mjs`(純粋な側)に居る。此の file は import した瞬間 listen するので、
+// 検査から直に呼べる場所へ置く必要が在った。既定値も向こうが持つ(30秒 → 最大 30分)。
+
 function refreshUsage() {
   if (usageCache.inflight) return usageCache.inflight;
+  usageCache.lastAttemptAt = Date.now();
   usageCache.inflight = execFileAsync("/bin/bash", ["-c", USAGE_CMD], {
     encoding: "utf8", timeout: USAGE_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024,
   })
     .then(({ stdout }) => {
       const parsed = parseCswapUsage(stdout);
-      // unreadable は捨てて古い値を保つ(「読めなかった」を「0件」にしない — account.mjs と同じ線)
-      if (parsed.status === "ok") { usageCache.byEmail = parsed.byEmail; usageCache.at = Date.now(); }
+      // unreadable は捨てて古い値を保つ(「読めなかった」を「0件」にしない — account.mjs と同じ線)。
+      // ただし**失敗として数える** —— 読めない出力が続く事は、値が無い事と同じくらい報告に値する。
+      if (parsed.status !== "ok") throw new Error("cswap の出力を読み切れない");
+      const recovered = usageCache.failures > 0;
+      usageCache.byEmail = parsed.byEmail;
+      usageCache.at = Date.now();
+      usageCache.failures = 0;
+      if (recovered) console.log("[rc-backend] 口座の使用量: 復帰(測り直せた)");
     })
-    .catch(() => {})
+    .catch((e) => {
+      // ★黙って捨てない(2026-08-29、Codex の指摘2)。捨てていた間、keychain・cswap・
+      //   出力形式のどの恒久障害でも、電話は**先週の数字を今の値として**描き続け、
+      //   しかも机側に痕跡が1行も残らなかった。口座の切替という実操作の判断材料なので、
+      //   「古い」が見えない事は「出ない」より危険。
+      //   backoff が在るので、この行の頻度は 30秒 → 最大 30分 へ自然に落ちる(氾濫しない)。
+      usageCache.failures += 1;
+      console.error(`[rc-backend] 口座の使用量を測れない(${usageCache.failures}回連続、`
+        + `次は${Math.round(usageBackoffMs(usageCache.failures) / 1000)}秒後): ${e && e.message}`);
+    })
     .finally(() => { usageCache.inflight = null; });
   return usageCache.inflight;
 }
+
 function usageForWire() {
-  if (Date.now() - usageCache.at > USAGE_TTL_MS) refreshUsage();
+  if (usageRefreshDue(usageCache, Date.now())) refreshUsage();
   return {
     usageByEmail: usageCache.byEmail,
     usageAgeSeconds: usageCache.at ? Math.round((Date.now() - usageCache.at) / 1000) : null,
