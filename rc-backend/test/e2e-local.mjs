@@ -2363,7 +2363,11 @@ try {
   const reqLines = svlog.split("\n").filter((l) => l.includes("[rc-backend] req "));
   check("★ログに 1リクエスト1行が残っている", reqLines.length >= 10, `req 行=${reqLines.length}`);
   check("送信の行に method / パスの型 / 結果コードが揃う",
-    reqLines.some((l) => / POST \/api\/sessions\/:id\/messages sid=\S+ route=\S+ client=\S+ code=\d+ reason=\S+ ms=\d+$/.test(l)),
+    // ★`build=` は 2026-08-30 に足した欄。行を末尾まで固定したまま新しい形へ張り直す ——
+    //   欄が増えたからと `$` を外すと、以後は行末に何が付いても通る検査になる。
+    //   ★此処を直し忘れて掃引が赤くなった。単体 991/991 も門が回した対照も緑だった ——
+    //     此の主張だけが e2e に居たから。緑はそれが測った範囲しか言わない。
+    reqLines.some((l) => / POST \/api\/sessions\/:id\/messages sid=\S+ route=\S+ client=\S+ build=\S+ code=\d+ reason=\S+ ms=\d+$/.test(l)),
     reqLines.filter((l) => l.includes("/messages")).slice(-1)[0] || "(送信の行が無い)");
   check("★ストリームの行に経路が乗る(§3-W が刺さった当の欄)",
     reqLines.some((l) => /\/api\/sessions\/:id\/stream .*route=(tmux|worker) /.test(l)),
