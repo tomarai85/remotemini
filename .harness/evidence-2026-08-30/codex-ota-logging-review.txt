@@ -1,0 +1,1088 @@
+# Codex 敵対レビュー — ota-server の要求ログ(2026-08-30)
+
+配布口(認証を付けられない・秘密の path 一段だけが守り)に1要求1行の記録を足した変更を、
+`codex exec --sandbox read-only` に当てた全文。**ヘッダを含む実走行**を残す ——
+要約だけだと「本当に走らせたか」が後から確かめられない(門も署名でそれを見ている)。
+
+```
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a05139-c7f9-7b13-aae8-61f540886690
+--------
+user
+Attack this change to a production file-distribution endpoint. I want the failure modes I missed, not reassurance. Be brief and specific.
+
+## What the endpoint is
+`ota-server.mjs`: a ~120-line Node HTTP server on an always-on Mac mini, bound to 127.0.0.1:8788, GET/HEAD only, no directory listing. `tailscale serve` exposes it at `https://<host>:9443/ota` on a tailnet (Funnel can only use 443/8443/10000, so this path is structurally not publicly reachable). It serves an iOS Ad Hoc `.ipa` + `manifest.plist` so the owner's iPhone can install a build over the air.
+
+**It has no authentication and cannot have any**: iOS `installd` fetches the manifest and the ipa without sending custom headers. The only access control is an unguessable 24-hex path segment, plus `chmod 700` on the directory (a same-machine leak through group-readable perms was found and fixed 2026-08-28 — there are three human accounts on this box).
+
+## The change
+It previously logged NOTHING per request, so "tapped but the install failed" and "never tapped" were indistinguishable. Added one line per request:
+
+```js
+const SECRET_SEG = /^[0-9a-f]{16,}$/i;
+
+export function otaPathShape(urlPath) {
+  const clean = String(urlPath || "/").split("?")[0];
+  return clean.split("/").map((seg) => (SECRET_SEG.test(seg) ? ":secret" : seg)).join("/");
+}
+
+export function otaClientClass(userAgent) {
+  const ua = String(userAgent || "");
+  if (!ua) return "none";
+  if (/^rc-live-/i.test(ua)) return "probe";
+  if (/CFNetwork|Darwin/i.test(ua)) return "app";
+  if (/curl|wget|node|undici|python|libwww/i.test(ua)) return "tool";
+  return "other";
+}
+
+function logReq(req, code, bytes) {
+  process.stdout.write(
+    `[ota] req ${new Date().toISOString()} ${req.method} ${otaPathShape(req.url)} `
+    + `client=${otaClientClass(req.headers["user-agent"])} code=${code} bytes=${bytes}\n`,
+  );
+}
+```
+
+Wiring: every early return goes through `done(code, body)` which now calls `logReq(req, code, Buffer.byteLength(body))`. The 200 file path counts real bytes off the read stream and logs on `res.on("close")`, using `res.writableFinished ? 200 : 0` so an aborted transfer records `code=0` (matching the sibling server's existing `code=0 reason=aborted` convention). HEAD logs 200/0.
+
+stdout goes to a launchd-redirected file owned by the service account.
+
+## Measured
+- `GET /missing` -> `code=404 bytes=10`
+- `GET /<secret>/index.html` -> `/:secret/index.html code=200 bytes=3`
+- 5MB file, normal -> `code=200 bytes=5000000`
+- 5MB file, client killed mid-transfer (`--limit-rate 50k --max-time 0.4`) -> `code=0 bytes=851968`
+- secret string appears 0 times in the log
+- iOS UA (`CFNetwork/3860 Darwin/25.5.0`) classified `app`; curl classified `tool`
+
+## Attack these specifically
+1. **Redaction completeness.** `SECRET_SEG` is `^[0-9a-f]{16,}$` per path segment. What real request shapes leak the secret past this? (query strings are dropped before splitting; what about the Referer header — I do not log it; what else could carry it?) Is a 16-char floor right, or should it be "any segment of length >= N regardless of charset"?
+2. **Log growth / rotation.** No rotation. An attacker who knows the tailnet host but not the secret can spam 404s and grow the file unbounded. Does that matter on a box where the same disk holds the desk's tmux transcripts, or is it noise?
+3. **`res.on("close")` correctness.** Is `writableFinished` reliable for distinguishing "sent everything" from "client hung up", including the keep-alive and HEAD cases? Any path where close fires twice, or never?
+4. **Unbounded write to stdout from a request handler.** Any backpressure or blocking risk when the launchd log file is on a slow or full disk?
+5. **Does per-request logging create a NEW oracle?** i.e. can someone who can read the log (same machine, other accounts) learn something they could not before, given the secret itself is redacted?
+
+If a choice is fine, say so in a few words and move on. I want the two or three things that are actually wrong.
+2026-08-30T05:52:17.252389Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T05:52:17.272572Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T05:52:17.739380Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+実ファイルの配線まで確認した上で、Node のイベント semantics と Mac mini 運用条件を分けて攻めます。Claude 側の保護・運用前提が絡むため、`claude-workspace-context` を使います。
+exec
+/bin/zsh -lc "sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/SKILL.md && rg --files -g 'ota-server.mjs' -g 'AGENTS.md' -g '"'!node_modules'"' . .." in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+---
+name: claude-workspace-context
+description: "Tomtim の Claude 側グローバル設定を Codex でも参照するためのワークスペース文脈スキル。Mac mini 運用、保護ファイル、AI 連携、Claude Code との役割分担、ハーネス、ルーティング、デプロイ前提、作業スタイル、Claude 由来の制約を踏まえて進める必要がある時に必ず使用。"
+---
+
+# Claude Workspace Context
+
+`~/.claude/CLAUDE.md` と主要エージェント定義を Codex から参照できるようにしたブリッジスキル。
+
+## いつ使うか
+
+- `/Users/tomtim` 配下で、Claude 側の運用前提を踏まえて作業する時
+- Mac mini、launchd、SSH、handoff、複数 AI 連携が絡む時
+- `.env`、設定ファイル、依存関係、デプロイ周辺の変更可否を慎重に判断したい時
+
+## 最重要ルール
+
+- 日本語でやり取りする。
+- ユーザー向けテキストでは絵文字や装飾的な Unicode を避ける。
+- 触ってはいけないもの:
+  - `~/.claude/settings.json`
+  - `~/.zshrc`, `~/.bashrc`, `~/.zprofile`, `~/.bash_profile`
+  - あらゆる `.env`
+- 次は事前確認が必要:
+  - 依存関係の追加/削除/ダウングレード
+  - メジャーアップグレード
+  - ビルド設定変更
+  - DB 接続設定やマイグレーション
+  - launchd、Docker、CI/CD、ポート、認証、SSL 周辺
+- 症状回避ではなく根本原因修正を優先する。
+- 長い文脈共有はファイルベースで残す発想を優先する。
+- Claude 側の routing banner / Harness / Agent Teams は設計思想として参照する。ただし Codex では上位ルールを優先し、明示的な許可なしに sub-agent を起動しない。
+- Claude 側の設定や設計を同期目的で変更しない。反映が必要な場合は Codex 側の skill、memory、reference にだけ写す。
+- 複数 AI が絡む作業では、同じファイルを同時編集しないように担当範囲を明確にする。
+
+## Mac mini 文脈
+
+- SSH: `ssh athenas@10.0.0.0`
+- Node: `/opt/homebrew/bin/node`
+- sudo が必要な作業は、基本的にユーザー実行前提
+
+## 読むべき参照
+
+- コピー索引: `references/README.md`
+- 元のグローバル設定: `references/claude-global.md`
+- Claude 側ルールコピー:
+  - `references/rules/protected-files.md`
+  - `references/rules/workflow-principles.md`
+  - `references/rules/mac-mini-ops.md`
+  - `references/rules/harness-rules.md`
+  - `references/rules/parallel-ai-rules.md`
+  - `references/rules/session-resume.md`
+- ハーネス系エージェント:
+  - `references/agents/planner.md`
+  - `references/agents/generator.md`
+  - `references/agents/evaluator.md`
+  - `references/agents/meta-agent.md`
+- Claude 側の追加エージェント文脈:
+  - `references/agents/mac-mini-deployer.md`
+  - `references/agents/pica-connector.md`
+  - `references/agents/x-bookmark-manager.md`
+- Claude 側コマンド/テンプレート/メモリのコピー:
+  - `references/commands/`
+  - `references/templates/`
+  - `references/memory/`
+  - `references/claude-skills/`
+
+## 注意
+
+- Claude 側のルールが Codex の system/developer 指示と衝突する場合は、Codex 側の上位指示を優先する。
+- このスキルは Claude の運用文脈を持ち込むためのものだが、Codex の権限モデルや sub-agent ルールまでは上書きしない。
+./rc-backend/tools/ota-server.mjs
+../mobile-work/rc-backend/tools/ota-server.mjs
+../mcp-servers/active/digitalsamba-video-toolkit/AGENTS.md
+../blink-selfbuild/work/sim-dd/SourcePackages/checkouts/purchases-ios/AGENTS.md
+../blink-selfbuild/work/dd/SourcePackages/checkouts/purchases-ios/AGENTS.md
+
+exec
+/bin/zsh -lc "sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/references/README.md && sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/mac-mini-ops.md && sed -n '1,220p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/protected-files.md && sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/workflow-principles.md && nl -ba rc-backend/tools/ota-server.mjs | sed -n '1,240p' && rg -n '\"node\"|engines|ota-server|8788|9443' rc-backend/package.json rc-backend -g 'package*.json' -g '*.plist' -g '*.sh' -g '*.mjs'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+# Claude References Copied For Codex
+
+Copied on: 2026-04-22
+
+This directory is a Codex-side read-only reference mirror of selected Claude Code context.
+The source files under `~/.claude/` were not modified.
+
+## Copied Sources
+
+- `~/.claude/CLAUDE.md` -> `claude-global.md`
+- `~/.claude/agents/*.md` and selected nested `agent.md` files -> `agents/`
+- `~/.claude/rules/*.md` -> `rules/`
+- `~/.claude/commands/*.md` -> `commands/`
+- `~/.claude/memory/*.md` -> `memory/`
+- `~/.claude/templates/*.md` -> `templates/`
+- `~/.claude/references/*.md` -> this directory
+- selected `~/.claude/skills/*/SKILL.md` -> `claude-skills/`
+
+## Excluded On Purpose
+
+- `~/.claude/settings.json`
+- `~/.claude/settings.local.json`
+- `.env` files
+- sessions, tasks, plans, caches, auth caches, and plugin JSON state
+- SSH keys or other credentials
+
+## Usage Boundary
+
+These files are copied as source material only.
+Claude-native commands, agent orchestration, hooks, routing banners, and permission assumptions are not automatically available in Codex.
+Codex system/developer instructions remain authoritative.
+
+---
+name: mac-mini-ops
+description: SSH operations, service management, and deploy procedures for the Mac mini (athenas@10.0.0.0)
+---
+
+# Mac mini Operation Rules
+
+## Connection
+- SSH: `ssh athenas@10.0.0.0` (via Tailscale)
+- Tailscale: App Store version, so `tailscale set --ssh` is not available
+
+## Node.js
+- Path: `/opt/homebrew/bin/node`
+- Not in PATH under launchd; always use the absolute path
+
+## .env location
+- Shared: `~/macmini-openclaw-claudeode-/.env`
+- Copy to each subsystem as needed
+
+## Directory layout
+- `~/個人/` — personal projects (x-bookmark etc.)
+- `~/Disocrod/` — Discord X-posting bot
+- client-a lives in a separate directory (do not conflate)
+
+## launchd service management
+```bash
+# Load
+launchctl load ~/Library/LaunchAgents/<plist>
+# Unload
+launchctl unload ~/Library/LaunchAgents/<plist>
+# Status
+launchctl list | grep <label>
+```
+
+## Tasks requiring sudo
+Not executable by AI. User runs `! ssh athenas@... sudo <command>` directly in the terminal.
+---
+name: protected-files
+description: List of files forbidden to edit/delete. Hook blocks these, but do not attempt in the first place.
+paths:
+  - "**/.env"
+  - "**/.env.*"
+  - "**/.zshrc"
+  - "**/.bashrc"
+  - "**/.zprofile"
+  - "**/.bash_profile"
+  - "**/settings.json"
+---
+
+# Config File Protection Rules
+
+## Files forbidden to modify (by any means)
+- `~/.claude/settings.json`
+- `~/.zshrc`, `~/.bashrc`, `~/.zprofile`, `~/.bash_profile`
+- `~/.env`, and any `.env` file in any directory
+
+## When a hook blocks
+- Do not try a workaround
+- Present the intended change to the user and request manual execution
+
+## When a change is truly needed
+Present the change and its rationale to the user, and request manual execution.
+---
+name: workflow-principles
+description: Task execution, completion, and self-improvement workflow principles
+---
+
+# Workflow Principles
+
+## Current-state confirmation
+When asked for a fix, do not execute immediately. First inspect the current state, propose, get approval, then execute.
+
+## Task planning
+- Tasks with 3+ steps or design decisions: plan via Plan mode before starting
+- Write the plan in `~/.claude/tasks/todo.md` as a checklist
+- On any problem, stop and re-plan immediately (do not push through)
+
+## Plan Mode Enumeration Checklist
+Before calling ExitPlanMode, walk through the 10 items below.
+Ask all ambiguous items via AskUserQuestion inside Plan mode.
+Do not surface additional confirmations after entering implementation phase
+(if one leaks out, recognize it as a failure of upfront enumeration).
+
+1. Tech / library choice
+2. Architecture approach
+3. UX / design preferences
+4. Scope boundary (how far to go)
+5. Intrusion scope into existing code / environment
+6. Edge case handling policy
+7. Error behavior
+8. Completion criteria
+9. Deploy / delivery target
+10. Conflicts with existing settings / rules
+
+Contract: Plan mode is the batch confirmation phase. Missed questions here destroy the value of autonomous execution. No shortcuts on this checklist.
+
+## Definition of done
+Writing code is not done. Must include log verification and proof of behavior.
+
+## Self-Improvement Loop
+- On user corrections or feedback, record the pattern in `~/.claude/projects/<PJ-slug>/memory/feedback_*.md`
+- Auto-referenced via MEMORY.md pointers; no manual review at session start
+
+## Demand Elegance
+- On noticing a hacky fix, self-question "is there a deeper solution?" before proceeding
+- Skip for trivially obvious simple fixes
+     1	#!/usr/bin/env node
+     2	// 机に置いた束を電話へ渡すだけの、極小の静的配信(2026-08-28)。
+     3	//
+     4	// ★なぜ rc-backend の中に入れなかったか。此処が配る道は**認証を付けられない** ——
+     5	//   iOS の `installd` が manifest と .ipa を取りに来る時、独自の header を送らないから。
+     6	//   其れを電話の生命線である rc-backend の中へ足すと、認証を外す分岐が本体に1本増える。
+     7	//   欠陥が出た時に壊れるのが「配布」だけで済む様に、**別のプロセスに切る**。
+     8	//   死んでも Tom の会話は生きている。
+     9	//
+    10	// ★守りは3つ。認証が無い代わりに、此の3つが全部要る:
+    11	//   1. 127.0.0.1 にしか listen しない。外へ出るのは `tailscale serve` の経路だけで、
+    12	//      其れは tailnet 限定。
+    13	//   2. path は `ROOT` の中へ**解決してから**比較する(`realpath` の前後で確かめる)。
+    14	//      `..` も symlink も此処で死ぬ。
+    15	//   3. **一覧を返さない**。dir を叩かれたら index.html だけ返し、無ければ 404。
+    16	//      配る path の秘密の一段は、一覧が出た瞬間に秘密でなくなる ——
+    17	//      Tom の tailnet には今も edith(2026-08-20 に譲渡した機体)が居る。
+    18	//
+    19	// ★GET と HEAD 以外は受けない。書き込みの口を1つも作らない。
+    20	//
+    21	// 使い方: OTA_ROOT=~/ota OTA_PORT=8788 node tools/ota-server.mjs
+    22	
+    23	import { createServer } from "node:http";
+    24	import { createReadStream, statSync, realpathSync } from "node:fs";
+    25	import { join, extname, resolve, sep } from "node:path";
+    26	import { homedir } from "node:os";
+    27	
+    28	const ROOT = realpathSync(resolve(process.env.OTA_ROOT || join(homedir(), "ota")));
+    29	const PORT = Number(process.env.OTA_PORT || 8788);
+    30	
+    31	// 表に在る型だけ。知らない拡張子は `application/octet-stream` に落とす ——
+    32	// 推測して text/html を返すと、置いた覚えの無い file が頁として解釈されうる。
+    33	const TYPES = {
+    34	  ".ipa": "application/octet-stream",
+    35	  ".plist": "application/xml",
+    36	  ".html": "text/html; charset=utf-8",
+    37	};
+    38	
+    39	/** ROOT の中へ解決できた実体の path。出来なければ null(= 404 にする)。 */
+    40	function safeResolve(urlPath) {
+    41	  let decoded;
+    42	  try {
+    43	    decoded = decodeURIComponent(urlPath.split("?")[0]);
+    44	  } catch {
+    45	    return null; // 壊れた %エスケープ。推測しない
+    46	  }
+    47	  if (decoded.includes("\0")) return null;
+    48	  const candidate = resolve(join(ROOT, "." + decoded));
+    49	  let real;
+    50	  try {
+    51	    real = realpathSync(candidate);
+    52	  } catch {
+    53	    return null; // 無い
+    54	  }
+    55	  // ★`startsWith(ROOT)` だけでは足りない: `/Users/x/ota-evil` が `/Users/x/ota` で
+    56	  //   始まってしまう。区切りまで含めて比べる。
+    57	  if (real !== ROOT && !real.startsWith(ROOT + sep)) return null;
+    58	  return real;
+    59	}
+    60	
+    61	
+    62	// ── 1要求1行の記録(2026-08-30)────────────────────────────────────────────────
+    63	// なぜ要るか: この口は build 89 を Tom の電話へ運んだ経路だが、何も記録していなかった ——
+    64	// 「開いたが入らなかった」と「一度も開いていない」が**ログから区別できない**。
+    65	// 実際 2026-08-29 に「tap したか」を答えられず、Tom に口頭で訊く以外に手が無かった。
+    66	//
+    67	// ★秘密の一段を**そのまま書かない**。この口の唯一の守りは推測できない 24 桁 hex で、
+    68	//   それを log に書けば、log を読める者に配布物が渡る(friday には athenas 以外に
+    69	//   tomtim / udagawa が居る = 08-28 に `chmod 700 ~/ota` で塞いだのと同じ穴)。
+    70	//   残すのは**形だけ**: `/<secret>/RemoteMini.ipa` → `/:secret/RemoteMini.ipa`。
+    71	// ★UA も生で書かない。`src/reqlog.mjs` の `clientClass` と同じ**閉じた語**へ落とす ——
+    72	//   生の UA には端末の型番と OS 版が入る。分類は独立の実装にせず綴りだけ合わせる
+    73	//   (此処は tools/ で src/ を import しない層なので、写しである事を明示しておく)。
+    74	// ★2026-08-30、Codex の指摘1: 「長い hex を畳む」は**文字列のヒューリスティック**で、
+    75	//   percent-encoding(`/ab%63d…`)・接尾辞(`/<secret>;x`)・absolute-form
+    76	//   (`GET http://host/<secret>x`)で秘密がそのまま出る。堅い形は長さでも文字種でもなく
+    77	//   **既知のルートだけを型で記録し、それ以外は1つの定数へ畳む**事。
+    78	//   副作用として、長大 URL による**ログ増幅(指摘2)も同時に塞がる** —— 行長が有界になる。
+    79	const KNOWN_LEAF = new Set(["manifest.plist", "index.html", ""]);
+    80	const IPA = /\.ipa$/i;
+    81	
+    82	/**
+    83	 * 記録に出す path。**元の文字列を一切通さない**(白名簿から組み立てる)。
+    84	 *   `/<secret>/manifest.plist` → `/:secret/manifest.plist`
+    85	 *   `/<secret>/RemoteMini.ipa` → `/:secret/:ipa`
+    86	 *   `/<secret>/`               → `/:secret/`
+    87	 *   それ以外(404 の的・攻撃・打ち間違い)→ `/:other`
+    88	 */
+    89	export function otaPathShape(urlPath) {
+    90	  const clean = String(urlPath || "/").split("?")[0].split("#")[0];
+    91	  const parts = clean.split("/");
+    92	  // 期待する形は ["", <secret>, <leaf>] の3片だけ。増減はすべて `/:other`。
+    93	  if (parts.length !== 3 || parts[0] !== "") return "/:other";
+    94	  const leaf = parts[2];
+    95	  if (IPA.test(leaf)) return "/:secret/:ipa";
+    96	  if (KNOWN_LEAF.has(leaf)) return `/:secret/${leaf}`;
+    97	  return "/:other";
+    98	}
+    99	
+   100	/** `src/reqlog.mjs` の `clientClass` と同じ語彙(app / probe / tool / none / other)。 */
+   101	export function otaClientClass(userAgent) {
+   102	  const ua = String(userAgent || "");
+   103	  if (!ua) return "none";
+   104	  if (/^rc-live-/i.test(ua)) return "probe";
+   105	  // iOS の installd はここに落ちる(CFNetwork/Darwin)。Safari も同じ語になるが、
+   106	  // **この口に来る CFNetwork は installd か Safari のどちらか**で、どちらも「電話が来た」。
+   107	  if (/CFNetwork|Darwin/i.test(ua)) return "app";
+   108	  if (/curl|wget|node|undici|python|libwww/i.test(ua)) return "tool";
+   109	  return "other";
+   110	}
+   111	
+   112	function logReq(req, code, bytes) {
+   113	  // 1行6欄。増やす時は此処だけ。`[ota] req` を頭に置くのは rc-backend の `[rc-backend] req` と
+   114	  // 同じ形にして、grep を1つの流儀で済ませる為。
+   115	  //
+   116	  // ★`bytes` / `code=200` は「**Node が OS へ渡し切った**」であって「電話が受け取って
+   117	  //   入れられた」ではない(Codex の指摘3)。この計器が答えられるのは
+   118	  //   「取りに来たか」「途中で切れたか」までで、install の成否は答えられない。
+   119	  // ★書き込みのエラーを飲む。stdout は launchd が普通のファイルへ向けているので、
+   120	  //   ディスクが満杯だと write が投げてプロセスごと落ちうる —— 配布が止まる方が、
+   121	  //   1行記録できない事より遥かに高くつく。
+   122	  try {
+   123	    process.stdout.write(
+   124	      `[ota] req ${new Date().toISOString()} ${req.method} ${otaPathShape(req.url)} `
+   125	      + `client=${otaClientClass(req.headers["user-agent"])} code=${code} bytes=${bytes}\n`,
+   126	      () => {},
+   127	    );
+   128	  } catch { /* 記録できない事は配布を止める理由にならない */ }
+   129	}
+   130	
+   131	const server = createServer((req, res) => {
+   132	  const done = (code, body = "") => {
+   133	    res.writeHead(code, { "content-type": "text/plain; charset=utf-8" });
+   134	    res.end(body);
+   135	    logReq(req, code, Buffer.byteLength(body));
+   136	  };
+   137	
+   138	  if (req.method !== "GET" && req.method !== "HEAD") return done(405, "GET only\n");
+   139	
+   140	  let target = safeResolve(req.url || "/");
+   141	  if (!target) return done(404, "not found\n");
+   142	
+   143	  let st;
+   144	  try {
+   145	    st = statSync(target);
+   146	  } catch {
+   147	    return done(404, "not found\n");
+   148	  }
+   149	
+   150	  if (st.isDirectory()) {
+   151	    // ★一覧を作らない。index.html が在ればそれ、無ければ 404。
+   152	    const idx = join(target, "index.html");
+   153	    try {
+   154	      st = statSync(idx);
+   155	      target = idx;
+   156	    } catch {
+   157	      return done(404, "not found\n");
+   158	    }
+   159	  }
+   160	  if (!st.isFile()) return done(404, "not found\n");
+   161	
+   162	  const type = TYPES[extname(target).toLowerCase()] || "application/octet-stream";
+   163	  res.writeHead(200, {
+   164	    "content-type": type,
+   165	    "content-length": String(st.size),
+   166	    // 束は焼き直しで同じ名前のまま中身が変わる。電話に古い物を掴ませない。
+   167	    "cache-control": "no-store",
+   168	  });
+   169	  if (req.method === "HEAD") { logReq(req, 200, 0); return res.end(); }
+   170	  // ★送った**実バイト**を自分で数える。初版は `res.bytesWritten` を書いたが、あれは
+   171	  //   `ServerResponse` に存在しない属性で、ログに `bytes=undefined` が出ていた。
+   172	  //   タスクの verifier は GET の行数しか数えないので**緑のまま通った** ——
+   173	  //   「検査が測っていない範囲」の実例なので、直しと一緒に此処へ残す。
+   174	  // ★`finish` ではなく `close` で記録する。`finish` は送り切った時しか出ないので、
+   175	  //   中断(電話が圏外へ出た / installd が諦めた)が**1行も残らない** —— それは
+   176	  //   「tap したのに入らなかった」を潰す当の欠陥と同じ形。`close` は必ず出る。
+   177	  //   送り切ったかは `writableFinished` で分け、中断は `code=0`
+   178	  //   (`src/reqlog.mjs` の実ログが `code=0 reason=aborted` を使うので綴りを合わせる)。
+   179	  let sent = 0;
+   180	  const stream = createReadStream(target);
+   181	  stream.on("data", (chunk) => { sent += chunk.length; });
+   182	  res.on("close", () => logReq(req, res.writableFinished ? 200 : 0, sent));
+   183	  stream.pipe(res);
+   184	});
+   185	
+   186	// ★送信の上限(2026-08-30、Codex の指摘3の後半)。客が**切らずに読むのを止める**と、
+   187	//   `close` が出ないので**1行も記録されない** —— 「取りに来たのに終わらなかった」が
+   188	//   計器から消える、この計器が塞ぐべき当の穴と同じ形。
+   189	//   5分 = tailnet 越しに 1.9MB の束を配るのに桁で足りる長さ(実測は秒)。
+   190	//   切った時は `close` が出るので `code=0` として残る。
+   191	server.requestTimeout = 0;                 // 要求の読みは即終わる(GET/HEAD のみ)
+   192	server.headersTimeout = 30_000;
+   193	server.on("connection", (socket) => { socket.setTimeout(300_000, () => socket.destroy()); });
+   194	
+   195	server.listen(PORT, "127.0.0.1", () => {
+   196	  console.log(`[ota] ${ROOT} を 127.0.0.1:${PORT} で配る(GET/HEAD のみ・一覧なし)`);
+   197	});
+rc-backend/test/ota-server-controls.sh:2:# controls-for: tools/ota-server.mjs
+rc-backend/test/ota-server-controls.sh:15:SUT="$HERE/tools/ota-server.mjs"
+rc-backend/test/ota-server-controls.sh:41:# `wait` で先に回収すれば通知が出ず、最後の行が `ota-server-controls: OK n / NG m` になる。
+rc-backend/test/ota-server-controls.sh:124:echo "ota-server-controls: OK $PASS / NG $FAIL"
+rc-backend/test/inject.test.mjs:975:  assert.equal(looksLikeClaudePane("node"), true);
+rc-backend/tools/delivery-check.sh:33:LIVE=$(curl -s --max-time 12 "${RC_TUNNEL_URL:-https://desk.tailnet.example:9443/healthz}" 2>/dev/null \
+rc-backend/tools/delivery-check.sh:79:#   私たちの机は 9443(tailnet 限定)に載っている。公開されている入口に `/rc -> 8787` を
+rc-backend/tools/delivery-check.sh:81:#   ★入口の**名前**ではなく**経路**で見る。「9443 が Funnel されていないか」は Funnel が
+rc-backend/tools/delivery-check.sh:92:code=$(curl -s -o /dev/null -m 12 -w '%{http_code}' "${RC_TUNNEL_URL:-https://desk.tailnet.example:9443/healthz}" 2>/dev/null)
+rc-backend/tools/verify-rc-backend-state.sh:50:#   `$2="node" / $3="src/server.mjs"` に割れる。実際 8/02 03:55 にこれを踏み、
+rc-backend/tools/funnel-exposure-check.sh:6:#   私たちの机は 9443(tailnet 限定)→ 127.0.0.1:8787 に載せてあるので、外の網からは届かない。
+rc-backend/tools/funnel-exposure-check.sh:7:#   ★ところが最初に書いた検査は「**9443 が Funnel されていないか**」を見ていた。
+rc-backend/tools/funnel-exposure-check.sh:8:#     Funnel が扱える入口は 443 / 8443 / 10000 だけなので、`AllowFunnel[":9443"]` は
+rc-backend/tools/funnel-exposure-check-control.sh:6:#   元の検査は「9443 が Funnel されていないか」を見ていた。Funnel が扱える入口は
+rc-backend/tools/funnel-exposure-check-control.sh:24:# Friday の現物(2026-08-26 実測)。443 が公開・9443 が tailnet 限定。
+rc-backend/tools/funnel-exposure-check-control.sh:25:REAL='{"TCP":{"443":{"HTTPS":true},"9443":{"HTTPS":true}},"Web":{"desk.tailnet.example:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8799"},"/ja":{"Proxy":"http://127.0.0.1:8801"}}},"desk.tailnet.example:9443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8787"}}}},"AllowFunnel":{"desk.tailnet.example:443":true}}'
+rc-backend/tools/funnel-exposure-check-control.sh:31:PRIVATE='{"TCP":{"9443":{"HTTPS":true}},"Web":{"h:9443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8787"}}}}}'
+rc-backend/tools/serve-decision-check.sh:140:FRIDAY='{"TCP":{"443":{"HTTPS":true},"9443":{"HTTPS":true}},"Web":{"desk.tailnet.example:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8799"}}},"desk.tailnet.example:9443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8787"}}}},"AllowFunnel":{"desk.tailnet.example:443":true}}'
+rc-backend/tools/serve-decision-check.sh:141:run2 M "Friday 現物・9443 は自分で公開されていない"   ok       8787 9443 "$FRIDAY"
+rc-backend/tools/serve-decision-check.sh:143:run2 O "自分の宛先でも Funnel されていたら断る[負]"   funneled 8787 9443 '{"TCP":{"9443":{"HTTPS":true}},"Web":{"h:9443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8787"}}}},"AllowFunnel":{"h:9443":true}}'
+rc-backend/tools/serve-decision-check.sh:144:run2 P "入口が空いている(9443 に何も無い)"           apply    8787 9443 '{"TCP":{"443":{"HTTPS":true}},"Web":{"h:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:1"}}}}}'
+rc-backend/tools/serve-decision-check.sh:145:run2 Q "Funnel が別ポートに在っても巻き込まない"      apply    8787 9443 '{"AllowFunnel":{"h:443":true},"TCP":{"443":{"HTTPS":true}},"Web":{"h:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:1"}}}}}'
+rc-backend/tools/serve-decision-check.sh:154:out=$(printf '%s' "$FRIDAY" | /bin/bash "$DEC" 9443 2>/dev/null); rc=$?
+rc-backend/tools/serve-decision-check.sh:159:out=$(printf '%s' "$FRIDAY" | /bin/bash "$DEC" 9443 443 2>/dev/null); rc=$?
+rc-backend/tools/tunnel-observer.sh:16:#   **自分の tailscale serve URL に届かない**(hairpin。friday が自分の friday…:9443 を
+rc-backend/tools/tunnel-observer.sh:38:URL="${RC_TUNNEL_URL:-https://desk.tailnet.example:9443/healthz}"
+rc-backend/tools/deploy-to-friday.sh:16:#   1. serve の入口が 443 ではなく **9443**。443 は `~/Personal/resonance-os` が持っていて
+rc-backend/tools/deploy-to-friday.sh:18:#      Funnel が使えるのは 443 / 8443 / 10000 の3つだけなので、9443 は構造的に公開できない。
+rc-backend/tools/serve-decision.sh:68:#   踏んだ形: `serve-decision.sh 9443` と撃った。第1引数は**手元**のポートなので、これは
+rc-backend/tools/serve-decision.sh:69:#   「serve 443 を見て、宛先が 127.0.0.1:9443 か」を聞いた事になる。443 は実際 Funnel されて
+rc-backend/tools/serve-decision.sh:70:#   いるので `funneled` という**それらしい 1 語**が返り、9443 の答えだと読み違えた。
+rc-backend/tools/serve-decision.sh:77:        443|8443|9443|10000)
+rc-backend/tools/exposure-standing-control.sh:22:SAFE='{"TCP":{"9443":{"HTTPS":true}},"Web":{"h:9443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8787"}}}},"AllowFunnel":{"h:443":true}}'
+rc-backend/tools/com.fleet.rc-backend.plist:20:    Claude Code の操縦面が公開される。よって **9443** に載せる。
+rc-backend/tools/com.fleet.rc-backend.plist:21:    Funnel が使えるのは 443 / 8443 / 10000 の3つだけなので、9443 を選ぶ事で
+rc-backend/tools/com.fleet.rc-backend.plist:23:    電話が開く URL = https://desk.tailnet.example:9443/
+rc-backend/tools/com.fleet.rc-backend.plist:51:    curl https://desk.tailnet.example:9443/healthz
+rc-backend/tools/com.fleet.rc-backend.plist:55:    ssh athenas '/Applications/Tailscale.app/Contents/MacOS/Tailscale serve の https=9443 旗を off'
+rc-backend/tools/com.fleet.rc-backend.plist:86:    <string>9443</string>
+rc-backend/tools/rollback-friday.sh:48:HEALTH="${RC_ROLLBACK_HEALTH:-https://desk.tailnet.example:9443/healthz}"
+rc-backend/tools/com.fleet.rc-ota.plist:24:    1. 127.0.0.1 にしか bind しない。外へ出る面は tailscale serve の 9443 だけで
+rc-backend/tools/com.fleet.rc-ota.plist:30:       検査 = rc-backend/test/ota-server-controls.sh(守りを外すと 6 本赤くなる事まで実測)。
+rc-backend/tools/com.fleet.rc-ota.plist:34:    9443 に `/ota` を足しても判定は `ok` のままで、rc-backend の起動ラッパは
+rc-backend/tools/com.fleet.rc-ota.plist:38:    scp rc-backend/tools/ota-server.mjs        athenas:/Users/athenas/rc-backend/tools/
+rc-backend/tools/com.fleet.rc-ota.plist:42:                 variant; the handler must proxy: serve is added with set path ota to http 127.0.0.1 8788'
+rc-backend/tools/com.fleet.rc-ota.plist:57:    <string>/Users/athenas/rc-backend/tools/ota-server.mjs</string>
+rc-backend/tools/com.fleet.rc-ota.plist:72:    <string>8788</string>
+rc-backend/tools/ota-server.mjs:21:// 使い方: OTA_ROOT=~/ota OTA_PORT=8788 node tools/ota-server.mjs
+rc-backend/tools/ota-server.mjs:29:const PORT = Number(process.env.OTA_PORT || 8788);
+rc-backend/tools/run-controls.sh:153:                                     # 机へ向く経路が無いか**」。前身は「9443 が Funnel されて
+rc-backend/tools/run-controls.sh:639:    test/ota-server-controls.sh      # ★2026-08-28。電話へ束を渡す静的配信
+rc-backend/tools/run-controls.sh:640:                                     # (`tools/ota-server.mjs`、friday の com.fleet.rc-ota)の対照。
+
+codex
+いまの実ファイルには、提示版より先の対策（白名簿ベースの path 形状化と5分 timeout）がすでに入っています。以下は「提示された変更そのもの」の欠陥と、現行対策にまだ残る点を分けて判定します。
+web search: 
+web search: site:nodejs.org/api/http.html ServerResponse close event writableFinished ...
+exec
+/bin/zsh -lc "nl -ba rc-backend/tools/com.fleet.rc-ota.plist | sed -n '1,180p' && nl -ba rc-backend/test/ota-server-controls.sh | sed -n '1,220p' && rg -n \"ota.*log|StandardOutPath|StandardErrorPath|chmod 700|umask|newsyslog|rotate\" rc-backend -g '"'!node_modules'"'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+     1	<?xml version="1.0" encoding="UTF-8"?>
+     2	<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+     3	<!--
+     4	  com.fleet.rc-ota  (Friday / athenas。2026-08-28 新設)
+     5	  ============================================================================
+     6	  電話へ**新しい束を渡す**だけの極小の配信。会話の面(com.fleet.rc-backend)とは
+     7	  別プロセスに切ってある。
+     8	
+     9	  ★なぜ在るか
+    10	    Tom「同じ WIFI じゃないといけないの論外」。実測でその通りだった:
+    11	    `xcrun devicectl` の tunnel は USB か同一 LAN の探索(mDNS)の上に建ち、
+    12	    Tailscale は L3 なので mDNS を運ばない。電話が tailnet に居ても
+    13	    (実測 10.0.0.0)devicectl は tunnelState: unavailable を返し、
+    14	    tailnet の IP を直に指すと「そんな端末は無い」で落ちる。
+    15	    だから配布の経路を替えた: Ad Hoc 署名の .ipa を此処が配り、電話は
+    16	    itms-services で取りに来る。Apple へ binary を送らない。
+    17	
+    18	  ★なぜ rc-backend の中に入れないのか
+    19	    此の道は**認証を付けられない**(iOS の installd は独自 header を送らない)。
+    20	    其れを電話の生命線である rc-backend へ足すと、認証を外す分岐が本体に増える。
+    21	    別プロセスなら、壊れても壊れるのは配布だけで会話は生きている。
+    22	
+    23	  ★守り(認証が無い代わりに、此の3つが全部要る)
+    24	    1. 127.0.0.1 にしか bind しない。外へ出る面は tailscale serve の 9443 だけで
+    25	       其れは tailnet 限定(Funnel が使えるのは 443 / 8443 / 10000 のみ)。
+    26	    2. 配る path に**推測できない一段**を噛ませる。Tom の tailnet には今も
+    27	       edith(2026-08-20 に家族さんへ譲渡した機体)が居る = tailnet 限定は
+    28	       「Tom だけ」を意味しない。
+    29	    3. 一覧を返さない / ROOT の外へ出られない / GET と HEAD 以外を受けない。
+    30	       検査 = rc-backend/test/ota-server-controls.sh(守りを外すと 6 本赤くなる事まで実測)。
+    31	
+    32	  ★serve の判定との関係(2026-08-28 に読んで確かめた)
+    33	    tools/serve-decision.sh の述語は各 Web entry の `Handlers["/"]` しか見ない。
+    34	    9443 に `/ota` を足しても判定は `ok` のままで、rc-backend の起動ラッパは
+    35	    毎回の入れ直しでも此の handler を消さない(あの台本は reset を撃たない)。
+    36	
+    37	  INSTALL(私が実行する。可逆なローカル操作 = Tom ゲートではない):
+    38	    scp rc-backend/tools/ota-server.mjs        athenas:/Users/athenas/rc-backend/tools/
+    39	    scp rc-backend/tools/com.fleet.rc-ota.plist athenas:/Users/athenas/Library/LaunchAgents/
+    40	    ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-ota.plist'
+    41	    ssh athenas '/Applications/Tailscale.app/Contents/MacOS/Tailscale serve is not a file server on this
+    42	                 variant; the handler must proxy: serve is added with set path ota to http 127.0.0.1 8788'
+    43	
+    44	  UNINSTALL(全部戻す手):
+    45	    ssh athenas 'launchctl bootout gui/501/com.fleet.rc-ota'
+    46	    ssh athenas '/Applications/Tailscale.app/... serve is removed with set path ota off'
+    47	    ssh athenas 'rm rf /Users/athenas/ota'
+    48	-->
+    49	<plist version="1.0">
+    50	<dict>
+    51	  <key>Label</key>
+    52	  <string>com.fleet.rc-ota</string>
+    53	
+    54	  <key>ProgramArguments</key>
+    55	  <array>
+    56	    <string>/opt/homebrew/bin/node</string>
+    57	    <string>/Users/athenas/rc-backend/tools/ota-server.mjs</string>
+    58	  </array>
+    59	
+    60	  <key>WorkingDirectory</key>
+    61	  <string>/Users/athenas/rc-backend</string>
+    62	
+    63	  <key>EnvironmentVariables</key>
+    64	  <dict>
+    65	    <key>PATH</key>
+    66	    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    67	    <key>HOME</key>
+    68	    <string>/Users/athenas</string>
+    69	    <key>OTA_ROOT</key>
+    70	    <string>/Users/athenas/ota</string>
+    71	    <key>OTA_PORT</key>
+    72	    <string>8788</string>
+    73	  </dict>
+    74	
+    75	  <key>RunAtLoad</key>
+    76	  <true/>
+    77	  <key>KeepAlive</key>
+    78	  <true/>
+    79	
+    80	  <key>StandardOutPath</key>
+    81	  <string>/Users/athenas/Library/Logs/rc-backend/rc-ota.log</string>
+    82	  <key>StandardErrorPath</key>
+    83	  <string>/Users/athenas/Library/Logs/rc-backend/rc-ota.log</string>
+    84	</dict>
+    85	</plist>
+     1	#!/usr/bin/env bash
+     2	# controls-for: tools/ota-server.mjs
+     3	#
+     4	# 此の配信には**認証が無い**(iOS の installd は header を送らない)。だから守っているのは
+     5	# 「秘密の一段」「一覧を出さない」「ROOT の外へ出られない」の3つだけで、
+     6	# 其の3つが本当に効いているかを毎回実測する。効いていない配信は、
+     7	# Tom の tailnet に居る全機体(2026-08-28 時点で edith を含む)へ束を開けている事になる。
+     8	#
+     9	# ★否定の対照を主にする。200 が返る事は必要条件でしかない。
+    10	#
+    11	# 終了コード: 0=全部緑 / 1=赤
+    12	set -uo pipefail
+    13	
+    14	HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # = rc-backend/
+    15	SUT="$HERE/tools/ota-server.mjs"
+    16	NODE="${NODE_BIN:-node}"
+    17	PORT="${OTA_TEST_PORT:-18799}"
+    18	
+    19	T=$(mktemp -d -t ota-controls)
+    20	ROOT="$T/ota"
+    21	mkdir -p "$ROOT/s3cret"
+    22	printf 'MANIFEST\n' > "$ROOT/s3cret/manifest.plist"
+    23	printf 'IPABYTES\n' > "$ROOT/s3cret/RemoteMini.ipa"
+    24	printf '<h1>install</h1>\n' > "$ROOT/s3cret/index.html"
+    25	# ROOT の**外**に置いた餌。此処が読めたら traversal が通っている。
+    26	printf 'TOPSECRET\n' > "$T/outside.txt"
+    27	# 接頭辞が同じ別の dir。`startsWith(ROOT)` だけの判定はこれを通してしまう。
+    28	mkdir -p "$T/ota-evil"; printf 'EVIL\n' > "$T/ota-evil/x.txt"
+    29	
+    30	PASS=0; FAIL=0
+    31	ok() { printf '  OK   %s\n' "$1"; PASS=$((PASS+1)); }
+    32	ng() { printf '  NG   %s\n' "$1"; FAIL=$((FAIL+1)); }
+    33	
+    34	OTA_ROOT="$ROOT" OTA_PORT="$PORT" "$NODE" "$SUT" > "$T/server.log" 2>&1 &
+    35	PID=$!
+    36	# ★`wait` で回収してから畳む(2026-08-30)。`kill` の stderr は既に捨てているが、
+    37	# **`Terminated: 15` を出すのは kill ではなく shell** —— 殺した背景ジョブを終了時に
+    38	# 回収する時に出す通知で、これが出力の**最後の行**になる。
+    39	# 門(`staged-controls-gate.sh`)の要約は最後の行を拾うので、一覧には
+    40	# 「GREEN 1s <Terminated…>」と出ていた = **15件測った事と落ちた事が読者から区別できない**。
+    41	# `wait` で先に回収すれば通知が出ず、最後の行が `ota-server-controls: OK n / NG m` になる。
+    42	cleanup() { kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null; rm -rf "$T"; }
+    43	trap cleanup EXIT
+    44	
+    45	for _ in $(seq 1 40); do
+    46	    curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$PORT/s3cret/manifest.plist" && break
+    47	    sleep 0.25
+    48	done
+    49	
+    50	# ★`--path-as-is` が要る(2026-08-28、嘘の緑を1本掴んで判った)。
+    51	#   curl は既定で URL の `..` を**送る前に**畳む。だから `/../outside.txt` は
+    52	#   `/outside.txt` になってサーバへ届き、ROOT に無いので 404 —— 守りが1行も
+    53	#   効いていなくても緑が出る。実際に守りを素朴な startsWith へ落とす変異を当てても
+    54	#   15 本全部緑のままだった。生の `..` を届かせて初めて測っている事になる。
+    55	code() { curl -s --path-as-is -o /dev/null -w '%{http_code}' --max-time 5 "$@" 2>/dev/null; }
+    56	body() { curl -s --path-as-is --max-time 5 "$@" 2>/dev/null; }
+    57	
+    58	# --- 本体が配れる(必要条件) --------------------------------------------------
+    59	[ "$(code "http://127.0.0.1:$PORT/s3cret/manifest.plist")" = "200" ] \
+    60	    && ok "manifest が返る" || ng "manifest が返らない"
+    61	[ "$(code "http://127.0.0.1:$PORT/s3cret/RemoteMini.ipa")" = "200" ] \
+    62	    && ok "束が返る" || ng "束が返らない"
+    63	[ "$(code "http://127.0.0.1:$PORT/s3cret/")" = "200" ] \
+    64	    && ok "dir を叩くと index.html が出る" || ng "index.html が出ない"
+    65	
+    66	# --- N1 一覧を返さない --------------------------------------------------------
+    67	b=$(body "http://127.0.0.1:$PORT/")
+    68	if printf '%s' "$b" | grep -q "s3cret"; then
+    69	    ng "N1 ROOT が中身を一覧した = 秘密の一段が無意味になる"
+    70	else
+    71	    ok "N1 ROOT は一覧を返さない"
+    72	fi
+    73	
+    74	# --- N2 ROOT の外へ出られない -------------------------------------------------
+    75	for p in "/../outside.txt" "/s3cret/../../outside.txt" "/%2e%2e/outside.txt" "/..%2foutside.txt"; do
+    76	    b=$(body "http://127.0.0.1:$PORT$p")
+    77	    if printf '%s' "$b" | grep -q "TOPSECRET"; then
+    78	        ng "N2 traversal が通った: $p"
+    79	    else
+    80	        ok "N2 traversal を弾く: $p"
+    81	    fi
+    82	done
+    83	
+    84	# --- N3 接頭辞が同じ隣の dir へ出られない -------------------------------------
+    85	# ★`real.startsWith(ROOT)` だけで判定すると此処が通る。区切りまで見ているかの検査。
+    86	b=$(body "http://127.0.0.1:$PORT/../ota-evil/x.txt")
+    87	if printf '%s' "$b" | grep -q "EVIL"; then
+    88	    ng "N3 接頭辞が同じ隣の dir が読めた(ota → ota-evil)"
+    89	else
+    90	    ok "N3 接頭辞が同じ隣の dir を弾く"
+    91	fi
+    92	
+    93	# --- N4 symlink で外へ出られない ----------------------------------------------
+    94	ln -s "$T/outside.txt" "$ROOT/s3cret/link.txt" 2>/dev/null || true
+    95	b=$(body "http://127.0.0.1:$PORT/s3cret/link.txt")
+    96	if printf '%s' "$b" | grep -q "TOPSECRET"; then
+    97	    ng "N4 symlink で ROOT の外が読めた"
+    98	else
+    99	    ok "N4 symlink で外へ出られない"
+   100	fi
+   101	
+   102	# --- N5 書き込みの口が無い ----------------------------------------------------
+   103	for m in POST PUT DELETE; do
+   104	    c=$(code -X "$m" "http://127.0.0.1:$PORT/s3cret/manifest.plist")
+   105	    [ "$c" = "405" ] && ok "N5 $m は 405" || ng "N5 $m が $c(405 でない)"
+   106	done
+   107	
+   108	# --- N6 外の網に listen していない --------------------------------------------
+   109	if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | grep -qv "127.0.0.1:$PORT"; then
+   110	    if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | grep -q "\*:$PORT"; then
+   111	        ng "N6 全ての面に listen している = tailnet 限定が効かない"
+   112	    else
+   113	        ok "N6 127.0.0.1 だけに listen"
+   114	    fi
+   115	else
+   116	    ok "N6 127.0.0.1 だけに listen"
+   117	fi
+   118	
+   119	# --- 型 -----------------------------------------------------------------------
+   120	ct=$(curl -s -o /dev/null -w '%{content_type}' --max-time 5 "http://127.0.0.1:$PORT/s3cret/RemoteMini.ipa")
+   121	[ "$ct" = "application/octet-stream" ] && ok "束の型が octet-stream" || ng "束の型が $ct"
+   122	
+   123	echo
+   124	echo "ota-server-controls: OK $PASS / NG $FAIL"
+   125	[ "$FAIL" -gt 0 ] && exit 1
+   126	exit 0
+rc-backend/src/listing.mjs:102: * (`stat` の後に開くと、その間の追記 / truncate / rotate でサイズと中身がずれる)。
+rc-backend/src/listing.mjs:219: * その隙間の rotate で別のファイルの中身に前のサイズを当てる事になる)。
+rc-backend/src/attach.mjs:182:        (o?.rotate ?? sipsRotate)(tmp, ori);
+rc-backend/src/attach.mjs:199:    // ★変換が権限を作り直す(2026-08-26 実測: `sips --out` の後は umask 既定の 644 に
+rc-backend/tools/rc-backend-launch.sh:91:# ★正直な注記: launchd は起動時に StandardOutPath を開いてから exec する。だから
+rc-backend/tools/com.fleet.rc-health-observer.plist.example:68:    <key>StandardOutPath</key>
+rc-backend/tools/com.fleet.rc-health-observer.plist.example:70:    <key>StandardErrorPath</key>
+rc-backend/tools/com.edith.rc-backend.plist:36:    ssh edith 'chmod 700 /Users/edith/rc-backend/tools/rc-backend-launch.sh'
+rc-backend/tools/com.edith.rc-backend.plist:111:  <key>StandardOutPath</key>
+rc-backend/tools/com.edith.rc-backend.plist:113:  <key>StandardErrorPath</key>
+rc-backend/tools/com.fleet.rc-phone-window.plist:95:  <key>StandardOutPath</key>
+rc-backend/tools/com.fleet.rc-phone-window.plist:97:  <key>StandardErrorPath</key>
+rc-backend/tools/com.edith.rc-phone-window.plist:105:  <key>StandardOutPath</key>
+rc-backend/tools/com.edith.rc-phone-window.plist:107:  <key>StandardErrorPath</key>
+rc-backend/tools/com.fleet.rc-backend.plist:47:    ssh athenas 'chmod 700 /Users/athenas/rc-backend/tools/rc-backend-launch.sh'
+rc-backend/tools/com.fleet.rc-backend.plist:118:  <key>StandardOutPath</key>
+rc-backend/tools/com.fleet.rc-backend.plist:120:  <key>StandardErrorPath</key>
+rc-backend/tools/verify-phone-window.sh:185:    # launchd は StandardOutPath を回さない。書く量は throttle で抑えてあるが、
+rc-backend/tools/com.fleet.rc-ota.plist:80:  <key>StandardOutPath</key>
+rc-backend/tools/com.fleet.rc-ota.plist:81:  <string>/Users/athenas/Library/Logs/rc-backend/rc-ota.log</string>
+rc-backend/tools/com.fleet.rc-ota.plist:82:  <key>StandardErrorPath</key>
+rc-backend/tools/com.fleet.rc-ota.plist:83:  <string>/Users/athenas/Library/Logs/rc-backend/rc-ota.log</string>
+rc-backend/tools/edith-gui-run.sh:139:    <key>StandardOutPath</key><string>$DIR/out</string>
+rc-backend/tools/edith-gui-run.sh:140:    <key>StandardErrorPath</key><string>$DIR/err</string>
+rc-backend/tools/com.fleet.rc-digest-notify.plist:77:  <key>StandardOutPath</key>
+rc-backend/tools/com.fleet.rc-digest-notify.plist:79:  <key>StandardErrorPath</key>
+rc-backend/tools/ota-server.mjs:69://   tomtim / udagawa が居る = 08-28 に `chmod 700 ~/ota` で塞いだのと同じ穴)。
+rc-backend/test/attach.test.mjs:102:  // 2026-08-26 実測の回帰: `sips --out` が umask で作り直すので、0600 で開いた意味が
+rc-backend/test/attach.test.mjs:242:  let rotated = 0;
+rc-backend/test/attach.test.mjs:243:  storeImage(readFileSync(join(d, "a.png")), { baseDir: base, rotate: () => { rotated++; } });
+rc-backend/test/attach.test.mjs:244:  assert.equal(rotated, 0, "PNG に回転を掛けた");
+rc-backend/test/seed-digest-recipe.test.mjs:101:    const otherKey = stamp(py, { url: c.url, key: `${c.key}-rotated` }).digest;
+
+exec
+/bin/zsh -lc 'git status --short -- rc-backend/tools/ota-server.mjs rc-backend/tools/com.fleet.rc-ota.plist rc-backend/test/ota-server-controls.sh && git diff -- rc-backend/tools/ota-server.mjs rc-backend/tools/com.fleet.rc-ota.plist rc-backend/test/ota-server-controls.sh' in /Users/tomtim/Infra/mobile-work
+ succeeded in 2791ms:
+2026-08-30 00:54:30.791 xcodebuild[68840:33940376]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-08-30 00:54:30.948 xcodebuild[68840:33940362] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-qUk0yDIJ' (errno=Operation not permitted)
+2026-08-30 00:54:31.345 xcodebuild[68998:33940651]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-08-30 00:54:31.460 xcodebuild[68998:33940646] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ M rc-backend/test/ota-server-controls.sh
+ M rc-backend/tools/ota-server.mjs
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-svE5hDm0' (errno=Operation not permitted)
+2026-08-30 00:54:32.263 xcodebuild[69375:33941294]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-08-30 00:54:32.377 xcodebuild[69375:33941293] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-PncYbax2' (errno=Operation not permitted)
+2026-08-30 00:54:32.716 xcodebuild[69517:33941529]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-08-30 00:54:32.830 xcodebuild[69517:33941528] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+diff --git a/rc-backend/test/ota-server-controls.sh b/rc-backend/test/ota-server-controls.sh
+index b5811d2..fd1109c 100644
+--- a/rc-backend/test/ota-server-controls.sh
++++ b/rc-backend/test/ota-server-controls.sh
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env bash
+-# controls-for: rc-backend/tools/ota-server.mjs
++# controls-for: tools/ota-server.mjs
+ #
+ # 此の配信には**認証が無い**(iOS の installd は header を送らない)。だから守っているのは
+ # 「秘密の一段」「一覧を出さない」「ROOT の外へ出られない」の3つだけで、
+@@ -33,7 +33,13 @@ ng() { printf '  NG   %s\n' "$1"; FAIL=$((FAIL+1)); }
+ 
+ OTA_ROOT="$ROOT" OTA_PORT="$PORT" "$NODE" "$SUT" > "$T/server.log" 2>&1 &
+ PID=$!
+-cleanup() { kill "$PID" 2>/dev/null; rm -rf "$T"; }
++# ★`wait` で回収してから畳む(2026-08-30)。`kill` の stderr は既に捨てているが、
++# **`Terminated: 15` を出すのは kill ではなく shell** —— 殺した背景ジョブを終了時に
++# 回収する時に出す通知で、これが出力の**最後の行**になる。
++# 門(`staged-controls-gate.sh`)の要約は最後の行を拾うので、一覧には
++# 「GREEN 1s <Terminated…>」と出ていた = **15件測った事と落ちた事が読者から区別できない**。
++# `wait` で先に回収すれば通知が出ず、最後の行が `ota-server-controls: OK n / NG m` になる。
++cleanup() { kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null; rm -rf "$T"; }
+ trap cleanup EXIT
+ 
+ for _ in $(seq 1 40); do
+diff --git a/rc-backend/tools/ota-server.mjs b/rc-backend/tools/ota-server.mjs
+index 5d68868..3da5934 100644
+--- a/rc-backend/tools/ota-server.mjs
++++ b/rc-backend/tools/ota-server.mjs
+@@ -58,10 +58,81 @@ function safeResolve(urlPath) {
+   return real;
+ }
+ 
++
++// ── 1要求1行の記録(2026-08-30)────────────────────────────────────────────────
++// なぜ要るか: この口は build 89 を Tom の電話へ運んだ経路だが、何も記録していなかった ——
++// 「開いたが入らなかった」と「一度も開いていない」が**ログから区別できない**。
++// 実際 2026-08-29 に「tap したか」を答えられず、Tom に口頭で訊く以外に手が無かった。
++//
++// ★秘密の一段を**そのまま書かない**。この口の唯一の守りは推測できない 24 桁 hex で、
++//   それを log に書けば、log を読める者に配布物が渡る(friday には athenas 以外に
++//   tomtim / udagawa が居る = 08-28 に `chmod 700 ~/ota` で塞いだのと同じ穴)。
++//   残すのは**形だけ**: `/<secret>/RemoteMini.ipa` → `/:secret/RemoteMini.ipa`。
++// ★UA も生で書かない。`src/reqlog.mjs` の `clientClass` と同じ**閉じた語**へ落とす ——
++//   生の UA には端末の型番と OS 版が入る。分類は独立の実装にせず綴りだけ合わせる
++//   (此処は tools/ で src/ を import しない層なので、写しである事を明示しておく)。
++// ★2026-08-30、Codex の指摘1: 「長い hex を畳む」は**文字列のヒューリスティック**で、
++//   percent-encoding(`/ab%63d…`)・接尾辞(`/<secret>;x`)・absolute-form
++//   (`GET http://host/<secret>x`)で秘密がそのまま出る。堅い形は長さでも文字種でもなく
++//   **既知のルートだけを型で記録し、それ以外は1つの定数へ畳む**事。
++//   副作用として、長大 URL による**ログ増幅(指摘2)も同時に塞がる** —— 行長が有界になる。
++const KNOWN_LEAF = new Set(["manifest.plist", "index.html", ""]);
++const IPA = /\.ipa$/i;
++
++/**
++ * 記録に出す path。**元の文字列を一切通さない**(白名簿から組み立てる)。
++ *   `/<secret>/manifest.plist` → `/:secret/manifest.plist`
++ *   `/<secret>/RemoteMini.ipa` → `/:secret/:ipa`
++ *   `/<secret>/`               → `/:secret/`
++ *   それ以外(404 の的・攻撃・打ち間違い)→ `/:other`
++ */
++export function otaPathShape(urlPath) {
++  const clean = String(urlPath || "/").split("?")[0].split("#")[0];
++  const parts = clean.split("/");
++  // 期待する形は ["", <secret>, <leaf>] の3片だけ。増減はすべて `/:other`。
++  if (parts.length !== 3 || parts[0] !== "") return "/:other";
++  const leaf = parts[2];
++  if (IPA.test(leaf)) return "/:secret/:ipa";
++  if (KNOWN_LEAF.has(leaf)) return `/:secret/${leaf}`;
++  return "/:other";
++}
++
++/** `src/reqlog.mjs` の `clientClass` と同じ語彙(app / probe / tool / none / other)。 */
++export function otaClientClass(userAgent) {
++  const ua = String(userAgent || "");
++  if (!ua) return "none";
++  if (/^rc-live-/i.test(ua)) return "probe";
++  // iOS の installd はここに落ちる(CFNetwork/Darwin)。Safari も同じ語になるが、
++  // **この口に来る CFNetwork は installd か Safari のどちらか**で、どちらも「電話が来た」。
++  if (/CFNetwork|Darwin/i.test(ua)) return "app";
++  if (/curl|wget|node|undici|python|libwww/i.test(ua)) return "tool";
++  return "other";
++}
++
++function logReq(req, code, bytes) {
++  // 1行6欄。増やす時は此処だけ。`[ota] req` を頭に置くのは rc-backend の `[rc-backend] req` と
++  // 同じ形にして、grep を1つの流儀で済ませる為。
++  //
++  // ★`bytes` / `code=200` は「**Node が OS へ渡し切った**」であって「電話が受け取って
++  //   入れられた」ではない(Codex の指摘3)。この計器が答えられるのは
++  //   「取りに来たか」「途中で切れたか」までで、install の成否は答えられない。
++  // ★書き込みのエラーを飲む。stdout は launchd が普通のファイルへ向けているので、
++  //   ディスクが満杯だと write が投げてプロセスごと落ちうる —— 配布が止まる方が、
++  //   1行記録できない事より遥かに高くつく。
++  try {
++    process.stdout.write(
++      `[ota] req ${new Date().toISOString()} ${req.method} ${otaPathShape(req.url)} `
++      + `client=${otaClientClass(req.headers["user-agent"])} code=${code} bytes=${bytes}\n`,
++      () => {},
++    );
++  } catch { /* 記録できない事は配布を止める理由にならない */ }
++}
++
+ const server = createServer((req, res) => {
+   const done = (code, body = "") => {
+     res.writeHead(code, { "content-type": "text/plain; charset=utf-8" });
+     res.end(body);
++    logReq(req, code, Buffer.byteLength(body));
+   };
+ 
+   if (req.method !== "GET" && req.method !== "HEAD") return done(405, "GET only\n");
+@@ -95,10 +166,32 @@ const server = createServer((req, res) => {
+     // 束は焼き直しで同じ名前のまま中身が変わる。電話に古い物を掴ませない。
+     "cache-control": "no-store",
+   });
+-  if (req.method === "HEAD") return res.end();
+-  createReadStream(target).pipe(res);
++  if (req.method === "HEAD") { logReq(req, 200, 0); return res.end(); }
++  // ★送った**実バイト**を自分で数える。初版は `res.bytesWritten` を書いたが、あれは
++  //   `ServerResponse` に存在しない属性で、ログに `bytes=undefined` が出ていた。
++  //   タスクの verifier は GET の行数しか数えないので**緑のまま通った** ——
++  //   「検査が測っていない範囲」の実例なので、直しと一緒に此処へ残す。
++  // ★`finish` ではなく `close` で記録する。`finish` は送り切った時しか出ないので、
++  //   中断(電話が圏外へ出た / installd が諦めた)が**1行も残らない** —— それは
++  //   「tap したのに入らなかった」を潰す当の欠陥と同じ形。`close` は必ず出る。
++  //   送り切ったかは `writableFinished` で分け、中断は `code=0`
++  //   (`src/reqlog.mjs` の実ログが `code=0 reason=aborted` を使うので綴りを合わせる)。
++  let sent = 0;
++  const stream = createReadStream(target);
++  stream.on("data", (chunk) => { sent += chunk.length; });
++  res.on("close", () => logReq(req, res.writableFinished ? 200 : 0, sent));
++  stream.pipe(res);
+ });
+ 
++// ★送信の上限(2026-08-30、Codex の指摘3の後半)。客が**切らずに読むのを止める**と、
++//   `close` が出ないので**1行も記録されない** —— 「取りに来たのに終わらなかった」が
++//   計器から消える、この計器が塞ぐべき当の穴と同じ形。
++//   5分 = tailnet 越しに 1.9MB の束を配るのに桁で足りる長さ(実測は秒)。
++//   切った時は `close` が出るので `code=0` として残る。
++server.requestTimeout = 0;                 // 要求の読みは即終わる(GET/HEAD のみ)
++server.headersTimeout = 30_000;
++server.on("connection", (socket) => { socket.setTimeout(300_000, () => socket.destroy()); });
++
+ server.listen(PORT, "127.0.0.1", () => {
+   console.log(`[ota] ${ROOT} を 127.0.0.1:${PORT} で配る(GET/HEAD のみ・一覧なし)`);
+ });
+
+web search: 
+web search: site:nodejs.org/api/net.html socket.setTimeout inactivity timeout reset activity Node.js
+exec
+/bin/zsh -lc "nl -ba rc-backend/tools/rc-backend-launch.sh | sed -n '72,112p' && nl -ba rc-backend/tools/verify-phone-window.sh | sed -n '170,205p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+    72	    if [ "$age" -lt "$MARK_MAX_S" ]; then
+    73	        log "配備中の印が在る(${age} 秒前)= 木が書き換わっている最中。起動しない(launchd の再試行に任せる)"
+    74	        exit 0
+    75	    fi
+    76	    log "★配備中の印が古い(${age} 秒 > ${MARK_MAX_S} 秒)= 配備台本が途中で落ちた跡。印を無視して起動する"
+    77	fi
+    78	
+    79	# --- 鍵 ---------------------------------------------------------------------
+    80	# ★作り直さない。server.mjs が無ければ作るが、在れば読むだけ。
+    81	# ここで消したり再生成したりすると、電話に貼ってある鍵が黙って失効する。
+    82	if [ -f "$KEY_FILE" ]; then
+    83	    log "鍵: 既存を使う (${KEY_FILE})"
+    84	else
+    85	    log "鍵: 無いので server.mjs が生成する"
+    86	fi
+    87	
+    88	# --- ログの上限(sudo 無しで出来る範囲) --------------------------------------
+    89	# launchd はローテーションしない。`KeepAlive` + bind 失敗が続くと 15 秒ごとに
+    90	# 起動を繰り返してログだけが伸びる。世代は1つで十分(20MB で頭打ち)。
+    91	# ★正直な注記: launchd は起動時に StandardOutPath を開いてから exec する。だから
+    92	#   ここで rename すると、**この回の出力は rename 後の file に行く**。それでも
+    93	#   disk が青天井にならないという目的は達する。閾値を大きめにしてあるのは、
+    94	#   crash loop 中に毎回 rename して直前の診断を潰さない為(実測ペースで約10日分)。
+    95	LOGF="${LOG_DIR}/rc-backend.log"
+    96	if [ -f "$LOGF" ] && [ "$(stat -f %z "$LOGF" 2>/dev/null || echo 0)" -gt 10485760 ]; then
+    97	    mv -f "$LOGF" "${LOGF}.1" 2>/dev/null && log "ログを退避した(10MB 超): ${LOGF}.1"
+    98	fi
+    99	
+   100	# --- tailscale が上がるのを待つ ----------------------------------------------
+   101	# ★2026-08-02 Codex 指摘の本命。冷起動で tailscaled がまだ準備できていない瞬間に
+   102	#   ここへ来ると `serve` は失敗する。`set -e` を張っていないので node は上がり、
+   103	#   **KeepAlive が node を生かし続けるので、このラッパは二度と走らない**。
+   104	#   = tailscaled が後から復旧しても serve は入らないまま。ローカルでは全部緑、
+   105	#   電話からだけ永久に到達できない = 渡米中に一番起きてほしくない形。
+   106	#   → 待つ。待っても駄目なら**そう言って**、node は上げる(ssh で診断できる方が良い)。
+   107	TS_READY=no
+   108	if [ -x "$TS" ]; then
+   109	    for i in $(seq 1 30); do   # 2 秒 x 30 = 最大 60 秒
+   110	        state=$("$TS" status --json 2>/dev/null | /usr/bin/python3 -c \
+   111	            'import sys,json
+   112	try: print(json.load(sys.stdin).get("BackendState",""))
+   170	    # ★attempt と success を分けて見る。走っているのに success が古い = 走ってはいるが
+   171	    #   毎回どこかの関門で止まっている(信頼判定など)。心拍1本だとこれが健康に見える。
+   172	    if not suc_ok:         fail.append(f"success が古い/無い({suc}s > {fresh_s}s)= 走ってはいるが「在る」を確かめられていない")
+   173	    if n != 1:             fail.append(f"work:phone が {n} 枚(1 枚でなければならない。0=鎖③未達 / 2+=増殖)")
+   174	    if n == 1 and alive < 1: fail.append("window は在るが中のペインが全部死んでいる(抜け殻)= 話せる相手ではない")
+   175	    if reg < 1:            fail.append("登録簿に載っていない(= その会話がどのペインに居るか誰も知らない)")
+   176	    # ★ここを分けた理由(2026-08-02): 登録簿に載っている事を「電話の一覧に出る」と書いていたが、
+   177	    #   実測すると **載っていても出ない**。一覧は jsonl を走査して作るので、0ターンの会話は
+   178	    #   ファイルが無く走査に載らない。= 再起動直後に用意した window が、電話からは見えない。
+   179	    #   1つの verdict に混ぜず、鎖ごとに状態を出す(混ぜると「どっちが壊れたか」が消える)。
+   180	    if listed == "false":  fail.append("★登録簿には在るのに電話の一覧に出ない。0ターンの会話は記録ファイルが無く、一覧の走査に載らない = 再起動直後に用意した window は電話から見えない")
+   181	    elif listed == "unknown": fail.append("一覧に出るか確かめられなかった(api.key か 8787 に届かない)= 未測定であって緑ではない")
+   182	    cmd = kv.get("phone_pane_cmd", "")
+   183	    if n == 1 and cmd in ("bash", "zsh", "sh", "-zsh", "login"):
+   184	        fail.append(f"pane で走っているのが素の shell({cmd})= 話せる相手ではない")
+   185	    # launchd は StandardOutPath を回さない。書く量は throttle で抑えてあるが、
+   186	    # 抑えが効いているかは**実測**で見る(効いていない事に気付く道が要る)。
+   187	    if logb > 8 * 1024 * 1024:
+   188	        fail.append(f"log が {logb} bytes = 抑えが効いていない。中身を読んで原因を潰す事")
+   189	else:  # absent
+   190	    if job:                fail.append("launchd に job がまだ居る")
+   191	    if procs > 0:          fail.append(f"script がまだ {procs} 本走っている")
+   192	
+   193	verdict = "ok" if not fail else "fail"
+   194	# 鎖ごとに出す。1つの verdict に丸めると「window が消えた」と「一覧に出ない」が同じ赤になり、
+   195	# 後で読んだ時にどちらが壊れたのか分からない(= 状態を混ぜた値は欠陥、という今週の型)。
+   196	chains = {
+   197	    "3_window":   "ok" if (n == 1 and alive >= 1) else "fail",
+   198	    "3_scheduler": "ok" if (job and att_ok) else "fail",
+   199	    "4_registry": "ok" if reg >= 1 else "fail",
+   200	    "4_listed":   {"true": "ok", "false": "fail"}.get(listed, "unknown"),
+   201	} if expect == "present" else {}
+   202	doc = {
+   203	    "what":        "鎖③④(tmux の中に話せる相手が居て、登録簿に載っている)の観測",
+   204	    "expect":      expect,
+   205	    "verdict":     verdict,
+
+codex
+本当に直すべきは3点です。
+
+1. **提示版の redaction は破れる。**  
+   `/%61bc.../manifest.plist` や `/<secret>%2Fmanifest.plist` は、配信側では decode されて正規ファイルへ到達しますが、logger は生 URL を見るため secret を残します。`;x`、secret を埋め込んだ filename、absolute-form も漏れます。「文字種を問わず N 文字以上」でも直りません。固定語彙で `/:secret/:ipa`、未知形はすべて `/:other` が正解です。現行ファイルは既にこの方式へ変更されています。[ota-server.mjs](/Users/tomtim/Infra/mobile-work/rc-backend/tools/ota-server.mjs:79)
+
+   ただし別経路が残っています。`createReadStream(target)` に `error` handler がなく、open/read error が uncaught になると、絶対 path、つまり secret を含む `Error.path` が stderr に出てプロセスも落ちます。[ota-server.mjs](/Users/tomtim/Infra/mobile-work/rc-backend/tools/ota-server.mjs:180) stdout/stderr は同じログです。[com.fleet.rc-ota.plist](/Users/tomtim/Infra/mobile-work/rc-backend/tools/com.fleet.rc-ota.plist:80)
+
+2. **無制限ログはノイズではなく可用性欠陥。**  
+   secret 不要の 404 spam だけで共有ディスクを埋められます。さらに POSIX で通常ファイルへ向く stdout は同期書き込みなので、遅いディスクでは Node 全体を止めます。[Node process I/O](https://nodejs.org/api/process.html)  
+   必須なのは「容量上限付き retention」と、`/:other` 404 の sampling/drop。rename だけの rotation は、稼働中プロセスが古い fd を握り続けるので不十分です。書き込み失敗も非致命化してください。
+
+3. **`close` は使えるが、計測値の意味が強すぎる。**  
+   `close` は response ごとに一度で、keep-alive でも問題ありません。`writableFinished` は「OS に flush した」であって「iPhone が受信した」ではありません。また `stream` の `data` はディスクから読んだ量なので、abort 時には socket buffer 分を過大計上します。[Node HTTP docs](https://nodejs.org/api/http.html)  
+   現行の5分 timeout は inactivity timeoutで、少量ずつ通信する相手には総時間上限になりません。[Node net docs](https://nodejs.org/api/net.html) 加えて現行 HEAD は `res.end()` 前に必ず200を記録しており、説明の「200/0」と一致しません。[ota-server.mjs](/Users/tomtim/Infra/mobile-work/rc-backend/tools/ota-server.mjs:169)
+
+新しい secret oracle はほぼありません。Referer、Cookie、Host は記録していません。ただしログ読者には、利用時刻・成功/失敗・IPAサイズ・`app` 分類が新たに見えます。UA分類は偽装可能です。ログは ownership だけでなく、親ディレクトリ `0700`、ファイル `0600` を確認すべきです。
+tokens used
+78,981
+本当に直すべきは3点です。
+
+1. **提示版の redaction は破れる。**  
+   `/%61bc.../manifest.plist` や `/<secret>%2Fmanifest.plist` は、配信側では decode されて正規ファイルへ到達しますが、logger は生 URL を見るため secret を残します。`;x`、secret を埋め込んだ filename、absolute-form も漏れます。「文字種を問わず N 文字以上」でも直りません。固定語彙で `/:secret/:ipa`、未知形はすべて `/:other` が正解です。現行ファイルは既にこの方式へ変更されています。[ota-server.mjs](/Users/tomtim/Infra/mobile-work/rc-backend/tools/ota-server.mjs:79)
+
+   ただし別経路が残っています。`createReadStream(target)` に `error` handler がなく、open/read error が uncaught になると、絶対 path、つまり secret を含む `Error.path` が stderr に出てプロセスも落ちます。[ota-server.mjs](/Users/tomtim/Infra/mobile-work/rc-backend/tools/ota-server.mjs:180) stdout/stderr は同じログです。[com.fleet.rc-ota.plist](/Users/tomtim/Infra/mobile-work/rc-backend/tools/com.fleet.rc-ota.plist:80)
+
+2. **無制限ログはノイズではなく可用性欠陥。**  
+   secret 不要の 404 spam だけで共有ディスクを埋められます。さらに POSIX で通常ファイルへ向く stdout は同期書き込みなので、遅いディスクでは Node 全体を止めます。[Node process I/O](https://nodejs.org/api/process.html)  
+   必須なのは「容量上限付き retention」と、`/:other` 404 の sampling/drop。rename だけの rotation は、稼働中プロセスが古い fd を握り続けるので不十分です。書き込み失敗も非致命化してください。
+
+3. **`close` は使えるが、計測値の意味が強すぎる。**  
+   `close` は response ごとに一度で、keep-alive でも問題ありません。`writableFinished` は「OS に flush した」であって「iPhone が受信した」ではありません。また `stream` の `data` はディスクから読んだ量なので、abort 時には socket buffer 分を過大計上します。[Node HTTP docs](https://nodejs.org/api/http.html)  
+   現行の5分 timeout は inactivity timeoutで、少量ずつ通信する相手には総時間上限になりません。[Node net docs](https://nodejs.org/api/net.html) 加えて現行 HEAD は `res.end()` 前に必ず200を記録しており、説明の「200/0」と一致しません。[ota-server.mjs](/Users/tomtim/Infra/mobile-work/rc-backend/tools/ota-server.mjs:169)
+
+新しい secret oracle はほぼありません。Referer、Cookie、Host は記録していません。ただしログ読者には、利用時刻・成功/失敗・IPAサイズ・`app` 分類が新たに見えます。UA分類は偽装可能です。ログは ownership だけでなく、親ディレクトリ `0700`、ファイル `0600` を確認すべきです。
+```

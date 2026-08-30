@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# controls-for: rc-backend/tools/ota-server.mjs
+# controls-for: tools/ota-server.mjs
 #
 # 此の配信には**認証が無い**(iOS の installd は header を送らない)。だから守っているのは
 # 「秘密の一段」「一覧を出さない」「ROOT の外へ出られない」の3つだけで、
@@ -33,7 +33,13 @@ ng() { printf '  NG   %s\n' "$1"; FAIL=$((FAIL+1)); }
 
 OTA_ROOT="$ROOT" OTA_PORT="$PORT" "$NODE" "$SUT" > "$T/server.log" 2>&1 &
 PID=$!
-cleanup() { kill "$PID" 2>/dev/null; rm -rf "$T"; }
+# ★`wait` で回収してから畳む(2026-08-30)。`kill` の stderr は既に捨てているが、
+# **`Terminated: 15` を出すのは kill ではなく shell** —— 殺した背景ジョブを終了時に
+# 回収する時に出す通知で、これが出力の**最後の行**になる。
+# 門(`staged-controls-gate.sh`)の要約は最後の行を拾うので、一覧には
+# 「GREEN 1s <Terminated…>」と出ていた = **15件測った事と落ちた事が読者から区別できない**。
+# `wait` で先に回収すれば通知が出ず、最後の行が `ota-server-controls: OK n / NG m` になる。
+cleanup() { kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null; rm -rf "$T"; }
 trap cleanup EXIT
 
 for _ in $(seq 1 40); do
