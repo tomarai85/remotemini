@@ -18,6 +18,10 @@
 #   C6 退避      — 末尾が `<file>.tail` に在り、本体には行方を示す1行が残る
 #   C7 権限      — 退避先の mode が元 log と一致する(600 の中身を 644 に写さない)
 #   C8 掃引の継続 — 1本失敗しても後ろの log は切られ、失敗は非 0 で帰る
+#   C9 複数 dir  — dir を複数渡すと全部切られ、従来の <dir> <bytes> も動く
+#   C10 無い dir  — 綴り違いを緑で帰さない(fail-open の修正)
+#   C11 実配線   — plist が実際に2つの dir を渡している
+#   C12 安全     — 退避先/元 log が symlink・hardlink なら触らない(api.key 上書き経路)
 #
 # 使い方: bash rc-backend/test/log-cap-controls.sh
 # 終了コード: 0=全部緑 / 1=1本でも赤
@@ -149,6 +153,112 @@ else ng "C8 前の1本が失敗しても後ろは切られる" "z-ok=$zs B = 掃
 if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "失敗"; then
     ok "C8 失敗は握り潰さず非 0 で帰る (rc=$rc)"
 else ng "C8 失敗を非 0 で帰す" "rc=$rc / $out"; fi
+/bin/rm -rf "$D"
+
+# ── C9 複数の dir ──────────────────────────────────────────────────────────
+# ★上限を「大きい file の在る場所」ではなく「暴走の起きる場所」に置く為に、
+#   dir を複数取れる様にした。測るのは3つ:
+#   (a) 2つ目の dir も実際に切られる (b) 従来の <dir> <bytes> がそのまま動く
+#   (c) 末尾が数字でなければ dir として扱う(上限を dir と誤読しない)
+D="$(mktemp -d)"; mkdir -p "$D/one" "$D/two"
+printf 'x%.0s' $(seq 1 300000) > "$D/one/a.log"
+printf 'x%.0s' $(seq 1 300000) > "$D/two/b.log"
+bash "$CAP_ALL" "$D/one" "$D/two" 100000 >/dev/null 2>&1
+s1="$(size "$D/one/a.log")"; s2="$(size "$D/two/b.log")"
+if [ "${s1:-9}" -le 100000 ] && [ "${s2:-9}" -le 100000 ]; then
+    ok "C9 dir を2つ渡すと**両方**切られる (one=$s1 two=$s2)"
+else ng "C9 dir 2つの両方が切られる" "one=$s1 two=$s2"; fi
+/bin/rm -rf "$D"
+
+# (b) 従来の形。★これが壊れると launchd の既存の呼び方と対照 C5 が同時に死ぬ。
+D="$(mktemp -d)"; printf 'x%.0s' $(seq 1 300000) > "$D/c.log"
+bash "$CAP_ALL" "$D" 100000 >/dev/null 2>&1
+s3="$(size "$D/c.log")"
+[ "${s3:-9}" -le 100000 ] && ok "C9b 従来の <dir> <bytes> がそのまま動く" \
+                          || ng "C9b 従来の形" "$s3 B"
+/bin/rm -rf "$D"
+
+# (c) 上限を書かない時、既定の 5MB で回り、dir 引数が上限と誤読されない。
+D="$(mktemp -d)"; printf 'x%.0s' $(seq 1 3000) > "$D/d.log"
+out="$(bash "$CAP_ALL" "$D" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "上限 5242880 B"; then
+    ok "C9c 上限を省くと既定 5MB(dir を上限と読まない)"
+else ng "C9c 上限の省略" "rc=$rc / $out"; fi
+/bin/rm -rf "$D"
+
+# ── C10 無い dir を緑で帰さない ★fail-open の修正 ──────────────────────────
+# ★初版は `[ -d "$DIR" ] || exit 0` だった。綴りを1文字間違えた引数が
+#   「全部上限内」に見え、しかも launchd から1時間ごとに同じ嘘を出し続ける。
+#   ★此処が緑に戻ったら、それは「直った」ではなく**守りが外れた**合図。
+D="$(mktemp -d)"; printf 'x%.0s' $(seq 1 3000) > "$D/e.log"
+out="$(bash "$CAP_ALL" "$D" "$D/no-such-dir" 100000 2>&1)"; rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q "無い"; then
+    ok "C10 指定した dir が無ければ rc=2(緑にしない)"
+else ng "C10 無い dir で rc=2" "rc=$rc / $(printf '%s' "$out" | tail -1)"; fi
+/bin/rm -rf "$D"
+
+# ── C11 plist が両方の dir を渡している ────────────────────────────────────
+# ★台本が複数 dir を取れても、plist が1つしか渡さなければ本番では何も変わらない。
+#   「出来る様にした」と「実際にそう回っている」は別。
+PL="$HERE/tools/com.fleet.rc-log-cap.plist"
+if [ -f "$PL" ] && grep -q "Library/Logs/rc-backend" "$PL" && grep -q "/\.rc-backend" "$PL"; then
+    ok "C11 plist が2つの dir を渡している(能力だけでなく実配線)"
+else ng "C11 plist が2つの dir を渡す" "$PL"; fi
+
+# ★数える方が切る方より**先**に居る事。順序が逆だと、切った回にその日の観測が失われる。
+#   「両方書いてある」では足りない —— 並び順そのものが仕様。
+if [ -f "$PL" ]; then
+    line="$(grep -m1 'app-usage-census.sh' "$PL" || true)"
+    if [ -z "$line" ]; then
+        ng "C11b census が plist に居る" "1行も無い"
+    elif printf '%s' "$line" | awk '{ c = index($0, "app-usage-census.sh"); l = index($0, "log-cap-all.sh"); exit !(c > 0 && l > 0 && c < l) }'; then
+        ok "C11b plist は census を先に、cap を後に回す(順序が仕様)"
+    else ng "C11b census が先" "順序が逆か、片方が別の行に居る: $line"; fi
+fi
+
+# ── C12 symlink 経由で別の file を上書きしない ★安全 ──────────────────────
+# ★2026-08-30、Codex が**実演して**見せた経路。`>` は symlink を辿るので、
+#   予測できる名前 `<file>.tail.new` に細工を置かれると其の先が上書きされる。
+#   ★此のレーンでは机上の話ではない —— 同じ日に掃引を `~/.rc-backend` へ向けており、
+#     其処には **api.key が在る**。「暴走の起きる場所へ上限を置く」は正しかったが、
+#     其処は同時に「壊されて困る物が在る場所」でもあった。
+#   実測(守りを外した変異): api.key 24 B -> 100,000 B、しかも **exit 0**。
+D="$(mktemp -d)"
+printf 'SECRET-KEY-DO-NOT-TOUCH\n' > "$D/api.key"
+kbefore="$(size "$D/api.key")"
+head -c 600000 /dev/urandom | base64 > "$D/live.log"
+ln -s "$D/api.key" "$D/live.log.tail.new"
+bash "$CAP_ONE" "$D/live.log" 200000 >/dev/null 2>&1; rc=$?
+kafter="$(size "$D/api.key")"
+if [ "$kbefore" = "$kafter" ] && [ "$rc" -ne 0 ]; then
+    ok "C12 退避先が symlink なら拒む(api.key は $kafter B のまま・rc=$rc)"
+else ng "C12 symlink 経由の上書きを拒む" "api.key $kbefore B -> $kafter B / rc=$rc"; fi
+/bin/rm -rf "$D"
+
+# 入口(元 log)が symlink の時も触らない。辿ると**別の file を切る**事になる。
+D="$(mktemp -d)"
+head -c 600000 /dev/urandom | base64 > "$D/real.log"
+rbefore="$(size "$D/real.log")"
+ln -s "$D/real.log" "$D/link.log"
+bash "$CAP_ONE" "$D/link.log" 200000 >/dev/null 2>&1; rc=$?
+rafter="$(size "$D/real.log")"
+if [ "$rbefore" = "$rafter" ] && [ "$rc" -ne 0 ]; then
+    ok "C12b 元 log が symlink なら切らない(rc=$rc)"
+else ng "C12b 元 log が symlink" "$rbefore -> $rafter / rc=$rc"; fi
+/bin/rm -rf "$D"
+
+# ★退避先が hardlink の時も拒む(symlink だけ塞いでも同じ結果になる別経路)。
+D="$(mktemp -d)"
+printf 'SECRET\n' > "$D/api.key"
+head -c 600000 /dev/urandom | base64 > "$D/h.log"
+ln "$D/api.key" "$D/h.log.tail" 2>/dev/null && {
+    hbefore="$(size "$D/api.key")"
+    bash "$CAP_ONE" "$D/h.log" 200000 >/dev/null 2>&1; rc=$?
+    hafter="$(size "$D/api.key")"
+    if [ "$hbefore" = "$hafter" ] && [ "$rc" -ne 0 ]; then
+        ok "C12c 退避先が hardlink なら拒む(rc=$rc)"
+    else ng "C12c hardlink を拒む" "$hbefore -> $hafter / rc=$rc"; fi
+}
 /bin/rm -rf "$D"
 
 echo ""

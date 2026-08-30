@@ -1,0 +1,1720 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a0538f-e19d-7a43-9153-a549202a30e3
+--------
+user
+Attack this. A change to a log-size cap that runs hourly, unattended, from a user LaunchAgent on a production Mac mini. Be brief — the two or three things actually wrong, not a survey.
+
+## The change
+
+`log-cap-all.sh` used to sweep exactly one directory: `~/Library/Logs/rc-backend`. It now takes any number of directories, and the plist passes two: that one plus `~/.rc-backend`.
+
+**Why the second directory, since it holds the smaller files.** The cap exists to bound *runaway*, not size. The runaway this project actually walked up to (recorded as H-4) was: deploying a health-observer script without one of its dependencies turns a once-a-day false alert into a **10-minute loop** — and every line of that loop lands in `~/.rc-backend/health-observer.log`, which the sweep did not see. The cap had been placed where the big files are, not where the runaway would be. Measured on the host: `health-observer.log` 131,982 B (appended every 600 s), `digest-notify.log` 89,500 B (every 150 s). Small, and that is not the argument.
+
+## Argument parsing (the part I most want attacked)
+
+```bash
+CAP=5242880
+args=("$@")
+n=${#args[@]}
+if [ "$n" -gt 0 ]; then
+    last="${args[$((n-1))]}"
+    case "$last" in
+        ''|*[!0-9]*) ;;                 # not numeric -> a directory
+        *) CAP="$last"; unset 'args[n-1]' ;;
+    esac
+fi
+for a in ${args+"${args[@]}"}; do DIRS+=("$a"); done
+[ ${#DIRS[@]} -eq 0 ] && DIRS=("$HOME/Library/Logs/rc-backend")
+```
+
+The point of "trailing argument is the cap only if it is purely numeric" is that the previous call form `log-cap-all.sh <dir> <bytes>` keeps working unchanged, so the existing plist invocation and the existing control suite stay green while directories can be added without a new flag. Known limitation, accepted: a directory literally named `12345` cannot be passed.
+
+## Fail-open I also closed
+
+The old code did `[ -d "$DIR" ] || { echo ...; exit 0; }`. A one-character typo in a directory argument therefore reported success, and the LaunchAgent repeated that same lie every hour. Now a missing directory is counted and the script exits 2 (measurement not established). Exit codes: 0 = all within cap, 1 = one or more files failed, 2 = not measurable (missing directory, or zero files seen).
+
+## What each file gets (unchanged from the earlier review you already did)
+
+Per file over the cap: tail snapshot to `<file>.tail`, one `: > "$F"`, then one `>>` note saying where the history went. Glob stays `*.log` so `.tail` cannot match. `*.error.log` is deliberately not exempt.
+
+## Attack these specifically
+
+1. **`unset 'args[n-1]'` leaves a sparse array**, and I iterate with `${args+"${args[@]}"}`. Is that actually safe under `set -u` in bash 3.2 (the macOS system bash this LaunchAgent will use — `/bin/bash`), or am I relying on behaviour that differs between 3.2 and 5.x? The plist calls `/bin/bash` explicitly.
+
+2. **Exit 2 on a missing directory, from a LaunchAgent.** Closing the fail-open means the job now exits non-zero whenever any listed directory is absent. `~/.rc-backend` is created by the backend at startup — so on a freshly booted box where the backend has not yet run, this job will fail hourly until it does. Is that the right trade, or have I converted a silent lie into recurring noise that will itself be ignored? What is the correct third state here?
+
+3. **Two directories, one cap.** `~/Library/Logs/rc-backend` holds a 1.1 MB request log; `~/.rc-backend` holds a 130 KB observer log and also **non-log state files** (`health-state.json`, `*.mark`, `api.key`). The glob is `*.log` so those are not touched — but is sweeping a *state* directory with a truncating tool a bad idea on principle, regardless of the glob? Would a narrower target (naming the two log files) be safer than a directory sweep here, given that the directory's other contents are the thing the system's correctness depends on?
+
+4. Anything else about running this hourly and unattended against a live production host that I am underweighting.
+2026-08-30T16:45:34.310316Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T16:45:34.389416Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T16:45:34.725481Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+`claude-workspace-context` を使い、Mac mini の本番運用前提と既存の保護方針を合わせます。そのうえで、macOS の `/bin/bash` 3.2 で提示コードを実測し、論点を3つに絞ります。
+exec
+/bin/zsh -lc "sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/SKILL.md && rg -n \"log-cap|health-observer|H-4|rc-backend|Mac mini\" /Users/tomtim/.codex/memories/MEMORY.md" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+---
+name: claude-workspace-context
+description: "Tomtim の Claude 側グローバル設定を Codex でも参照するためのワークスペース文脈スキル。Mac mini 運用、保護ファイル、AI 連携、Claude Code との役割分担、ハーネス、ルーティング、デプロイ前提、作業スタイル、Claude 由来の制約を踏まえて進める必要がある時に必ず使用。"
+---
+
+# Claude Workspace Context
+
+`~/.claude/CLAUDE.md` と主要エージェント定義を Codex から参照できるようにしたブリッジスキル。
+
+## いつ使うか
+
+- `/Users/tomtim` 配下で、Claude 側の運用前提を踏まえて作業する時
+- Mac mini、launchd、SSH、handoff、複数 AI 連携が絡む時
+- `.env`、設定ファイル、依存関係、デプロイ周辺の変更可否を慎重に判断したい時
+
+## 最重要ルール
+
+- 日本語でやり取りする。
+- ユーザー向けテキストでは絵文字や装飾的な Unicode を避ける。
+- 触ってはいけないもの:
+  - `~/.claude/settings.json`
+  - `~/.zshrc`, `~/.bashrc`, `~/.zprofile`, `~/.bash_profile`
+  - あらゆる `.env`
+- 次は事前確認が必要:
+  - 依存関係の追加/削除/ダウングレード
+  - メジャーアップグレード
+  - ビルド設定変更
+  - DB 接続設定やマイグレーション
+  - launchd、Docker、CI/CD、ポート、認証、SSL 周辺
+- 症状回避ではなく根本原因修正を優先する。
+- 長い文脈共有はファイルベースで残す発想を優先する。
+- Claude 側の routing banner / Harness / Agent Teams は設計思想として参照する。ただし Codex では上位ルールを優先し、明示的な許可なしに sub-agent を起動しない。
+- Claude 側の設定や設計を同期目的で変更しない。反映が必要な場合は Codex 側の skill、memory、reference にだけ写す。
+- 複数 AI が絡む作業では、同じファイルを同時編集しないように担当範囲を明確にする。
+
+## Mac mini 文脈
+
+- SSH: `ssh athenas@10.0.0.0`
+- Node: `/opt/homebrew/bin/node`
+- sudo が必要な作業は、基本的にユーザー実行前提
+
+## 読むべき参照
+
+- コピー索引: `references/README.md`
+- 元のグローバル設定: `references/claude-global.md`
+- Claude 側ルールコピー:
+  - `references/rules/protected-files.md`
+  - `references/rules/workflow-principles.md`
+  - `references/rules/mac-mini-ops.md`
+  - `references/rules/harness-rules.md`
+  - `references/rules/parallel-ai-rules.md`
+  - `references/rules/session-resume.md`
+- ハーネス系エージェント:
+  - `references/agents/planner.md`
+  - `references/agents/generator.md`
+  - `references/agents/evaluator.md`
+  - `references/agents/meta-agent.md`
+- Claude 側の追加エージェント文脈:
+  - `references/agents/mac-mini-deployer.md`
+  - `references/agents/pica-connector.md`
+  - `references/agents/x-bookmark-manager.md`
+- Claude 側コマンド/テンプレート/メモリのコピー:
+  - `references/commands/`
+  - `references/templates/`
+  - `references/memory/`
+  - `references/claude-skills/`
+
+## 注意
+
+- Claude 側のルールが Codex の system/developer 指示と衝突する場合は、Codex 側の上位指示を優先する。
+- このスキルは Claude の運用文脈を持ち込むためのものだが、Codex の権限モデルや sub-agent ルールまでは上書きしない。
+1:# Task Group: Conductor setup, workflow usage, and Claude/Mac mini clarification
+26:## Task 3: Mac mini への SSH 到達性と Claude Code subscription/auth の境界を切り分けて説明した
+34:- ssh, athenas@10.0.0.0, Friday.local, Claude Code, subscription, auth, claude --version, codex --version, Mac mini
+
+exec
+/bin/zsh -lc "sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/protected-files.md; sed -n '1,260p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/workflow-principles.md; sed -n '1,260p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/mac-mini-ops.md" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+---
+name: protected-files
+description: List of files forbidden to edit/delete. Hook blocks these, but do not attempt in the first place.
+paths:
+  - "**/.env"
+  - "**/.env.*"
+  - "**/.zshrc"
+  - "**/.bashrc"
+  - "**/.zprofile"
+  - "**/.bash_profile"
+  - "**/settings.json"
+---
+
+# Config File Protection Rules
+
+## Files forbidden to modify (by any means)
+- `~/.claude/settings.json`
+- `~/.zshrc`, `~/.bashrc`, `~/.zprofile`, `~/.bash_profile`
+- `~/.env`, and any `.env` file in any directory
+
+## When a hook blocks
+- Do not try a workaround
+- Present the intended change to the user and request manual execution
+
+## When a change is truly needed
+Present the change and its rationale to the user, and request manual execution.
+---
+name: workflow-principles
+description: Task execution, completion, and self-improvement workflow principles
+---
+
+# Workflow Principles
+
+## Current-state confirmation
+When asked for a fix, do not execute immediately. First inspect the current state, propose, get approval, then execute.
+
+## Task planning
+- Tasks with 3+ steps or design decisions: plan via Plan mode before starting
+- Write the plan in `~/.claude/tasks/todo.md` as a checklist
+- On any problem, stop and re-plan immediately (do not push through)
+
+## Plan Mode Enumeration Checklist
+Before calling ExitPlanMode, walk through the 10 items below.
+Ask all ambiguous items via AskUserQuestion inside Plan mode.
+Do not surface additional confirmations after entering implementation phase
+(if one leaks out, recognize it as a failure of upfront enumeration).
+
+1. Tech / library choice
+2. Architecture approach
+3. UX / design preferences
+4. Scope boundary (how far to go)
+5. Intrusion scope into existing code / environment
+6. Edge case handling policy
+7. Error behavior
+8. Completion criteria
+9. Deploy / delivery target
+10. Conflicts with existing settings / rules
+
+Contract: Plan mode is the batch confirmation phase. Missed questions here destroy the value of autonomous execution. No shortcuts on this checklist.
+
+## Definition of done
+Writing code is not done. Must include log verification and proof of behavior.
+
+## Self-Improvement Loop
+- On user corrections or feedback, record the pattern in `~/.claude/projects/<PJ-slug>/memory/feedback_*.md`
+- Auto-referenced via MEMORY.md pointers; no manual review at session start
+
+## Demand Elegance
+- On noticing a hacky fix, self-question "is there a deeper solution?" before proceeding
+- Skip for trivially obvious simple fixes
+---
+name: mac-mini-ops
+description: SSH operations, service management, and deploy procedures for the Mac mini (athenas@10.0.0.0)
+---
+
+# Mac mini Operation Rules
+
+## Connection
+- SSH: `ssh athenas@10.0.0.0` (via Tailscale)
+- Tailscale: App Store version, so `tailscale set --ssh` is not available
+
+## Node.js
+- Path: `/opt/homebrew/bin/node`
+- Not in PATH under launchd; always use the absolute path
+
+## .env location
+- Shared: `~/macmini-openclaw-claudeode-/.env`
+- Copy to each subsystem as needed
+
+## Directory layout
+- `~/個人/` — personal projects (x-bookmark etc.)
+- `~/Disocrod/` — Discord X-posting bot
+- client-a lives in a separate directory (do not conflate)
+
+## launchd service management
+```bash
+# Load
+launchctl load ~/Library/LaunchAgents/<plist>
+# Unload
+launchctl unload ~/Library/LaunchAgents/<plist>
+# Status
+launchctl list | grep <label>
+```
+
+## Tasks requiring sudo
+Not executable by AI. User runs `! ssh athenas@... sudo <command>` directly in the terminal.
+
+exec
+/bin/zsh -lc "rg --files -g 'log-cap-all.sh' -g '*.plist' -g '*health*' -g 'AGENTS.md' . .. 2>/dev/null | sed -n '1,160p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+./rc-backend/src/health.mjs
+./rc-backend/test/health-observer-controls.sh
+./rc-backend/test/health.test.mjs
+./rc-backend/test/phone-window-health-controls.sh
+./rc-backend/tools/log-cap-all.sh
+./rc-backend/tools/com.fleet.rc-health-observer.plist.example
+./rc-backend/tools/health-step.mjs
+./rc-backend/tools/com.edith.rc-phone-window.plist
+./rc-backend/tools/com.fleet.rc-ota.plist
+./rc-backend/tools/com.fleet.rc-digest-notify.plist
+./rc-backend/tools/health-observer.sh
+./rc-backend/tools/com.fleet.rc-log-cap.plist
+./rc-backend/tools/com.fleet.rc-phone-window.plist
+./rc-backend/tools/com.edith.rc-backend.plist
+./rc-backend/tools/com.fleet.rc-backend.plist
+./rc-backend/tools/phone-window-health.sh
+./ios/Info.plist
+../mobile-work/ios/Info.plist
+../mobile-work/rc-backend/src/health.mjs
+../mobile-work/rc-backend/test/phone-window-health-controls.sh
+../mobile-work/rc-backend/tools/log-cap-all.sh
+../mobile-work/rc-backend/tools/com.fleet.rc-health-observer.plist.example
+../mobile-work/rc-backend/tools/health-step.mjs
+../mobile-work/rc-backend/tools/com.edith.rc-phone-window.plist
+../mobile-work/rc-backend/tools/com.fleet.rc-ota.plist
+../mobile-work/rc-backend/tools/com.fleet.rc-digest-notify.plist
+../mobile-work/rc-backend/tools/health-observer.sh
+../mobile-work/rc-backend/tools/com.fleet.rc-log-cap.plist
+../mobile-work/rc-backend/tools/com.fleet.rc-phone-window.plist
+../mobile-work/rc-backend/tools/com.edith.rc-backend.plist
+../mobile-work/rc-backend/tools/com.fleet.rc-backend.plist
+../mobile-work/rc-backend/tools/phone-window-health.sh
+../mobile-work/rc-backend/test/health.test.mjs
+../mobile-work/rc-backend/test/health-observer-controls.sh
+../blink-selfbuild/work/sim-dd/info.plist
+../mcp-servers/active/tradingview-mcp/src/cli/commands/health.js
+../mcp-servers/active/tradingview-mcp/src/core/health.js
+../Athenas/discord-bot/com.athenas.discord-bot.plist
+../mcp-servers/active/tradingview-mcp/src/tools/health.js
+../Athenas/ai-agent/config/launchd/com.athenas.aiagent.channel-listener.plist
+../Athenas/ai-agent/config/launchd/com.athenas.claude.sync-pull.plist
+../Athenas/ai-agent/config/launchd/com.athenas.aiagent.morning-agent.plist
+../Athenas/ai-agent/config/launchd/com.athenas.aiagent.archiver.plist
+../Athenas/ai-agent/config/launchd/com.tomtim.claude.memory-rsync-push.plist
+../Athenas/ai-agent/config/launchd/com.athenas.aiagent.health.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/BlinkFileProviderExtensionUI.appex/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/BlinkFileProviderExtensionUI.appex/Base.lproj/MainInterface.storyboardc/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/network_ios.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/OpenSSH.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/SSH.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/BlinkFiles.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/BlinkFileProvider.framework.dSYM/Contents/Info.plist
+../mcp-servers/active/digitalsamba-video-toolkit/AGENTS.md
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Protobuf_C_.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/openssl.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/network_ios.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Runestone_Runestone.bundle/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/BlinkCode.framework/Info.plist
+../blink-selfbuild/work/products/BlinkFileProviderExtensionUI.appex/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/shell.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/ios_system.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/text.framework/Info.plist
+../blink-selfbuild/work/products/BlinkFileProviderExtensionUI.appex/Base.lproj/MainInterface.storyboardc/Info.plist
+../blink-selfbuild/work/products/ZIPFoundation_ZIPFoundation.bundle/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/tar.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/products/vim.framework/Info.plist
+../blink-selfbuild/work/products/network_ios.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/LibSSH.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/BlinkConfig.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/products/Blink.app.dSYM/Contents/Info.plist
+../blink-selfbuild/work/products/BlinkFileProvider.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Info.plist
+../blink-selfbuild/work/products/Protobuf_C_.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/ios_system.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/products/Runestone_Runestone.bundle/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/MBProgressHUD.framework/Info.plist
+../blink-selfbuild/work/products/SQLite.swift_SQLite.bundle/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Runestone_Runestone.bundle/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/curl_ios.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/BlinkFileProviderExtension.appex/Info.plist
+../blink-selfbuild/work/products/bc_ios.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Intermediates.noindex/ZIPFoundation.build/Release-iphonesimulator/ZIPFoundation_ZIPFoundation.build/empty-ZIPFoundation_ZIPFoundation.plist
+../blink-selfbuild/work/sim-dd/Build/Intermediates.noindex/ZIPFoundation.build/Release-iphonesimulator/ZIPFoundation product.build/empty-ZIPFoundation_-14A6248D789D2CE9_PackageProduct.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/BlinkFileProviderExtension.appex/SQLite.swift_SQLite.bundle/Info.plist
+../blink-selfbuild/work/products/text.framework/Info.plist
+../blink-selfbuild/work/products/awk.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/BlinkFileProvider.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/shell.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/products/LibSSH.framework/Info.plist
+../blink-selfbuild/work/products/BlinkFileProviderExtensionUI.appex.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/BlinkSnippets.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/products/Blink.app/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/text.framework/Info.plist
+../blink-selfbuild/work/products/SSH.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/files.framework/Info.plist
+../blink-selfbuild/work/products/SSH.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/awk.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/Runestone_Runestone.bundle/Info.plist
+../blink-selfbuild/work/products/ios_system.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/SSH.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/BlinkFiles.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/curl_ios.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/SwiftCBOR_-5E59CDED1BD67AC4_PackageProduct.framework/Info.plist
+../blink-selfbuild/work/products/openssl.framework/Info.plist
+../blink-selfbuild/work/products/shell.framework/Info.plist
+../blink-selfbuild/work/products/curl_ios.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/tar.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Intermediates.noindex/RevenueCat.build/Release-iphonesimulator/RevenueCat_RevenueCat.build/empty-RevenueCat_RevenueCat.plist
+../blink-selfbuild/work/products/shell.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/products/ZIPFoundation_-14A6248D789D2CE9_PackageProduct.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/products/network_ios.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/BlinkConfig.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/Protobuf_C_.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/text.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/products/BlinkCode.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/ios_system.framework/Info.plist
+../blink-selfbuild/work/products/BlinkFiles.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/ZIPFoundation_-14A6248D789D2CE9_PackageProduct.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/MBProgressHUD.framework/Info.plist
+../blink-selfbuild/work/products/tar.framework.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/BlinkFileProvider.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/libssh2.framework/Info.plist
+../blink-selfbuild/work/products/BlinkFiles.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/Frameworks/curl_ios.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/Frameworks/text.framework/Info.plist
+../blink-selfbuild/work/blink/BlinkFileProviderExtensionUI/Info.plist
+../blink-selfbuild/work/products/OpenSSH.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/Base32Kit_-49EB2F59D192C6EF_PackageProduct.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/Frameworks/files.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/SQLite.swift_SQLite.bundle/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/BlinkSnippets.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/Frameworks/awk.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/xxd.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/Frameworks/SSH.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/Frameworks/BlinkFiles.framework/Info.plist
+../blink-selfbuild/work/products/Protobuf_C_.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/vim.framework/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app.dSYM/Contents/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/bc_ios.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/PlugIns/BlinkFileProviderExtensionUI.appex/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/BlinkSnippets.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/Frameworks/SwiftCBOR_-5E59CDED1BD67AC4_PackageProduct.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/Frameworks/network_ios.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/PlugIns/BlinkFileProviderExtensionUI.appex/Base.lproj/MainInterface.storyboardc/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/openssl.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/Frameworks/shell.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/extraCommandsDictionary.plist
+../blink-selfbuild/work/products/Blink.app/Frameworks/tar.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/TreeSitterLanguages_TreeSitterBashQueries.bundle/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/ZIPFoundation_-14A6248D789D2CE9_PackageProduct.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/blinkCommandsDictionary.plist
+../blink-selfbuild/work/products/Blink.app/PlugIns/BlinkFileProviderExtension.appex/Info.plist
+../blink-selfbuild/work/products/Blink.app/Frameworks/BlinkConfig.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/RevenueCat_RevenueCat.bundle/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/ZIPFoundation_-14A6248D789D2CE9_PackageProduct.framework/ZIPFoundation_ZIPFoundation.bundle/Info.plist
+../blink-selfbuild/work/products/Blink.app/PlugIns/BlinkFileProviderExtension.appex/SQLite.swift_SQLite.bundle/Info.plist
+../blink-selfbuild/work/sim-dd/Build/Products/Release-iphonesimulator/Blink.app/Frameworks/BlinkCode.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/commandDictionary.plist
+../blink-selfbuild/work/products/tar.framework/Info.plist
+../blink-selfbuild/work/products/Blink.app/Frameworks/Protobuf_C_.framework/Info.plist
+
+exec
+/bin/zsh -lc "git -C rc-backend status --short; nl -ba rc-backend/tools/log-cap-all.sh | sed -n '1,260p'; nl -ba rc-backend/tools/com.fleet.rc-log-cap.plist | sed -n '1,220p'; rg -n \"log-cap-all|zero files|missing dir|5242880|rc-log-cap\" rc-backend/test rc-backend/tools rc-backend/docs rc-backend 2>/dev/null | sed -n '1,240p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+ M ../ios/Sources/Screens/Conversation/ConversationView.swift
+ M ../ios/Sources/Screens/KeyEntry/KeyEntryView.swift
+ M test/log-cap-controls.sh
+ M tools/com.fleet.rc-log-cap.plist
+ M tools/log-cap-all.sh
+ M tools/run-controls.sh
+?? ../.harness/evidence-2026-08-30/codex-multidir-cap-review.txt
+?? ../.harness/evidence-2026-08-30/codex-plist-parity-review.txt
+?? test/fleet-plist-parity-controls.sh
+?? tools/fleet-plist-parity-check.sh
+     1	#!/bin/bash
+     2	# log-cap-all.sh — rc-backend 系のログを全部まとめて上限内に収める(launchd から回す入口)。
+     3	#
+     4	# なぜ1本にまとめるか: 上限を掛ける対象は増える(ota / phone-window / digest-notify …)。
+     5	# plist に file 名を並べると、log が1本増えるたびに**設定を触る人が居ないと漏れる** ——
+     6	# observer が 22 日古くなったのと同じ形。ここは dir を舐める。
+     7	#
+     8	# ★**dir も1つでは足りなかった**(2026-08-30、出荷した後の指摘で気付いた)。
+     9	#   初版は `~/Library/Logs/rc-backend` だけを見ていた。理由は「大きい file が其処に在る」で、
+    10	#   それ自体は正しい。だが此の上限が防ぎたいのは**暴走**であって大きさではない ——
+    11	#   そして此のレーンが実際に踏みかけた暴走(CONTINUITY H-4: 依存物を欠いたまま observer を
+    12	#   配ると、日1回の誤報が **10 分毎**のループに化ける)が書き込む先は
+    13	#   `~/.rc-backend/health-observer.log` = **上限の外**だった。
+    14	#   **上限を、大きい物の在る場所ではなく、暴走の起きる場所に置く。**
+    15	#   実測(2026-08-30 friday、上限の外): health-observer.log 131,982 B(600 秒毎に追記)/
+    16	#   digest-notify.log 89,500 B(150 秒毎)。大きくはない —— 大きさは論点ではない。
+    17	#
+    18	# ★glob は `*.log` のまま広げない。退避先 `<file>.tail` が当たらない事が §12 の前提。
+    19	#
+    20	# 使い方:
+    21	#   bash tools/log-cap-all.sh [dir ...] [上限バイト]
+    22	#     - 末尾の引数が**数字だけ**なら上限。それ以外は全部 dir。
+    23	#     - dir を1つも書かなければ ~/Library/Logs/rc-backend
+    24	#   例: log-cap-all.sh                                   # 既定 dir・5MB
+    25	#       log-cap-all.sh ~/Library/Logs/rc-backend 1048576 # 従来の形(そのまま動く)
+    26	#       log-cap-all.sh ~/Library/Logs/rc-backend ~/.rc-backend
+    27	#
+    28	# ★`*.error.log` も**同じ上限を掛ける**(2026-08-30、Codex の指摘4)。
+    29	#   「履歴が欲しいのは寧ろ error の方だから除外したい」に対する答えは**除外しない**:
+    30	#   除外した1本が暴走すると、上限を掛けた意味そのものが消える。
+    31	#   欲しいのは履歴であって無制限ではないので、必要なら CAP を大きくして掛ける。
+    32	#
+    33	# ★ディスク占有は「上限 × 本数」ではなく **(上限 + 上限/2) × 本数**。
+    34	#   log-size-cap.sh が末尾を `<file>.tail` へ退避する為(1世代のみ。次に切る時に上書き)。
+    35	#
+    36	# 終了コード: 0=全部上限内 / 1=1本以上で失敗 / 2=**測定不成立**(対象 0 本 / dir が無い)
+    37	set -uo pipefail
+    38	
+    39	HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    40	CAP=5242880
+    41	DIRS=()
+    42	
+    43	# ★引数の解釈。末尾が**数字だけ**の時に限り上限として外す —— こうすると従来の
+    44	#   `log-cap-all.sh <dir> <bytes>` がそのまま動き、dir を足すのに形を変えずに済む。
+    45	#   (数字だけの名前の dir は扱えない。実在しないので受け入れる制限。)
+    46	args=("$@")
+    47	n_args=${#args[@]}
+    48	if [ "$n_args" -gt 0 ]; then
+    49	    last="${args[$((n_args - 1))]}"
+    50	    case "$last" in
+    51	        ''|*[!0-9]*) ;;                                   # 数字でない = dir
+    52	        *) CAP="$last"; unset 'args[n_args-1]' ;;
+    53	    esac
+    54	fi
+    55	for a in ${args+"${args[@]}"}; do DIRS+=("$a"); done
+    56	[ "${#DIRS[@]}" -eq 0 ] && DIRS=("$HOME/Library/Logs/rc-backend")
+    57	
+    58	[ "$CAP" -gt 1024 ] 2>/dev/null || { echo "log-cap-all: 上限が不正($CAP)"; exit 2; }
+    59	
+    60	n=0; capped=0; failed=0; missing=0; seen_dirs=0
+    61	for DIR in "${DIRS[@]}"; do
+    62	    # ★無い dir を 0 で帰さない(初版はそうしていた = fail-open)。
+    63	    #   綴りを1文字間違えただけの引数が「全部上限内」に見え、しかも launchd から
+    64	    #   1時間ごとに同じ嘘を出し続ける。数えて、最後に測定不成立として帰す。
+    65	    if [ ! -d "$DIR" ]; then
+    66	        echo "log-cap-all: ★$DIR が無い(測っていない)"
+    67	        missing=$((missing + 1)); continue
+    68	    fi
+    69	    seen_dirs=$((seen_dirs + 1))
+    70	    for f in "$DIR"/*.log; do
+    71	        [ -f "$f" ] || continue
+    72	        n=$((n + 1))
+    73	        before="$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)"
+    74	        # ★1本で止めない(2026-08-30、自分の差分を読み直して直した)。
+    75	        #   初版は最初の失敗で `exit 1` していた。掃引は名前順に回るので、
+    76	        #   壊れた1本より**後ろの log が全部上限なしのまま残る**。しかも此の job は
+    77	        #   1時間ごとに同じ場所で失敗し続けるので、その状態が自動で解けない。
+    78	        #   失敗は数えて最後に非 0 で帰る —— 止めるのは報告であって、掃引ではない。
+    79	        if ! bash "$HERE/log-size-cap.sh" "$f" "$CAP"; then
+    80	            echo "log-cap-all: ★$f で失敗(残りは続ける)"
+    81	            failed=$((failed + 1))
+    82	            continue
+    83	        fi
+    84	        after="$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)"
+    85	        [ "${before:-0}" != "${after:-0}" ] && capped=$((capped + 1))
+    86	    done
+    87	done
+    88	
+    89	# ★件数を言う。0 本を舐めて「全部上限内」に見えるのを防ぐ(此の repo が繰り返し踏んだ型)。
+    90	echo "log-cap-all: ${seen_dirs}/${#DIRS[@]} dir の $n 本を見て $capped 本を切った(上限 $CAP B)$([ "$failed" -gt 0 ] && echo "★失敗 $failed 本")$([ "$missing" -gt 0 ] && echo "★無い dir $missing 件")"
+    91	[ "$missing" -eq 0 ] || { echo "log-cap-all: 指定された dir が欠けている = 測定不成立(綴りを疑う事)"; exit 2; }
+    92	[ "$n" -gt 0 ] || { echo "log-cap-all: 対象が 0 本 = 測定不成立(dir か glob を疑う事)"; exit 2; }
+    93	[ "$failed" -eq 0 ] || exit 1
+    94	exit 0
+     1	<?xml version="1.0" encoding="UTF-8"?>
+     2	<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+     3	<!--
+     4	  com.fleet.rc-log-cap  (Friday / athenas 用。2026-08-30 新設)
+     5	  ============================================================================
+     6	  何を持つか: `~/Library/Logs/rc-backend/*.log` に**上限を置く**段。回転が1本も無い。
+     7	
+     8	  ★これは「今すぐ溢れる」対策ではない。実測(2026-08-30、friday):
+     9	      rc-backend.log 1,147,336 B ・ rc-phone-window.log 513,512 B ・ 空き 31Gi
+    10	    常用では約 260KB/日で、5MB に当たるのは3週間に1度。押さえたいのは**暴走**の方 ——
+    11	    `rc-ota.log` は**認証を掛けられない配布口**の記録で、tailnet に居れば誰でも 404 を
+    12	    連打でき、URL も長く出来る。同じディスクに机の tmux 転写が載っている。
+    13	
+    14	  ★OS 標準の `newsyslog` を使わない理由: 設定が `/etc/newsyslog.d/` に在り root が要る。
+    15	    この環境では sudo が構造的に不可なので、user LaunchAgent で自前に持つ。
+    16	
+    17	  ★**この上限が押さえられない物**(正直に): 悪意ある連打の即時。次の実行までの1時間に
+    18	    書けた量はそのまま乗るので、実効の上限は「上限 + 1時間ぶん」。本当の止め方は
+    19	    配布口側の認証か流量制限で、それは別の仕事。
+    20	
+    21	  ★既存の回転 job は守備範囲が違う(2026-08-30 実測):
+    22	    `com.edith.log-rotate-check` は edith 側で **未ロード**(launchctl list に居ない)、
+    23	    `com.tom.cswap-log-rotate` は `~/.claude-swap-backup/auto.log` 1本だけ。
+    24	    どちらも rc-backend の log を見ていないので、既存に相乗りせず新設した。
+    25	
+    26	  ★**2つ目の dir `~/.rc-backend` を 2026-08-30 に足した**。初版は
+    27	    `~/Library/Logs/rc-backend` だけで、理由は「大きい file が其処に在る」だった。
+    28	    だが此の上限が防ぎたいのは大きさではなく**暴走**で、このレーンが実際に踏みかけた暴走
+    29	    (H-4: 依存物を欠いた observer が日1回の誤報を **10 分毎**のループに化けさせる)が
+    30	    書き込む先は `~/.rc-backend/health-observer.log` = **上限の外**だった。
+    31	    上限は、大きい物の在る場所ではなく**暴走の起きる場所**に置く。
+    32	
+    33	  ★この job は**自分の log も切る**(出力先が同じ dir で `*.log` に当たる)。
+    34	    切り方が「追記者を殺さない」形なので、launchd が握ったままの fd でも壊れない。
+    35	    退避先 `<file>.tail` は `*.log` に当たらないので二重に切られない。
+    36	    ディスク占有は「上限 x 本数」ではなく **(上限 + 上限/2) x 本数**。
+    37	
+    38	  ★対象から `*.error.log` を外していない(Codex 2026-08-30)。履歴が欲しいのは寧ろ
+    39	    error の方だが、除外した1本が暴走すると上限を置いた意味そのものが消える。
+    40	    欲しいのは履歴であって無制限ではない。
+    41	
+    42	  INSTALL:
+    43	    scp .../com.fleet.rc-log-cap.plist athenas:/Users/athenas/Library/LaunchAgents/
+    44	    ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-log-cap.plist'
+    45	  TEARDOWN:
+    46	    ssh athenas 'launchctl bootout gui/501/com.fleet.rc-log-cap'
+    47	-->
+    48	<plist version="1.0">
+    49	<dict>
+    50	  <key>Label</key>
+    51	  <string>com.fleet.rc-log-cap</string>
+    52	
+    53	  <key>ProgramArguments</key>
+    54	  <array>
+    55	    <string>/bin/bash</string>
+    56	    <string>/Users/athenas/rc-backend/tools/log-cap-all.sh</string>
+    57	    <string>/Users/athenas/Library/Logs/rc-backend</string>
+    58	    <string>/Users/athenas/.rc-backend</string>
+    59	  </array>
+    60	
+    61	  <key>WorkingDirectory</key>
+    62	  <string>/Users/athenas/rc-backend</string>
+    63	
+    64	  <key>EnvironmentVariables</key>
+    65	  <dict>
+    66	    <key>PATH</key>
+    67	    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    68	    <key>HOME</key>
+    69	    <string>/Users/athenas</string>
+    70	  </dict>
+    71	
+    72	  <key>LimitLoadToSessionType</key>
+    73	  <array>
+    74	    <string>Aqua</string>
+    75	    <string>Background</string>
+    76	  </array>
+    77	
+    78	  <key>RunAtLoad</key>
+    79	  <true/>
+    80	
+    81	  <key>StartInterval</key>
+    82	  <integer>3600</integer>
+    83	
+    84	  <key>StandardOutPath</key>
+    85	  <string>/Users/athenas/Library/Logs/rc-backend/rc-log-cap.log</string>
+    86	  <key>StandardErrorPath</key>
+    87	  <string>/Users/athenas/Library/Logs/rc-backend/rc-log-cap.error.log</string>
+    88	
+    89	  <key>ProcessType</key>
+    90	  <string>Background</string>
+    91	</dict>
+    92	</plist>
+rc-backend/tools/log-cap-all.sh:2:# log-cap-all.sh — rc-backend 系のログを全部まとめて上限内に収める(launchd から回す入口)。
+rc-backend/tools/log-cap-all.sh:21:#   bash tools/log-cap-all.sh [dir ...] [上限バイト]
+rc-backend/tools/log-cap-all.sh:24:#   例: log-cap-all.sh                                   # 既定 dir・5MB
+rc-backend/tools/log-cap-all.sh:25:#       log-cap-all.sh ~/Library/Logs/rc-backend 1048576 # 従来の形(そのまま動く)
+rc-backend/tools/log-cap-all.sh:26:#       log-cap-all.sh ~/Library/Logs/rc-backend ~/.rc-backend
+rc-backend/tools/log-cap-all.sh:40:CAP=5242880
+rc-backend/tools/log-cap-all.sh:44:#   `log-cap-all.sh <dir> <bytes>` がそのまま動き、dir を足すのに形を変えずに済む。
+rc-backend/tools/log-cap-all.sh:58:[ "$CAP" -gt 1024 ] 2>/dev/null || { echo "log-cap-all: 上限が不正($CAP)"; exit 2; }
+rc-backend/tools/log-cap-all.sh:66:        echo "log-cap-all: ★$DIR が無い(測っていない)"
+rc-backend/tools/log-cap-all.sh:80:            echo "log-cap-all: ★$f で失敗(残りは続ける)"
+rc-backend/tools/log-cap-all.sh:90:echo "log-cap-all: ${seen_dirs}/${#DIRS[@]} dir の $n 本を見て $capped 本を切った(上限 $CAP B)$([ "$failed" -gt 0 ] && echo "★失敗 $failed 本")$([ "$missing" -gt 0 ] && echo "★無い dir $missing 件")"
+rc-backend/tools/log-cap-all.sh:91:[ "$missing" -eq 0 ] || { echo "log-cap-all: 指定された dir が欠けている = 測定不成立(綴りを疑う事)"; exit 2; }
+rc-backend/tools/log-cap-all.sh:92:[ "$n" -gt 0 ] || { echo "log-cap-all: 対象が 0 本 = 測定不成立(dir か glob を疑う事)"; exit 2; }
+rc-backend/tools/com.fleet.rc-log-cap.plist:4:  com.fleet.rc-log-cap  (Friday / athenas 用。2026-08-30 新設)
+rc-backend/tools/com.fleet.rc-log-cap.plist:43:    scp .../com.fleet.rc-log-cap.plist athenas:/Users/athenas/Library/LaunchAgents/
+rc-backend/tools/com.fleet.rc-log-cap.plist:44:    ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-log-cap.plist'
+rc-backend/tools/com.fleet.rc-log-cap.plist:46:    ssh athenas 'launchctl bootout gui/501/com.fleet.rc-log-cap'
+rc-backend/tools/com.fleet.rc-log-cap.plist:51:  <string>com.fleet.rc-log-cap</string>
+rc-backend/tools/com.fleet.rc-log-cap.plist:56:    <string>/Users/athenas/rc-backend/tools/log-cap-all.sh</string>
+rc-backend/tools/com.fleet.rc-log-cap.plist:85:  <string>/Users/athenas/Library/Logs/rc-backend/rc-log-cap.log</string>
+rc-backend/tools/com.fleet.rc-log-cap.plist:87:  <string>/Users/athenas/Library/Logs/rc-backend/rc-log-cap.error.log</string>
+rc-backend/tools/log-size-cap.sh:37:CAP="${2:-5242880}"
+rc-backend/test/log-cap-controls.sh:3:# controls-for: tools/log-cap-all.sh
+rc-backend/test/log-cap-controls.sh:31:CAP_ALL="$HERE/tools/log-cap-all.sh"
+rc-backend/test/log-cap-controls.sh:183:if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "上限 5242880 B"; then
+rc-backend/test/log-cap-controls.sh:202:PL="$HERE/tools/com.fleet.rc-log-cap.plist"
+rc-backend/test/log-cap-controls.sh:3:# controls-for: tools/log-cap-all.sh
+rc-backend/test/log-cap-controls.sh:31:CAP_ALL="$HERE/tools/log-cap-all.sh"
+rc-backend/test/log-cap-controls.sh:183:if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "上限 5242880 B"; then
+rc-backend/test/log-cap-controls.sh:202:PL="$HERE/tools/com.fleet.rc-log-cap.plist"
+rc-backend/tools/log-cap-all.sh:2:# log-cap-all.sh — rc-backend 系のログを全部まとめて上限内に収める(launchd から回す入口)。
+rc-backend/tools/log-cap-all.sh:21:#   bash tools/log-cap-all.sh [dir ...] [上限バイト]
+rc-backend/tools/log-cap-all.sh:24:#   例: log-cap-all.sh                                   # 既定 dir・5MB
+rc-backend/tools/log-cap-all.sh:25:#       log-cap-all.sh ~/Library/Logs/rc-backend 1048576 # 従来の形(そのまま動く)
+rc-backend/tools/log-cap-all.sh:26:#       log-cap-all.sh ~/Library/Logs/rc-backend ~/.rc-backend
+rc-backend/tools/log-cap-all.sh:40:CAP=5242880
+rc-backend/tools/log-cap-all.sh:44:#   `log-cap-all.sh <dir> <bytes>` がそのまま動き、dir を足すのに形を変えずに済む。
+rc-backend/tools/log-cap-all.sh:58:[ "$CAP" -gt 1024 ] 2>/dev/null || { echo "log-cap-all: 上限が不正($CAP)"; exit 2; }
+rc-backend/tools/log-cap-all.sh:66:        echo "log-cap-all: ★$DIR が無い(測っていない)"
+rc-backend/tools/log-cap-all.sh:80:            echo "log-cap-all: ★$f で失敗(残りは続ける)"
+rc-backend/tools/log-cap-all.sh:90:echo "log-cap-all: ${seen_dirs}/${#DIRS[@]} dir の $n 本を見て $capped 本を切った(上限 $CAP B)$([ "$failed" -gt 0 ] && echo "★失敗 $failed 本")$([ "$missing" -gt 0 ] && echo "★無い dir $missing 件")"
+rc-backend/tools/log-cap-all.sh:91:[ "$missing" -eq 0 ] || { echo "log-cap-all: 指定された dir が欠けている = 測定不成立(綴りを疑う事)"; exit 2; }
+rc-backend/tools/log-cap-all.sh:92:[ "$n" -gt 0 ] || { echo "log-cap-all: 対象が 0 本 = 測定不成立(dir か glob を疑う事)"; exit 2; }
+rc-backend/tools/com.fleet.rc-log-cap.plist:4:  com.fleet.rc-log-cap  (Friday / athenas 用。2026-08-30 新設)
+rc-backend/tools/com.fleet.rc-log-cap.plist:43:    scp .../com.fleet.rc-log-cap.plist athenas:/Users/athenas/Library/LaunchAgents/
+rc-backend/tools/com.fleet.rc-log-cap.plist:44:    ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-log-cap.plist'
+rc-backend/tools/com.fleet.rc-log-cap.plist:46:    ssh athenas 'launchctl bootout gui/501/com.fleet.rc-log-cap'
+rc-backend/tools/com.fleet.rc-log-cap.plist:51:  <string>com.fleet.rc-log-cap</string>
+rc-backend/tools/com.fleet.rc-log-cap.plist:56:    <string>/Users/athenas/rc-backend/tools/log-cap-all.sh</string>
+rc-backend/tools/com.fleet.rc-log-cap.plist:85:  <string>/Users/athenas/Library/Logs/rc-backend/rc-log-cap.log</string>
+rc-backend/tools/com.fleet.rc-log-cap.plist:87:  <string>/Users/athenas/Library/Logs/rc-backend/rc-log-cap.error.log</string>
+rc-backend/tools/log-size-cap.sh:37:CAP="${2:-5242880}"
+
+codex
+現物では plist の2引数だけでなく、ジョブ自身の stdout/stderr も同じ sweep 対象です。引数処理の互換性と、起動直後・並行追記時の挙動を分けて確認しています。
+exec
+/bin/zsh -lc "/bin/bash --version | sed -n '1p'
+/bin/bash -c '
+set -u
+probe() {
+  args=(\""'$@")
+  n=${#args[@]}
+  if [ "$n" -gt 0 ]; then
+    last="${args[$((n-1))]}"
+    case "$last" in ""|*[!0-9]*) ;; *) CAP="$last"; unset '"'\\''args[n-1]'\\'' ;; esac
+  fi
+  printf \"argc=%s indexes=\" \""'${#args[@]}"; printf "[%s]" "${!args[@]}"; printf " values="
+  for a in ${args+"${args[@]}"}; do printf "<%s>" "$a"; done
+  printf "'"\\n\"
+}
+probe
+probe 5000
+probe /a 5000
+probe /a /b
+probe \"/a x\" /b 5000
+'
+nl -ba rc-backend/tools/log-size-cap.sh | sed -n '1,220p'
+nl -ba rc-backend/test/log-cap-controls.sh | sed -n '1,270p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+GNU bash, version 3.2.57(1)-release (arm64-apple-darwin25)
+argc=0 indexes=[] values=
+argc=0 indexes=[] values=
+argc=1 indexes=[0] values=</a>
+argc=2 indexes=[0][1] values=</a></b>
+argc=2 indexes=[0][1] values=</a x></b>
+     1	#!/bin/bash
+     2	# log-size-cap.sh — ログ1本を上限内に収める(root 不要・追記者を殺さない)。
+     3	#
+     4	# ── なぜ要るか(2026-08-30、Codex の指摘)──────────────────────────────────────
+     5	# `rc-ota.log` は**認証を付けられない配布口**の記録で、tailnet に居れば誰でも 404 を連打でき、
+     6	# URL も長くできる。回転が1つも無いので素直に伸びる。同じディスクに机の tmux 転写も載る。
+     7	#
+     8	# ★ただし**常用では溢れない**。実測(friday 2026-08-30):
+     9	#     rc-backend.log 1,034,264 B / 起動から4日 = 約 260KB/日 ・ 空き 32Gi
+    10	#   これは「今すぐ溢れる」対策ではなく、**暴走に上限を置く**物。
+    11	#   `newsyslog` は `/etc/newsyslog.d/` に置くので root が要る(この環境では sudo が構造的に不可)。
+    12	#
+    13	# ── 形の選択(2回変えた。両方とも実測と外部の指摘で)────────────────────────────
+    14	# (1) **mv 回転は採らない**。追記者は file を開いたままなので、mv すると fd が古い inode に
+    15	#     残り、新しい file には1行も書かれない。実測: mv 後の新 file **0 B** / 旧 inode 7,488,895 B。
+    16	# (2) **tail を同じ file へ書き戻すのも採らない**(初版はこれだった)。
+    17	#     `cat "$tmp" > "$F"` は**追記 mode ではなく offset 0 から**書くので、書いている最中に
+    18	#     追記された行を後続の write が**上書きし得る**。
+    19	#     ★私の「fd が生きている」の実測は**追記が続く事**しか示しておらず、
+    20	#       **行が失われない事は測っていなかった**(大きさが増えるのは上書きでも起きる)。
+    21	#     採るのは Codex の助言どおり「**退避してから1回だけ空にする**」:
+    22	#       末尾を**別 file**へ写す → `: > "$F"` を1回。
+    23	#     残る損失は「写した後・空にする前」に入った行だけで、上書きは起きない。
+    24	#
+    25	# ★この上限が**押さえられない物**(正直に): 悪意ある連打。次の実行までの1時間に書ける量が
+    26	#   そのまま上乗せされるので、実効の上限は「CAP + 1時間ぶん」。本当の対策は配布口側の
+    27	#   認証か流量制限で、それは此の台本の役目ではない。
+    28	#
+    29	# 使い方:
+    30	#   bash tools/log-size-cap.sh <file> [上限バイト]     # 既定 5MB
+    31	#   退避先 = <file>.tail(1世代だけ。次に切る時に上書きされる)
+    32	#
+    33	# 終了コード: 0=上限内(切ったかは問わない) / 1=失敗 / 2=引数が不正
+    34	set -uo pipefail
+    35	
+    36	F="${1:-}"
+    37	CAP="${2:-5242880}"
+    38	KEEP_FRAC="${LOG_CAP_KEEP_FRAC:-2}"   # 退避に残す量 = 上限の 1/KEEP_FRAC
+    39	
+    40	[ -n "$F" ] || { echo "usage: log-size-cap.sh <file> [bytes]"; exit 2; }
+    41	[ -f "$F" ] || { echo "log-size-cap: $F が無い(何もしない)"; exit 0; }
+    42	case "$CAP" in ''|*[!0-9]*) echo "log-size-cap: 上限が数値でない: $CAP"; exit 2 ;; esac
+    43	[ "$CAP" -gt 1024 ] || { echo "log-size-cap: 上限が小さすぎる($CAP)"; exit 2; }
+    44	
+    45	size() { stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null; }
+    46	
+    47	now="$(size "$F")"
+    48	case "$now" in ''|*[!0-9]*) echo "log-size-cap: 大きさを測れない: $F"; exit 1 ;; esac
+    49	[ "$now" -le "$CAP" ] && exit 0
+    50	
+    51	keep=$((CAP / KEEP_FRAC))
+    52	snap="$F.tail"
+    53	
+    54	# ★退避先の権限を**元 log に合わせる**(2026-08-30、自分の差分を読み直して見つけた)。
+    55	#   `>` は umask 任せなので、既定の 022 だと **600 の log の中身が 644 の file に写る**。
+    56	#   実測: 元 `-rw-------` → 退避 `-rw-r--r--`。dir が 700 なので実害は小さいが、
+    57	#   `rc-ota.log` の権限を 600 に揃えた判断(2026-08-30)と矛盾する。
+    58	#   umask ではなく元 file の mode を写す —— log ごとに違っても追随する。
+    59	mode="$(stat -f%Lp "$F" 2>/dev/null || stat -c%a "$F" 2>/dev/null)"
+    60	case "$mode" in [0-7][0-7][0-7]) ;; *) mode=600 ;; esac
+    61	umask 077
+    62	
+    63	# 1) 末尾を**別 file** へ退避(ここでは元 file を1バイトも触らない)
+    64	if ! tail -c "$keep" "$F" > "$snap.new" 2>/dev/null; then
+    65	    /bin/rm -f "$snap.new"
+    66	    echo "log-size-cap: 末尾を退避できない: $F"; exit 1
+    67	fi
+    68	# 先頭の欠けた行は落とす。**ただし、それで殆ど全部消えるなら落とさない** ——
+    69	# 2026-08-30 に実測で踏んだ: 検体が巨大な1行だったので `sed 1d` が 500KB を **81 B** にした。
+    70	# task の verifier は「上限以下かつ 0 でない」しか見ないので **PASS のまま**通った。
+    71	dropped="$(sed '1d' "$snap.new" | wc -c | tr -d ' ')"
+    72	whole="$(wc -c < "$snap.new" | tr -d ' ')"
+    73	{ printf '[log-size-cap] %s に %s B から切り詰め(上限 %s B。以降は元の file に続く)\n' \
+    74	      "$(date '+%Y-%m-%d %H:%M:%S')" "$now" "$CAP"
+    75	  if [ "$whole" -gt 0 ] && [ "$((dropped * 2))" -lt "$whole" ]; then
+    76	      cat "$snap.new"        # 1行が長すぎる: 途中から始まるが、捨てるよりまし
+    77	  else
+    78	      sed '1d' "$snap.new"
+    79	  fi
+    80	} > "$snap" 2>/dev/null || { /bin/rm -f "$snap.new"; echo "log-size-cap: 退避を書けない"; exit 1; }
+    81	/bin/rm -f "$snap.new"
+    82	chmod "$mode" "$snap" 2>/dev/null || echo "log-size-cap: 退避の権限を $mode に出来ない: $snap"
+    83	
+    84	# 2) 元 file を**1回だけ**空にする。offset 0 から書き戻さないので、追記との競合で
+    85	#    行を上書きする道が無い(失うのは 1) と 2) の間に入った行だけ)。
+    86	: > "$F" || { echo "log-size-cap: 空にできない: $F"; exit 1; }
+    87	
+    88	# 3) 何処へ消えたかを本体に1行だけ残す。**`>>` は O_APPEND = 常に EOF へ書く**ので、
+    89	#    同時に追記している writer の行を上書きしない(offset 0 へ書き戻す初版とはここが違う)。
+    90	#    此の1行が無いと、log を開いた人には「空 = 何も起きていない」としか見えない。
+    91	printf '[log-size-cap] %s 時点で %s B を切り詰め。以前の末尾 %s B は %s に在る\n' \
+    92	    "$(date '+%Y-%m-%d %H:%M:%S')" "$now" "$(size "$snap")" "$snap" >> "$F" \
+    93	    || { echo "log-size-cap: 註記を追記できない: $F"; exit 1; }
+    94	
+    95	after="$(size "$F")"
+    96	echo "log-size-cap: $F  $now B -> $after B(退避 $(size "$snap") B = $snap / 上限 $CAP)"
+    97	[ "${after:-0}" -le "$CAP" ] || { echo "log-size-cap: 切ったのに上限を超えている"; exit 1; }
+    98	exit 0
+     1	#!/bin/bash
+     2	# controls-for: tools/log-size-cap.sh
+     3	# controls-for: tools/log-cap-all.sh
+     4	#
+     5	# log-cap-controls.sh — 上限を掛ける台本が「行を失わずに」切れるかを測る。
+     6	#
+     7	# ★測るのは「上限内に収まるか」**ではない**。それは初版でも通っていた。
+     8	#   測るのは **切る過程で追記中の行を失わないか**。
+     9	#   2026-08-30、初版の検査は「大きさが増え続けるか」だけを見ていて、
+    10	#   上書きが起きていても成立する物だった(Codex の指摘で気付いた)。
+    11	#
+    12	# 対照の構成:
+    13	#   C1 基本      — 上限を超えた file が上限内に収まり、空にならない
+    14	#   C2 巨大1行   — 改行の無い巨大な1行で `sed 1d` が中身を消し飛ばさない(81 B 事故)
+    15	#   C3 同時追記  — 追記され続けている file を切っても連番に欠けが出ない ★中核
+    16	#   C4 変異対照  — 書き戻し方式に戻すと C3 が**赤くなる**(検査が本物である事の証明)
+    17	#   C5 掃き手    — 0 本を舐めた時に「全部上限内」と読ませない
+    18	#   C6 退避      — 末尾が `<file>.tail` に在り、本体には行方を示す1行が残る
+    19	#   C7 権限      — 退避先の mode が元 log と一致する(600 の中身を 644 に写さない)
+    20	#   C8 掃引の継続 — 1本失敗しても後ろの log は切られ、失敗は非 0 で帰る
+    21	#   C9 複数 dir  — dir を複数渡すと全部切られ、従来の <dir> <bytes> も動く
+    22	#   C10 無い dir  — 綴り違いを緑で帰さない(fail-open の修正)
+    23	#   C11 実配線   — plist が実際に2つの dir を渡している
+    24	#
+    25	# 使い方: bash rc-backend/test/log-cap-controls.sh
+    26	# 終了コード: 0=全部緑 / 1=1本でも赤
+    27	set -uo pipefail
+    28	
+    29	HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    30	CAP_ONE="$HERE/tools/log-size-cap.sh"
+    31	CAP_ALL="$HERE/tools/log-cap-all.sh"
+    32	pass=0; fail=0
+    33	ok() { echo "PASS  $1"; pass=$((pass + 1)); }
+    34	ng() { echo "FAIL  $1  ($2)"; fail=$((fail + 1)); }
+    35	size() { stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null; }
+    36	
+    37	for f in "$CAP_ONE" "$CAP_ALL"; do
+    38	    [ -f "$f" ] || { echo "測る対象が無い: $f"; exit 1; }
+    39	done
+    40	
+    41	# ── C1 基本 ────────────────────────────────────────────────────────────────
+    42	D="$(mktemp -d)"; F="$D/c1.log"
+    43	head -c 3000000 /dev/urandom | base64 > "$F"
+    44	bash "$CAP_ONE" "$F" 500000 >/dev/null 2>&1
+    45	s="$(size "$F")"
+    46	if [ "${s:-0}" -le 500000 ] && [ "${s:-0}" -gt 0 ]; then ok "C1 上限内に収まり空にならない ($s B)"
+    47	else ng "C1 上限内に収まり空にならない" "$s B"; fi
+    48	# C6 は C1 の産物で測る(退避 file と註記の1行)
+    49	if [ -s "$F.tail" ] && grep -q "log-size-cap" "$F"; then
+    50	    ok "C6 末尾は $(basename "$F").tail に在り、本体に行方の1行が残る"
+    51	else ng "C6 退避と註記" "tail=$(size "$F.tail" 2>/dev/null) / 本体に註記なし"; fi
+    52	/bin/rm -rf "$D"
+    53	
+    54	# ── C2 巨大1行 ─────────────────────────────────────────────────────────────
+    55	# 改行の無い1行だけの file。`sed 1d` で処理すると中身が消える(実際 500KB -> 81 B にした)。
+    56	D="$(mktemp -d)"; F="$D/c2.log"
+    57	head -c 400000 /dev/urandom | base64 | tr -d '\n' > "$F"
+    58	bash "$CAP_ONE" "$F" 200000 >/dev/null 2>&1
+    59	t="$(size "$F.tail" 2>/dev/null || echo 0)"
+    60	if [ "${t:-0}" -gt 50000 ]; then ok "C2 巨大1行でも中身が残る (退避 $t B)"
+    61	else ng "C2 巨大1行でも中身が残る" "退避 $t B = 81 B 事故の再演"; fi
+    62	/bin/rm -rf "$D"
+    63	
+    64	# ── C3 / C4 同時追記(共通の測り手)─────────────────────────────────────────
+    65	# 書き手が SEQ-1, SEQ-2, … を追記している最中に切り、後で**連番の欠け**を数える。
+    66	# ★「連番が戻った箇所」ではない。上書きは順序を戻さず、行を消す。
+    67	concurrent_holes() {   # $1=使う台本 -> 標準出力に "holes broken lines"
+    68	    local script="$1" d f w
+    69	    d="$(mktemp -d)"; f="$d/live.log"
+    70	    ( i=0; while [ $i -lt 200000 ]; do i=$((i+1)); echo "SEQ-$i"
+    71	        [ $((i % 2000)) -eq 0 ] && sleep 0.05; done > "$f" ) & w=$!
+    72	    sleep 3
+    73	    bash "$script" "$f" 200000 >/dev/null 2>&1
+    74	    sleep 3
+    75	    kill $w 2>/dev/null; wait $w 2>/dev/null
+    76	    python3 - "$f" <<'PY'
+    77	import re, sys
+    78	p = sys.argv[1]
+    79	lines = list(open(p, errors="replace"))
+    80	nums = [int(m.group(1)) for m in (re.match(r"SEQ-(\d+)\s*$", l) for l in lines) if m]
+    81	broken = sum(1 for l in lines if l.startswith("SEQ-") and not re.match(r"SEQ-\d+\s*$", l))
+    82	holes = sum(1 for i in range(1, len(nums)) if nums[i] != nums[i - 1] + 1)
+    83	print(holes, broken, len(nums))
+    84	PY
+    85	    /bin/rm -rf "$d"
+    86	}
+    87	
+    88	read -r h b n <<< "$(concurrent_holes "$CAP_ONE")"
+    89	if [ "${h:-1}" -eq 0 ] && [ "${b:-1}" -eq 0 ] && [ "${n:-0}" -gt 1000 ]; then
+    90	    ok "C3 同時追記中に切っても欠け 0 / 壊れた行 0 ($n 行)"
+    91	else ng "C3 同時追記中に切っても欠け 0" "欠け=$h 壊れ=$b 行数=$n"; fi
+    92	
+    93	# ── C4 変異対照 ────────────────────────────────────────────────────────────
+    94	# `: > "$F"`(1回だけ空にする)を `cp "$snap" "$F"`(書き戻し = Codex 前の形)に差し替える。
+    95	# ★これで C3 が緑のままなら、C3 は何も測っていない。
+    96	MD="$(mktemp -d)"; MUT="$MD/mutant.sh"
+    97	sed -e 's|^: > "\$F" .*|cp "$snap" "$F" \|\| exit 1|' \
+    98	    -e '/^printf .\[log-size-cap\] %s 時点/,+2d' "$CAP_ONE" > "$MUT"
+    99	if ! bash -n "$MUT" 2>/dev/null; then
+   100	    ng "C4 変異対照" "変異が構文として成立しない = sed の当て先が動いた(対照を直す事)"
+   101	elif ! grep -q 'cp "$snap" "$F"' "$MUT"; then
+   102	    ng "C4 変異対照" "変異が当たっていない = 元の台本の綴りが変わった(対照を直す事)"
+   103	else
+   104	    read -r mh mb mn <<< "$(concurrent_holes "$MUT")"
+   105	    if [ "${mh:-0}" -gt 0 ]; then ok "C4 書き戻し方式に戻すと赤くなる (欠け $mh 箇所) = C3 は本物"
+   106	    else ng "C4 書き戻し方式に戻すと赤くなる" "欠け 0 のまま = C3 が壊れ方を測れていない"; fi
+   107	fi
+   108	/bin/rm -rf "$MD"
+   109	
+   110	# ── C7 権限 ────────────────────────────────────────────────────────────────
+   111	# 本番の log は 600(`~/Library/Logs/rc-backend/` は 700)。退避先を umask 任せにすると
+   112	# 既定の 022 で **644** になり、600 の中身が緩い file に写る。実測で踏んだ欠陥。
+   113	# ★2つの mode で測る。片方だけだと「常に 600 にする」実装でも緑になり、
+   114	#   「元に合わせている」事を測れない。
+   115	D="$(mktemp -d)"
+   116	for m in 600 640; do
+   117	    F="$D/perm-$m.log"
+   118	    head -c 600000 /dev/urandom | base64 > "$F"; chmod "$m" "$F"
+   119	    bash "$CAP_ONE" "$F" 200000 >/dev/null 2>&1
+   120	    got="$(stat -f%Lp "$F.tail" 2>/dev/null || stat -c%a "$F.tail" 2>/dev/null)"
+   121	    if [ "$got" = "$m" ]; then ok "C7 退避の権限が元 log と一致する (mode $m)"
+   122	    else ng "C7 退避の権限が元 log と一致する" "元 $m に対し退避 $got"; fi
+   123	done
+   124	/bin/rm -rf "$D"
+   125	
+   126	# ── C5 掃き手 ──────────────────────────────────────────────────────────────
+   127	D="$(mktemp -d)"
+   128	if bash "$CAP_ALL" "$D" 100000 >/dev/null 2>&1; then
+   129	    ng "C5 0 本を舐めたら測定不成立" "rc=0 = 『全部上限内』に見えてしまう"
+   130	else
+   131	    [ $? -eq 2 ] && ok "C5 0 本を舐めたら rc=2(測定不成立)" || ok "C5 0 本を舐めたら非 0"
+   132	fi
+   133	printf 'x%.0s' $(seq 1 300000) > "$D/a.log"; echo hi > "$D/b.log"
+   134	out="$(bash "$CAP_ALL" "$D" 100000 2>&1)"
+   135	if printf '%s' "$out" | grep -q "2 本を見て 1 本を切った"; then
+   136	    ok "C5 見た本数と切った本数を別々に言う"
+   137	else ng "C5 件数の報告" "$out"; fi
+   138	/bin/rm -rf "$D"
+   139	
+   140	# ── C8 1本の失敗が掃引を止めない ───────────────────────────────────────────
+   141	# ★名前順で**前**に在る file が失敗した時、後ろの file が上限なしのまま残らないか。
+   142	#   初版は最初の失敗で exit していたので、`a-broken.log` の後ろは全部素通りだった。
+   143	#   しかも1時間ごとに同じ所で失敗するので、その状態が自動では解けない。
+   144	D="$(mktemp -d)"
+   145	printf 'x%.0s' $(seq 1 300000) > "$D/a-broken.log"; chmod 000 "$D/a-broken.log"
+   146	printf 'x%.0s' $(seq 1 300000) > "$D/z-ok.log"
+   147	out="$(bash "$CAP_ALL" "$D" 100000 2>&1)"; rc=$?
+   148	chmod 644 "$D/a-broken.log"
+   149	zs="$(size "$D/z-ok.log")"
+   150	if [ "${zs:-999999}" -le 100000 ]; then ok "C8 前の1本が失敗しても後ろは切られる (z-ok=$zs B)"
+   151	else ng "C8 前の1本が失敗しても後ろは切られる" "z-ok=$zs B = 掃引が止まった"; fi
+   152	if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "失敗"; then
+   153	    ok "C8 失敗は握り潰さず非 0 で帰る (rc=$rc)"
+   154	else ng "C8 失敗を非 0 で帰す" "rc=$rc / $out"; fi
+   155	/bin/rm -rf "$D"
+   156	
+   157	# ── C9 複数の dir ──────────────────────────────────────────────────────────
+   158	# ★上限を「大きい file の在る場所」ではなく「暴走の起きる場所」に置く為に、
+   159	#   dir を複数取れる様にした。測るのは3つ:
+   160	#   (a) 2つ目の dir も実際に切られる (b) 従来の <dir> <bytes> がそのまま動く
+   161	#   (c) 末尾が数字でなければ dir として扱う(上限を dir と誤読しない)
+   162	D="$(mktemp -d)"; mkdir -p "$D/one" "$D/two"
+   163	printf 'x%.0s' $(seq 1 300000) > "$D/one/a.log"
+   164	printf 'x%.0s' $(seq 1 300000) > "$D/two/b.log"
+   165	bash "$CAP_ALL" "$D/one" "$D/two" 100000 >/dev/null 2>&1
+   166	s1="$(size "$D/one/a.log")"; s2="$(size "$D/two/b.log")"
+   167	if [ "${s1:-9}" -le 100000 ] && [ "${s2:-9}" -le 100000 ]; then
+   168	    ok "C9 dir を2つ渡すと**両方**切られる (one=$s1 two=$s2)"
+   169	else ng "C9 dir 2つの両方が切られる" "one=$s1 two=$s2"; fi
+   170	/bin/rm -rf "$D"
+   171	
+   172	# (b) 従来の形。★これが壊れると launchd の既存の呼び方と対照 C5 が同時に死ぬ。
+   173	D="$(mktemp -d)"; printf 'x%.0s' $(seq 1 300000) > "$D/c.log"
+   174	bash "$CAP_ALL" "$D" 100000 >/dev/null 2>&1
+   175	s3="$(size "$D/c.log")"
+   176	[ "${s3:-9}" -le 100000 ] && ok "C9b 従来の <dir> <bytes> がそのまま動く" \
+   177	                          || ng "C9b 従来の形" "$s3 B"
+   178	/bin/rm -rf "$D"
+   179	
+   180	# (c) 上限を書かない時、既定の 5MB で回り、dir 引数が上限と誤読されない。
+   181	D="$(mktemp -d)"; printf 'x%.0s' $(seq 1 3000) > "$D/d.log"
+   182	out="$(bash "$CAP_ALL" "$D" 2>&1)"; rc=$?
+   183	if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "上限 5242880 B"; then
+   184	    ok "C9c 上限を省くと既定 5MB(dir を上限と読まない)"
+   185	else ng "C9c 上限の省略" "rc=$rc / $out"; fi
+   186	/bin/rm -rf "$D"
+   187	
+   188	# ── C10 無い dir を緑で帰さない ★fail-open の修正 ──────────────────────────
+   189	# ★初版は `[ -d "$DIR" ] || exit 0` だった。綴りを1文字間違えた引数が
+   190	#   「全部上限内」に見え、しかも launchd から1時間ごとに同じ嘘を出し続ける。
+   191	#   ★此処が緑に戻ったら、それは「直った」ではなく**守りが外れた**合図。
+   192	D="$(mktemp -d)"; printf 'x%.0s' $(seq 1 3000) > "$D/e.log"
+   193	out="$(bash "$CAP_ALL" "$D" "$D/no-such-dir" 100000 2>&1)"; rc=$?
+   194	if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q "無い"; then
+   195	    ok "C10 指定した dir が無ければ rc=2(緑にしない)"
+   196	else ng "C10 無い dir で rc=2" "rc=$rc / $(printf '%s' "$out" | tail -1)"; fi
+   197	/bin/rm -rf "$D"
+   198	
+   199	# ── C11 plist が両方の dir を渡している ────────────────────────────────────
+   200	# ★台本が複数 dir を取れても、plist が1つしか渡さなければ本番では何も変わらない。
+   201	#   「出来る様にした」と「実際にそう回っている」は別。
+   202	PL="$HERE/tools/com.fleet.rc-log-cap.plist"
+   203	if [ -f "$PL" ] && grep -q "Library/Logs/rc-backend" "$PL" && grep -q "/\.rc-backend<" "$PL"; then
+   204	    ok "C11 plist が2つの dir を渡している(能力だけでなく実配線)"
+   205	else ng "C11 plist が2つの dir を渡す" "$PL"; fi
+   206	
+   207	echo ""
+   208	echo "LOG-CAP-CONTROLS: pass=$pass fail=$fail"
+   209	exit $(( fail > 0 ))
+
+exec
+/bin/zsh -lc "/bin/bash -c '
+set -u
+for mode in empty one two; do
+  case "'$mode in empty) args=();; one) args=(5000);; two) args=(/a 5000);; esac
+  n=${#args[@]}
+  if [ "$n" -gt 0 ]; then
+    last=${args[$((n-1))]}
+    case $last in ""|*[!0-9]*) ;; *) args=("${args[@]:0:$((n-1))}");; esac
+  fi
+  DIRS=("${args[@]}")
+  printf "%s count=%s values=" "$mode" "${#DIRS[@]}"; printf "<%s>" "${DIRS[@]}"; echo
+ done
+'"'" in /Users/tomtim/Infra/mobile-work
+ exited 127 in 0ms:
+/bin/bash: line 9: args[@]: unbound variable
+
+web search: 
+web search: site:gnu.org/software/bash/manual Bash arrays unset subscript @ expansion sparse array ...
+exec
+/bin/zsh -lc "MANWIDTH=120 man 5 launchd.plist 2>/dev/null | col -b | rg -n -C 4 \"StartInterval|StandardOutPath|StandardErrorPath|ThrottleInterval|successful exit|exit status|KeepAlive|running\" | sed -n '1,260p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+132-     also lets the system consider process eligible for reclamation under memory pressure when it's inactive. See
+133-     xpc_main(3) for details. Jobs that opt into Pressured Exit will be automatically relaunched if they exit or crash
+134-     while holding open transactions.
+135-
+136:     NOTE: launchd(8) does not respect EnablePressuredExit for jobs that have KeepAlive set to true.
+137-
+138-     IMPORTANT: Jobs which opt into Pressured Exit will ignore SIGTERM rather than exiting by default, so a dispatch(3)
+139-     source must be used when handling this signal.
+140-
+141-     OnDemand <boolean>
+142-     This key does nothing if set to true. If set to false, this key is equivalent to specifying a true value for the
+143:     KeepAlive key. This key should not be used. Please remove this key from your launchd.plist.
+144-
+145-     ServiceIPC <boolean>
+146-     Please remove this key from your launchd.plist.
+147-
+148:     KeepAlive <boolean or dictionary of stuff>
+149:     This optional key is used to control whether your job is to be kept continuously running or to let demand and
+150-     conditions control the invocation. The default is false and therefore only demand will start the job. The value may
+151-     be set to true to unconditionally keep the job alive. Alternatively, a dictionary of conditions may be specified to
+152-     selectively control whether launchd keeps a job alive or not. If multiple keys are provided, launchd ORs them, thus
+153-     providing maximum flexibility to the job to refine the logic and stall if necessary. If launchd finds no reason to
+--
+155-     to be kept alive will be throttled to conserve system resources. The use of this key implicitly implies RunAtLoad,
+156-     causing launchd to speculatively launch the job.
+157-
+158-	   SuccessfulExit <boolean>
+159:	   If true, the job will be restarted as long as the program exits and with an exit status of zero.  If false,
+160-	   the job will be restarted in the inverse condition.	This key implies that "RunAtLoad" is set to true, since
+161:	   the job needs to run at least once before an exit status can be determined.
+162-
+163-	   NetworkState <boolean>
+164-	   This key is no longer implemented as it never acted how most users expected.
+165-
+--
+168-	   alive as long as the path exists.  If false, the job will be kept alive in the inverse condition. The intent
+169-	   of this feature is that two or more jobs may create semaphores in the file- system namespace. The following
+170-	   example keeps the job alive as long as the file /path/to/file exists.
+171-
+172:		 <key>KeepAlive</key>
+173-		 <dict>
+174-		      <key>PathState</key>
+175-		      <dict>
+176-			   <key>/path/to/file</key>
+--
+184-	   OtherJobEnabled <dictionary of booleans>
+185-	   Each key in this dictionary is the name of another job. If the value is true, then the job will be kept alive
+186-	   as long as one of the specified other jobs is loaded in launchd(8).
+187-
+188:	   NOTE: This key only evaluates whether the job is loaded, not whether it is running. Use of this key is highly
+189-	   discouraged. If multiple jobs need to coordinate coordinate their lifecycles, they should establish contracts
+190-	   using IPC.
+191-
+192-	   Crashed <boolean>
+--
+198-     is false. This key should be avoided, as speculative job launches have an adverse effect on system-boot and user-
+199-     login scenarios.
+200-
+201-     RootDirectory <string>
+202:     This optional key is used to specify a directory to chroot(2) to before running the job.
+203-
+204-     IMPORTANT: iOS and OS X both make significant use of IPC to implement features. The details of the communication
+205-     between a client and server are typically implemented in dynamic library code that is abstracted away from the
+206-     caller beneath the API boundary so that the client of a daemon is not aware of any IPC that is happening.
+207-
+208-     So unless the library stack which exists in the jail specified by this key or a call to chroot(2) is identical to
+209:     the one shipping on the system, there is no guarantee that a process running in that jail will know how to
+210-     communicate with the daemons on the system. Mismatches in the library stack between the jail and the system can
+211-     manifest as random failures, hangs and crashes.
+212-
+213-     For these reasons, it is highly recommended that you avoid making use of this key unless you have taken special
+--
+217-     have done that, there is no guarantee that any subprocesses spawned by your child processes will take care to do
+218-     the same thing unless you completely control all possible chains of execution, which is unlikely.
+219-
+220-     WorkingDirectory <string>
+221:     This optional key is used to specify a directory to chdir(2) to before running the job.
+222-
+223-     EnvironmentVariables <dictionary of strings>
+224:     This optional key is used to specify additional environmental variables to be set before running the job. Each key
+225-     in the dictionary is the name of an environment variable, with the corresponding value being a string representing
+226-     the desired value.  NOTE: Values other than strings will be ignored.
+227-
+228-     Umask <integer or string>
+229:     This optional key specifies what value should be passed to umask(2) before running the job. If the value specified
+230-     is an integer, it must be a decimal representation of the desired umask, as property lists do not support encoding
+231-     integers in octal. If a string is given, the string will be converted into an integer as per the rules described in
+232-     strtoul(3), and an octal value may be specified by prefixing the string with a '0'. If a string that does not
+233-     cleanly convert to an integer is specified, the behavior will be to set a umask(2) according to the strtoul(3)
+--
+242-     The amount of time launchd waits between sending the SIGTERM signal and before sending a SIGKILL signal when the
+243-     job is to be stopped. The default value is system-defined. The value zero is interpreted as infinity and should not
+244-     be used, as it can stall system shutdown forever.
+245-
+246:     ThrottleInterval <integer>
+247-     This key lets one override the default throttling policy imposed on jobs by launchd.  The value is in seconds, and
+248-     by default, jobs will not be spawned more than once every 10 seconds. The principle behind this is that jobs should
+249-     linger around just in case they are needed again in the near future. This not only reduces the latency of
+250-     responses, but it encourages developers to amortize the cost of program invocation.
+--
+265-
+266-     StartOnMount <boolean>
+267-     This optional key causes the job to be started every time a filesystem is mounted.
+268-
+269:     StartInterval <integer>
+270-     This optional key causes the job to be started every N seconds. If the system is asleep during the time of the next
+271:     scheduled interval firing, that interval will be missed due to shortcomings in kqueue(3).	If the job is running
+272-     during an interval firing, that interval firing will likewise be missed.
+273-
+274-     StartCalendarInterval <dictionary of integers or array of dictionaries of integers>
+275-     This optional key causes the job to be started every calendar interval as specified. Missing arguments are
+--
+279-     Unlike cron which skips job invocations when the computer is asleep, launchd will start the job the next time the
+280-     computer wakes up.  If multiple intervals transpire before the computer is woken, those events will be coalesced
+281-     into one event upon wake from sleep.
+282-
+283:     Note that StartInterval and StartCalendarInterval are not aware of each other. They are evaluated completely
+284-     independently by the system.
+285-
+286-	   Minute <integer>
+287-	   The minute (0-59) on which this job will be run.
+--
+303-     This optional key specifies that the given path should be mapped to the job's stdin(4), and that the contents of
+304-     that file will be readable from the job's stdin(4).  If the file does not exist, no data will be delivered to the
+305-     process' stdin(4).
+306-
+307:     StandardOutPath <string>
+308-     This optional key specifies that the given path should be mapped to the job's stdout(4), and that any writes to the
+309-     job's stdout(4) will go to the given file. If the file does not exist, it will be created with writable permissions
+310-     and ownership reflecting the user and/or group specified as the UserName and/or GroupName, respectively (if set)
+311-     and permissions reflecting the umask(2) specified by the Umask key, if set.
+312-
+313:     StandardErrorPath <string>
+314-     This optional key specifies that the given path should be mapped to the job's stderr(4), and that any writes to the
+315-     job's stderr(4) will go to the given file. Note that this file is opened as readable and writable as mandated by
+316-     the POSIX specification for unclear reasons.  If the file does not exist, it will be created with ownership
+317-     reflecting the user and/or group specified as the UserName and/or GroupName, respectively (if set) and permissions
+--
+528-     app installs a legacy plist the plist should include this key with a value of the app's bundle identifier.
+529-
+530-CAVEATS
+531-     Daemons and agents managed by launchd are subject to macOS user privacy protections.  Specifying privacy sensitive
+532:     files and folders in a launchd plist may not have the desired effect, and may prevent the job from running.
+533-
+534-DEPENDENCIES
+535-     Unlike many bootstrapping daemons, launchd has no explicit dependency model.  Interdependencies are expected to be
+536-     solved through the use of IPC. It is therefore in the best interest of a job developer who expects dependents to
+
+exec
+/bin/zsh -lc 'rg -n "mkdir[''^'"\\n]*(Library/Logs/rc-backend|\\.rc-backend)|RC_STATE|STATE_DIR|health-observer\\.log|digest-notify\\.log\" rc-backend --glob '"'!node_modules/**'"' | sed -n '1,320p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+rc-backend/tools/rollback-friday-control.sh:24:mkdir -p "$FAKE/rc-releases" "$FAKE/rc-backend" "$FAKE/.rc-backend"
+rc-backend/tools/digest-notify.sh:41:LOG="${RC_DIGEST_LOG:-$HOME/.rc-backend/digest-notify.log}"
+rc-backend/tools/log-cap-all.sh:13:#   `~/.rc-backend/health-observer.log` = **上限の外**だった。
+rc-backend/tools/log-cap-all.sh:15:#   実測(2026-08-30 friday、上限の外): health-observer.log 131,982 B(600 秒毎に追記)/
+rc-backend/tools/log-cap-all.sh:16:#   digest-notify.log 89,500 B(150 秒毎)。大きくはない —— 大きさは論点ではない。
+rc-backend/tools/com.edith.rc-backend.plist:35:    ssh edith 'mkdir -p /Users/edith/Library/Logs/rc-backend'
+rc-backend/tools/observer.conf.example:41:RC_HEALTH_LOG="${RC_HEALTH_LOG:-$HOME/.rc-backend/health-observer.log}"
+rc-backend/test/phone-window-notify-controls.sh:15:mkdir -p "$D/home/.rc-backend"
+rc-backend/tools/com.fleet.rc-backend.plist:46:    ssh athenas 'mkdir -p /Users/athenas/Library/Logs/rc-backend'
+rc-backend/tools/com.fleet.rc-log-cap.plist:30:    書き込む先は `~/.rc-backend/health-observer.log` = **上限の外**だった。
+rc-backend/tools/desktop-attach-control.sh:52:mkdir -p "$TMP/fakehome/.rc-backend"
+rc-backend/tools/departure-survivability-check.sh:635:    L="$HOME/.rc-backend/health-observer.log"
+rc-backend/tools/com.fleet.rc-digest-notify.plist:78:  <string>/Users/athenas/Library/Logs/rc-backend/rc-digest-notify.log</string>
+rc-backend/tools/ensure-phone-window.sh:56:STATE_DIR=${RC_PHONE_STATE_DIR:-$HOME/.rc-backend}
+rc-backend/tools/ensure-phone-window.sh:63:BIRTHS="$STATE_DIR/phone-window.births"
+rc-backend/tools/ensure-phone-window.sh:64:ATTEMPT="$STATE_DIR/phone-window.attempt"   # 走った(それだけ)
+rc-backend/tools/ensure-phone-window.sh:65:SUCCESS="$STATE_DIR/phone-window.success"   # ★在る事を確かめられた
+rc-backend/tools/ensure-phone-window.sh:66:LOCK="$STATE_DIR/phone-window.lock"
+rc-backend/tools/ensure-phone-window.sh:67:STATE_F="$STATE_DIR/phone-window.state"
+rc-backend/tools/ensure-phone-window.sh:89:mkdir -p "$STATE_DIR" 2>/dev/null || true
+rc-backend/tools/health-observer.sh:40:LOG="${RC_HEALTH_LOG:-$HOME/.rc-backend/health-observer.log}"
+rc-backend/test/tunnel-observer-controls.sh:16:mkdir -p "$D/home/.rc-backend" "$D/bin"
+rc-backend/test/remote-mini-root-controls.sh:628:old = '''  [ -f "$STATE_DIR/$slug.json" ] && die "this directory is already checked out'''
+rc-backend/test/phone-window-controls.sh:66:        RC_PHONE_STATE_DIR="$TMP/state" RC_PHONE_PATH="$PATH" \
+rc-backend/test/phone-window-controls.sh:86:      RC_PHONE_STATE_DIR="$TMP/state" bash "$TARGET" 2>&1); CODE=$?
+rc-backend/test/phone-window-controls.sh:182:        RC_PHONE_STATE_DIR="$TMP/state-log" RC_PHONE_PATH="$PATH" \
+
+exec
+/bin/zsh -lc "nl -ba rc-backend/tools/health-observer.sh | sed -n '1,140p'; nl -ba rc-backend/tools/digest-notify.sh | sed -n '1,120p'; nl -ba rc-backend/tools/com.fleet.rc-health-observer.plist.example | sed -n '1,150p'; nl -ba rc-backend/tools/com.fleet.rc-digest-notify.plist | sed -n '1,135p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+     1	#!/bin/bash
+     2	# rc-backend の外向き生存信号(DESIGN §7-P)。**edith 以外**のノードから 10 分毎に叩く。
+     3	#
+     4	# 守りたいのは「サーバが上がっている」ではなく **「今この瞬間、電話から見える面が生きているか」**。
+     5	# だから見るのは §7 の鎖の①(= HTTP が返るか)であって、tmux も launchd も見ない。
+     6	#
+     7	# 使い方:
+     8	#   tools/health-observer.sh                 通常(launchd から)
+     9	#   tools/health-observer.sh --inject-fail   偽の失敗を1回注入(経路を撃つ試験用)
+    10	#   tools/health-observer.sh --inject-ok     偽の成功を1回注入
+    11	#   tools/health-observer.sh --dry-run       通知を出さず、出す筈だった文面を表示
+    12	#
+    13	# 終了コード: 0 = 正常(鳴らした/鳴らさない の両方) / 2 = 引数が不正(人が手で叩いた時だけ)
+    14	#             3 = ★**監視自体が壊れている**(状態ファイル / 起動前提 / 設定の値)
+    15	#   3 は「観測できなかった」であって「異常なし」ではない。ここを 0 に丸めると、
+    16	#   10 分毎に静かに失敗し続けて誰も気付かない = yoda の 46 時間と同じ形になる。
+    17	#
+    18	# ★観測者を**どのノードに置くかは決めていない**(艦隊の移動計画が未確定 = DESIGN §7-P)。
+    19	#   なので台本はどこでも動く形にし、機械依存は全部設定に出す。既定は Jervis で動く値。
+    20	set -uo pipefail
+    21	
+    22	CONF="${RC_HEALTH_CONF:-$HOME/.rc-backend/observer.conf}"
+    23	# shellcheck disable=SC1090
+    24	[ -f "$CONF" ] && . "$CONF"
+    25	
+    26	HOST="${RC_HEALTH_HOST:desk.tailnet.example}"
+    27	URL="${RC_HEALTH_URL:-https://$HOST/healthz}"
+    28	# ★名前解決を迂回する口(既定は空 = 使わない = 従来どおり)。
+    29	#   2026-08-08、athenas に据えようとして見つけた: そのノードは MagicDNS が切れており
+    30	#   (`tailscale debug prefs` の `CorpDNS: false`)、`desk.tailnet.example` を引けない。
+    31	#   その時 curl が返すのは exit 6(名前が引けない)で、**「対象が落ちている」と区別が付かない**。
+    32	#   据えたその日から永久に嘘の赤を出し、閾値で1回鳴ってから黙る —— yoda の 46 時間と同じ形。
+    33	#   ここに tailnet の住所を入れると curl は住所へ繋ぎ、証明書と SNI は $HOST で検証する
+    34	#   (`--resolve`)。**機械の DNS 設定には触らない** = 他の常駐サービスを巻き込まない。
+    35	#   前提: 443(既定の https)。`RC_HEALTH_URL` に別 port を書く時はこの口を使わない事。
+    36	RESOLVE="${RC_HEALTH_RESOLVE:-}"
+    37	THRESHOLD="${RC_HEALTH_THRESHOLD:-3}"
+    38	STATE="${RC_HEALTH_STATE:-$HOME/.rc-backend/health-state.json}"
+    39	NOTIFY="${RC_HEALTH_NOTIFY:-$HOME/bin/discord-notify.sh}"
+    40	LOG="${RC_HEALTH_LOG:-$HOME/.rc-backend/health-observer.log}"
+    41	# 監視自体が壊れた時の通知を何秒に1回までにするか(既定 6 時間)。
+    42	# 壊れ方が続くと 10 分毎に鳴り続け、Tom が経路ごと黙らせる = yoda と同じ結末になる。
+    43	BROKEN_EVERY="${RC_HEALTH_BROKEN_EVERY:-21600}"
+    44	BROKEN_MARK="${RC_HEALTH_BROKEN_MARK:-$STATE.broken-notified}"
+    45	# ★「監視が最後に働けた時刻」(Codex Q3)。「監視側が壊れています」だけでは、
+    46	#   10 分前からなのか 3 日前からなのかが分からず、Tom は log を開くまで緊急度を測れない。
+    47	#   ★記録するのは **対象が up だった時刻ではなく、判定が一周できた時刻**。
+    48	#     up を記録すると「対象が長く落ちている」が「監視が長く壊れている」に見え、
+    49	#     Q3 が消したがっている取り違えを別の場所で作り直す事になる。
+    50	#   状態 file とは**別の file** に置く。監視が壊れる二形のうち一方が
+    51	#   「状態 file が壊れている」なので、そこに相乗りすると肝心な時に読めない。
+    52	OK_MARK="${RC_HEALTH_OK_MARK:-$STATE.last-ok}"
+    53	
+    54	ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    55	STEP="$ROOT/tools/health-step.mjs"
+    56	NODE="${RC_HEALTH_NODE:-$(command -v node || echo /opt/homebrew/bin/node)}"
+    57	
+    58	# ── tailnet 鍵の残日数(up/down とは**別系統**)────────────────────────
+    59	# 鍵が切れると機械は tailnet から落ちる。up/down の監視はそれを「落ちた」としてしか言えず、
+    60	# しかも**切れてから**しか言えない。切れる前に言う為の系統が要る = 此処。
+    61	#
+    62	# ★測る相手が2つ在る理由(2026-08-03 実測): 監視は「edith を、別のノードから」叩く形なので、
+    63	#   鎖には鍵が2本ある。実測値は 観測側(Jervis)46 日 / edith 143 日 —— **先に切れるのは
+    64	#   監視する側**。遠い方だけ見ていると、先に壊れる方を一度も見ない。だから両方を見る。
+    65	#   観測側が落ちると edith は無事なのに `/healthz` へ届かず、**本物の障害と区別が付かない
+    66	#   偽の警報**が出るか、監視ごと黙る。
+    67	KEY_CHECK="${RC_HEALTH_KEY_CHECK:-$ROOT/tools/tailnet-key-expiry.sh}"
+    68	# ★**表示用の名前と、機体を引く名前は型が違う**(Codex 2026-08-26)。
+    69	#   以前は `${RC_HEALTH_KEY_PEER:-$HOST}` と書いて `HOST` を継いでいた。だが `HOST` は
+    70	#   URL を明示した構成では**人が読む札**になる —— 実際 athenas の `observer.conf` は
+    71	#   `RC_HEALTH_HOST="friday(loopback)"` を置いている(URL は loopback で別に指定済み)。
+    72	#   その札を機体名として引きに行くので必ず失敗し、`rc=2` = 「監視が壊れている」を鳴らした。
+    73	#   実測 2026-08-26 11:08、それが本物の障害でない事は同じ log の前後が全部 `ok` である事で判る。
+    74	#
+    75	#   ★狼を2回叫んだ見張りは、3回目に読まれない。だから継承を切る。
+    76	#   **未設定 = 相手が居ない**(単一機体構成)として扱い、鳴らさない。
+    77	#   相手を明示した時だけ、測れない事を「監視が壊れている」と言う —— そちらは正しい。
+    78	KEY_PEER="${RC_HEALTH_KEY_PEER:-}"           # 監視している相手。**空 = 相手が居ない**
+    79	KEY_EVERY="${RC_HEALTH_KEY_EVERY:-86400}"    # 測る間隔(既定 1 日1回。10 分毎に測る物ではない)
+    80	KEY_MARK="${RC_HEALTH_KEY_MARK:-$STATE.key-checked}"
+    81	KEY_WARN_DAYS="${RC_HEALTH_KEY_WARN_DAYS:-45}"
+    82	# 段(この日数を**下回った**時に1回だけ鳴らす)。45 日間まいにち鳴らすと Tom が経路ごと
+    83	# 黙らせる —— yoda の 46 時間と同じ終わり方をする。だから段を降りた時だけ言う。
+    84	# ★2026-08-03 に 45/30/14/7/3/1 から減らした(査読 Q4)。どの段でも Tom がやる事は
+    85	#   「admin console で Disable key expiry を押す」の1つだけなので、段を増やしても情報は
+    86	#   増えず、鳴る回数だけ増えて「経路ごと黙らされる」側にだけ効く。期限切れの段(0)を
+    87	#   足しても**1台あたり最大5通**で、元の6通より少ない。
+    88	KEY_STEPS="${RC_HEALTH_KEY_STEPS:-45 14 7 1}"
+    89	
+    90	# ---- 公開面への相乗りを見張る(2026-08-26 新設)------------------------------------
+    91	# 何を問うか: 「**公開されている入口の下に、机(127.0.0.1:$EXP_PORT)へ向く経路が在るか**」。
+    92	# なぜ此処か(Codex 2026-08-26 の裁定1): `tailscale serve status` は**この機体でしか**
+    93	#   権威ある値を読めない。机の外(Jervis)から見に行く案は、回線が不定期に落ちる度に
+    94	#   「到達できない」を「露出しているかもしれない」に翻訳してしまう = 安全の警報を
+    95	#   回線障害から作る事になる。
+    96	# ★間隔は KEY_* と違って**毎回**測る。serve の設定は1コマンドで変わるので、
+    97	#   日に1回では「変わって・使われて・戻った」を丸ごと見逃す。読むのは local なので安い。
+    98	EXP_CHECK="${RC_HEALTH_EXP_CHECK:-$ROOT/tools/funnel-exposure-check.sh}"
+    99	EXP_PORT="${RC_HEALTH_EXP_PORT:-8787}"
+   100	EXP_TS="${RC_HEALTH_EXP_TS:-/Applications/Tailscale.app/Contents/MacOS/Tailscale}"
+   101	EXP_MARK="${RC_HEALTH_EXP_MARK:-$STATE.exposure}"
+   102	# 「測れなかった」が続いた時に鳴らす回数。**露出そのものより緩く、生存より厳しい** ——
+   103	# これは「保証を失った」であって「壊れた」でも「安全」でもない(Codex 裁定2)。
+   104	EXP_BLIND_THRESHOLD="${RC_HEALTH_EXP_BLIND_THRESHOLD:-2}"
+   105	
+   106	
+   107	MODE="probe"; DRY=0; EXPOSURE_ONLY=0
+   108	for a in "$@"; do
+   109	    case "$a" in
+   110	        --inject-fail) MODE="fail" ;;
+   111	        --inject-ok)   MODE="ok" ;;
+   112	        --dry-run)     DRY=1 ;;
+   113	        # ★露出の節だけを叩く口(2026-08-26)。対照の為に足した ——
+   114	        #   関数を sed で切り出して eval する駆動は、本文の書式が少し変わるだけで
+   115	        #   黙って何も走らなくなる(実際そうなり、対照が「鳴らない」と赤を出した。
+   116	        #   あれは実装の欠陥ではなく**駆動の欠陥**で、区別が付かないのが一番悪い)。
+   117	        #   本物の口を1つ開ける方が、測る物と測られる物が一致する。
+   118	        --exposure-only) EXPOSURE_ONLY=1 ;;
+   119	        *) echo "不明な引数: $a" >&2; exit 2 ;;
+   120	    esac
+   121	done
+   122	
+   123	mkdir -p "$(dirname "$STATE")" "$(dirname "$LOG")" 2>/dev/null
+   124	log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
+   125	
+   126	# ── 「監視自体が壊れている」を知らせる(up/down とは別系統)────────────
+   127	# ★なぜ在るか(2026-08-02、再現してから足した): 監視が**動き出す前**に落ちる形 ——
+   128	#   node の場所が違う / 設定の値が不正 / 判定の繋ぎが無い —— は、元は log 1 行だけ残して
+   129	#   黙っていた。実測: 閾値に `0` と書いた設定で5回叩いて通知 **0 通**、node の場所を
+   130	#   違えて3回叩いて **0 通**。どちらも据え付けた当日に起きる類の書き損じで、
+   131	#   起きた瞬間から監視は**永久に鳴らない**。判定の門(`health.mjs` の閾値検査)は
+   132	#   在ったが、**門が閉じた事を誰にも知らせていなかった** = 守り手自身が静かに死ぬ形。
+   133	#
+   134	# 抑制時計 `$BROKEN_MARK` は「状態ファイルが壊れている」と共用する。Tom 側から見れば
+   135	# どちらも「監視が壊れている」1つの事なので、2本の警報を並べても読む手間が増えるだけ。
+   136	#
+   137	# 引数: $1 = Tom に見せる短い語。**必ず我々の固定文字列**を渡す事 —— `$ERR` の中身は
+   138	#       渡さない(通知は Tom が読む面なので、素性の分からない文字列を流し込まない)。
+   139	# 返り値は常に 3(= 監視が壊れている)。鳴らせたかどうかで変えない。
+   140	
+     1	#!/bin/bash
+     2	# digest-notify.sh — **机が Tom の返事を待って止まっている**時に、電話を開かせずに知らせる。
+     3	# 2026-08-26 新設。Friday の上で走る(API は loopback、鍵は同じ機体に在る)。
+     4	#
+     5	# なぜ要るか(実測): 常駐が `attention=input / action=soon` のまま **60 分**座っていた。
+     6	#   Tom は「待たれている」事を知らないので、電話を開くまでその時間は丸ごと死ぬ。
+     7	#   此処が取り戻すのはその死に時間で、それ以上の物ではない。
+     8	#
+     9	# ★鳴らし方は `phone-window-notify.sh` が確立した規約に揃える:
+    10	#   検出と配達を分ける / 続いている間ずっと鳴らさない / 沈黙と正常を同じ顔にしない。
+    11	#   ただし**「直った時に1回鳴らす」は此処では採らない** —— この信号の「直った」は
+    12	#   *Tom が返事をした* であって、本人が知っている。知らせるのは騒音になる(Codex 2026-08-26)。
+    13	#
+    14	# ★鳴らす条件(Codex 2026-08-26 の裁定、本人が同日 amend した後の版):
+    15	#   1. `attention` が **`choice` か `input`** の時だけ。`unknown` は**永久に不適格** ——
+    16	#      正直だが役に立たない状態を人に見せると、信号ごと無視される様になる。
+    17	#   2. `action.level = now` … **2回続けて同じ指紋**なら鳴らす(この台本の刻みで 4-6 分)。
+    18	#   3. `action.level = soon` … **同じ指紋が実経過で 20 分**続いた時だけ。
+    19	#      ★回数ではなく**時間**で測る。同じ画面を2回読んでも独立した証拠にはならない。
+    20	#   4. 一度鳴らした指紋では二度と鳴らさない。指紋が変われば(= 会話が進めば)状態は消える。
+    21	#
+    22	# ★指紋 = `sessionId + attention + lastAt`。
+    23	#   - `lastAt` は最後の記録の時刻。Tom が返せば動く = 指紋が変わる = 状態が消える。
+    24	#   - 別の会話が同じ文面でも `sessionId` が違う。
+    25	#   - 台本が再起動しても状態は disk に在るので、続き具合を見失わない。
+    26	#   ★中身(本文)は指紋に入れない。この repo は「打った物の中身を残さない」線を引いている。
+    27	#
+    28	# ★此処が答えない事: 見張りは事後にしか気付かない。刻みの隙間に出て消えた要求は残らない。
+    29	#
+    30	# 使い方:
+    31	#   digest-notify.sh              1回見る(launchd から 2-3 分毎)
+    32	#   digest-notify.sh --dry-run    鳴らさずに判定だけ出す
+    33	#   digest-notify.sh --state      今の状態を出す
+    34	#
+    35	# 終了コード: 0=見た(鳴らしたかは問わない) / 2=使い方 / 3=見られなかった(= 監視が壊れている)
+    36	set -uo pipefail
+    37	
+    38	API="${RC_DIGEST_API:-http://127.0.0.1:8787}"
+    39	KEYFILE="${RC_DIGEST_KEY:-$HOME/.rc-backend/api.key}"
+    40	STATE="${RC_DIGEST_STATE:-$HOME/.rc-backend/digest-notify.json}"
+    41	LOG="${RC_DIGEST_LOG:-$HOME/.rc-backend/digest-notify.log}"
+    42	NOTIFY="${RC_DIGEST_NOTIFY:-$HOME/bin/discord-notify.sh}"
+    43	SOON_MIN="${RC_DIGEST_SOON_MIN:-20}"          # `soon` を鳴らすまでの実経過(分)
+    44	NOW_OBS="${RC_DIGEST_NOW_OBS:-2}"             # `now` を鳴らすまでの連続観測回数
+    45	STALE_MIN="${RC_DIGEST_STALE_MIN:-720}"       # これを過ぎた記録は捨てる(状態が太らない)
+    46	PY="${RC_DIGEST_PY:-/usr/bin/python3}"
+    47	
+    48	DRY=0; SHOW=0
+    49	while [ $# -gt 0 ]; do
+    50	    case "$1" in
+    51	        --dry-run) DRY=1; shift ;;
+    52	        --state)   SHOW=1; shift ;;
+    53	        -h|--help) sed -n '/^# 使い方:/,/^# 終了コード/p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    54	        *) echo "不明な引数: $1" >&2; exit 2 ;;
+    55	    esac
+    56	done
+    57	
+    58	mkdir -p "$(dirname "$STATE")" "$(dirname "$LOG")" 2>/dev/null
+    59	log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
+    60	
+    61	if [ "$SHOW" -eq 1 ]; then cat "$STATE" 2>/dev/null || echo '{}'; exit 0; fi
+    62	
+    63	[ -r "$KEYFILE" ] || { log "鍵が読めない: $KEYFILE"; echo "鍵が読めない: $KEYFILE" >&2; exit 3; }
+    64	KEY="$(cat "$KEYFILE")"
+    65	
+    66	# ---- 一覧 → 各会話の digest を集める ---------------------------------------------
+    67	# ★取れなかった事を「静か = 正常」にしない。exit 3 で「見られなかった」と言う。
+    68	sessions="$(curl -s -m 20 -H "authorization: Bearer $KEY" "$API/api/sessions" 2>/dev/null \
+    69	    | "$PY" -c 'import json,sys
+    70	try: d=json.load(sys.stdin)
+    71	except Exception: sys.exit(3)
+    72	for s in (d.get("sessions") or []):
+    73	    i=s.get("id")
+    74	    if i: print(i)' 2>/dev/null)"; srn=$?
+    75	
+    76	# ★「取れなかった」と「0 件だった」を分ける(2026-08-26 に自分の diff を読み返して足した)。
+    77	#   0 件は起こり得る —— 常駐が落ちてから `ensure-phone-window` が作り直すまでの間、
+    78	#   `cli` の会話は本当に 0 になる。それを「監視が壊れている」と言うのは誤診で、
+    79	#   誤診は次に本当に壊れた日に読まれなくなる。
+    80	#   ★取れなかった側(rc != 0)は今まで通り exit 3。**静かと正常を同じ顔にしない**。
+    81	if [ "$srn" != 0 ]; then
+    82	    log "会話の一覧が取れなかった(= 監視が壊れている。静かなのではない)"
+    83	    exit 3
+    84	fi
+    85	if [ -z "$sessions" ]; then
+    86	    log "会話が 0 件(壊れてはいない。常駐が立ち上がるまでの間に起こる)"
+    87	    exit 0
+    88	fi
+    89	
+    90	now_epoch="$(date +%s)"
+    91	tmp="$(mktemp)"; : > "$tmp"
+    92	for sid in $sessions; do
+    93	    body="$(curl -s -m 20 -H "authorization: Bearer $KEY" "$API/api/sessions/$sid/digest" 2>/dev/null)"
+    94	    [ -n "$body" ] || { log "digest が取れない: ${sid:0:8}"; continue; }
+    95	    printf '%s\t%s\n' "$sid" "$body" >> "$tmp"
+    96	done
+    97	
+    98	# ---- 判定と状態の更新は1つの python に閉じる(shell で JSON を切り貼りしない)-------
+    99	out="$("$PY" - "$tmp" "$STATE" "$now_epoch" "$SOON_MIN" "$NOW_OBS" "$STALE_MIN" <<'PY'
+   100	import json, os, sys, hashlib
+   101	
+   102	feed, statep, now, soon_min, now_obs, stale_min = sys.argv[1:7]
+   103	now = int(now); soon_min = int(soon_min); now_obs = int(now_obs); stale_min = int(stale_min)
+   104	
+   105	try:
+   106	    state = json.load(open(statep))
+   107	    if not isinstance(state, dict): state = {}
+   108	except Exception:
+   109	    state = {}
+   110	
+   111	fresh = {}
+   112	alerts = []
+   113	
+   114	for line in open(feed):
+   115	    line = line.rstrip("\n")
+   116	    if "\t" not in line: continue
+   117	    sid, raw = line.split("\t", 1)
+   118	    try:
+   119	        d = json.loads(raw)
+   120	    except Exception:
+     1	<?xml version="1.0" encoding="UTF-8"?>
+     2	<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+     3	<!--
+     4	  rc-backend 生存監視の launchd 見本(DESIGN §7-P)。
+     5	
+     6	  ★★2026-08-08、athenas(Friday の Mac mini)へ**実際に据えた**。
+     7	     選んだ根拠は3つとも実測: 眠らない(pmset sleep 0 / autorestart 1)、日本に残る、
+     8	     そして**通知の出し先が Tom が毎朝読んでいる経路そのもの**(morning-brief と同じ
+     9	     bot と channel)。3つ目が yoda の46時間の真因(通知先)に直接効く。
+    10	     edith 自身には絶対に置かない: 対象ごと落ちた時に監視も一緒に死ぬ。
+    11	     別のノードへ据え直す時は:
+    12	
+    13	       cp tools/com.fleet.rc-health-observer.plist.example \
+    14	          ~/Library/LaunchAgents/com.fleet.rc-health-observer.plist
+    15	       # ProgramArguments の __台本の絶対パス__ を実物に書き換える
+    16	       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.fleet.rc-health-observer.plist
+    17	       launchctl kickstart -p gui/$(id -u)/com.fleet.rc-health-observer   # 1回撃って目で見る
+    18	
+    19	  ★据えたら**必ず1回、偽の失敗で経路を撃つ**:
+    20	       tools/health-observer.sh に inject-fail の旗(先頭にハイフン2つ)を付けて叩く。
+    21	       閾値どおり3回で鳴る。
+    22	     yoda が 46 時間気付けなかったのは閾値でも判定でもなく**通知先**だった。
+    23	     「Issue は作られた」は届いた事の証拠ではない —— Tom の画面に出るまでを見る。
+    24	
+    25	  ★この file 自身の構文を `test/example-artifacts-controls.sh` が測る。
+    26	     見本が壊れていると、据える人は**据える瞬間に初めて**それを知る事になる。
+    27	     (最初の版は3つ落としていた: DOCTYPE 無し / XML コメントにハイフン2連続 /
+    28	      置き換え箇所を山括弧で書いて**タグに化けていた**)
+    29	     ★2つ目は `plutil -lint` を**素通りする**。落とすのは `xmllint` だけ。だから
+    30	      対照は両方に通す(A1=plutil / A3=xmllint)。器が欠陥より弱い事が在る。
+    31	-->
+    32	<plist version="1.0">
+    33	<dict>
+    34	    <key>Label</key>
+    35	    <string>com.fleet.rc-health-observer</string>
+    36	
+    37	    <key>ProgramArguments</key>
+    38	    <array>
+    39	        <string>/bin/bash</string>
+    40	        <string>__台本の絶対パス__/tools/health-observer.sh</string>
+    41	    </array>
+    42	
+    43	    <!-- 10 分毎。閾値 3 と合わせて「約 30 分沈黙したら鳴る」。 -->
+    44	    <key>StartInterval</key>
+    45	    <integer>600</integer>
+    46	
+    47	    <key>RunAtLoad</key>
+    48	    <true/>
+    49	
+    50	    <!-- ★launchd の PATH は素。台本側も絶対パスを使うが、node の場所は設定でも渡す。
+    51	         `/usr/local/bin` は 2026-08-08 に足した。**足した時に書いた理由は間違っていた**ので
+    52	         測った結果を残す:「athenas の tailscale は /usr/local/bin に在るから、外すと鍵の枝が
+    53	         黙る」と書いたが、対照(新旧2つの PATH で同じ run を撃つ)は**両方とも鳴った**。
+    54	         真相 = この観測者は tailscale を PATH から引いていない。
+    55	         tailnet-key-expiry.sh が /Applications/Tailscale.app の絶対パスで持っており
+    56	         (`RC_TAILSCALE_BIN` で移せる)、health-observer.sh 自身は tailscale を一度も呼ばない。
+    57	         PATH に本当に要るのは curl(/usr/bin)だけで、node は $RC_HEALTH_NODE 側。
+    58	         それでも残すのは、`RC_TAILSCALE_BIN=tailscale` の様に**名前で**渡された時の保険。
+    59	         教訓の方が本体: 見本に理由を書く時も、書いた理由を1回撃って確かめる事。 -->
+    60	    <key>EnvironmentVariables</key>
+    61	    <dict>
+    62	        <key>PATH</key>
+    63	        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    64	    </dict>
+    65	
+    66	    <!-- 台本自身が壊れた時の受け皿。台本の通常ログ(RC_HEALTH_LOG)とは別物 —
+    67	         こちらに何か出ていたら「監視の外側」が壊れている。 -->
+    68	    <key>StandardOutPath</key>
+    69	    <string>/tmp/rc-health-observer.out</string>
+    70	    <key>StandardErrorPath</key>
+    71	    <string>/tmp/rc-health-observer.err</string>
+    72	</dict>
+    73	</plist>
+     1	<?xml version="1.0" encoding="UTF-8"?>
+     2	<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+     3	<!--
+     4	  com.fleet.rc-digest-notify  (Friday / athenas 用。2026-08-26 新設)
+     5	  ============================================================================
+     6	  何を持つか: 「**机が Tom の返事を待って止まっている**」を、電話を開かせずに届ける段。
+     7	  動機は実測 — 常駐が `attention=input / action=soon` のまま 60 分座っていた。
+     8	  Tom は待たれている事を知らないので、その時間は丸ごと死ぬ。取り戻すのはその死に時間だけ。
+     9	
+    10	  ★刻みは 150 秒(2.5 分)。Codex 2026-08-26 の裁定:
+    11	    `now` は 2 回続けて同じ指紋で鳴らす = 5 分前後の確認遅れ。
+    12	    `soon` は **回数ではなく実経過 20 分**。同じ画面を 2 回読んでも独立した証拠にならない。
+    13	    刻みを 10 分に伸ばすと `now` の確認遅れが 20 分になり、速い方の意味が消える。
+    14	
+    15	  ★`unknown` は永久に鳴らさない。正直だが役に立たない信号を人に見せると、信号ごと
+    16	    無視される様になる(= 次に本当に要る時に届かない)。
+    17	
+    18	  ★**「直りました」を出さない。** この信号の「直った」は *Tom が返事をした* であって
+    19	    本人が知っている。`com.fleet.rc-phone-window` の 3 本目(phone-window-notify)は
+    20	    「直った時に 1 回鳴らす」規約だが、あちらの信号(窓の固着)は本人が知らないので
+    21	    正しい。**同じ言葉で別の判断をしている**ので、両方に理由を書いてある。
+    22	
+    23	  ★武装について(この job だけの注意):
+    24	    これは **Tom へ実際にメッセージを出す**段。据えた直後から鳴る。
+    25	    `RC_DIGEST_NOTIFY` が指す先が実行できなければ log に残して黙る(fail-closed)。
+    26	    止めたい時は TEARDOWN で job ごと落とす —— 閾値をいじって黙らせると、
+    27	    「検出は生きているのに配達だけ死んでいる」状態が出来て、次に本当に要る時に届かない。
+    28	
+    29	  ★この注釈の中にハイフン2連続を書けない(XML コメントの規則)。
+    30	
+    31	  INSTALL:
+    32	    scp .../com.fleet.rc-digest-notify.plist athenas:/Users/athenas/Library/LaunchAgents/
+    33	    ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-digest-notify.plist'
+    34	  TEARDOWN:
+    35	    ssh athenas 'launchctl bootout gui/501/com.fleet.rc-digest-notify'
+    36	-->
+    37	<plist version="1.0">
+    38	<dict>
+    39	  <key>Label</key>
+    40	  <string>com.fleet.rc-digest-notify</string>
+    41	
+    42	  <key>ProgramArguments</key>
+    43	  <array>
+    44	    <string>/bin/bash</string>
+    45	    <string>/Users/athenas/rc-backend/tools/digest-notify.sh</string>
+    46	  </array>
+    47	
+    48	  <key>WorkingDirectory</key>
+    49	  <string>/Users/athenas/rc-backend</string>
+    50	
+    51	  <key>EnvironmentVariables</key>
+    52	  <dict>
+    53	    <key>PATH</key>
+    54	    <string>/Users/athenas/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    55	    <key>HOME</key>
+    56	    <string>/Users/athenas</string>
+    57	    <key>RC_DIGEST_API</key>
+    58	    <string>http://127.0.0.1:8787</string>
+    59	    <key>RC_DIGEST_SOON_MIN</key>
+    60	    <string>20</string>
+    61	    <key>RC_DIGEST_NOW_OBS</key>
+    62	    <string>2</string>
+    63	  </dict>
+    64	
+    65	  <key>LimitLoadToSessionType</key>
+    66	  <array>
+    67	    <string>Aqua</string>
+    68	    <string>Background</string>
+    69	  </array>
+    70	
+    71	  <key>RunAtLoad</key>
+    72	  <true/>
+    73	
+    74	  <key>StartInterval</key>
+    75	  <integer>150</integer>
+    76	
+    77	  <key>StandardOutPath</key>
+    78	  <string>/Users/athenas/Library/Logs/rc-backend/rc-digest-notify.log</string>
+    79	  <key>StandardErrorPath</key>
+    80	  <string>/Users/athenas/Library/Logs/rc-backend/rc-digest-notify.error.log</string>
+    81	
+    82	  <key>ProcessType</key>
+    83	  <string>Background</string>
+    84	</dict>
+    85	</plist>
+
+exec
+/bin/zsh -lc 'tmpd="$(mktemp -d)"; target="$tmpd/critical-state"; sweep="$tmpd/mixed"; mkdir "$sweep"; head -c 4096 /dev/zero > "$target"; ln -s "$target" "$sweep/looks-like.log"; before=$(stat -f%z "$target"); /bin/bash rc-backend/tools/log-cap-all.sh "$sweep" 2048 >/tmp/rc-cap-symlink-test.out 2>&1; rc=$?; after=$(stat -f%z "$target"); printf '"'rc=%s target_before=%s target_after=%s symlink=%s\\n' \""'$rc" "$before" "$after" "$(readlink "$sweep/looks-like.log")"; sed -n '"'1,12p' /tmp/rc-cap-symlink-test.out; /bin/rm -rf \""'$tmpd" /tmp/rc-cap-symlink-test.out' in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+rc=0 target_before=4096 target_after=4096 symlink=/var/folders/yn/5m6bw9z92y94qmcy4tsnxdlw0000gn/T/tmp.KdVVaatn8J/critical-state
+log-cap-all: 1/1 dir の 1 本を見て 0 本を切った(上限 2048 B)
+
+exec
+/bin/zsh -lc 'tmpd="$(mktemp -d)"; f="$tmpd/live.log"; key="$tmpd/api.key"; head -c 4096 /dev/zero > "$f"; printf '"'SECRET-KEY\\n' > \""'$key"; ln -s "$key" "$f.tail.new"; before=$(wc -c < "$key" | tr -d '"' '); /bin/bash rc-backend/tools/log-size-cap.sh \""'$f" 2048 >/tmp/rc-cap-sidecar-test.out 2>&1; rc=$?; after=$(wc -c < "$key" | tr -d '"' '); printf 'rc=%s key_before=%s key_after=%s first_bytes=' \""'$rc" "$before" "$after"; od -An -tx1 -N8 "$key" | tr -d '"' \\n'; printf '\\n'; sed -n '1,12p' /tmp/rc-cap-sidecar-test.out; /bin/rm -rf \""'$tmpd" /tmp/rc-cap-sidecar-test.out' in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+rc=0 key_before=11 key_after=1024 first_bytes=0000000000000000
+log-size-cap: /var/folders/yn/5m6bw9z92y94qmcy4tsnxdlw0000gn/T/tmp.GgNQfqAEKh/live.log  4096 B -> 185 B(退避 1137 B = /var/folders/yn/5m6bw9z92y94qmcy4tsnxdlw0000gn/T/tmp.GgNQfqAEKh/live.log.tail / 上限 2048)
+
+codex
+`unset` の疎配列は実機相当の Bash 3.2.57 で問題なしでした。一方、混在ディレクトリの議論には原則論ではなく、sidecar の予測可能なパスが同居する `api.key` を上書きできる具体的な破壊経路があります。ここを最優先の指摘にします。
+exec
+/bin/zsh -lc '/bin/bash test/log-cap-controls.sh' in /Users/tomtim/Infra/mobile-work/rc-backend
+ succeeded in 13589ms:
+PASS  C3 同時追記中に切っても欠け 0 / 壊れた行 0 (79143 行)
+PASS  C4 書き戻し方式に戻すと赤くなる (欠け 1 箇所) = C3 は本物
+PASS  C7 退避の権限が元 log と一致する (mode 600)
+PASS  C7 退避の権限が元 log と一致する (mode 640)
+PASS  C5 0 本を舐めたら rc=2(測定不成立)
+PASS  C5 見た本数と切った本数を別々に言う
+PASS  C8 前の1本が失敗しても後ろは切られる (z-ok=188 B)
+PASS  C8 失敗は握り潰さず非 0 で帰る (rc=1)
+PASS  C9 dir を2つ渡すと**両方**切られる (one=189 two=189)
+PASS  C9b 従来の <dir> <bytes> がそのまま動く
+PASS  C9c 上限を省くと既定 5MB(dir を上限と読まない)
+PASS  C10 指定した dir が無ければ rc=2(緑にしない)
+PASS  C11 plist が2つの dir を渡している(能力だけでなく実配線)
+
+LOG-CAP-CONTROLS: pass=16 fail=0
+
+web search: 
+web search: site:github.com/apple-oss-distributions/launchd launchd.plist StartInterval StandardOutPath SuccessfulExit ...
+codex
+結論: 引数処理と「同じCAP」は問題ありません。直すべきは次の2点です。
+
+1. `unset` は安全
+
+`/bin/bash` 3.2.57で「引数なし／CAPだけ／複数dir＋CAP／空白入りdir」を実測し、`set -u`でも正常でした。疎配列は仕様上許され、 `"${args[@]}"` は存在する要素だけを展開します。`${args+"${args[@]}"}` も、全要素を外した場合のnounset回避として機能しています。[GNU Bash Arrays](https://www.gnu.org/s/bash/manual/html_node/Arrays.html)
+
+ここは直さなくてよいです。既存controlも16/16で通過しました。
+
+2. exit 2より、状態遷移を監視していないことが問題
+
+このplistでは非ゼロ終了は通知になりません。毎時実行され、結果がログと`LastExitStatus`に残るだけです。[Apple launchd.plist](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5)
+
+正解は、インストール時に両ディレクトリを作ってからLaunchAgentをロードし、「missing＝常に異常」にすることです。起動順による未作成を許すなら、
+
+- readiness前: `not-ready`
+- readiness後に消失: exit 2
+- 通知: 毎時ではなく、失敗への遷移または最終成功時刻のstaleで1回
+
+に分けるべきです。現状のエラー出力がstdoutなのも弱く、非ゼロ診断はstderrへ出すべきです。
+
+3. stateディレクトリ掃引には実際の破壊経路がある
+
+問題はglobより、[log-size-cap.sh](/Users/tomtim/Infra/mobile-work/rc-backend/tools/log-size-cap.sh:64) が予測可能な`<file>.tail.new`と`<file>.tail`へ`>`で書く点です。リダイレクトはsymlinkを辿ります。
+
+実測では、`live.log.tail.new -> api.key`を置くと、`api.key`が11 Bから1024 Bへ上書きされ、それでもexit 0でした。明示的に2ファイルを指定しても、この問題自体は残ります。
+
+最善はログを専用ディレクトリへ移すこと。それに加えて、secureな一時ファイル＋renameを使い、入力ログとsidecarのsymlink/hardlinkを拒否してください。同一CAPはそのままで構いません。
+tokens used
+92,514
+結論: 引数処理と「同じCAP」は問題ありません。直すべきは次の2点です。
+
+1. `unset` は安全
+
+`/bin/bash` 3.2.57で「引数なし／CAPだけ／複数dir＋CAP／空白入りdir」を実測し、`set -u`でも正常でした。疎配列は仕様上許され、 `"${args[@]}"` は存在する要素だけを展開します。`${args+"${args[@]}"}` も、全要素を外した場合のnounset回避として機能しています。[GNU Bash Arrays](https://www.gnu.org/s/bash/manual/html_node/Arrays.html)
+
+ここは直さなくてよいです。既存controlも16/16で通過しました。
+
+2. exit 2より、状態遷移を監視していないことが問題
+
+このplistでは非ゼロ終了は通知になりません。毎時実行され、結果がログと`LastExitStatus`に残るだけです。[Apple launchd.plist](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5)
+
+正解は、インストール時に両ディレクトリを作ってからLaunchAgentをロードし、「missing＝常に異常」にすることです。起動順による未作成を許すなら、
+
+- readiness前: `not-ready`
+- readiness後に消失: exit 2
+- 通知: 毎時ではなく、失敗への遷移または最終成功時刻のstaleで1回
+
+に分けるべきです。現状のエラー出力がstdoutなのも弱く、非ゼロ診断はstderrへ出すべきです。
+
+3. stateディレクトリ掃引には実際の破壊経路がある
+
+問題はglobより、[log-size-cap.sh](/Users/tomtim/Infra/mobile-work/rc-backend/tools/log-size-cap.sh:64) が予測可能な`<file>.tail.new`と`<file>.tail`へ`>`で書く点です。リダイレクトはsymlinkを辿ります。
+
+実測では、`live.log.tail.new -> api.key`を置くと、`api.key`が11 Bから1024 Bへ上書きされ、それでもexit 0でした。明示的に2ファイルを指定しても、この問題自体は残ります。
+
+最善はログを専用ディレクトリへ移すこと。それに加えて、secureな一時ファイル＋renameを使い、入力ログとsidecarのsymlink/hardlinkを拒否してください。同一CAPはそのままで構いません。
