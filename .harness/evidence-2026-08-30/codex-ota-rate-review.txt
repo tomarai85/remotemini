@@ -1,0 +1,751 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a053c2-9cf4-7bb0-8fbe-aa4bb48b9585
+--------
+user
+Attack this. A rate limiter added to an unauthenticated file-distribution endpoint running unattended on a production Mac mini. Be brief — the two or three things actually wrong, not a survey.
+
+## What the endpoint is
+
+`ota-server.mjs` serves an Ad Hoc iOS `.ipa` + `manifest.plist` + a landing page from `~/ota/<24-hex-secret>/`. It listens on `127.0.0.1:8788` only; the sole path in is `tailscale serve`, which proxies `https://friday.<tailnet>.ts.net:9443/ota -> http://127.0.0.1:8788` (tailnet-only, not Funnel). It **cannot carry authentication** — iOS `installd` sends no custom headers — so the secret path segment is the whole access control. Anyone on the owner's tailnet can hit it, and that tailnet still contains a machine that was given away.
+
+Until now nothing bounded request volume. A log size cap was added earlier today, but that bounds the *trace* of abuse, not the abuse.
+
+## The limiter
+
+```js
+const RATE_PER_MIN  = Number(process.env.OTA_RATE_PER_MIN || 120);
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX_PEERS = 2048;
+const hits = new Map();            // peer -> number[] (timestamps)
+
+function peerOf(req) {
+    const xff = String(req.headers["x-forwarded-for"] || "");
+    if (xff) {
+        const hops = xff.split(",").map(h => h.trim()).filter(Boolean);
+        if (hops.length) return { key: hops[hops.length - 1], src: "xff" };   // LAST hop
+    }
+    return { key: String(req.socket?.remoteAddress || "?"), src: "sock" };
+}
+
+function overRate(key, now) {
+    let arr = hits.get(key);
+    if (!arr) {
+        if (hits.size >= RATE_MAX_PEERS) {
+            const oldest = hits.keys().next().value;      // insertion order
+            if (oldest !== undefined) hits.delete(oldest);
+        }
+        arr = []; hits.set(key, arr);
+    }
+    while (arr.length && now - arr[0] > RATE_WINDOW_MS) arr.shift();
+    if (arr.length >= RATE_PER_MIN) return true;
+    arr.push(now);
+    return false;
+}
+```
+The check runs **before** method dispatch and path resolution, so a flood does not buy the attacker a stat() per request. Over the limit: 429 + `Retry-After: 60`, and the request is still logged (`code=429`).
+
+## What I measured rather than assumed
+
+- The socket address is useless for identity: everything arrives from 127.0.0.1 through the proxy. Confirmed against the live config (`/ota -> http://127.0.0.1:8788`).
+- So the log records **which source was used** — `peer=xff` or `peer=sock`, the source only, never the value (this log's standing rule is that no raw client identifier is written). Hitting the real tailnet URL logs `peer=xff`, so tailscale does forward the header.
+- I first keyed on `hops[0]`. Rotating a client-supplied first hop then bypasses the limiter completely — measured, 20 requests with `X-Forwarded-For: 10.0.0.$i, 10.0.0.0` produced **0** 429s. Switching to the last hop gives 15/20. The mutation is kept as a control.
+- The default 120/min never touches a real install: an install is landing page + manifest + ipa; three rounds of that (9 requests) sees no 429.
+
+## Attack these specifically
+
+1. **Is "last hop" actually safe here?** It rests on tailscale serve *appending* its own value to a client-supplied header rather than replacing or passing it through. I inferred that from `peer=xff` appearing plus general proxy convention — I did **not** verify what tailscale does with a client-supplied `X-Forwarded-For`, because my log deliberately does not record the value. Is there a way to establish this that does not involve logging a client-controlled string? And if tailscale *replaces* rather than appends, does last-hop still hold?
+
+2. **`hits.keys().next().value` evicts in insertion order, not least-recently-used.** With 2048 slots and a peer set of ~5 real devices, is that exploitable — can a flooder from one tailnet address cycle enough distinct keys to evict a legitimate peer's window, and does that even matter given eviction only *resets* someone's count (fails open, never denies)?
+
+3. **A sliding window of timestamps per peer.** The array is bounded at RATE_PER_MIN because the over-limit branch returns without pushing. Is there a case where it is not — and is a per-peer array of up to 120 numbers the right structure here versus a counter with a reset, given this process also streams a 2 MB file?
+
+4. **429 during a genuine install on a bad network.** installd retries, and a large ranged download could in principle issue many requests. 120/min was chosen as "obviously above a real install" without measuring a retry storm. What would a real failing install look like, and is there a shape that keeps abuse bounded while making it structurally impossible to refuse the owner — for instance never rate-limiting the manifest/landing page, only the .ipa, or the reverse?
+
+5. Anything about adding a limiter to the one path a person uses to recover their phone that I am underweighting. If the honest answer is "a rate limiter is the wrong control here and the real fix is X", say that.
+2026-08-30T17:40:59.107110Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T17:40:59.107123Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T17:40:59.444292Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+率直に絞ります。ここはTailscale Serveの現行X-Forwarded-For挙動だけ一次資料・実装で確認し、残りは提示コードから攻撃成立性を判定します。
+codex
+Mac mini運用と保護設定の前提が絡むため、`claude-workspace-context` も参照します。今回はレビューのみで、設定やサービスには触れません。
+exec
+/bin/zsh -lc "sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/SKILL.md" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+---
+name: claude-workspace-context
+description: "Tomtim の Claude 側グローバル設定を Codex でも参照するためのワークスペース文脈スキル。Mac mini 運用、保護ファイル、AI 連携、Claude Code との役割分担、ハーネス、ルーティング、デプロイ前提、作業スタイル、Claude 由来の制約を踏まえて進める必要がある時に必ず使用。"
+---
+
+# Claude Workspace Context
+
+`~/.claude/CLAUDE.md` と主要エージェント定義を Codex から参照できるようにしたブリッジスキル。
+
+## いつ使うか
+
+- `/Users/tomtim` 配下で、Claude 側の運用前提を踏まえて作業する時
+- Mac mini、launchd、SSH、handoff、複数 AI 連携が絡む時
+- `.env`、設定ファイル、依存関係、デプロイ周辺の変更可否を慎重に判断したい時
+
+## 最重要ルール
+
+- 日本語でやり取りする。
+- ユーザー向けテキストでは絵文字や装飾的な Unicode を避ける。
+- 触ってはいけないもの:
+  - `~/.claude/settings.json`
+  - `~/.zshrc`, `~/.bashrc`, `~/.zprofile`, `~/.bash_profile`
+  - あらゆる `.env`
+- 次は事前確認が必要:
+  - 依存関係の追加/削除/ダウングレード
+  - メジャーアップグレード
+  - ビルド設定変更
+  - DB 接続設定やマイグレーション
+  - launchd、Docker、CI/CD、ポート、認証、SSL 周辺
+- 症状回避ではなく根本原因修正を優先する。
+- 長い文脈共有はファイルベースで残す発想を優先する。
+- Claude 側の routing banner / Harness / Agent Teams は設計思想として参照する。ただし Codex では上位ルールを優先し、明示的な許可なしに sub-agent を起動しない。
+- Claude 側の設定や設計を同期目的で変更しない。反映が必要な場合は Codex 側の skill、memory、reference にだけ写す。
+- 複数 AI が絡む作業では、同じファイルを同時編集しないように担当範囲を明確にする。
+
+## Mac mini 文脈
+
+- SSH: `ssh athenas@10.0.0.0`
+- Node: `/opt/homebrew/bin/node`
+- sudo が必要な作業は、基本的にユーザー実行前提
+
+## 読むべき参照
+
+- コピー索引: `references/README.md`
+- 元のグローバル設定: `references/claude-global.md`
+- Claude 側ルールコピー:
+  - `references/rules/protected-files.md`
+  - `references/rules/workflow-principles.md`
+  - `references/rules/mac-mini-ops.md`
+  - `references/rules/harness-rules.md`
+  - `references/rules/parallel-ai-rules.md`
+  - `references/rules/session-resume.md`
+- ハーネス系エージェント:
+  - `references/agents/planner.md`
+  - `references/agents/generator.md`
+  - `references/agents/evaluator.md`
+  - `references/agents/meta-agent.md`
+- Claude 側の追加エージェント文脈:
+  - `references/agents/mac-mini-deployer.md`
+  - `references/agents/pica-connector.md`
+  - `references/agents/x-bookmark-manager.md`
+- Claude 側コマンド/テンプレート/メモリのコピー:
+  - `references/commands/`
+  - `references/templates/`
+  - `references/memory/`
+  - `references/claude-skills/`
+
+## 注意
+
+- Claude 側のルールが Codex の system/developer 指示と衝突する場合は、Codex 側の上位指示を優先する。
+- このスキルは Claude の運用文脈を持ち込むためのものだが、Codex の権限モデルや sub-agent ルールまでは上書きしない。
+
+exec
+/bin/zsh -lc "sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/mac-mini-ops.md" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+---
+name: mac-mini-ops
+description: SSH operations, service management, and deploy procedures for the Mac mini (athenas@10.0.0.0)
+---
+
+# Mac mini Operation Rules
+
+## Connection
+- SSH: `ssh athenas@10.0.0.0` (via Tailscale)
+- Tailscale: App Store version, so `tailscale set --ssh` is not available
+
+## Node.js
+- Path: `/opt/homebrew/bin/node`
+- Not in PATH under launchd; always use the absolute path
+
+## .env location
+- Shared: `~/macmini-openclaw-claudeode-/.env`
+- Copy to each subsystem as needed
+
+## Directory layout
+- `~/個人/` — personal projects (x-bookmark etc.)
+- `~/Disocrod/` — Discord X-posting bot
+- client-a lives in a separate directory (do not conflate)
+
+## launchd service management
+```bash
+# Load
+launchctl load ~/Library/LaunchAgents/<plist>
+# Unload
+launchctl unload ~/Library/LaunchAgents/<plist>
+# Status
+launchctl list | grep <label>
+```
+
+## Tasks requiring sudo
+Not executable by AI. User runs `! ssh athenas@... sudo <command>` directly in the terminal.
+
+web search: 
+web search: site:github.com/tailscale/tailscale "X-Forwarded-For" serve proxy ...
+web search: 
+web search: site:github.com/tailscale/tailscale "func addProxyForwardedHeaders" ...
+web search: 
+web search: 
+web search: 
+web search: https://raw.githubusercontent.com/tailscale/tailscale/main/ipn/ipnlocal/serve.go
+web search: 
+web search: 'func addProxyForwardedHeaders'
+codex
+現行のTailscale実装ではXFFは「追加」ではなく、接続元のTailscale IPで`Set`されています。導入版との差分だけ避けたいので、Mac mini上のバージョンを読み取り確認します。変更はしません。
+exec
+/bin/zsh -lc "ssh -o BatchMode=yes -o ConnectTimeout=8 athenas@10.0.0.0 'tailscale version'" in /Users/tomtim/Infra/mobile-work
+ exited 127 in 185ms:
+zsh:1: command not found: tailscale
+
+exec
+/bin/zsh -lc "ssh -o BatchMode=yes -o ConnectTimeout=8 athenas@10.0.0.0 '/Applications/Tailscale.app/Contents/MacOS/Tailscale version'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 188ms:
+1.102.3
+  tailscale commit: 9329c3677031109ff6d0b80abee0cddc8f35ff6f
+  long version: 1.102.3-t9329c3677-ga522f65e9
+  other commit: a522f65e92d54b594fe72e842afc9572bd9cf0b8
+  go version: go1.26.6 (tailscale/go 7275f792d4)
+
+web search: 
+web search: https://raw.githubusercontent.com/tailscale/tailscale/9329c3677031109ff6d0b80abee0cddc8f35ff6f/ipn/ipnlocal/serve.go
+web search: 
+web search: site:github.com/tailscale/tailscale/releases/tag/v1.102.3 ...
+web search: 
+web search: https://raw.githubusercontent.com/tailscale/tailscale/v1.102.3/ipn/ipnlocal/serve.go
+web search: 
+web search: 'func addProxyForwardedHeaders'
+web search: 
+web search: site:nodejs.org/api/http.html server.timeout default 0 requestTimeout receiving entire request
+exec
+/bin/zsh -lc "rg --files -g 'ota-server.mjs' -g '"'!node_modules'"'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+rc-backend/tools/ota-server.mjs
+
+exec
+/bin/zsh -lc "sed -n '1,280p' rc-backend/tools/ota-server.mjs" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+#!/usr/bin/env node
+// 机に置いた束を電話へ渡すだけの、極小の静的配信(2026-08-28)。
+//
+// ★なぜ rc-backend の中に入れなかったか。此処が配る道は**認証を付けられない** ——
+//   iOS の `installd` が manifest と .ipa を取りに来る時、独自の header を送らないから。
+//   其れを電話の生命線である rc-backend の中へ足すと、認証を外す分岐が本体に1本増える。
+//   欠陥が出た時に壊れるのが「配布」だけで済む様に、**別のプロセスに切る**。
+//   死んでも Tom の会話は生きている。
+//
+// ★守りは3つ。認証が無い代わりに、此の3つが全部要る:
+//   1. 127.0.0.1 にしか listen しない。外へ出るのは `tailscale serve` の経路だけで、
+//      其れは tailnet 限定。
+//   2. path は `ROOT` の中へ**解決してから**比較する(`realpath` の前後で確かめる)。
+//      `..` も symlink も此処で死ぬ。
+//   3. **一覧を返さない**。dir を叩かれたら index.html だけ返し、無ければ 404。
+//      配る path の秘密の一段は、一覧が出た瞬間に秘密でなくなる ——
+//      Tom の tailnet には今も edith(2026-08-20 に譲渡した機体)が居る。
+//
+// ★GET と HEAD 以外は受けない。書き込みの口を1つも作らない。
+//
+// 使い方: OTA_ROOT=~/ota OTA_PORT=8788 node tools/ota-server.mjs
+
+import { createServer } from "node:http";
+import { createReadStream, statSync, realpathSync } from "node:fs";
+import { join, extname, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+
+const ROOT = realpathSync(resolve(process.env.OTA_ROOT || join(homedir(), "ota")));
+const PORT = Number(process.env.OTA_PORT || 8788);
+
+// 表に在る型だけ。知らない拡張子は `application/octet-stream` に落とす ——
+// 推測して text/html を返すと、置いた覚えの無い file が頁として解釈されうる。
+const TYPES = {
+  ".ipa": "application/octet-stream",
+  ".plist": "application/xml",
+  ".html": "text/html; charset=utf-8",
+};
+
+/** ROOT の中へ解決できた実体の path。出来なければ null(= 404 にする)。 */
+function safeResolve(urlPath) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(urlPath.split("?")[0]);
+  } catch {
+    return null; // 壊れた %エスケープ。推測しない
+  }
+  if (decoded.includes("\0")) return null;
+  const candidate = resolve(join(ROOT, "." + decoded));
+  let real;
+  try {
+    real = realpathSync(candidate);
+  } catch {
+    return null; // 無い
+  }
+  // ★`startsWith(ROOT)` だけでは足りない: `/Users/x/ota-evil` が `/Users/x/ota` で
+  //   始まってしまう。区切りまで含めて比べる。
+  if (real !== ROOT && !real.startsWith(ROOT + sep)) return null;
+  return real;
+}
+
+
+// ── 1要求1行の記録(2026-08-30)────────────────────────────────────────────────
+// なぜ要るか: この口は build 89 を Tom の電話へ運んだ経路だが、何も記録していなかった ——
+// 「開いたが入らなかった」と「一度も開いていない」が**ログから区別できない**。
+// 実際 2026-08-29 に「tap したか」を答えられず、Tom に口頭で訊く以外に手が無かった。
+//
+// ★秘密の一段を**そのまま書かない**。この口の唯一の守りは推測できない 24 桁 hex で、
+//   それを log に書けば、log を読める者に配布物が渡る(friday には athenas 以外に
+//   tomtim / udagawa が居る = 08-28 に `chmod 700 ~/ota` で塞いだのと同じ穴)。
+//   残すのは**形だけ**: `/<secret>/RemoteMini.ipa` → `/:secret/RemoteMini.ipa`。
+// ★UA も生で書かない。`src/reqlog.mjs` の `clientClass` と同じ**閉じた語**へ落とす ——
+//   生の UA には端末の型番と OS 版が入る。分類は独立の実装にせず綴りだけ合わせる
+//   (此処は tools/ で src/ を import しない層なので、写しである事を明示しておく)。
+// ★2026-08-30、Codex の指摘1: 「長い hex を畳む」は**文字列のヒューリスティック**で、
+//   percent-encoding(`/ab%63d…`)・接尾辞(`/<secret>;x`)・absolute-form
+//   (`GET http://host/<secret>x`)で秘密がそのまま出る。堅い形は長さでも文字種でもなく
+//   **既知のルートだけを型で記録し、それ以外は1つの定数へ畳む**事。
+//   副作用として、長大 URL による**ログ増幅(指摘2)も同時に塞がる** —— 行長が有界になる。
+const KNOWN_LEAF = new Set(["manifest.plist", "index.html", ""]);
+const IPA = /\.ipa$/i;
+
+/**
+ * 記録に出す path。**元の文字列を一切通さない**(白名簿から組み立てる)。
+ *   `/<secret>/manifest.plist` → `/:secret/manifest.plist`
+ *   `/<secret>/RemoteMini.ipa` → `/:secret/:ipa`
+ *   `/<secret>/`               → `/:secret/`
+ *   それ以外(404 の的・攻撃・打ち間違い)→ `/:other`
+ */
+export function otaPathShape(urlPath) {
+  const clean = String(urlPath || "/").split("?")[0].split("#")[0];
+  const parts = clean.split("/");
+  // 期待する形は ["", <secret>, <leaf>] の3片だけ。増減はすべて `/:other`。
+  if (parts.length !== 3 || parts[0] !== "") return "/:other";
+  const leaf = parts[2];
+  if (IPA.test(leaf)) return "/:secret/:ipa";
+  if (KNOWN_LEAF.has(leaf)) return `/:secret/${leaf}`;
+  return "/:other";
+}
+
+/** `src/reqlog.mjs` の `clientClass` と同じ語彙(app / probe / tool / none / other)。 */
+export function otaClientClass(userAgent) {
+  const ua = String(userAgent || "");
+  if (!ua) return "none";
+  if (/^rc-live-/i.test(ua)) return "probe";
+  // iOS の installd はここに落ちる(CFNetwork/Darwin)。Safari も同じ語になるが、
+  // **この口に来る CFNetwork は installd か Safari のどちらか**で、どちらも「電話が来た」。
+  if (/CFNetwork|Darwin/i.test(ua)) return "app";
+  if (/curl|wget|node|undici|python|libwww/i.test(ua)) return "tool";
+  return "other";
+}
+
+function logReq(req, code, bytes) {
+  // 1行6欄。増やす時は此処だけ。`[ota] req` を頭に置くのは rc-backend の `[rc-backend] req` と
+  // 同じ形にして、grep を1つの流儀で済ませる為。
+  //
+  // ★`bytes` / `code=200` は「**Node が OS へ渡し切った**」であって「電話が受け取って
+  //   入れられた」ではない(Codex の指摘3)。この計器が答えられるのは
+  //   「取りに来たか」「途中で切れたか」までで、install の成否は答えられない。
+  // ★書き込みのエラーを飲む。stdout は launchd が普通のファイルへ向けているので、
+  //   ディスクが満杯だと write が投げてプロセスごと落ちうる —— 配布が止まる方が、
+  //   1行記録できない事より遥かに高くつく。
+  try {
+    process.stdout.write(
+      `[ota] req ${new Date().toISOString()} ${req.method} ${otaPathShape(req.url)} `
+      + `client=${otaClientClass(req.headers["user-agent"])} peer=${peerOf(req).src} code=${code} bytes=${bytes}\n`,
+      () => {},
+    );
+  } catch { /* 記録できない事は配布を止める理由にならない */ }
+}
+
+// ── 連打を断る(2026-08-30)──────────────────────────────────────────────────
+// ★此の口には**認証を付けられない**(iOS の installd は独自の header を送らない)ので、
+//   tailnet に居る誰でも叩ける。DESIGN §12 で「上限では押さえられない物」として
+//   名指ししていたのが此処 —— log の上限は暴走の**跡**を縛るだけで、暴走そのものは止めない。
+//
+// ★**相手を socket では区別できない**(実測 2026-08-30): `tailscale serve` が
+//   `/ota -> http://127.0.0.1:8788` を代理するので、`remoteAddress` は常に 127.0.0.1。
+//   だから「XFF が在ればその先頭、無ければ socket」を鍵にし、**どちらを使ったかを
+//   1語だけログに出す**(`peer=xff` / `peer=sock`)。値は出さない —— 相手の住所は
+//   此の口が答えるべき問いではないし、生の識別子を残さないのが此の log の規約。
+//   ★仮定で書かない為の1語。本番で実際に何が届くかを、此の欄で測る。
+const RATE_PER_MIN = Number(process.env.OTA_RATE_PER_MIN || 120);
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX_PEERS = 2048;          // 限流器自身が漏れない様に上限を置く
+const hits = new Map();               // peer -> number[](時刻)
+
+// ★既定 120/分 は**本物の導入を絶対に止めない**為の値。1回の導入は
+//   導線の頁 + manifest + 束 の3要求で、installd が範囲要求を足しても桁が違う。
+//   守りを厳しくして本物を止めたら、此の口の存在意義そのものが消える。
+function peerOf(req) {
+    const xff = String((req.headers || {})["x-forwarded-for"] || "");
+    if (xff) {
+        // ★**末尾**を取る。先頭ではない —— 客は自分で `X-Forwarded-For` を付けられるので、
+        //   先頭を鍵にすると header を回すだけで限流を素通りできる(鍵が毎回変わる)。
+        //   信頼できる代理が1段(此処は tailscale serve だけ)の時、**自分に一番近い側 =
+        //   末尾**が其の代理の書いた値で、客には書き換えられない。
+        //   ★**推測ではなく実測で確定**(2026-08-30)。本番の tailnet 経路へ、先頭 hop を
+        //     130 通りに偽装しながら 130 回叩いた: **200 が 120 / 429 が 10** ——
+        //     既定の上限 120/分ちょうどで断られた。もし代理が客の header を素通りさせて
+        //     いれば鍵が毎回変わって 429 は 0 になる。つまり tailscale serve は
+        //     **自分の値を追記**しており、末尾は客に書けない。
+        //   ★此の測り方は header の**値を1度も記録しない**。行に残るのは `peer=xff` の
+        //     1語だけで、判定は 429 が出るか否かという振る舞いで取っている。
+        const hops = xff.split(",").map((h) => h.trim()).filter(Boolean);
+        if (hops.length) return { key: hops[hops.length - 1], src: "xff" };
+    }
+    // 直に叩かれた時(= 127.0.0.1 に居るのは此の機体の中の誰か)。
+    return { key: String(req.socket?.remoteAddress || "?"), src: "sock" };
+}
+
+function overRate(key, now) {
+    let arr = hits.get(key);
+    if (!arr) {
+        // 相手が増え続けても地図が無限にならない様に、古い物から落とす。
+        if (hits.size >= RATE_MAX_PEERS) {
+            const oldest = hits.keys().next().value;
+            if (oldest !== undefined) hits.delete(oldest);
+        }
+        arr = [];
+        hits.set(key, arr);
+    }
+    // 窓の外を捨ててから数える(件数ではなく**時刻**を持つので、窓の境界で緩まない)。
+    while (arr.length && now - arr[0] > RATE_WINDOW_MS) arr.shift();
+    if (arr.length >= RATE_PER_MIN) return true;
+    arr.push(now);
+    return false;
+}
+
+const server = createServer((req, res) => {
+  const done = (code, body = "") => {
+    res.writeHead(code, { "content-type": "text/plain; charset=utf-8" });
+    res.end(body);
+    logReq(req, code, Buffer.byteLength(body));
+  };
+
+  // ★連打の判定は**一番前**。読み方の判定より先に断らないと、断る為の仕事が
+  //   そのまま攻撃者の欲しい仕事になる(path の解決も stat も走ってしまう)。
+  if (overRate(peerOf(req).key, Date.now())) {
+    res.writeHead(429, { "content-type": "text/plain; charset=utf-8", "retry-after": "60" });
+    res.end("too many requests\n");
+    logReq(req, 429, 0);
+    return;
+  }
+
+  if (req.method !== "GET" && req.method !== "HEAD") return done(405, "GET only\n");
+
+  let target = safeResolve(req.url || "/");
+  if (!target) return done(404, "not found\n");
+
+  let st;
+  try {
+    st = statSync(target);
+  } catch {
+    return done(404, "not found\n");
+  }
+
+  if (st.isDirectory()) {
+    // ★一覧を作らない。index.html が在ればそれ、無ければ 404。
+    const idx = join(target, "index.html");
+    try {
+      st = statSync(idx);
+      target = idx;
+    } catch {
+      return done(404, "not found\n");
+    }
+  }
+  if (!st.isFile()) return done(404, "not found\n");
+
+  const type = TYPES[extname(target).toLowerCase()] || "application/octet-stream";
+  const head = {
+    "content-type": type,
+    "content-length": String(st.size),
+    // 束は焼き直しで同じ名前のまま中身が変わる。電話に古い物を掴ませない。
+    "cache-control": "no-store",
+  };
+  // HEAD は中身を開けない —— 開く必要が無い上に、開けば下の失敗経路を無駄に踏む。
+  if (req.method === "HEAD") { res.writeHead(200, head); logReq(req, 200, 0); return res.end(); }
+
+  // ★★読み取りの失敗で**プロセスごと死ぬ**穴を塞ぐ(2026-08-30、実測で落として確認)。
+  //   `stream.pipe(res)` は読み手のエラーを転送せず、`error` に聞き手が居なければ
+  //   Node は投げる = **配布口が丸ごと落ちる**。実演: 束を `chmod 000` にして1回叩くと
+  //   `EACCES` で死に、以後は正常な file も `000`(接続すら出来ない)になった。
+  //   `statSync` が通っても `open` は落ちうる —— stat は読み権限を要らないし、
+  //   stat と open の間に消える事も在る。同時要求が増えれば `EMFILE` も同じ形で来る
+  //   (**それは此の口が晒されている連打そのもの**)。
+  //
+  //   ★`open` を待ってから頭を書く。初版の順(先に 200 を書いてから開く)だと、
+  //     失敗した時には既に 200 が出ているので、**嘘の 200 を送った後で切る**しか無い。
+  //     開けた事を確かめてから 200 を書けば、失敗は素直に 404 として出せる。
+  let sent = 0;
+  const stream = createReadStream(target);
+
+  stream.once("error", () => {
+    // 頭がまだなら 404。既に出ていれば切るしかない(`close` が code=0 を残す)。
+    if (!res.headersSent) return done(404, "not found\n");
+    res.destroy();
+  });
+
+  stream.once("open", () => {
+    // 開く前に客が切っていたら、頭も書かず fd も持ち続けない。
+    if (res.destroyed || res.writableEnded) return stream.destroy();
+    res.writeHead(200, head);
+    // ★送った**実バイト**を自分で数える。初版は `res.bytesWritten` を書いたが、あれは
+    //   `ServerResponse` に存在しない属性で、ログに `bytes=undefined` が出ていた。
+    //   タスクの verifier は GET の行数しか数えないので**緑のまま通った** ——
+    //   「検査が測っていない範囲」の実例なので、直しと一緒に此処へ残す。
+    // ★`finish` ではなく `close` で記録する。`finish` は送り切った時しか出ないので、
+    //   中断(電話が圏外へ出た / installd が諦めた)が**1行も残らない** —— それは
+    //   「tap したのに入らなかった」を潰す当の欠陥と同じ形。`close` は必ず出る。
+    //   送り切ったかは `writableFinished` で分け、中断は `code=0`
+    //   (`src/reqlog.mjs` の実ログが `code=0 reason=aborted` を使うので綴りを合わせる)。
+    stream.on("data", (chunk) => { sent += chunk.length; });
+    res.on("close", () => { logReq(req, res.writableFinished ? 200 : 0, sent); stream.destroy(); });
+    stream.pipe(res);
+  });
+});
+
+// ★最後の網。上で塞いだ経路の外にも、まだ知らない投げ方が在りうる —— 配布口が
+//   黙って消えるより、一行残して生き続ける方が良い(此の口は無人で回る)。
+//   ★これは上の `stream.once("error")` の**代わりではない**。此処だけに頼ると
+
+exec
+/bin/zsh -lc "sed -n '281,520p' rc-backend/tools/ota-server.mjs" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+//     「落ちはしないが、その要求に何が起きたか分からない」状態になる。
+process.on("uncaughtException", (e) => {
+  try { process.stdout.write(`[ota] uncaught ${new Date().toISOString()} ${e?.code || ""} ${e?.message || e}\n`, () => {}); } catch { /* 記録できない事は配布を止める理由にならない */ }
+});
+
+// ★送信の上限(2026-08-30、Codex の指摘3の後半)。客が**切らずに読むのを止める**と、
+//   `close` が出ないので**1行も記録されない** —— 「取りに来たのに終わらなかった」が
+//   計器から消える、この計器が塞ぐべき当の穴と同じ形。
+//   5分 = tailnet 越しに 1.9MB の束を配るのに桁で足りる長さ(実測は秒)。
+//   切った時は `close` が出るので `code=0` として残る。
+server.requestTimeout = 0;                 // 要求の読みは即終わる(GET/HEAD のみ)
+server.headersTimeout = 30_000;
+server.on("connection", (socket) => { socket.setTimeout(300_000, () => socket.destroy()); });
+
+server.listen(PORT, "127.0.0.1", () => {
+  console.log(`[ota] ${ROOT} を 127.0.0.1:${PORT} で配る(GET/HEAD のみ・一覧なし)`);
+});
+
+web search: 
+web search: site:tailscale.com/docs/features/access-control tailnet access control source IP device Tailscale Serve
+exec
+/bin/zsh -lc "nl -ba rc-backend/tools/ota-server.mjs | sed -n '165,250p;310,335p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+   165	        if (hops.length) return { key: hops[hops.length - 1], src: "xff" };
+   166	    }
+   167	    // 直に叩かれた時(= 127.0.0.1 に居るのは此の機体の中の誰か)。
+   168	    return { key: String(req.socket?.remoteAddress || "?"), src: "sock" };
+   169	}
+   170	
+   171	function overRate(key, now) {
+   172	    let arr = hits.get(key);
+   173	    if (!arr) {
+   174	        // 相手が増え続けても地図が無限にならない様に、古い物から落とす。
+   175	        if (hits.size >= RATE_MAX_PEERS) {
+   176	            const oldest = hits.keys().next().value;
+   177	            if (oldest !== undefined) hits.delete(oldest);
+   178	        }
+   179	        arr = [];
+   180	        hits.set(key, arr);
+   181	    }
+   182	    // 窓の外を捨ててから数える(件数ではなく**時刻**を持つので、窓の境界で緩まない)。
+   183	    while (arr.length && now - arr[0] > RATE_WINDOW_MS) arr.shift();
+   184	    if (arr.length >= RATE_PER_MIN) return true;
+   185	    arr.push(now);
+   186	    return false;
+   187	}
+   188	
+   189	const server = createServer((req, res) => {
+   190	  const done = (code, body = "") => {
+   191	    res.writeHead(code, { "content-type": "text/plain; charset=utf-8" });
+   192	    res.end(body);
+   193	    logReq(req, code, Buffer.byteLength(body));
+   194	  };
+   195	
+   196	  // ★連打の判定は**一番前**。読み方の判定より先に断らないと、断る為の仕事が
+   197	  //   そのまま攻撃者の欲しい仕事になる(path の解決も stat も走ってしまう)。
+   198	  if (overRate(peerOf(req).key, Date.now())) {
+   199	    res.writeHead(429, { "content-type": "text/plain; charset=utf-8", "retry-after": "60" });
+   200	    res.end("too many requests\n");
+   201	    logReq(req, 429, 0);
+   202	    return;
+   203	  }
+   204	
+   205	  if (req.method !== "GET" && req.method !== "HEAD") return done(405, "GET only\n");
+   206	
+   207	  let target = safeResolve(req.url || "/");
+   208	  if (!target) return done(404, "not found\n");
+   209	
+   210	  let st;
+   211	  try {
+   212	    st = statSync(target);
+   213	  } catch {
+   214	    return done(404, "not found\n");
+   215	  }
+   216	
+   217	  if (st.isDirectory()) {
+   218	    // ★一覧を作らない。index.html が在ればそれ、無ければ 404。
+   219	    const idx = join(target, "index.html");
+   220	    try {
+   221	      st = statSync(idx);
+   222	      target = idx;
+   223	    } catch {
+   224	      return done(404, "not found\n");
+   225	    }
+   226	  }
+   227	  if (!st.isFile()) return done(404, "not found\n");
+   228	
+   229	  const type = TYPES[extname(target).toLowerCase()] || "application/octet-stream";
+   230	  const head = {
+   231	    "content-type": type,
+   232	    "content-length": String(st.size),
+   233	    // 束は焼き直しで同じ名前のまま中身が変わる。電話に古い物を掴ませない。
+   234	    "cache-control": "no-store",
+   235	  };
+   236	  // HEAD は中身を開けない —— 開く必要が無い上に、開けば下の失敗経路を無駄に踏む。
+   237	  if (req.method === "HEAD") { res.writeHead(200, head); logReq(req, 200, 0); return res.end(); }
+   238	
+   239	  // ★★読み取りの失敗で**プロセスごと死ぬ**穴を塞ぐ(2026-08-30、実測で落として確認)。
+   240	  //   `stream.pipe(res)` は読み手のエラーを転送せず、`error` に聞き手が居なければ
+   241	  //   Node は投げる = **配布口が丸ごと落ちる**。実演: 束を `chmod 000` にして1回叩くと
+   242	  //   `EACCES` で死に、以後は正常な file も `000`(接続すら出来ない)になった。
+   243	  //   `statSync` が通っても `open` は落ちうる —— stat は読み権限を要らないし、
+   244	  //   stat と open の間に消える事も在る。同時要求が増えれば `EMFILE` も同じ形で来る
+   245	  //   (**それは此の口が晒されている連打そのもの**)。
+   246	  //
+   247	  //   ★`open` を待ってから頭を書く。初版の順(先に 200 を書いてから開く)だと、
+   248	  //     失敗した時には既に 200 が出ているので、**嘘の 200 を送った後で切る**しか無い。
+   249	  //     開けた事を確かめてから 200 を書けば、失敗は素直に 404 として出せる。
+   250	  let sent = 0;
+
+exec
+/bin/zsh -lc "nl -ba rc-backend/tools/ota-server.mjs | sed -n '125,170p;285,325p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+   125	      + `client=${otaClientClass(req.headers["user-agent"])} peer=${peerOf(req).src} code=${code} bytes=${bytes}\n`,
+   126	      () => {},
+   127	    );
+   128	  } catch { /* 記録できない事は配布を止める理由にならない */ }
+   129	}
+   130	
+   131	// ── 連打を断る(2026-08-30)──────────────────────────────────────────────────
+   132	// ★此の口には**認証を付けられない**(iOS の installd は独自の header を送らない)ので、
+   133	//   tailnet に居る誰でも叩ける。DESIGN §12 で「上限では押さえられない物」として
+   134	//   名指ししていたのが此処 —— log の上限は暴走の**跡**を縛るだけで、暴走そのものは止めない。
+   135	//
+   136	// ★**相手を socket では区別できない**(実測 2026-08-30): `tailscale serve` が
+   137	//   `/ota -> http://127.0.0.1:8788` を代理するので、`remoteAddress` は常に 127.0.0.1。
+   138	//   だから「XFF が在ればその先頭、無ければ socket」を鍵にし、**どちらを使ったかを
+   139	//   1語だけログに出す**(`peer=xff` / `peer=sock`)。値は出さない —— 相手の住所は
+   140	//   此の口が答えるべき問いではないし、生の識別子を残さないのが此の log の規約。
+   141	//   ★仮定で書かない為の1語。本番で実際に何が届くかを、此の欄で測る。
+   142	const RATE_PER_MIN = Number(process.env.OTA_RATE_PER_MIN || 120);
+   143	const RATE_WINDOW_MS = 60_000;
+   144	const RATE_MAX_PEERS = 2048;          // 限流器自身が漏れない様に上限を置く
+   145	const hits = new Map();               // peer -> number[](時刻)
+   146	
+   147	// ★既定 120/分 は**本物の導入を絶対に止めない**為の値。1回の導入は
+   148	//   導線の頁 + manifest + 束 の3要求で、installd が範囲要求を足しても桁が違う。
+   149	//   守りを厳しくして本物を止めたら、此の口の存在意義そのものが消える。
+   150	function peerOf(req) {
+   151	    const xff = String((req.headers || {})["x-forwarded-for"] || "");
+   152	    if (xff) {
+   153	        // ★**末尾**を取る。先頭ではない —— 客は自分で `X-Forwarded-For` を付けられるので、
+   154	        //   先頭を鍵にすると header を回すだけで限流を素通りできる(鍵が毎回変わる)。
+   155	        //   信頼できる代理が1段(此処は tailscale serve だけ)の時、**自分に一番近い側 =
+   156	        //   末尾**が其の代理の書いた値で、客には書き換えられない。
+   157	        //   ★**推測ではなく実測で確定**(2026-08-30)。本番の tailnet 経路へ、先頭 hop を
+   158	        //     130 通りに偽装しながら 130 回叩いた: **200 が 120 / 429 が 10** ——
+   159	        //     既定の上限 120/分ちょうどで断られた。もし代理が客の header を素通りさせて
+   160	        //     いれば鍵が毎回変わって 429 は 0 になる。つまり tailscale serve は
+   161	        //     **自分の値を追記**しており、末尾は客に書けない。
+   162	        //   ★此の測り方は header の**値を1度も記録しない**。行に残るのは `peer=xff` の
+   163	        //     1語だけで、判定は 429 が出るか否かという振る舞いで取っている。
+   164	        const hops = xff.split(",").map((h) => h.trim()).filter(Boolean);
+   165	        if (hops.length) return { key: hops[hops.length - 1], src: "xff" };
+   166	    }
+   167	    // 直に叩かれた時(= 127.0.0.1 に居るのは此の機体の中の誰か)。
+   168	    return { key: String(req.socket?.remoteAddress || "?"), src: "sock" };
+   169	}
+   170	
+   285	
+   286	// ★送信の上限(2026-08-30、Codex の指摘3の後半)。客が**切らずに読むのを止める**と、
+   287	//   `close` が出ないので**1行も記録されない** —— 「取りに来たのに終わらなかった」が
+   288	//   計器から消える、この計器が塞ぐべき当の穴と同じ形。
+   289	//   5分 = tailnet 越しに 1.9MB の束を配るのに桁で足りる長さ(実測は秒)。
+   290	//   切った時は `close` が出るので `code=0` として残る。
+   291	server.requestTimeout = 0;                 // 要求の読みは即終わる(GET/HEAD のみ)
+   292	server.headersTimeout = 30_000;
+   293	server.on("connection", (socket) => { socket.setTimeout(300_000, () => socket.destroy()); });
+   294	
+   295	server.listen(PORT, "127.0.0.1", () => {
+   296	  console.log(`[ota] ${ROOT} を 127.0.0.1:${PORT} で配る(GET/HEAD のみ・一覧なし)`);
+   297	});
+
+codex
+結論: `last hop`、FIFO eviction、timestamp配列は主な問題ではありません。直すべきは次の3点です。
+
+1. 根本のアクセス制御が違う
+
+まず譲渡済み端末をtailnetから失効させ、secret pathもローテーションすべきです。TailscaleのACL/GrantはServeにも適用されます。また、`installd`がheaderを付けなくても、Serve自身がspoof済みheaderを除去して`Tailscale-User-Login`等を注入できます。[Tailscale Serve documentation](https://tailscale.com/docs/features/tailscale-serve#identity-headers)
+
+ただし譲渡端末が同じユーザーidentityならheaderだけでは区別できません。端末失効、または許可端末のTailscale IPに限定したGrantが先です。rate limiterはその後の保険です。
+
+2. limiterが要求数しか縛らず、実資源を縛っていない
+
+120個の`.ipa` GETは、120個のsocketとfile streamを同時に開けます。[現在の5分timeout](/Users/tomtim/Infra/mobile-work/rc-backend/tools/ota-server.mjs:286)は絶対期限ではなくinactivity timeoutなので、少量ずつ読み続ければ維持できます。次の窓でさらに120個追加でき、`EMFILE`等でownerも巻き込めます。Nodeもsocket timeoutの既定・意味をそのように定義しています。[Node HTTP documentation](https://nodejs.org/api/http.html#servertimeout)
+
+対策は「manifestだけ除外」ではありません。IPAが拒否されれば結局installできません。
+
+- 非ownerの同時IPA転送数を小さく制限
+- 非owner全体にもglobal concurrency cap
+- 転送には絶対wall-clock期限
+- owner identity/許可端末用の予約laneは429にしない
+
+失敗installは、途中切断後のIPA再GETや`Range`再開という形になります。Appleが上限を契約しているわけではないため、120という推測よりowner laneで安全性を作る方が堅いです。
+
+3. `RATE_PER_MIN`の検証漏れ
+
+[`Number(...)`](/Users/tomtim/Infra/mobile-work/rc-backend/tools/ota-server.mjs:142)は`NaN`や`Infinity`を許します。その場合`arr.length >= RATE_PER_MIN`が永遠に成立せず、配列も無限に伸びます。起動時に「有限な正のsafe integer」でなければ落とすべきです。正常値ならtimestamp配列は120件に収まり、counterへ変える必要はありません。
+
+補足: Mac miniはTailscale 1.102.3でした。この版はXFFをappendせず、実接続元IPで`Header.Set`しています。[v1.102.3 source](https://github.com/tailscale/tailscale/blob/v1.102.3/ipn/ipnlocal/serve.go#L996-L1003) したがってlast-hopは安全ですが、「appendを実測した」というコメントは誤りです。replaceでもテスト結果は同じになります。生値なしで確認するなら、canary XFFを送り、`contains_canary=false`と`has_comma=false`の真偽値だけ記録すれば足ります。FIFO evictionも、信頼できるXFFなら1端末が2048キーを生成できず、evictionはfail-openなので問題ではありません。
+tokens used
+211,021
+結論: `last hop`、FIFO eviction、timestamp配列は主な問題ではありません。直すべきは次の3点です。
+
+1. 根本のアクセス制御が違う
+
+まず譲渡済み端末をtailnetから失効させ、secret pathもローテーションすべきです。TailscaleのACL/GrantはServeにも適用されます。また、`installd`がheaderを付けなくても、Serve自身がspoof済みheaderを除去して`Tailscale-User-Login`等を注入できます。[Tailscale Serve documentation](https://tailscale.com/docs/features/tailscale-serve#identity-headers)
+
+ただし譲渡端末が同じユーザーidentityならheaderだけでは区別できません。端末失効、または許可端末のTailscale IPに限定したGrantが先です。rate limiterはその後の保険です。
+
+2. limiterが要求数しか縛らず、実資源を縛っていない
+
+120個の`.ipa` GETは、120個のsocketとfile streamを同時に開けます。[現在の5分timeout](/Users/tomtim/Infra/mobile-work/rc-backend/tools/ota-server.mjs:286)は絶対期限ではなくinactivity timeoutなので、少量ずつ読み続ければ維持できます。次の窓でさらに120個追加でき、`EMFILE`等でownerも巻き込めます。Nodeもsocket timeoutの既定・意味をそのように定義しています。[Node HTTP documentation](https://nodejs.org/api/http.html#servertimeout)
+
+対策は「manifestだけ除外」ではありません。IPAが拒否されれば結局installできません。
+
+- 非ownerの同時IPA転送数を小さく制限
+- 非owner全体にもglobal concurrency cap
+- 転送には絶対wall-clock期限
+- owner identity/許可端末用の予約laneは429にしない
+
+失敗installは、途中切断後のIPA再GETや`Range`再開という形になります。Appleが上限を契約しているわけではないため、120という推測よりowner laneで安全性を作る方が堅いです。
+
+3. `RATE_PER_MIN`の検証漏れ
+
+[`Number(...)`](/Users/tomtim/Infra/mobile-work/rc-backend/tools/ota-server.mjs:142)は`NaN`や`Infinity`を許します。その場合`arr.length >= RATE_PER_MIN`が永遠に成立せず、配列も無限に伸びます。起動時に「有限な正のsafe integer」でなければ落とすべきです。正常値ならtimestamp配列は120件に収まり、counterへ変える必要はありません。
+
+補足: Mac miniはTailscale 1.102.3でした。この版はXFFをappendせず、実接続元IPで`Header.Set`しています。[v1.102.3 source](https://github.com/tailscale/tailscale/blob/v1.102.3/ipn/ipnlocal/serve.go#L996-L1003) したがってlast-hopは安全ですが、「appendを実測した」というコメントは誤りです。replaceでもテスト結果は同じになります。生値なしで確認するなら、canary XFFを送り、`contains_canary=false`と`has_comma=false`の真偽値だけ記録すれば足ります。FIFO evictionも、信頼できるXFFなら1端末が2048キーを生成できず、evictionはfail-openなので問題ではありません。

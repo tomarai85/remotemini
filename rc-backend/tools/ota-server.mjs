@@ -122,10 +122,101 @@ function logReq(req, code, bytes) {
   try {
     process.stdout.write(
       `[ota] req ${new Date().toISOString()} ${req.method} ${otaPathShape(req.url)} `
-      + `client=${otaClientClass(req.headers["user-agent"])} code=${code} bytes=${bytes}\n`,
+      + `client=${otaClientClass(req.headers["user-agent"])} peer=${peerOf(req).src} code=${code} bytes=${bytes}\n`,
       () => {},
     );
   } catch { /* 記録できない事は配布を止める理由にならない */ }
+}
+
+// ── 連打を断る(2026-08-30)──────────────────────────────────────────────────
+// ★此の口には**認証を付けられない**(iOS の installd は独自の header を送らない)ので、
+//   tailnet に居る誰でも叩ける。DESIGN §12 で「上限では押さえられない物」として
+//   名指ししていたのが此処 —— log の上限は暴走の**跡**を縛るだけで、暴走そのものは止めない。
+//
+// ★**相手を socket では区別できない**(実測 2026-08-30): `tailscale serve` が
+//   `/ota -> http://127.0.0.1:8788` を代理するので、`remoteAddress` は常に 127.0.0.1。
+//   だから「XFF が在ればその先頭、無ければ socket」を鍵にし、**どちらを使ったかを
+//   1語だけログに出す**(`peer=xff` / `peer=sock`)。値は出さない —— 相手の住所は
+//   此の口が答えるべき問いではないし、生の識別子を残さないのが此の log の規約。
+//   ★仮定で書かない為の1語。本番で実際に何が届くかを、此の欄で測る。
+// ★起動時に検証して落とす(2026-08-30、Codex の指摘3)。`Number()` は `NaN` も
+//   `Infinity` も通す。どちらでも `arr.length >= RATE_PER_MIN` が**永遠に偽**になり、
+//   限流が黙って消えた上に時刻の配列が**無限に伸びる** —— 守りが消えるだけでなく
+//   守りの器がそのまま漏れになる。fail-closed に倒す: 変な値なら起動しない。
+const RATE_PER_MIN = Number(process.env.OTA_RATE_PER_MIN || 120);
+if (!Number.isSafeInteger(RATE_PER_MIN) || RATE_PER_MIN <= 0) {
+  console.error(`[ota] OTA_RATE_PER_MIN が正の整数でない: ${JSON.stringify(process.env.OTA_RATE_PER_MIN)}`);
+  process.exit(2);
+}
+const RATE_WINDOW_MS = 60_000;
+
+// ★**要求の数だけ縛っても資源は縛れない**(2026-08-30、Codex の指摘2)。
+//   限界の 120 は「1分に何回来られるか」でしかない。120 本の `.ipa` GET を**同時に**
+//   張られると socket と file stream が 120 本開き、しかも下の 5 分は
+//   **無活動 timeout** なので、少しずつ読み続ければ延々と保持できる。
+//   次の窓でさらに 120 本足せる = `EMFILE` で**持ち主まで巻き込める**。
+//   だから重い方(束の転送)だけ、**同時本数**と**絶対の期限**で別に縛る。
+const MAX_INFLIGHT_IPA = Number(process.env.OTA_MAX_INFLIGHT_IPA || 4);
+const TRANSFER_DEADLINE_MS = Number(process.env.OTA_TRANSFER_DEADLINE_MS || 120_000);
+for (const [name, v] of [["OTA_MAX_INFLIGHT_IPA", MAX_INFLIGHT_IPA], ["OTA_TRANSFER_DEADLINE_MS", TRANSFER_DEADLINE_MS]]) {
+  if (!Number.isSafeInteger(v) || v <= 0) {
+    console.error(`[ota] ${name} が正の整数でない: ${JSON.stringify(process.env[name])}`);
+    process.exit(2);
+  }
+}
+let inflightIpa = 0;
+// ★持ち主用の予約 lane は**作らない**。作るなら identity で分ける事になるが、
+//   Codex の指摘どおり、譲渡した機体が同じ利用者 identity を名乗るなら header では
+//   分けられない。分けられない物で lane を作ると「守った気になるだけ」の層が増える。
+//   持ち主を守る本筋は §12-b の末尾に書いた通り**アクセス制御の側**(機体の失効)。
+const RATE_MAX_PEERS = 2048;          // 限流器自身が漏れない様に上限を置く
+const hits = new Map();               // peer -> number[](時刻)
+
+// ★既定 120/分 は**本物の導入を絶対に止めない**為の値。1回の導入は
+//   導線の頁 + manifest + 束 の3要求で、installd が範囲要求を足しても桁が違う。
+//   守りを厳しくして本物を止めたら、此の口の存在意義そのものが消える。
+function peerOf(req) {
+    const xff = String((req.headers || {})["x-forwarded-for"] || "");
+    if (xff) {
+        // ★**末尾**を取る。先頭ではない —— 客は自分で `X-Forwarded-For` を付けられるので、
+        //   先頭を鍵にすると header を回すだけで限流を素通りできる(鍵が毎回変わる)。
+        //   信頼できる代理が1段(此処は tailscale serve だけ)の時、**自分に一番近い側 =
+        //   末尾**が其の代理の書いた値で、客には書き換えられない。
+        //   ★実測(2026-08-30): 本番の tailnet 経路へ先頭 hop を 130 通りに偽装しながら
+        //     130 回叩くと **200 が 120 / 429 が 10** = 既定の上限ちょうどで断られた。
+        //     素通りしていれば鍵が毎回変わって 429 は 0 になるので、
+        //     **末尾は客に書き換えられない**事は此れで言える。
+        //   ★★但し「代理が**追記**している」とは言えない —— 私は一度そう書いたが**誤り**だった
+        //     (Codex 2026-08-30 が実装を確認: tailscale 1.102.3 は `Header.Set` = **置換**)。
+        //     置換でも追記でも上の実験は同じ結果になるので、**あの実験は両者を区別していない**。
+        //     区別が要るなら、canary の XFF を送って `contains_canary` と `has_comma` の
+        //     真偽だけを記録すれば足りる(値は記録しない)。今は last-hop が安全である事さえ
+        //     言えれば足りるので、そこまではやっていない。
+        //   ★此の測り方は header の**値を1度も記録しない**。行に残るのは `peer=xff` の
+        //     1語だけで、判定は 429 が出るか否かという振る舞いで取っている。
+        const hops = xff.split(",").map((h) => h.trim()).filter(Boolean);
+        if (hops.length) return { key: hops[hops.length - 1], src: "xff" };
+    }
+    // 直に叩かれた時(= 127.0.0.1 に居るのは此の機体の中の誰か)。
+    return { key: String(req.socket?.remoteAddress || "?"), src: "sock" };
+}
+
+function overRate(key, now) {
+    let arr = hits.get(key);
+    if (!arr) {
+        // 相手が増え続けても地図が無限にならない様に、古い物から落とす。
+        if (hits.size >= RATE_MAX_PEERS) {
+            const oldest = hits.keys().next().value;
+            if (oldest !== undefined) hits.delete(oldest);
+        }
+        arr = [];
+        hits.set(key, arr);
+    }
+    // 窓の外を捨ててから数える(件数ではなく**時刻**を持つので、窓の境界で緩まない)。
+    while (arr.length && now - arr[0] > RATE_WINDOW_MS) arr.shift();
+    if (arr.length >= RATE_PER_MIN) return true;
+    arr.push(now);
+    return false;
 }
 
 const server = createServer((req, res) => {
@@ -134,6 +225,15 @@ const server = createServer((req, res) => {
     res.end(body);
     logReq(req, code, Buffer.byteLength(body));
   };
+
+  // ★連打の判定は**一番前**。読み方の判定より先に断らないと、断る為の仕事が
+  //   そのまま攻撃者の欲しい仕事になる(path の解決も stat も走ってしまう)。
+  if (overRate(peerOf(req).key, Date.now())) {
+    res.writeHead(429, { "content-type": "text/plain; charset=utf-8", "retry-after": "60" });
+    res.end("too many requests\n");
+    logReq(req, 429, 0);
+    return;
+  }
 
   if (req.method !== "GET" && req.method !== "HEAD") return done(405, "GET only\n");
 
@@ -180,10 +280,35 @@ const server = createServer((req, res) => {
   //   ★`open` を待ってから頭を書く。初版の順(先に 200 を書いてから開く)だと、
   //     失敗した時には既に 200 が出ているので、**嘘の 200 を送った後で切る**しか無い。
   //     開けた事を確かめてから 200 を書けば、失敗は素直に 404 として出せる。
+  // ★重い方(束)だけ同時本数を縛る。manifest と導線の頁は数百バイトなので、
+  //   其処まで絞ると**本物の導入が先に死ぬ** —— 束が拒まれれば結局入らないので、
+  //   「manifest だけ通す」形の緩和には意味が無い(Codex の指摘2)。
+  const isIpa = IPA.test(target);
+  if (isIpa && inflightIpa >= MAX_INFLIGHT_IPA) {
+    res.writeHead(503, { "content-type": "text/plain; charset=utf-8", "retry-after": "10" });
+    res.end("busy\n");
+    logReq(req, 503, 0);
+    return;
+  }
+
   let sent = 0;
+  let released = false;
+  if (isIpa) inflightIpa += 1;
+  const release = () => { if (!released && isIpa) { released = true; inflightIpa -= 1; } };
+  // ★**絶対の期限**。socket の timeout は無活動でしか切れないので、少しずつ読み続ける客を
+  //   永久に保持してしまう。転送そのものに壁時計の締切を置く。
+  //   既定 2 分 = tailnet 越しに 1.9MB を配るのに桁で足りる(実測は秒未満)。
+  const deadline = setTimeout(() => {
+    if (!res.writableFinished) res.destroy();
+  }, TRANSFER_DEADLINE_MS);
+  deadline.unref?.();
+
   const stream = createReadStream(target);
 
   stream.once("error", () => {
+    // ★席を必ず返す。返し忘れると、読めない file を数回叩かれただけで
+    //   同時本数の枠が埋まり、以後は誰も束を取れなくなる(守りが詰まりに化ける)。
+    clearTimeout(deadline); release();
     // 頭がまだなら 404。既に出ていれば切るしかない(`close` が code=0 を残す)。
     if (!res.headersSent) return done(404, "not found\n");
     res.destroy();
@@ -191,7 +316,7 @@ const server = createServer((req, res) => {
 
   stream.once("open", () => {
     // 開く前に客が切っていたら、頭も書かず fd も持ち続けない。
-    if (res.destroyed || res.writableEnded) return stream.destroy();
+    if (res.destroyed || res.writableEnded) { clearTimeout(deadline); release(); return stream.destroy(); }
     res.writeHead(200, head);
     // ★送った**実バイト**を自分で数える。初版は `res.bytesWritten` を書いたが、あれは
     //   `ServerResponse` に存在しない属性で、ログに `bytes=undefined` が出ていた。
@@ -203,7 +328,10 @@ const server = createServer((req, res) => {
     //   送り切ったかは `writableFinished` で分け、中断は `code=0`
     //   (`src/reqlog.mjs` の実ログが `code=0 reason=aborted` を使うので綴りを合わせる)。
     stream.on("data", (chunk) => { sent += chunk.length; });
-    res.on("close", () => { logReq(req, res.writableFinished ? 200 : 0, sent); stream.destroy(); });
+    res.on("close", () => {
+      clearTimeout(deadline); release();
+      logReq(req, res.writableFinished ? 200 : 0, sent); stream.destroy();
+    });
     stream.pipe(res);
   });
 });
