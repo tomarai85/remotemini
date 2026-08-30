@@ -89,6 +89,15 @@ struct SessionsClient: SessionsListing {
         request.httpMethod = "GET"
         request.timeoutInterval = BackendSession.interactiveTimeout
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        // ★自分の版を**明示のヘッダ**で名乗る(2026-08-30、Codex の指摘1)。
+        //   机は今まで `User-Agent` から読んでいたが、あれは iOS が既定で組み立てる物 =
+        //   **私が所有していない契約**。Apple が形を変えれば、机は「版が判らない」に落ち、
+        //   帯は黙る —— そして「版が判らない」と「解析が壊れた」が同じ null になるので、
+        //   **壊れた事に誰も気付かない**。名乗る側が名乗る。
+        //   ★UA 側の解析は残す(此のヘッダを持たない古い版からの要求を読める様に)。
+        if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String {
+            request.setValue(build, forHTTPHeaderField: "X-App-Build")
+        }
 
         let data: Data
         let response: URLResponse

@@ -16,6 +16,8 @@ import { spawn as nodeSpawn, execFileSync, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords } from "./sessions.mjs";
 import { accountBody, gapItem, healthzBody, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
+import { publishedBuild } from "./ota-published.mjs";
+import { appBuild, headerBuild } from "./reqlog.mjs";
 import { parseFleetAccount, selectionMessage, selectionProblem } from "./account.mjs";
 import { parseCswapUsage, usageBackoffMs, usageRefreshDue } from "./usage.mjs";
 import { JsonlTail, formatPollCursor, pollDecision, resumeDecision } from "./tail.mjs";
@@ -73,6 +75,9 @@ const ATTACH_DIR = process.env.RC_ATTACH_DIR || join(HOME, ".rc-backend", "attac
  * 無ければ規則ゼロ = この層が在る前と挙動が変わらない。
  */
 const DENY_FILE = process.env.RC_DENY_FILE || join(HOME, ".rc-backend", "deny.json");
+// 配布口の置き場(`ios/tools/adhoc-ota.sh` が `~/ota/<秘密>/` へ置く)。
+// ★此処からは **manifest を読むだけ**。配る側でも消す側でもない。
+const OTA_ROOT = process.env.RC_OTA_ROOT || join(HOME, "ota");
 
 /**
  * 同じ送信を2回打たない為の記憶。★**プロセスの中だけ**に持つ。
@@ -1336,7 +1341,19 @@ const server = createServer(async (req, res) => {
         cacheMax: scan.cacheMax, cacheSize: scan.cacheSize, cacheCapped: scan.cacheCapped };
       // 封筒の形と、その形である理由は `src/wire.mjs`(単体から実行して鍵名を採れる場所)。
       // ここは観測値を渡すだけ。
-      return json(res, 200, sessionsBody({ sessions: listing, scan: scanBody, paneFault }));
+      // ★配布口が配っている版と、**要求して来た電話の版**(既定 User-Agent 由来)を渡す。
+      //   文面を決めるのは `wire.mjs` の `updateNotice` —— 「描くのは display」に揃える。
+      //   どちらか読めなければ `null` = 出さない。此処は観測値を渡すだけ。
+      return json(res, 200, sessionsBody({
+        sessions: listing, scan: scanBody, paneFault,
+        publishedBuild: publishedBuild(OTA_ROOT),
+        // ★明示のヘッダを**先に**見る。`User-Agent` は iOS が既定で組み立てる物で、
+        //   私が所有していない契約(Codex 2026-08-30)。名乗るヘッダを持つ版は其れを使い、
+        //   持たない古い版だけ UA へ落ちる。どちらも `appBuild()` の同じ厳格な数字判定を通す。
+        appBuild: headerBuild(req.headers["x-app-build"]) !== "-"
+          ? headerBuild(req.headers["x-app-build"])
+          : appBuild(req.headers["user-agent"]),
+      }));
     }
 
     if (path === "/api/account" && req.method === "GET") {

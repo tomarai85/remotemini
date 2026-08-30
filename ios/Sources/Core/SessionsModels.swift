@@ -28,6 +28,27 @@ struct SessionsResponse: Decodable, Equatable {
         /// The scan line, already formatted server-side (`scanLine()` in
         /// `view.mjs`). Rendered as-is (brief §3-b: "加工しない").
         let scan: String
+
+        /// 「机は新しい版を配っている」の一行。文面はサーバの `updateNotice()` が決める。
+        ///
+        /// ★`decodeIfPresent` にせず **optional として合成に任せる**のではなく、
+        ///   明示の初期化子で `nil` を既定にしている(下)。理由は CF-15 と同じ形を
+        ///   避ける為: 線に在る鍵を復号し忘れると「画面が痩せるだけで気付けない」。
+        ///   ★出ない時は `nil`。**空文字にしない** —— 「出す物が無い」と「文面が空」は
+        ///   別で、後者は帯に空の警告を出す(`gapNotice` が同じ結論を書いている)。
+        let update: String?
+
+        /// 帯が指している**配布側の番号**。「此の版は後で」を憶える鍵に使う。
+        /// ★文面から数字を拾わない —— 文面は語を直す事が在り、其の度に記憶が壊れる。
+        let updateBuild: String?
+
+        /// ★明示の初期化子。合成に任せると、後で欄を足した時に「復号はするが
+        ///   どこにも渡さない」形(CF-14 で実際に踏んだ)が作れてしまう。
+        init(scan: String, update: String? = nil, updateBuild: String? = nil) {
+            self.scan = scan
+            self.update = update
+            self.updateBuild = updateBuild
+        }
     }
 
     struct PaneFault: Decodable, Equatable {

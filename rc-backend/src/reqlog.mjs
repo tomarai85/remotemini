@@ -187,6 +187,20 @@ export function appBuild(userAgent) {
   return m ? m[1] : "-";
 }
 
+/**
+ * 電話が**自分で名乗った**版(`X-App-Build`)。読めなければ `"-"`。
+ *
+ * ★`appBuild()` と分ける理由: あちらは `RemoteMini/<n> CFNetwork/...` という
+ *   **iOS が既定で組み立てる** UA の形を読む。こちらは素の数字1つ。
+ *   同じ関数に両方を通そうとすると、片方の形が緩んだ時にもう片方も緩む。
+ * ★全桁が数字の物だけ通す。ヘッダは誰でも書けるので、`"96abc"` から 96 を作らない
+ *   (`parseInt` の前方一致で実際に踏んだ罠。`wire.mjs` の `updateNotice` と同じ判断)。
+ */
+export function headerBuild(value) {
+  const v = String(value ?? "").trim();
+  return /^\d{1,9}$/.test(v) ? v : "-";
+}
+
 export function attachRequestLog(req, res, opt = {}) {
   const out = opt.out || ((line) => console.log(line));
   const now = opt.now || (() => new Date());

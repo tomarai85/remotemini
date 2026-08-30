@@ -290,7 +290,7 @@ const MODULE_OF = {
   unreadableRow: ["sessions", "src/sessions.mjs", "export function unreadableRow({ id, project, updatedAt, errorCode }) {"],
   registryOnlySessions: ["registry", "src/registry.mjs", "out.push("],
   sessionRow: ["wire", "src/wire.mjs"],
-  sessionsBody: ["wire", "src/wire.mjs", "export function sessionsBody({ sessions, scan, paneFault }) {"],
+  sessionsBody: ["wire", "src/wire.mjs", "export function sessionsBody({ sessions, scan, paneFault, publishedBuild, appBuild }) {"],
   // 引数を分解しない2本は既定の目印で本文に届く(`gapItem(why, seq)` / `withWho(entry)`)。
   gapItem: ["wire", "src/wire.mjs"],
   withWho: ["wire", "src/wire.mjs"],

@@ -299,9 +299,9 @@ probe "サーバ registryOnlySessions が fromRegistryOnly を落とす" "$REGJS
 #    「電話が読み落とした候補」なので人が見る。此処が緑になる検査は「電話は鍵を無視してよい」
 #    と言っているのと同じで、電話が読むべき鍵を1本落とした日も同じ緑を出す。
 probe "サーバ sessionsBody が宣言していない鍵を1つ増やす" "$WIRE" \
-    "display: { scan: scanLine(scan) }," \
-    "display: { scan: scanLine(scan) },
-    debugTrace: \"x\","
+    "      scan: scanLine(scan)," \
+    "      scan: scanLine(scan),
+      debugTrace: \"x\","
 
 # --- ここから S8-26(2026-08-09)の側A ------------------------------------------
 
@@ -446,15 +446,15 @@ probe "測っていない型の名前が本物とズレる" "$TESTF" \
 #    直後に来る `{` は**引数の分解**なので、原文からは鍵が0件しか読めない —— ②は
 #    「原文に鍵が無い」と読んで静かに緑になる。0件を赤と言えているかを此処で測る。
 probe "引数を分解する builder の明示の目印が外れる" "$TESTF" \
-    'sessionsBody: ["wire", "src/wire.mjs", "export function sessionsBody({ sessions, scan, paneFault }) {"],' \
+    'sessionsBody: ["wire", "src/wire.mjs", "export function sessionsBody({ sessions, scan, paneFault, publishedBuild, appBuild }) {"],' \
     'sessionsBody: ["wire", "src/wire.mjs"],'
 
 # ⑳ ★封筒を純関数へ出した意味そのもの。ハンドラが直書きへ戻れば、11組の照合は
 #    **全部飾りになる**(検査は builder を測り、線に出るのは別物)。server.mjs は
 #    import した瞬間 listen するので実行では捕まらない —— 原文の錨だけが此処を守る。
 probe "ハンドラが封筒を直書きへ戻す(builder を通らなくなる)" "$SERVER" \
-    "json(res, 200, sessionsBody({ sessions: listing, scan: scanBody, paneFault }));" \
-    "json(res, 200, { sessions: listing, scan: scanBody, paneFault });"
+    "      return json(res, 200, sessionsBody({" \
+    "      return json(res, 200, ({"
 
 echo
 echo "== 正しい変更は赤にしない(陰性対照) =="

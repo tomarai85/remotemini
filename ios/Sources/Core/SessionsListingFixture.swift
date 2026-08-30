@@ -60,6 +60,13 @@ struct SessionsListingFixture: SessionsListing {
         /// 「banner を単独で見せる」面で、再試行のボタンを持たない(brief §4)。
         /// 旅程で最も起きる失敗(一覧が出ない)の唯一の的が、一度も測れていなかった。
         case fetchFailure = "list-fetchfail"
+        /// ★2026-08-30。**机が新しい版を配っている**面。CF-11 と CF-17 が一続きの失敗を
+        /// 作った —— 私が「修正は反映済み」と報告した其の修正は Tom のどの版にも入っておらず、
+        /// 配布口には `client=app` が path を問わず1本も来ていなかった(= 栞は一度も
+        /// 叩かれていない)。「新しい版が在る」を伝える経路が**私が思い出して言う**しか
+        /// 無かったので、画面に置いた。此の面が無いと、其の帯が**画素になるか**を
+        /// UI 検査から一度も測れない(単体は `ListViewModel` までしか届かない)。
+        case updateAvailable = "list-update"
         /// ★2026-08-27。**返って来ない**面。`list-fetchfail`(即座に失敗)とは別物で、
         /// あちらは `.retryable` へ落ちるが此方は `.initialLoading` に留まり続ける ——
         /// 「机が黙っている」= Tom が「最初の読み込みが異様に長い」と言った状態そのもの。
@@ -89,6 +96,13 @@ struct SessionsListingFixture: SessionsListing {
             return .failure(.unreachable)
         case .normal:
             return .success(Self.response(sessions: Self.sampleRows, paneFault: nil, fetchCount: n))
+        case .updateAvailable:
+            // ★文面は**机が決めた物をそのまま運ぶ**形を再現する(電話側で組み立てない)。
+            //   ここで綺麗な別の文を書くと、検査が本番に出ない文字列を測る事になる。
+            return .success(Self.response(
+                sessions: Self.sampleRows, paneFault: nil, fetchCount: n,
+                update: "机は新しい版を配っています(手元 96 → 配布 105)。栞から入れ直してください。",
+                updateBuild: "105"))
         case .paneFault:
             return .success(Self.response(
                 sessions: [Self.sampleRows[0]],
@@ -130,10 +144,12 @@ struct SessionsListingFixture: SessionsListing {
         ], paneFault: nil, fetchCount: 1)
     }
 
-    private static func response(sessions: [SessionRow], paneFault: SessionsResponse.PaneFault?, fetchCount: Int) -> SessionsResponse {
+    private static func response(sessions: [SessionRow], paneFault: SessionsResponse.PaneFault?, fetchCount: Int,
+                                 update: String? = nil, updateBuild: String? = nil) -> SessionsResponse {
         SessionsResponse(
             sessions: sessions,
-            display: .init(scan: "scan: fixture data, no real scan ran (fetch #\(fetchCount))"),
+            display: .init(scan: "scan: fixture data, no real scan ran (fetch #\(fetchCount))",
+                           update: update, updateBuild: updateBuild),
             paneFault: paneFault
         )
     }
