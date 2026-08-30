@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: ../.harness/push-readiness-check.sh
+# controls-for: .harness/push-readiness-check.sh
 #
 # push-readiness-check.sh の**挙動**対照。本物の repo では回さない ——
 # 本物は今 NOT READY(履歴に機械の識別子が在る)なので、其れだけを見ていると
