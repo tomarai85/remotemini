@@ -454,6 +454,235 @@ check_exposure() {
 check_exposure
 [ "$EXPOSURE_ONLY" -eq 1 ] && exit 0
 
+# ── 掃除の job と配布口を見張る(2026-08-30 新設 / 同日 Codex 査読で作り直し)──────
+# 何を問うか: 「**この鎖の中で、誰も見ていない機械が止まっていないか**」。
+#   `com.fleet.rc-log-cap` は log を毎時掃く。止まっても誰も気付かない —— 気付くのは
+#   disk が埋まった時か、台帳を読もうとして log が既に消えていた時。
+#   配布口(OTA)は Tom の電話への**唯一の**経路。古い版を配り始めても、Tom が
+#   「入れ直したのに直っていない」と気付くまで誰も知らない。
+#
+# ★言い方の規約: **状態の名前が変わった時だけ1行**。毎回書くと此の2つで log が埋まり、
+#   本物の up/down が読めなくなる —— 鍵の段が「段を降りた時だけ」なのと同じ理由。
+#   走った事の証拠は log ではなく記録 file の mtime が持つ。
+#
+# ★通知に `notify_monitor_broken` を**使わない**。あの文面は
+#   「rc-backend の監視側が壊れています」で固定で、掃除の job が止まった事を其の文で
+#   流すと**壊れていない物を壊れたと言う**事になる。時計も分ける —— 混ぜると、
+#   掃除の話で6時間黙った隙に監視そのものが壊れても鳴らない。
+#
+# ★2026-08-30 の Codex 査読で直した4つ(初版は全部踏んでいた):
+#   1. `巻き戻り(通知済) → 未配達 → ok` で**復帰通知が永久に消えた**。現在の状態に
+#      括り付けた「通知済み」だけでは、間に別の状態を挟むと消える。だから
+#      「**まだ片付いていないと言った問題が在るか**(open)」を状態と別に持つ。
+#   2. `--dry-run` が「通知済み」を本番の記録に書いていた = 一度試すと本番が黙る。
+#      dry の記録は `<file>.dry` へ分ける(混ざらないなら試して良い)。
+#   3. 復帰通知の**失敗を捨てて** ok を書いていた = 直った事を永久に言わない。
+#      配達できるまで open を降ろさない。
+#   4. `未配達` を鳴らさない事にしていた。それは「**直っている物が Tom の電話に
+#      届いていない**」= 一番利用者に見える失敗を捨てる判断だった。鳴らす —— ただし
+#      HEAD との差ではなく**その状態が続いた時間**を起点にする(私が触っている間は
+#      常に真なので、猶予を跨いだ時だけ1回)。
+# ★既定は**空 = この機体では測らない**。鍵の `KEY_PEER` / 配布口の `OTA_CHECK` と同じ形。
+#   `com.fleet.rc-log-cap` を回しているのは friday だけなので、他の機体の観測器が
+#   其の生死を語る資格は無い —— 既定で実パスを読みに行くと、掃除を回していない機体で
+#   必ず「印が無い」を鳴らす(2026-08-30、既存の対照 5 本が此れを掴んだ)。
+#   回している機体の conf が指す。指していない = 測らない。
+CAP_HEARTBEAT="${RC_HEALTH_CAP_MARK-}"
+CAP_STATE_F="${RC_HEALTH_CAP_STATE:-$STATE.cap-seen}"
+CAP_EVERY="${RC_HEALTH_CAP_EVERY:-3600}"      # 掃除は毎時。測るのは stat 1回なので安い
+CAP_STALE_S="${RC_HEALTH_CAP_STALE_S:-10800}" # 3 時間成功していない = 3 回落とした
+# 「印が無い」を鳴らすまでの猶予。★据え付けた直後は**まだ一度も走っていない**ので
+#   印が無いのが正常 —— 猶予無しで鳴らすと、新しい機体に据える度に必ず1通誤報する
+#   (2026-08-30 に既存の対照 5 本が此れを掴んだ)。掃除が走る機会を跨いでも
+#   まだ無い時に初めて言う。`stale` と `failed` には猶予を置かない —— そちらは
+#   「在った物が壊れた」で、据え付け直後と取り違えようが無い。
+CAP_MISSING_GRACE="${RC_HEALTH_CAP_MISSING_GRACE:-7200}"
+
+# ★`:-` でなく `-`(コロン無し)。`:-` は**空文字も未設定として既定へ倒す**ので、
+#   「この機体では測らない」と明示した空が既定の台本に化ける。未設定 = 既定を使う、
+#   空と明示 = 測らない、を区別する必要が在るのは此処だけ。
+OTA_CHECK="${RC_HEALTH_OTA_CHECK-$ROOT/tools/ota-freshness-check.sh}"
+OTA_STATE_F="${RC_HEALTH_OTA_STATE:-$STATE.ota-seen}"
+OTA_EVERY="${RC_HEALTH_OTA_EVERY:-86400}"     # ssh を1本張るので日に1回
+# 「測れない」が続いた時に鳴らすまでの**時間**。回数で数えると、日に1回の測定では
+# 2 回目まで 48 時間かかる —— 計器が盲になった事を2日後に知らせる警報に意味は無い。
+OTA_BLIND_S="${RC_HEALTH_OTA_BLIND_S:-3600}"
+# 「出来ているのに配っていない」を鳴らすまでの猶予。私の作業中は常に真なので、
+# 作業の1回ぶんより長く取る。跨いだら**1回だけ**言う。
+OTA_UNDELIVERED_GRACE="${RC_HEALTH_OTA_UNDELIVERED_GRACE:-172800}"
+# 壊れている間の測り直しの間隔。★これが Codex の指摘3/4 の本体 ——
+# 通知の再送も、盲の時間を数える刻みも、**測る周期に縛られている**。
+# 壊れている間だけ細かく測れば、両方が同時に直る。直れば元の周期に戻る。
+BAD_EVERY="${RC_HEALTH_BAD_EVERY:-900}"
+
+# 記録の中身 = "<最後に測った epoch> <状態> <通知済み 0|1> <続いた回数> <未解決 0|1> <この状態になった epoch>"
+subject_path() { [ "$DRY" -eq 1 ] && printf '%s.dry' "$1" || printf '%s' "$1"; }
+
+subject_read() {   # subject_read <file> → S_TS / S_STATE / S_DONE / S_RUN / S_OPEN / S_SINCE
+    local now; now="$(date +%s)"
+    S_TS=0; S_STATE="unknown"; S_DONE=0; S_RUN=0; S_OPEN=0; S_SINCE=0
+    [ -f "$1" ] || return 0
+    read -r S_TS S_STATE S_DONE S_RUN S_OPEN S_SINCE _rest < "$1" 2>/dev/null || true
+    case "${S_TS:-}"    in ''|*[!0-9]*) S_TS=0 ;; esac
+    case "${S_RUN:-}"   in ''|*[!0-9]*) S_RUN=0 ;; esac
+    case "${S_SINCE:-}" in ''|*[!0-9]*) S_SINCE=0 ;; esac
+    # ★0|1 を**厳密に**通す。数字でありさえすれば良い書き方だと `2` が入った時に
+    #   「通知済み」とも「未解決」とも読めない値で両方の枝が黙る(Codex 指摘)。
+    [ "${S_DONE:-}" = "1" ] || S_DONE=0
+    [ "${S_OPEN:-}" = "1" ] || S_OPEN=0
+    [ -n "${S_STATE:-}" ] || S_STATE="unknown"
+    # ★未来の時刻は 0 に倒す。時計が飛ぶと `now - S_TS` が負になり、
+    #   「まだ間隔が空いていない」として**二度と測らなくなる**(Codex 指摘)。
+    [ "$S_TS" -gt "$now" ] 2>/dev/null && S_TS=0
+    [ "$S_SINCE" -gt "$now" ] 2>/dev/null && S_SINCE="$now"
+    return 0
+}
+
+subject_write() {  # subject_write <file> <epoch> <状態> <通知済み> <回数> <未解決> <since>
+    local f="$1" tmp
+    # ★差し替えで書く。printf の途中で死ぬと半端な行が残り、次に読んだ側が
+    #   別の状態として読む(Codex 指摘)。
+    tmp="$(mktemp "$(dirname "$f")/.subj.XXXXXX" 2>/dev/null)" || {
+        log "★状態を書けない($f) — 次回また同じ判定になる(重複は沈黙よりまし)"; return 0; }
+    if printf '%s %s %s %s %s %s\n' "$2" "$3" "$4" "$5" "$6" "$7" > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$f" 2>/dev/null || { /bin/rm -f "$tmp"; log "★状態を差し替えられない($f)"; }
+    else
+        /bin/rm -f "$tmp"; log "★状態を書けない($f)"
+    fi
+    return 0
+}
+
+# 出し先へ1通。`notify_monitor_broken` と**時計を分ける**(上の註記)。
+# 返り値 0 = 配達できた(= 「言った」と記録してよい)。非 0 = 出せていない。
+notify_fleet() {   # notify_fleet <log 用の短い名> <本文>
+    local tag="$1" msg="$2" nrc
+    if [ "$DRY" -eq 1 ]; then
+        log "DRY-RUN: $tag — 通知は出さない($msg)"
+        return 0
+    fi
+    if [ ! -x "$NOTIFY" ]; then
+        log "★$tag を知らせたいが出し先を実行できない: $NOTIFY"
+        return 1
+    fi
+    printf '%s' "$msg" | "$NOTIFY"; nrc=$?
+    log "$tag を通知(出し先 rc=$nrc)"
+    return "$nrc"
+}
+
+# 状態が変わった時だけ 1 行 log し、猶予を跨いだ問題を**まだ言っていなければ**1 通出す。
+# 戻った時は、**言った問題が残っている時だけ**戻った事を言い、配達できるまで降ろさない。
+subject_settle() { # subject_settle <記録> <短い名> <新状態> <本文> <epoch> <鳴らすまでの猶予秒>
+    local f="$1" tag="$2" state="$3" msg="$4" now="$5" grace="${6:-0}"
+    local announced=0 run=1 since="$now" open="$S_OPEN"
+    if [ "$state" = "$S_STATE" ]; then
+        run=$((S_RUN + 1)); announced="$S_DONE"; since="$S_SINCE"
+        [ "$since" -gt 0 ] || since="$now"
+    else
+        log "$tag: 状態が $S_STATE → $state"
+    fi
+
+    if [ "$state" != "ok" ] && [ "$announced" -eq 0 ] && [ $((now - since)) -ge "$grace" ]; then
+        if notify_fleet "$tag($state)" "$msg"; then announced=1; open=1; fi
+    fi
+    # ★「言った問題」が残っている時だけ復帰を言う。言っていない状態(猶予の内に
+    #   直った物など)の復帰を報せると、Tom は身に覚えの無い通知を受け取る。
+    if [ "$state" = "ok" ] && [ "$open" -eq 1 ]; then
+        if notify_fleet "$tag(戻った)" "$(hostname -s): $tag が直りました($S_STATE から回復)。"; then
+            open=0
+        fi
+    fi
+    subject_write "$f" "$now" "$state" "$announced" "$run" "$open" "$since"
+}
+
+# 壊れている間・言い残しが在る間は細かく測り直す。直れば元の周期へ戻る。
+subject_due() {   # subject_due <now> <通常の間隔> → 0=測る時
+    local now="$1" every="$2"
+    { [ "$S_STATE" != "ok" ] && [ "$S_STATE" != "unknown" ]; } || [ "$S_OPEN" -eq 1 ] && every="$BAD_EVERY"
+    [ $((now - S_TS)) -ge "$every" ]
+}
+
+# ── 掃除の job(com.fleet.rc-log-cap)が生きているか ─────────────────────────
+# ★読むのは job 自身が書く**生存の印**(`<試みた epoch> <最後に成功した epoch> <終了コード>`)。
+#   初版は log の「最後の行が掃除の要約か」で読んでいた。それは他人の出力の文言に
+#   縛られる契約で、誰かが行を1本足した日から永久に「壊れている」と言い、Tom は
+#   其の警告を読まなくなる(Codex 指摘2)。印は job が全部終わってから差し替える。
+check_log_cap() {
+    local now state msg f age rc ok_at
+    now="$(date +%s)"
+    [ -n "$CAP_HEARTBEAT" ] || return 0        # 空 = この機体では掃除を回していない
+    f="$(subject_path "$CAP_STATE_F")"
+    subject_read "$f"
+    subject_due "$now" "$CAP_EVERY" || return 0
+
+    if [ ! -f "$CAP_HEARTBEAT" ]; then
+        state="missing"; age=0; rc=0
+    else
+        ok_at="$(awk '{print $2}' "$CAP_HEARTBEAT" 2>/dev/null)"
+        rc="$(awk '{print $3}' "$CAP_HEARTBEAT" 2>/dev/null)"
+        case "${ok_at:-}" in ''|*[!0-9]*) ok_at=0 ;; esac
+        case "${rc:-}"    in ''|*[!0-9]*) rc=1 ;; esac   # 読めない = 失敗側に倒す
+        age=$((now - ok_at))
+        if   [ "$rc" -ne 0 ]              ; then state="failed"
+        elif [ "$age" -ge "$CAP_STALE_S" ]; then state="stale"
+        else                                     state="ok"
+        fi
+    fi
+
+    case "$state" in
+        missing) msg="$(hostname -s): com.fleet.rc-log-cap の生存の印が在りません($CAP_HEARTBEAT)。log の上限が掛かっていない可能性。" ;;
+        stale)   msg="$(hostname -s): com.fleet.rc-log-cap が $((age / 3600)) 時間ぶん成功していません。log の上限が掛かっていない。" ;;
+        failed)  msg="$(hostname -s): com.fleet.rc-log-cap の最後の回が失敗しています(終了コード $rc)。$CAP_HEARTBEAT" ;;
+        *)       msg="" ;;
+    esac
+    local grace=0
+    [ "$state" = "missing" ] && grace="$CAP_MISSING_GRACE"
+    subject_settle "$f" "rc-log-cap" "$state" "$msg" "$now" "$grace"
+}
+
+# ── 配布口が古い版を配っていないか ─────────────────────────────────────────
+# `ota-freshness-check.sh` の終了コード: 0=順当 / 1=**配布が承認済みより古い**(巻き戻り) /
+#   2=測れない / 3=承認済みが HEAD より古い(出来ているのに配っていない)。
+check_ota_fresh() {
+    local now rc out state msg grace f
+    now="$(date +%s)"
+    f="$(subject_path "$OTA_STATE_F")"
+    subject_read "$f"
+    subject_due "$now" "$OTA_EVERY" || return 0
+
+    # ★空 = **この機体では測らない**。鍵の `KEY_PEER` と同じ形。
+    #   測る材料(署名済み plist と承認の記録)は**焼いた機械にしか無い**ので、
+    #   持っていない機体で測ろうとすれば必ず 2 を返し、その 2 を「配布口が判らない」
+    #   として毎時鳴らす事になる —— 居ない物を測れないのは異常ではない。
+    #   材料が揃った機体だけが台本を指す。
+    if [ -z "$OTA_CHECK" ]; then
+        return 0
+    fi
+    if [ ! -x "$OTA_CHECK" ]; then
+        subject_settle "$f" "ota-freshness" "unmeasurable" \
+            "$(hostname -s): 配布口の鮮度を測る台本が在りません($OTA_CHECK)。" "$now" "$OTA_BLIND_S"
+        return 0
+    fi
+
+    out="$("$OTA_CHECK" 2>&1)"; rc=$?
+    grace=0
+    case "$rc" in
+        0) state="ok" ;;
+        1) state="rollback" ;;
+        3) state="undelivered"; grace="$OTA_UNDELIVERED_GRACE" ;;
+        *) state="unmeasurable"; grace="$OTA_BLIND_S" ;;
+    esac
+    case "$state" in
+        rollback)     msg="$(hostname -s): 配布口が**承認済みより古い版**を配っています。Tom が入れ直すと巻き戻ります。$(printf '%s' "$out" | tail -1)" ;;
+        undelivered)  msg="$(hostname -s): 配布口に**出来ている版が届いていません**($((OTA_UNDELIVERED_GRACE / 3600)) 時間このまま)。入れ直しても古いままです。$(printf '%s' "$out" | tail -1)" ;;
+        unmeasurable) msg="$(hostname -s): 配布口の鮮度を測れません($rc)。古くないと読まない事。$(printf '%s' "$out" | tail -1)" ;;
+        *)            msg="" ;;
+    esac
+    subject_settle "$f" "ota-freshness" "$state" "$msg" "$now" "$grace"
+}
+
+check_log_cap
+check_ota_fresh
+
 # ── 1回叩く ───────────────────────────────────────────────────────
 # 本体は捨てずに見る: 200 を返すだけの別物(tailscale の受け口や proxy)を「生きている」と
 # 読まない為。★ただし本体を**ログにも通知にも載せない**(会話の情報が混ざる余地を作らない)。
