@@ -633,9 +633,10 @@ const PAIRS = [
     // `parseStatus` / `anomalies` = 内部の英語トークン。電話は `display` に畳まれた
     //   日本語しか読まない —— 型から外してあるのは、読める形にすると
     //   「英語のまま画面に出す」道が生えるから(`AccountClient.decodeAccount` の註)。
-    serverOnly: ["account", "anomalies", "parseStatus",
-      // 使用量の観測の齢。電話はまだ読まない(古さの表示を足す時に読み始める)。
-      "usageAgeSeconds"],
+    // ★2026-08-29(同日中の追記): `usageAgeSeconds` を serverOnly から**外した**。
+    //   電話が読み始めたから(古さが閾値を超えたら数字を隠す)。線に載せたまま画面に
+    //   出さない状態は、恒久障害の時に先週の数字を今の値として描き続ける形だった。
+    serverOnly: ["account", "anomalies", "parseStatus"],
   },
   { swift: "AccountClient.Wire.Row", builders: ["accountRow"], at: "" },
   { swift: "AccountClient.Wire.Row.Usage", builders: ["accountUsage"], at: "" },

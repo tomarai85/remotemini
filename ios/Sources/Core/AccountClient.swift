@@ -53,6 +53,14 @@ struct AccountState: Equatable {
     /// 「まだ訊いていない」ではない(後者は `AccountViewModel.Phase.idle`)。
     let current: String?
     let accounts: [AccountRow]
+    /// 使用量の観測の齢(秒)。`nil` = 机が一度も測れていない。
+    ///
+    /// ★何故これを画面が読むか(2026-08-29、Codex の指摘): 机が恒久的に測れなくなっても
+    /// (keychain が締まる / 道具が消える / 出力形式が変わる)、キャッシュは最後の良い値を
+    /// 保つので、**先週の「94% left」が今の値として描かれ続ける**。口座の切替という
+    /// 実操作の判断材料なので、古い数字を黙って出すのは、出さないより危険。
+    /// 閾値を超えたら数字を隠して「更新できていない」と言う(`SettingsView.usageTooStale`)。
+    var usageAgeSeconds: Double? = nil
     /// 一覧を読み切れたか。`false` = **切替を出してはいけない**。
     ///
     /// ★`ok == false` と `accounts.isEmpty` は別物。混ぜると、edith 側の台本の出力形式が
@@ -199,6 +207,8 @@ struct AccountClient: AccountReading, AccountAdvancing, AccountSelecting {
             let accounts: [Row]
             let ok: Bool
             let display: Display
+            /// 使用量の観測の齢(秒)。`null` = 机がまだ一度も測れていない。
+            let usageAgeSeconds: Double?
             let raw: String?
             /// 机は `ok == false` の枝でしか此の鍵を載せない(`accountRaw` が組で吐く)。
             /// 読めた時に鍵ごと無いのは正常なので、欠けを `false` に落とす。
@@ -254,6 +264,7 @@ struct AccountClient: AccountReading, AccountAdvancing, AccountSelecting {
                     }
                 )
             },
+            usageAgeSeconds: wire.usageAgeSeconds,
             ok: wire.ok,
             statusMessage: wire.display.status,
             anomalyMessages: wire.display.anomalies,
