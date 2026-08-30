@@ -1,0 +1,3134 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a0547d-d093-7351-88e2-b873b6c8a41a
+--------
+user
+Attack this. A small change to a script that runs hourly, unattended, on a production Mac mini. Be brief — the two or three things actually wrong.
+
+## Context
+
+A phone app talks to a Claude Code session on the owner's Mac mini. The backend writes one line per request; a `client=` field classifies the caller (`app`/`tool`/`probe`/`none`), and as of today a `build=` field carries the app's build number, parsed from the product User-Agent (raw UA is never logged, by standing rule).
+
+An open hypothesis, H-3, asks: **does the owner actually use this app?** Its stated discharge condition is to observe, over 3-7 waking days and without sending a synthetic notification, whether he acts through it. The recorded premise was: `client=app` rows are his real phone, because simulator builds lack the baked-in server URL and structurally cannot reach the desk.
+
+An hourly job accumulates a per-day count of `client=app` requests into a file outside the log-rotation scope, so a size cap cannot eat the evidence. Day totals only.
+
+## The change
+
+A second file, same job, same accumulation rule: `date <TAB> hour <TAB> build <TAB> count`. Day totals are untouched (four days already accumulated; changing that shape would make the history unreadable). Both files use per-key max-merge rather than sum, because the source log gets truncated and a later run sees fewer rows for a day already counted.
+
+## What it immediately showed, and why I am asking you
+
+Real production data, first run:
+
+```
+2026-08-30  13時(CDT)  build=1    48
+2026-08-30  13時(CDT)  build=96   36
+2026-08-30  13時(CDT)  build=100   6
+2026-08-30  15時(CDT)  build=1    12
+2026-08-30  15時(CDT)  build=102  10
+```
+
+`build=96` is the owner's phone: a 38-second burst at 18:15 UTC where he opened a conversation, sent three messages, switched accounts and sent again.
+
+`build=1` is 60 requests, only `/api/sessions` + `/api/account` in pairs, running before and after his session and stopping 17 minutes ago — at which point two iOS simulators are still booted on my machine from UI control runs. So `build=1` is **my own automated control runs reaching the real backend**.
+
+That falsifies H-3's premise: `client=app` is not "the owner's phone". His own count for today is 36 of the 593 accumulated, not 593.
+
+## Attack these
+
+1. **Is `build` a sound discriminator, or did I just replace one wrong premise with another?** The owner's build number changes every time I publish (96 → 102 → 105). A rule like "app rows whose build equals the last published build are his" breaks the moment I publish while he is still on the old one — which is the normal state. What is the right way to separate his traffic from my harness's, using only per-request metadata that never includes a raw device identifier?
+
+2. **The day totals are now known to be contaminated** — four accumulated days mixing his phone with my control runs, with no way to split them retroactively because the old rows have no build. Do I leave them (a record that is honest about what it is), annotate them, or discard and restart? Discarding loses the only evidence spanning the window H-3 asks about.
+
+3. **max-merge on a per-hour key.** A day's rows can only grow. If the log is truncated mid-hour and the job runs, that hour's count is preserved — good. But if a genuinely *new* hour arrives with fewer requests than an old identical key... there is no collision, keys include the date. Is there a case where max-merge silently overstates?
+
+4. Anything about accumulating a growing per-hour record outside the rotation scope that I am underweighting — it is unbounded by construction, one row per (day, hour, build).
+2026-08-30T21:05:27.545516Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T21:05:27.563421Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T21:05:28.018968Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+論点を「識別の妥当性」「証拠の保存」「集計の故障条件」に絞ります。Claude/Mac mini の運用前提を外さないため `claude-workspace-context`、仮説の崩れ方を点検するため `issue-driven` を使い、実害のある2〜3点だけ返します。
+exec
+/bin/zsh -lc "sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/SKILL.md && sed -n '1,260p' /Users/tomtim/.codex/skills/issue-driven/SKILL.md" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+---
+name: claude-workspace-context
+description: "Tomtim の Claude 側グローバル設定を Codex でも参照するためのワークスペース文脈スキル。Mac mini 運用、保護ファイル、AI 連携、Claude Code との役割分担、ハーネス、ルーティング、デプロイ前提、作業スタイル、Claude 由来の制約を踏まえて進める必要がある時に必ず使用。"
+---
+
+# Claude Workspace Context
+
+`~/.claude/CLAUDE.md` と主要エージェント定義を Codex から参照できるようにしたブリッジスキル。
+
+## いつ使うか
+
+- `/Users/tomtim` 配下で、Claude 側の運用前提を踏まえて作業する時
+- Mac mini、launchd、SSH、handoff、複数 AI 連携が絡む時
+- `.env`、設定ファイル、依存関係、デプロイ周辺の変更可否を慎重に判断したい時
+
+## 最重要ルール
+
+- 日本語でやり取りする。
+- ユーザー向けテキストでは絵文字や装飾的な Unicode を避ける。
+- 触ってはいけないもの:
+  - `~/.claude/settings.json`
+  - `~/.zshrc`, `~/.bashrc`, `~/.zprofile`, `~/.bash_profile`
+  - あらゆる `.env`
+- 次は事前確認が必要:
+  - 依存関係の追加/削除/ダウングレード
+  - メジャーアップグレード
+  - ビルド設定変更
+  - DB 接続設定やマイグレーション
+  - launchd、Docker、CI/CD、ポート、認証、SSL 周辺
+- 症状回避ではなく根本原因修正を優先する。
+- 長い文脈共有はファイルベースで残す発想を優先する。
+- Claude 側の routing banner / Harness / Agent Teams は設計思想として参照する。ただし Codex では上位ルールを優先し、明示的な許可なしに sub-agent を起動しない。
+- Claude 側の設定や設計を同期目的で変更しない。反映が必要な場合は Codex 側の skill、memory、reference にだけ写す。
+- 複数 AI が絡む作業では、同じファイルを同時編集しないように担当範囲を明確にする。
+
+## Mac mini 文脈
+
+- SSH: `ssh athenas@10.0.0.0`
+- Node: `/opt/homebrew/bin/node`
+- sudo が必要な作業は、基本的にユーザー実行前提
+
+## 読むべき参照
+
+- コピー索引: `references/README.md`
+- 元のグローバル設定: `references/claude-global.md`
+- Claude 側ルールコピー:
+  - `references/rules/protected-files.md`
+  - `references/rules/workflow-principles.md`
+  - `references/rules/mac-mini-ops.md`
+  - `references/rules/harness-rules.md`
+  - `references/rules/parallel-ai-rules.md`
+  - `references/rules/session-resume.md`
+- ハーネス系エージェント:
+  - `references/agents/planner.md`
+  - `references/agents/generator.md`
+  - `references/agents/evaluator.md`
+  - `references/agents/meta-agent.md`
+- Claude 側の追加エージェント文脈:
+  - `references/agents/mac-mini-deployer.md`
+  - `references/agents/pica-connector.md`
+  - `references/agents/x-bookmark-manager.md`
+- Claude 側コマンド/テンプレート/メモリのコピー:
+  - `references/commands/`
+  - `references/templates/`
+  - `references/memory/`
+  - `references/claude-skills/`
+
+## 注意
+
+- Claude 側のルールが Codex の system/developer 指示と衝突する場合は、Codex 側の上位指示を優先する。
+- このスキルは Claude の運用文脈を持ち込むためのものだが、Codex の権限モデルや sub-agent ルールまでは上書きしない。
+---
+name: issue-driven
+description: "安宅和人『イシューからはじめよ』に基づき、課題・アイデア・計画の本質イシューを見極める思考支援スキル。問題設定、仮説整理、犬の道チェック、一次情報確認、既存プランの点検を行いたい時に使用。"
+---
+
+# issue-driven -- 本質を捉えるスキル
+
+安宅和人「イシューからはじめよ」に基づく、本質を捉えるための思考支援スキル。
+ユーザーが持ちかけた課題・アイデア・計画に対して、表面ではなく本質のイシューを炙り出す。
+
+Codex 版では `/issue-driven` のようなコマンド名は読み替えであり、ユーザーがこのスキル名を指定するか、「本質を見極めたい」「イシューを整理したい」と依頼した時に使う。
+
+## 基本公式
+
+```
+バリュー = イシュー度 x 解の質
+```
+
+- イシュー度: 今この局面で、この問題に答えを出す必要性の高さ
+- 解の質: そのイシューに対して、どこまで明確に答えを出せているか
+
+**順序が全て。** イシュー度を先に上げ、その後に解の質を磨く。逆にすると犬の道（大量の作業で勝負する無駄な道）に陥る。
+
+## 補完関係
+
+- `/issue-driven`: イシューの質を上げる（問題設定）
+- `/visionary-council`: 解の質を評価する（ソリューション評価）
+
+この2つは対になる。issue-drivenでイシューを確定した後、visionary-councilでソリューション案を評価するのが理想的な流れ。
+
+---
+
+## モード一覧
+
+| モード | コマンド例 | 動作 |
+|---|---|---|
+| デフォルト | `/issue-driven [入力]` | 入力タイプに応じてStep 0-4を実行 |
+| クイック | `/issue-driven --quick [入力]` | Step 1のみ（3条件 + 犬の道チェック） |
+| 深掘り | `/issue-driven --deep [入力]` | Step 1を対話形式で深掘り |
+| 点検 | `/issue-driven --check [ファイルパス]` | 既存の計画・分析のイシュー度を診断 |
+
+---
+
+## 実行フロー
+
+### 入口ルーティング（自動判定）
+
+スキル起動時、ユーザー入力を以下の4タイプに自動分類し、適切なStepにルーティングする。
+
+| タイプ | 判定基準 | 開始Step |
+|---|---|---|
+| A: 明確な課題 | 「Xが問題」「Xを解決したい」「Xを改善したい」 | Step 1 |
+| B: 漠然とした欲求 | 「Xしたい」「何がいいか分からない」「方向性を決めたい」 | Step 0 |
+| C: 既存分析あり | ファイルパス添付、既に構造化された計画・分析がある | Step 1（検証モード） |
+| D: 技術課題 | CI/CD、パフォーマンス、リファクタ、バグ等の技術的問題 | Step 1（技術フレーム） |
+
+判定に迷った場合はタイプAとして扱う。
+
+**入力が空の場合**: ユーザーに「何について本質を見極めたいか？」と問いかけ、回答を待ってからルーティングする。
+
+### --check モード（タイプC）の動作
+
+`/issue-driven --check [ファイルパス]` で起動した場合:
+1. 指定ファイルを読み込む
+2. ファイル内容からイシューと仮説を抽出
+3. Step 1の全チェック（3条件、犬の道、一次情報）を適用
+4. 「このプランのイシュー度」を診断結果として出力
+5. イシュー度が低い部分を指摘し、改善案を提示
+
+---
+
+## Step 0: プレイシュー（タイプBのみ）
+
+イシューが存在しない状態から、イシューの種を見つける。
+
+### 実行手順
+
+1. **欲求の特定**
+   ユーザーに問いかける: 「何を得たいか」ではなく「何が満たされていないか」
+   - 収入 / 成長 / 自由 / 承認 / 知的刺激 / 社会貢献 / 安定
+   - 文脈自動読み込みでプロジェクト情報があれば、それも参照する
+
+2. **制約の整理**
+   - 時間（1日何時間使えるか）
+   - スキル（何ができるか、何ができないか）
+   - リソース（資金、人脈、ツール）
+   - リスク許容度（失敗しても大丈夫か）
+
+3. **仮イシュー候補の生成**
+   欲求と制約から、「○○は××ではないか」の形で仮イシューを3つ生成する。
+   各候補に「なぜこれがイシューになりうるか」の1行説明を付ける。
+
+4. **ユーザーの選択**
+   「この中で最も"そうかもしれない"と感じるのはどれか？」と問い、選択されたものをStep 1に渡す。
+
+### Step 0 の出力
+
+```
+## プレイシュー分析
+
+### 満たされていないもの
+- [特定された欲求]
+
+### 制約
+- [整理された制約]
+
+### 仮イシュー候補
+1. 「[主語] は [述語+スタンス] ではないか」 -- [根拠1行]
+2. 「[主語] は [述語+スタンス] ではないか」 -- [根拠1行]
+3. 「[主語] は [述語+スタンス] ではないか」 -- [根拠1行]
+
+どれが最も近いか？（番号で回答）
+```
+
+---
+
+## Step 1: イシューの見極め（核心）
+
+**本質を捉える**ための最重要ステップ。全てのモードでこのStepを通る。
+
+### 1a. 空・雨・傘による分離
+
+ユーザーの入力を3層に分解する:
+
+| 層 | 意味 | 問い |
+|---|---|---|
+| 空（事実） | 客観的に何が起きているか | 「何が見えるか？」 |
+| 雨（解釈） | それはどういう意味か | 「それはつまり？」 |
+| 傘（判断） | だから何をすべきか | 「だからどうする？」 |
+
+**核心原則**: 多くの場合、ユーザーは「傘」（やりたいこと）を持ちかける。しかし本質は「空」と「雨」の間にある。事実の観察と解釈が不十分なまま判断に飛ぶと、的外れな行動になる。
+
+分離の手順:
+1. ユーザーの入力から「傘」（判断・行動）を特定する
+2. その判断の前提となっている「空」（事実）を洗い出す
+3. 事実と判断をつなぐ「雨」（解釈）を明示する
+4. 解釈が飛躍していないか、別の解釈がありうるか検討する
+
+### 1b. 仮説の言語化
+
+イシューを仮説の形にする。
+
+**言語化ルール:**
+- 必ず **主語 + 述語 + スタンス（立場）** を含める
+- スタンスを取ることで初めて検証可能になる
+
+| 品質 | 例 | 問題点 |
+|---|---|---|
+| NG | 「市場規模はどうか？」 | ただの問い。スタンスがない。検証しようがない |
+| NG | 「採用が難しい」 | 事実の記述。仮説ではない |
+| OK | 「RPO市場は、AI導入で2年以内に構造転換するのではないか」 | スタンスがある。検証可能 |
+| OK | 「"応募が来ない"の本質は、求人原稿の質ではなく、ターゲット企業の選定ミスではないか」 | 本質に迫る仮説 |
+
+ユーザーの入力が「問い」の形なら、スタンスを取った仮説に変換して提示する。
+
+### 1c. イシュー度の検証（3条件）
+
+| 条件 | 問い | 合格 | 不合格 |
+|---|---|---|---|
+| **本質的な選択肢がある** | この問いに答えが出ると、方向性が変わるか？ | 答え次第でやることが根本的に変わる | 答えが出ても「ふーん」で終わる |
+| **深い仮説がある** | 「なるほど」と膝を打つ直感があるか？ | 常識を覆す、意外性がある | 誰でも思いつく、当たり前すぎる |
+| **答えを出せる** | 今の手段で検証できるか？ | データ収集・実験・ヒアリングで確認可能 | 必要なデータも手段も存在しない |
+
+**3条件すべてを満たす必要がある。** 1つでも不合格なら、イシューの筋が悪い。
+
+筋が悪い場合の対処:
+- 本質的選択肢がない → イシューの粒度を上げる（より具体的に）
+- 深い仮説がない → 一次情報に触れる、専門家の意見を聞く
+- 答えを出せない → イシューを分解し、答えが出せるサブイシューに落とす
+
+### 1d. 犬の道チェック
+
+以下のパターンを検出したら警告を出す:
+
+| パターン | ユーザーの言動 | 警告メッセージ |
+|---|---|---|
+| **ソリューション先行** | 「とにかく作ってみよう」「まず実装しよう」 | イシュー度が確定する前のソリューション着手は犬の道。方向転換時に全てが無駄になる |
+| **網羅症** | 「全部やらなきゃ」「漏れがないように」 | 本当にやるべきことは100のうち1-2個。100を100のまま抱えるのは見極めの放棄 |
+| **情報収集依存** | 「もっとデータを集めよう」「調査してからにしたい」 | 知り過ぎ注意。情報を集めすぎると仮説の自由度が死ぬ。今ある情報でスタンスを取れ |
+| **労働量の自己正当化** | 「忙しいから仕方ない」「頑張っているから大丈夫」 | 作業量はバリューの指標ではない。イシュー度が低い仕事を大量にやっても価値はゼロ |
+| **完璧主義** | 「もっと精度を上げてから」「まだ不完全だから」 | 60%ルール。完璧を目指さず高速回転させ、サイクルで深める |
+
+### 1e. 一次情報チェック
+
+ユーザーの判断が何に基づいているかを確認する。
+
+- **一次情報**: 誰のフィルターも通っていない生のデータ（直接の観察、インタビュー、生ログ、自分の体験）
+- **二次情報**: 他人がまとめたもの（記事、レポート、まとめサイト、人から聞いた話）
+
+チェック項目:
+- 「その判断は一次情報に基づいているか？」
+- 「二次情報だけで判断していないか？」
+- 「一次情報を取りに行く手段はあるか？」
+
+一次情報が不足している場合: Step 4のアクションに「一次情報を取得する」を含める。
+
+### 技術課題向けの調整（タイプD）
+
+技術課題ではフレームワークの一部を読み替える:
+
+| 標準フレーム | 技術課題での読み替え |
+|---|---|
+| 表面 vs 本質 | 症状 vs 原因 |
+| 犬の道 | 根本原因を特定せずにパッチを当て続けること |
+| 本質的選択肢 | 技術的選択肢（アーキテクチャ判断が変わるか） |
+| 一次情報 | 実測データ（プロファイリング、ログ、メトリクス） |
+| 仮説の言語化 | 「○○が遅い原因は、××がボトルネックではないか」 |
+
+### Step 1 の出力
+
+```
+## イシューの見極め
+
+### 空（事実）
+- [客観的に起きていること 1]
+- [客観的に起きていること 2]
+- [客観的に起きていること 3]
+
+### 雨（解釈）
+- [事実が意味すること 1]
+- [事実が意味すること 2]
+
+### 傘（ユーザーが取ろうとしている行動）
+- [判断・行動]
+
+### 本質イシュー（仮説）
+「[主語] は [述語+スタンス] ではないか」
+
+### イシュー度チェック
+| 条件 | 判定 | 根拠 |
+|---|---|---|
+| 本質的選択肢 | [合格/不合格] | [理由] |
+| 深い仮説 | [合格/不合格] | [理由] |
+| 答えを出せる | [合格/不合格] | [理由] |
+
+### 犬の道チェック
+[該当パターンがあれば警告。なければ「該当なし」]
+
+### 一次情報ステータス
+[一次情報に基づいている / 二次情報のみ / 一次情報の取得が必要]
+
+---
+ここまでで得たもの: イシューの見極めと、それが本質的かどうかの判定。
+続けると、イシューの分解と具体的なアクション3つまで落とし込める。
+```
+
+### --quick モードの場合
+
+Step 1の出力のみで終了。Step 2以降は実行しない。
+
+---
+
+## Step 2: イシューの分解
+
+Step 1で確定したイシューを、検証可能な単位に分解する。
+
+### 2a. サブイシューへのMECE分解
+
+メインイシューを「漏れなく・ダブりなく」3-5個のサブイシューに分解する。
+
+
+exec
+/bin/zsh -lc "sed -n '261,620p' /Users/tomtim/.codex/skills/issue-driven/SKILL.md" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+各サブイシューに対して:
+- 仮説を立てる（主語+述語+スタンス）
+- 検証の難易度を評価する（高/中/低）
+- イシュー度を評価する（高/中/低）
+
+**イシュー度が高く、検証難易度が低いものを優先する。**
+
+### 2b. 絵コンテ（分析設計）
+
+各サブイシューについて、分析に入る前に「何と何を比較すれば検証できるか」を設計する。
+
+**分析の本質は比較である。**
+
+各サブイシューに対して以下を定義:
+- **比較対象**: 何を比較するか
+- **ベンチマーク**: 何と比較するか
+- **評価軸**: どんな基準で判断するか
+- **十分条件**: どんな結果が出れば「仮説が支持された」と言えるか
+
+データを集める前にこの設計を済ませる。設計なきデータ収集は犬の道の入口。
+
+### 2c. ストーリーラインの型選択
+
+分解したサブイシューをどう組み立てるか、2つの型から選ぶ:
+
+**WHYの並び立て（論証型）:**
+「なぜXなのか？ 理由1、理由2、理由3」
+- 結論が先にあり、根拠を並列に示す
+- 論理的な説得に向く
+
+**空・雨・傘（説得型）:**
+「事実→解釈→判断」
+- ストーリーとして流れがある
+- 相手の理解を段階的に積み上げるのに向く
+
+選択基準:
+- 結論に自信がある → WHYの並び立て
+- 相手を段階的に説得したい → 空・雨・傘
+- 複数の解釈がありうる → 空・雨・傘（解釈の段階で分岐を示せる）
+
+### Step 2 の出力
+
+```
+## イシューの分解
+
+### メインイシュー
+「[Step 1で確定した仮説]」
+
+### サブイシュー
+| # | サブイシュー（仮説） | イシュー度 | 検証難易度 | 優先度 |
+|---|---|---|---|---|
+| 1 | 「[仮説]」 | 高/中/低 | 高/中/低 | [順位] |
+| 2 | 「[仮説]」 | 高/中/低 | 高/中/低 | [順位] |
+| 3 | 「[仮説]」 | 高/中/低 | 高/中/低 | [順位] |
+
+### 絵コンテ（分析設計）
+サブイシュー1:
+- 比較対象: [何を]
+- ベンチマーク: [何と]
+- 評価軸: [どんな基準で]
+- 十分条件: [どうなれば仮説支持]
+
+[以下同様]
+
+### ストーリーライン
+[選択した型] を使用:
+[ストーリーの骨格]
+
+---
+ここまでで得たもの: イシューの構造化と、検証の設計図。
+続けると、So What?テストで本質をさらに研ぎ澄ませ、アクション3つに絞り込める。
+```
+
+---
+
+## Step 3: 本質の検証
+
+分解した各サブイシューに対して品質チェックを適用する。
+
+### 3a. So What?テスト
+
+各サブイシューの仮説に「だから何？」を問う:
+
+- 「この仮説が正しいとして、何が変わるか？」
+- 「受け手にとってどんな意味があるか？」
+- **何も変わらないなら、そのサブイシューは本質ではない → 削る**
+
+So What?テストを通過しないサブイシューは、いくら論理的に正しくても価値がない。勇気を持って削る。
+
+### 3b. 右脳と左脳の往復
+
+データ分析（左脳）の結果に対して、直感（右脳）で検証する:
+
+- 「数字はこう言っているが、何かおかしくないか？」
+- 「この結論は、自分の実体験と矛盾していないか？」
+- 「同じデータから逆の結論を導くことはできないか？」
+
+違和感があれば、その違和感を言語化し、仮説を修正する。数字だけで結論を出さない。
+
+### Step 3 の出力
+
+```
+## 本質の検証
+
+### So What?テスト結果
+| # | サブイシュー | So What? | 判定 |
+|---|---|---|---|
+| 1 | 「[仮説]」 | [何が変わるか] | 残す/削る |
+| 2 | 「[仮説]」 | [何が変わるか] | 残す/削る |
+| 3 | 「[仮説]」 | [何が変わるか] | 残す/削る |
+
+### 右脳チェック
+[直感との整合性。違和感があれば記載]
+
+### 研ぎ澄まされたイシュー
+「[So What?テスト後の、より本質的な仮説]」
+
+---
+ここまでで得たもの: So What?テストにより、本質でないサブイシューを削ぎ落とした研ぎ澄まされたイシュー。
+続けると、具体的なアクション3つと「やらないこと」リストまで落とし込める。
+```
+
+---
+
+## Step 4: アクション
+
+### 4a. 検証方法を3つに絞る
+
+Step 2-3の結果から、最もイシュー度の高いサブイシューに対する検証方法を **3つだけ** 選ぶ。
+
+**絞る基準（優先順）:**
+1. イシュー度が最も高い（答えが出ると方向性が変わる）
+2. 検証コストが最も低い（60%ルール: 完璧を目指さず高速回転）
+3. 一次情報を取得できる（二次情報の分析より、一次情報の取得を優先）
+
+### 4b. 出力の分離
+
+アクションを2種類に明確に分ける:
+
+- **Codexで今すぐ支援できるもの**: ヒアリングシート作成、検証マトリクス生成、競合分析、データ整理、タスクリスト作成、プロトタイプのコード等
+- **ユーザー自身が動く必要があるもの**: 対面ヒアリング、関係構築、意思決定、交渉、実地調査等
+
+技術課題（タイプD）の場合は追加で:
+- **実装への橋渡し**: 具体的なコード変更提案、設定ファイルの修正案、アーキテクチャ図等
+
+### 4c. 捨てるものの明示
+
+「今やること」と等しい重みで「今やらないこと」を明示する。捨てる理由を付けることで、優先順位の判断を透明にする。
+
+### Step 4 の出力（最終出力）
+
+```
+## イシュー分析結果
+
+### 本質イシュー
+「[確定した仮説]」
+
+### So What?
+[このイシューが解決されたとき、何が変わるか -- 1-2文]
+
+### サブイシュー分解（優先順）
+1. 「[仮説]」 -- 検証方法: [具体的な手段]
+2. 「[仮説]」 -- 検証方法: [具体的な手段]
+3. 「[仮説]」 -- 検証方法: [具体的な手段]
+
+### 今やること（3つ）
+1. [最優先の検証アクション]
+   支援: Codexで○○を生成可 / ユーザーが△△する
+2. [次の検証アクション]
+   支援: Codexで○○を生成可 / ユーザーが△△する
+3. [その次の検証アクション]
+   支援: Codexで○○を生成可 / ユーザーが△△する
+
+### 今やらないこと（意図的に捨てるもの）
+- [捨てるもの1] -- 理由: [なぜ今ではないか]
+- [捨てるもの2] -- 理由: [なぜ今ではないか]
+- [捨てるもの3] -- 理由: [なぜ今ではないか]
+```
+
+---
+
+## --deep モード（対話的深掘り）
+
+安宅和人の思考法をシミュレートし、ユーザーと対話しながら本質を炙り出す。
+
+### 動作
+
+**入力テキストがある場合:**
+1. Step 1a（空・雨・傘）の結果を提示
+2. 仮説を提示し、ユーザーに「これは本質か？」と問う
+3. ユーザーの反応に対して切り返し、より深い本質を探る
+4. 合意に達するまで対話を繰り返す
+5. 合意後、Step 1c-1eのチェックを実行して出力
+
+**入力テキストがない場合:**
+1. 「何について深掘りしたいか？」と問いかける
+2. ユーザーの回答を受けて上記フローを開始する
+
+### 反論パターン
+
+対話では以下の型で切り返す。
+
+- 表面に留まる場合: 顧客要望、データ、業界常識を「空」として扱い、その裏の構造と別解釈を問う。
+- 犬の道に向かう場合: 早期実装、網羅症、過剰調査を止め、最も方向性が変わる1つの問いに戻す。
+- 諦めに向かう場合: 感情ではなく制約を分解し、「今は不可能」と「根本的に不可能」を分ける。
+
+---
+
+## 文脈自動読み込み
+
+スキル実行時、プロジェクトの文脈を自動で収集する。
+
+### 読み込み対象
+
+1. カレントディレクトリの `circles/`, `*.txt`, `*.md` を検索（Glob）
+2. `.harness/spec.md` があれば読む
+3. auto memoryの該当プロジェクトメモリを参照
+4. ユーザーの `user_profile_*.md` メモリがあれば参照（Life Mission、インセンティブ構造等）
+
+### 文脈の活用
+
+- 見つかった情報を「空（事実）」の層に追加する
+- プロジェクトの経緯や過去の判断を踏まえた上でイシューを分析する
+- 何も見つからなければ、ユーザー入力のみで分析する
+
+---
+
+## 詳細参照
+
+安宅本の全フレームワーク詳細:
+- `references/book-framework.md`
+
+exec
+/bin/zsh -lc "rg --files -g 'AGENTS.md' -g '*.md' -g '*.txt' -g '.harness/spec.md' -g '"'!node_modules'"' -g '"'!Pods'"' . | sed -n '1,160p'
+rg -n -i 'mobile-work|H-3|client=app|build=|hourly|day total' /Users/tomtim/.codex/memories/MEMORY.md | sed -n '1,120p'
+sed -n '1,220p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/mac-mini-ops.md
+sed -n '1,220p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/workflow-principles.md" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+./PRE-DEPARTURE-2026-08-20.md
+./DESIGN.md
+./rc-backend/test/fixtures/screens/edith-interrupt-rewound.txt
+./rc-backend/test/fixtures/screens/generating-spinner-hidden.txt
+./rc-backend/test/fixtures/screens/composer-holds-text.txt
+./rc-backend/test/fixtures/screens/generating.txt
+./rc-backend/test/fixtures/screens/choice-permission-bash.txt
+./rc-backend/test/fixtures/screens/edith-after-escape.txt
+./rc-backend/test/fixtures/screens/edith-generating-spinner-hidden.txt
+./rc-backend/test/fixtures/screens/composer-numbered-multiline.txt
+./rc-backend/test/fixtures/screens/choice-danger-menu.txt
+./rc-backend/test/fixtures/screens/choice-model-menu.txt
+./rc-backend/test/fixtures/screens/composer-multiline-tail-break.txt
+./rc-backend/test/fixtures/screens/queued-during-generation.txt
+./rc-backend/test/fixtures/screens/transcript-echo-numbered.txt
+./rc-backend/test/fixtures/screens/composer-rule-in-body.txt
+./rc-backend/test/fixtures/screens/generating-spinner-visible.txt
+./rc-backend/test/fixtures/screens/edith-generating-dot-frame.txt
+./rc-backend/test/fixtures/screens/idle-after-two-turns.txt
+./rc-backend/test/fixtures/screens/idle-boot.txt
+./rc-backend/test/fixtures/screens/edith-idle-footer.txt
+./rc-backend/test/fixtures/screens/edith-finished.txt
+./rc-backend/test/fixtures/screens/edith-interrupted.txt
+./rc-backend/test/fixtures/screens/composer-numbered-body.txt
+./rc-backend/test/fixtures/screens/edith-generating-footer.txt
+./rc-backend/test/fixtures/screens/composer-wrapped-long.txt
+./rc-backend/test/fixtures/screens/echo-then-model-menu.txt
+./rc-backend/test/fixtures/screens/composer-scrolled-1500.txt
+./rc-backend/test/fixtures/screens/promo-banner-boot.txt
+./rc-backend/test/fixtures/screens/limit-reached-edith.txt
+./rc-backend/test/fixtures/screens/composer-wrapped-tail-short.txt
+./HANDOFF-NEXT-SESSION.md
+./REQUIREMENTS.md
+./rc-backend/tools/phone-expected-apps.txt
+./WORKLOG.md
+./research/remote-control-teardown.md
+./research/requirements-mining.md
+./research/asset-survey.md
+---
+name: mac-mini-ops
+description: SSH operations, service management, and deploy procedures for the Mac mini (athenas@10.0.0.0)
+---
+
+# Mac mini Operation Rules
+
+## Connection
+- SSH: `ssh athenas@10.0.0.0` (via Tailscale)
+- Tailscale: App Store version, so `tailscale set --ssh` is not available
+
+## Node.js
+- Path: `/opt/homebrew/bin/node`
+- Not in PATH under launchd; always use the absolute path
+
+## .env location
+- Shared: `~/macmini-openclaw-claudeode-/.env`
+- Copy to each subsystem as needed
+
+## Directory layout
+- `~/個人/` — personal projects (x-bookmark etc.)
+- `~/Disocrod/` — Discord X-posting bot
+- client-a lives in a separate directory (do not conflate)
+
+## launchd service management
+```bash
+# Load
+launchctl load ~/Library/LaunchAgents/<plist>
+# Unload
+launchctl unload ~/Library/LaunchAgents/<plist>
+# Status
+launchctl list | grep <label>
+```
+
+## Tasks requiring sudo
+Not executable by AI. User runs `! ssh athenas@... sudo <command>` directly in the terminal.
+---
+name: workflow-principles
+description: Task execution, completion, and self-improvement workflow principles
+---
+
+# Workflow Principles
+
+## Current-state confirmation
+When asked for a fix, do not execute immediately. First inspect the current state, propose, get approval, then execute.
+
+## Task planning
+- Tasks with 3+ steps or design decisions: plan via Plan mode before starting
+- Write the plan in `~/.claude/tasks/todo.md` as a checklist
+- On any problem, stop and re-plan immediately (do not push through)
+
+## Plan Mode Enumeration Checklist
+Before calling ExitPlanMode, walk through the 10 items below.
+Ask all ambiguous items via AskUserQuestion inside Plan mode.
+Do not surface additional confirmations after entering implementation phase
+(if one leaks out, recognize it as a failure of upfront enumeration).
+
+1. Tech / library choice
+2. Architecture approach
+3. UX / design preferences
+4. Scope boundary (how far to go)
+5. Intrusion scope into existing code / environment
+6. Edge case handling policy
+7. Error behavior
+8. Completion criteria
+9. Deploy / delivery target
+10. Conflicts with existing settings / rules
+
+Contract: Plan mode is the batch confirmation phase. Missed questions here destroy the value of autonomous execution. No shortcuts on this checklist.
+
+## Definition of done
+Writing code is not done. Must include log verification and proof of behavior.
+
+## Self-Improvement Loop
+- On user corrections or feedback, record the pattern in `~/.claude/projects/<PJ-slug>/memory/feedback_*.md`
+- Auto-referenced via MEMORY.md pointers; no manual review at session start
+
+## Demand Elegance
+- On noticing a hacky fix, self-question "is there a deeper solution?" before proceeding
+- Skip for trivially obvious simple fixes
+
+exec
+/bin/zsh -lc "rg -n -i 'H-3|client=app|client=|build=|hourly|hour|day total|accumulat|max.merge|max_merge|sessions|account' --glob '"'!node_modules/**'"' --glob '"'!Pods/**'"' --glob '"'!*.xcodeproj/**'"' . | sed -n '1,260p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+./PRE-DEPARTURE-2026-08-20.md:131:| `/api/sessions?scope=registered` の tmux 経路 | **1 件** |
+./PRE-DEPARTURE-2026-08-20.md:158:その会話が名乗りを上げて `/api/sessions` の一覧に出る。私が一覧を見て確認できる。
+./REQUIREMENTS.md:178:→ 電話 UI に**現用アカウントの表示と切替**が要る。土台は実装済み(edith `fleet-account`
+./REQUIREMENTS.md:240:   | server `/api/sessions/<id>/history?limit=50` | **1〜5ms** | edith の loopback |
+./REQUIREMENTS.md:241:   | server `/api/sessions`(41本) | 38〜65ms | 同上 |
+./REQUIREMENTS.md:264:   **2026-08-12 に出荷した。** サーバ側(`GET /api/account` / `POST /api/account/next`)は
+./REQUIREMENTS.md:267:   `ios/Sources/Core/AccountClient.swift` / `Screens/Shared/AccountViewModel.swift` /
+./REQUIREMENTS.md:268:   `Screens/Shared/AccountBar.swift` / `Core/AccountFixture.swift`。
+./REQUIREMENTS.md:274:   ★**設計上の非対称(サーバの注釈が根拠)**: `fleet-account --next` は時間切れになる
+./REQUIREMENTS.md:277:   報告する。検査 = `ios/Tests/Core/AccountClientTests.swift` の
+./REQUIREMENTS.md:278:   `testAFailedSwitchIsNotRetried`、`ios/Tests/Screens/Shared/AccountViewModelTests.swift` の
+./REQUIREMENTS.md:279:   `testAFailedSwitchRereadsTheAccountRatherThanAssumingItDidNotMove`、
+./REQUIREMENTS.md:280:   サーバ側の契約 = `rc-backend/test/account-routes.test.mjs`(陰性対照3本)。
+./REQUIREMENTS.md:302:| edith 側の入口 | `edith:~/fleet-tools/phone-shell`(強制コマンド)/ `claude-work` / `fleet-account` |
+./REQUIREMENTS.md:357:現状: `POST /api/account/next` = **次へ回すだけ**。どの口座が在るのか一覧できず、
+./REQUIREMENTS.md:359:→ 口座の**一覧**を返す口(サーバ側の `fleet-account` が持っている情報)と、
+./REQUIREMENTS.md:363:線に候補が乗っていなかったのが正体で、`GET /api/account` は人向けの6行を `account` の
+./REQUIREMENTS.md:364:1鍵に入れて渡していた。`src/account.mjs` の `parseFleetAccount` で構造へ均し、
+./REQUIREMENTS.md:365:`POST /api/account/select` を新設。矢印は**退避路として残す**(一覧が読めない時に
+./REQUIREMENTS.md:368:★台本 `fleet-account` 自体は別レーンの資産なので触っていない。読む側だけを持つ。
+./research/remote-control-teardown.md:38:- `/config` の "Enable Remote Control for all sessions" で全セッション自動 RC 化。
+./rc-backend/src/account.mjs:7:// `fleet-account` の**人向け出力**を構造に直す暫定アダプター。
+./rc-backend/src/account.mjs:10://   `fleet-account` は edith 上の `~/fleet-tools/fleet-account`(75行の bash)で、
+./rc-backend/src/account.mjs:24://   → `parseStatus !== "ok"` は**読めていない**、`accounts: []` かつ `ok` は**本当に空**。
+./rc-backend/src/account.mjs:38:export const ACCOUNT_NAME_MAX = 64;
+./rc-backend/src/account.mjs:49:export function accountNameProblem(name) {
+./rc-backend/src/account.mjs:52:  if (name.length > ACCOUNT_NAME_MAX) return "too-long";
+./rc-backend/src/account.mjs:63:  return { current, accounts: [], parseStatus, anomalies: [] };
+./rc-backend/src/account.mjs:67: * `fleet-account`(引数なし)の標準出力を構造に直す。
+./rc-backend/src/account.mjs:71: *   accounts    [{ name, order, hasToken, active }] — `.order` の並び順
+./rc-backend/src/account.mjs:75: * ★`accounts: []` + `parseStatus: "ok"` は起こりうる正当な状態:
+./rc-backend/src/account.mjs:79:export function parseFleetAccount(stdout) {
+./rc-backend/src/account.mjs:91:  const accounts = [];
+./rc-backend/src/account.mjs:98:    accounts.push({ name, order: Number(m[2]), hasToken: m[4] === "有", active: m[1] === "->" });
+./rc-backend/src/account.mjs:102:  for (let i = 0; i < accounts.length; i++) {
+./rc-backend/src/account.mjs:103:    if (accounts[i].order !== i + 1) { anomalies.push("order-not-sequential"); break; }
+./rc-backend/src/account.mjs:105:  const names = accounts.map((a) => a.name);
+./rc-backend/src/account.mjs:108:  if (accounts.length === 0) {
+./rc-backend/src/account.mjs:119:    const marked = accounts.filter((a) => a.active);
+./rc-backend/src/account.mjs:133:  return { current, accounts, parseStatus: "ok", anomalies };
+./rc-backend/src/account.mjs:143:  const bad = accountNameProblem(name);
+./rc-backend/src/account.mjs:146:  const hit = parsed.accounts.find((a) => a.name === name);
+./rc-backend/src/account.mjs:147:  if (!hit) return "unknown-account";
+./rc-backend/src/account.mjs:159:  "listing-unreadable", "unknown-account", "no-token",
+./rc-backend/src/account.mjs:163:  "not-a-string": "The account name did not arrive as a string.",
+./rc-backend/src/account.mjs:164:  empty: "The account name is empty (an .order line may contain only `claude-token-`).",
+./rc-backend/src/account.mjs:165:  "too-long": `The account name is too long (max ${ACCOUNT_NAME_MAX} chars).`,
+./rc-backend/src/account.mjs:166:  dot: "`.` and `..` cannot be used as an account name.",
+./rc-backend/src/account.mjs:167:  "leading-dash": "Names starting with `-` cannot be switched to (fleet-account would read them as an option).",
+./rc-backend/src/account.mjs:171:  "listing-unreadable": "The account list is unreadable, so switching is unavailable (fleet-account's output format may have changed).",
+./rc-backend/src/account.mjs:172:  "unknown-account": "That account is not in the list.",
+./rc-backend/src/account.mjs:173:  "no-token": `That account's token is missing on ${DESK}.`,
+./rc-backend/src/account.mjs:182:  return `This account cannot be selected (reason: ${reason}).`;
+./rc-backend/src/account.mjs:192:/** `parseFleetAccount` が返しうる `parseStatus` の全域。★ここが正本。 */
+./rc-backend/src/account.mjs:196:  "no-current-line": `fleet-account on ${DESK} returned an unexpected shape (the first line is not 「現用:」). Switching is unavailable.`,
+./rc-backend/src/account.mjs:197:  "no-order-header": `fleet-account on ${DESK} returned an unexpected shape (the 「優先順 (.order):」 header is missing). Switching is unavailable.`,
+./rc-backend/src/account.mjs:198:  "unreadable-rows": "Account list rows were unreadable (fleet-account's output format may have changed). A partial list is withheld rather than shown.",
+./rc-backend/src/account.mjs:208:  return `The account list state is unknown (${status}).`;
+./rc-backend/src/account.mjs:222:  "unnamed-row": "An account with an empty name is in the list (an .order line may contain only `claude-token-`).",
+./rc-backend/src/account.mjs:223:  "order-not-sequential": "List numbering has gaps (can happen after hand-editing .order). Display order follows fleet-account's output.",
+./rc-backend/src/account.mjs:224:  "duplicate-name": "Two or more accounts share the same name. Which one a switch lands on depends on fleet-account's ordering.",
+./rc-backend/src/account.mjs:225:  "current-not-listed": "The current account is not in the list (the token symlink may have been relinked by hand).",
+./rc-backend/src/account.mjs:230:  "empty-order": "fleet-account returned zero priority entries (.order being empty, missing, or unreadable all produce the same zero rows). The script's own output was readable, so this is not a transport or parse failure.",
+./rc-backend/src/account.mjs:231:  "active-name-mismatch": "The account named as current and the row marked selected (->) disagree. fleet-account's output may be corrupted, or the token symlink was relinked by hand.",
+./rc-backend/src/account.mjs:241:        : `The current marker (->) appears on ${n} rows. fleet-account output may be corrupted.`;
+./research/requirements-mining.md:68:| MCP実依存(30日) | Gmail 468 / Slack(stdio)193 / Slack(account連携)158 / Drive 60 / Calendar 41 | `measured-plan.md` §1-6 |
+./HANDOFF-NEXT-SESSION.md:26:> 1. **配備先の再決定(Tom 判断)**: backend は edith 前提で焼いてある — `RC_BIND=10.0.0.0` / `RC_PORT=8787`(`src/server.mjs` の `const PORT = Number(process.env.RC_PORT || 8787)` と冒頭コメントの `RC_BIND=10.0.0.0` 例)、配備台本も `tools/deploy-to-edith.sh`。選択肢 = (a) edith 復電待ち(日本の家族機を米国から使う形になる。復電は Tom にしか出来ない) / (b) Friday へ移設(今動いていて米国に在る。BIND IP・Tailscale 名・deploy 台本・iPhone 側 RCBaseURL/RCAPIKey が全部動く)。境界の正本 = memory `project_macmini_relationship_map_2026-08-20.md`、fleet-account / claude-work / rc-claude / tmux work / `~/.claude.json` / Tailscale 名を触ったら `departure-survivability-check.sh` を撃つ。
+./HANDOFF-NEXT-SESSION.md:39:> - Tom 08-18 目視の結果: 細部でなく**画面構造**の指摘(Sessions の置き場 / team チップ / 下部に複数選択肢 + Banana 型スワイプ切替)。
+./HANDOFF-NEXT-SESSION.md:41:> - 統合で動く境界の正本 = memory `project_macmini_relationship_map_2026-08-20.md`(edith 実機観測つき)。統合中に edith の fleet-account / claude-work / rc-claude / tmux work / ~/.claude.json / Tailscale 名を触ったら `departure-survivability-check.sh` を撃つ。
+./HANDOFF-NEXT-SESSION.md:50:> | UI 言語 = 英語 | 製品の文字列は電話・サーバ wire 表示文の両方英語。**fleet-account の parse 錨(現用:/(未設定)/優先順/有)だけは台本の実出力なので日本語のまま** | REQUIREMENTS §4-4 / commit `41a04d7` |
+./HANDOFF-NEXT-SESSION.md:84:> - **XCUITest の文字列 subscript は 128 字上限**。英語化で paneFault 帯本文が 155 字になり query 自体が throw。本文短縮で解決(blocked.mjs / SessionsListingFixture / RemoteMiniUITests の3点同時が必須 — fixture-labels-producible が3点一致を強制)。
+./HANDOFF-NEXT-SESSION.md:178:> `keyentry-rejected` / `account-rotating` 等、既定の 3 種以外にも在る)。
+./HANDOFF-NEXT-SESSION.md:213:> deploy 構造対照 E14/E15、deploy 挙動対照 B0e/B10a-d/B4e、e2e の偽 `fleet-account`、
+./HANDOFF-NEXT-SESSION.md:252:> | 未測定4本 | `list-return-refresh` `signout-notice` `account-ui` `dod-sprint-6.5` | 同上 |
+./HANDOFF-NEXT-SESSION.md:254:> | 未コミット | `DESIGN.md` / `AccountViewModel.swift` + その検体 / `account-ui-control.sh` / 生成木の錠 一式 | `git status --short` |
+./HANDOFF-NEXT-SESSION.md:266:>    (`account-ui-control.sh` 等)は**自分で generate を撃つのに変数を持たない**。
+./HANDOFF-NEXT-SESSION.md:377:> だけで 1374 秒、`account-ui-control.sh` 616 秒、`list-return-refresh-control.sh` 538 秒)。
+./HANDOFF-NEXT-SESSION.md:405:> - `ios/Sources/Screens/Shared/AccountViewModel.swift` — `load()` 冒頭に
+./HANDOFF-NEXT-SESSION.md:407:> - `ios/Tests/.../AccountViewModelTests.swift` — その検体
+./HANDOFF-NEXT-SESSION.md:408:>   (`testAForegroundRefreshDuringASwitchDoesNotResurrectTheOldAccount`)。
+./HANDOFF-NEXT-SESSION.md:411:> - `ios/tools/account-ui-control.sh` — 変異 A8。**測った: PASS 8 / FAIL 0 / UNMEASURED 0、
+./HANDOFF-NEXT-SESSION.md:418:>   ★A8 は `testAForegroundRefreshDuringASwitchDoesNotResurrectTheOldAccount` **1 本だけ**を、
+./HANDOFF-NEXT-SESSION.md:444:> | 対照 | `ios/tools/account-ui-control.sh` 新設(変異5本、全部で赤を確認) |
+./HANDOFF-NEXT-SESSION.md:611:> `GET /api/sessions/:id/poll`。判定の純関数も `resumeDecision` → **`pollDecision`**。
+./HANDOFF-NEXT-SESSION.md:701:> `POST /api/sessions/:id/choice` は 08-03 に出荷済みで、`inject.mjs` 側は検査で固めてある。
+./HANDOFF-NEXT-SESSION.md:1418:★**`/api/sessions` では判らない** —— 一覧は末尾の有界読みで組むので **`turns` は常に `null`**
+./HANDOFF-NEXT-SESSION.md:1719:### 1-G-3. ★★本番の `/api/sessions` は**今この瞬間 13/13 が `route: "worker"`**(= 区切り故障が実機で起きている)
+./HANDOFF-NEXT-SESSION.md:1901:| `src/sessions.mjs` | jsonl から一覧/メタ/履歴を組む。`entrypoint:"cli"` で絞る + **有界な履歴読み** `readHistoryFromPath`(止める条件は行数でなく**項目数**) | 7 + 12 |
+./HANDOFF-NEXT-SESSION.md:2141:**サーバ側の契約を4つ直した**(全部 `server.mjs`、3 は `sessions.mjs`):
+./HANDOFF-NEXT-SESSION.md:2149:3. **`metadataIncomplete` を HTTP の外へ**(`sessions.mjs`)— 層の中で正直に測っていたのに
+./HANDOFF-NEXT-SESSION.md:2217:| ★★**選択画面(CHOICE)に電話から答える道が無い**(8/02 07:0x に実測で発覚。探していた物ではなく、`live-http-check` が信頼確認で止まった副産物) | API は `GET /api/sessions` / `POST …/messages` / `POST …/interrupt` / `POST /api/account/next` の4つだけ。**キーを送る口が無い**。送信は CHOICE を検出したら**必ず断る**(2-D の設計で、これ自体は正しい)。結果、会話が選択画面に入った瞬間、電話からは**見えるが答えられない**。Claude Code は許可確認・信頼確認・`/model` 等で日常的にここへ入るので、頻度は低くない。Tom の裁定「返答待ちであれ作業中であれいつでも見て、**干渉できれば**いい」の「返答待ち」がまさにこれ | ★**未着手。設計から**。自由なキー入力を通す口(= 何でも送れる)は作らない — 断りの規約(2-B)ごと無効になる。当てる形: **画面から読み取った選択肢に対する「N 番を選ぶ / Esc」だけを受ける**口。①`classifyScreen` は既に CHOICE を返す ②選択肢の行(`❯ 1. …`)を読む所は未実装 ③送るのは `1`..`9` / `Enter` / `Escape` に限定し、**画面が CHOICE の時だけ**通す ④ここは「電話から Yes を押す」= 安全確認の遠隔応答なので、Tom の裁定を先に取る(私が仕様を決める所ではない) |
+./HANDOFF-NEXT-SESSION.md:2315:| 2b | `USAGE_LIMIT` の正規表現を**広い側へ**倒す | 現行 `/You'?ve hit your (weekly\|usage) limit\|usage limit reached/i` は **ASCII のアポストロフィ限定**。実機2枚(`limit-reached-edith.txt:20` と 8/02 の生 capture)は確かに ASCII の `'` だが、TUI の英文は `’`(U+2019)を使う所が他に在るので、ビルド更新で1文字変わるとこの関数は**黙って false を返す**(= 当たらないプローブは「無い」と報告する、をまた踏む)。加えて `5-hour limit` / `opus limit` の言い回しに当たらない。→ `You['’]?ve hit your [^\n]{0,24}limit` へ広げる。**広げる方向は inject.mjs のコメントが選んだ非対称(誤検知の被害 << 見落としの被害)と同じ向き**なので、判断を新しく作らない |
+./HANDOFF-NEXT-SESSION.md:2640:`claude-work` の **`account=` 行**が流れる = **メールアドレスが電話とログに出る**。
+./HANDOFF-NEXT-SESSION.md:2645:(1) `worker_error.error` にその行が入る (2) `account=<メール>` が `<mail>` に伏せられる
+./HANDOFF-NEXT-SESSION.md:2768:**当て**: `spawn` の `cwd` を **その会話の cwd** にする(`scanSessions` が既に持っている値で、
+./HANDOFF-NEXT-SESSION.md:2779:| **client 供給の cwd を信用するな**(project 固有の hook / 設定が走る) | **採る**が形が違う。我々の cwd の出所は**転写**で、電話は cwd を送らない。電話が送るのは会話 ID だけ —— この不変を注釈に固定する。★hook が走るのは**推測ではなく確認済**: `OBe` は `xBe(forkSession ? "fork" : "resume", …)` を呼び、`xBe` は **SessionStart hook の実行器**(`fd("hooks")` / plugin hook の読み込みを含む)。= ワーカーが1通送るたびに、その cwd の設定と hook が**丸ごと起動する** |
+./HANDOFF-NEXT-SESSION.md:2791:   一時そこを疑ったが、`sessionCwd()` は一覧の走査(`scanSessions`)ではなく
+./HANDOFF-NEXT-SESSION.md:2902:| 一覧 | `scanSessions()` → `isPhoneVisible`(`sessions.mjs:100` = `entrypoint === "cli"`) | **壊れる(別の形)**。枝が湧くのではなく**祖先の行が更新されなくなる**(mtime / `lastPrompt` / `turns` は枝の側で増える) |
+./HANDOFF-NEXT-SESSION.md:2938:1. ★★**`scope=registered` では当てが静かに無効化する**。`scanSessions` は `:111` で
+./HANDOFF-NEXT-SESSION.md:3104:**口**: `POST /api/sessions/:id/choice` — `{key, digest}`。`key` は `1`-`9` / `enter` / `escape` のみ。
+./HANDOFF-NEXT-SESSION.md:3111:**電話から見える物**: `/status` と `/api/sessions` の `CHOICE` 行に `choice` が付く
+./HANDOFF-NEXT-SESSION.md:3341:| `/api/sessions`(41本) | 38〜65ms(30,085 B) | 同上 |
+./HANDOFF-NEXT-SESSION.md:3363:| `interactiveTimeout` | 8s | history / sessions / healthz / auth probe | 生きている経路(10〜65ms)に対して**約2桁の余裕**。沈黙した経路だけが到達する |
+./HANDOFF-NEXT-SESSION.md:3368:`POST /api/sessions/<id>/messages` に **idempotency key が無い**(`server.mjs` を読んで確認。
+./HANDOFF-NEXT-SESSION.md:3391:`ios/Sources/Core/*Client.swift` から対象を導いていた。`SessionsAuthProbe.swift` は
+./HANDOFF-NEXT-SESSION.md:3416:| 探査の **assertion だけ**削除(注釈は残す) | **gate 赤** `SessionsAuthProbe: requestedTimeouts`。hash `d3369ae0551d`→`33475c7ddfdc`、復元一致 |
+./HANDOFF-NEXT-SESSION.md:3548:3. **★edith をどの Claude アカウントで走らせるか**。実測: `oauthAccount.emailAddress` =
+./HANDOFF-NEXT-SESSION.md:3561:   `/stream` を1度も開かず、`GET /api/sessions/:id/poll` の応答を `await r.json()` で
+./rc-backend/src/view.mjs:44: * `POST /api/sessions/<id>/messages` の応答を画面語にする(DESIGN §2.13 の表)。
+./rc-backend/src/view.mjs:106: * `POST /api/sessions/<id>/interrupt` の応答を画面語にする。
+./rc-backend/src/view.mjs:205: * ★これを隠していた物が在る: `ios/Sources/Core/SessionsListingFixture.swift` の worker 行は
+./rc-backend/src/view.mjs:324:  ambiguous: "Multiple sessions are open in the same folder; the target can't be determined.",
+./rc-backend/src/view.mjs:455: * 長待ち受け(`/api/sessions/:id/poll`)の応答1回分の形を、**適用の前に**丸ごと検める。
+./rc-backend/src/view.mjs:613: * `POST /api/sessions/<id>/choice` の応答を画面語にする。`sendResult` と同じ形。
+./rc-backend/src/listing.mjs:1:// 一覧を作る為の**有界読み**。`/api/sessions` の下回り。
+./DESIGN.md:49:| アカウント切替 | **必須要件**(Tom 逐語 2026-07-28、REQUIREMENTS §4-5)。土台実装済み: `fleet-account --next` + 2h 自動フェイルオーバー。UI は現用表示+切替ボタンでこれを呼ぶだけ | 土台あり |
+./DESIGN.md:615:`$TMUX_PANE` が環境に必ず居る。SessionStart hook は同じ保証を持たない。
+./DESIGN.md:880:> **長待ち受け** `GET /api/sessions/:id/poll` で、規約の正本は **§2.36** にある。
+./DESIGN.md:969:認証 401 → `/api/sessions` → `/status` → `/history` → SSE 購読 → `POST /messages` →
+./DESIGN.md:980:`scanSessions()` が何を払っているかを測った(`scratchpad/scan-cost.mjs` = 実装を写した計測):
+./DESIGN.md:998:`scanSessions` の `catch { continue; }` が飲むので、**その会話は警告なく一覧から消える**。
+./DESIGN.md:1126:| `src/sessions.mjs` `readHistoryFromPath()` | 履歴。止める条件は**行数でなく項目数**(1レコードが 0 項目にも 3 項目にもなる) |
+./DESIGN.md:1128:呼び出し側3箇所を差し替えた: 一覧(`scanSessions`)・履歴(`/history`)・
+./DESIGN.md:1351:2. **一覧** — `GET /api/sessions`。1行 = 題 / 現在地(`cwd`)/ 最終更新の相対時刻 /
+./DESIGN.md:1396:| 1 | `GET /history?limit=50` | 実際の経路は `GET /api/sessions/<id>/history`。`/api/` 以外は**認証の前に 404**(`server.mjs:504`) | 画面は `/api/...` を叩く。`/`・`/debug`・`/frames.mjs`・`/view.mjs`・`/manifest.webmanifest`・`/icon.png` は **404 の行より前**に明示的に置く(総当たりの静的配信は作らない = パス遡行を作らない) |
+./DESIGN.md:1521:一覧(`GET /api/sessions`)は jsonl を **mtime の新しい順**に見て、`?limit=` の件数で
+./DESIGN.md:1533:★実際には電話の画面は `api("/api/sessions")` を limit 無しで叩いていた
+./DESIGN.md:1564:「電話に出す会話か」は `sessions.mjs` の `isPhoneVisible(meta)` **1本だけ**。
+./DESIGN.md:1625:§8-3 は同じ事を 7/31 に `~/.claude.json` の `oauthAccount` から確定済で、上限の解除日
+./DESIGN.md:1799:配備後の本番の実測(`.harness/evidence-2026-08-02/api-sessions-after-deploy-20260802-0956.json`):
+./DESIGN.md:1866:| 一覧 `/api/sessions` | **1枚**(`server.mjs:240` の戻りに `work` は無い) | **69%** |
+./DESIGN.md:2044:`GET /api/sessions` を読んだら、**一覧はセッションごとの画面状態を持っていない**:
+./DESIGN.md:2064:  だが `sessions.mjs:60` の定義は **`if (obj.type === "user") meta.turns += 1`** =
+./DESIGN.md:2404:| `/api/sessions`(一覧) | `scanSessions()` = 転写 file の走査 → `isPhoneVisible`(`sessions.mjs:100` = `entrypoint === "cli"`)で篩う | **壊れる(初稿と別の形)**。枝が別行として湧くのではなく、**祖先の行が更新されなくなる**(mtime も `lastPrompt` も `turns` も、増えるのは枝の側) |
+./DESIGN.md:2490:`scanSessions({only})` は `:111` で `if (only && !only.has(sessionId)) continue;` = **開く前に落とす**。
+./DESIGN.md:2603:| `scanSessions({only, limit, heads})` | (1) `only` を `registered ∪ {頭}` に**広げる**(罠1) (2) 各行に `sortMs` と `head` の枠を持たせる (3) **`sort` の前**に畳む (4) 頭そのものの行を落とす |
+./DESIGN.md:3171:| 1 | `一覧の件数: 0` | 会話が1件も見えない | **14件ある** | 私の `d.get("sessions", ...)` の**既定値**。応答は `{"error":...}` で、鍵が違うだけだったのに、**既定値が「0件」という*もっともらしい成功*に化けた** |
+./DESIGN.md:3189:`d.get("sessions", [])` は鍵が違う時に例外を出さず、空配列を返し、`len()` は 0 を返す。
+./DESIGN.md:3199:`/api/sessions` 200・14件 / 鍵なし 401(fail-closed が**真陽性**で確認済み)/
+./DESIGN.md:3233:(11) の `d.get("sessions", [])` は失敗を `0` に、ここの `.catch(() => ({}))` は失敗を「成功」に変えた。
+./DESIGN.md:4608:`claude-work` の **`account=` 行**が流れる = **メールアドレスが電話とログに出る**。
+./DESIGN.md:4620:| 2 | `account=<メール>` が `<mail>` に伏せられる | 伏字を外すと落ちる |
+./DESIGN.md:4628:(上限は残す)。逆に `account=` 以外の秘密も流れる事が分かれば、伏字では足りず
+./DESIGN.md:4668:Google の client secret(`GOCSPX-…`)を転写へ出している。`account=` だけを見て
+./DESIGN.md:5363:した(`POST /api/sessions/:id/choice` は `digest` 無しなら **400**)。★省略時にサーバが今の画面
+./DESIGN.md:5658:| 3 | 実行時に読む path | `PROJECTS_DIR` / `KEY_DIR` / `HEADS_DIR` / `FLEET_ACCOUNT` = **全部同期ツリーの外** |
+./DESIGN.md:5659:| 4 | 子プロセス | `ps` / `tmux` / `claude` / `FLEET_ACCOUNT` のみ。ツリー内の script を起こす経路は無し |
+./DESIGN.md:6788:`POST /api/sessions/<id>/choice` は 2026-08-03 に出荷し、`src/inject.mjs` の
+./DESIGN.md:8176:`ios/Sources/Core/SessionsListingFixture.swift` の scan 行に取得の通し番号を載せた
+./DESIGN.md:8303:`sessions` / 認証の探り。`ios/Sources/Core/BackendSession.swift` の doc が理由まで
+./DESIGN.md:8613:`ios/UITests` で `account` に当たるのは `KeychainCredentialStore` の属性名2箇所だけで、
+./DESIGN.md:9917:- 実測(2026-07-31): `~/.claude.json` の `oauthAccount.emailAddress` = **`mail-redacted@example.invalid`**
+./DESIGN.md:9936:両機の `~/.claude.json` の `oauthAccount` を直読(2026-08-04 21:4x):
+./DESIGN.md:11272:サーバが居るか)が返ってから `/api/sessions`(その鍵が通るか)へ行く。両方とも
+./DESIGN.md:11294:   `SessionsAuthProbe` / `KeychainCredentialStore`)を持ち、`KeyEntryView.init` は
+./DESIGN.md:11443:`ios/Sources/Core/SessionsListingFixture.swift` に**手で書いてある**。その worker 行は
+./DESIGN.md:11592:`SessionsListingFixture.swift` の `paneFault` は `pane-scan-timeout` +
+./DESIGN.md:11608:`paneFaultReason` の2値それぞれに見出しと本文を持ち、`/api/sessions` の
+./DESIGN.md:11685:`whoOf(role)` との一致で行い、道具の行についてはさらに本文が `sessions.mjs` の
+./DESIGN.md:11708:書き残しておく —— 電話が持つ fixture は6本(`SessionsListingFixture.swift` /
+./DESIGN.md:11824:`SessionsResponse` / `HistoryResponse` と其の中の `display` 型)は、`src/server.mjs` が
+./DESIGN.md:11851:  `PollResponse` / `SessionsResponse` / `HistoryResponse` と其の中の `display` 型、
+./DESIGN.md:11878:- `sessionRow` / `sessionsBody` → **新設の `src/wire.mjs`**。`src/view.mjs` に置けない ——
+./DESIGN.md:11882:- `unreadableRow` → **`src/sessions.mjs`**(`buildListing` の隣)。一覧の行を作る生産者を
+./DESIGN.md:11883:  `sessions.mjs` と `registry.mjs` の**2箇所だけ**に閉じる為。
+./DESIGN.md:11886:(`registryOnlySessions`)/ 読めなかった(`unreadableRow`)。1本でも呼び忘れると、
+./DESIGN.md:11899:「目印の**後ろの最初の `{`**」を本文と見なす。`export function sessionsBody({ sessions, scan, paneFault })`
+./DESIGN.md:12168:5本(`SessionsResponse` / `SessionRow` / `PollResponse` / `MessageItem` / `GapItem`)へ増えた。
+./DESIGN.md:12181:  (`src/sessions.mjs`)が押し込むのは `{role, text}` だけである。そのまま走らせれば
+./DESIGN.md:12236:対照 ㉟ は `healthzBody` に `sessions: 3` を足す —— 「今日は何本の会話を開いていたか」を
+./DESIGN.md:12297:`ios/Sources/Core/SessionsListingFixture.swift` が `screen: "MAIN"` を焼いていた。
+./DESIGN.md:12323:数えられる**。この厳しさは据えた晩に元を取った —— ⑬「`SessionsListingFixture.swift` が
+./DESIGN.md:12368:(`ios/Sources/Core/SessionsModels.swift` の `PaneFault.reason` に「Never drawn」と書いてある。
+./DESIGN.md:12663:`projects-attic/` へ退避する)は残す。2手目 = `sessions.mjs` に `cwdIsGone` を足して、
+./DESIGN.md:12708:| `GET /api/account` → `{ account: "現用: team\n優先順 (.order):\n->  1. team …" }` の1鍵 | `{ current, accounts[], ok, parseStatus, anomalies, display, raw? }` |
+./DESIGN.md:12709:| 電話の型は `let account: String` の1鍵 | `AccountState` + `AccountRow`(名前 / トークンの有無 / 現用の印 / 選べるか / 断り理由) |
+./DESIGN.md:12710:| 押せる物は `POST /api/account/next` の矢印1本 | 名指しの `POST /api/account/select` + 矢印は**退避路**として残す |
+./DESIGN.md:12712:★台本の出力を構造へ均す所は `src/account.mjs` の `parseFleetAccount` に置いた。
+./DESIGN.md:12713:`fleet-account` は別レーンの資産(私の git 管理下に無い)なので**台本には触っていない** ——
+./DESIGN.md:12718:`accounts: []` と一緒に日本語の理由(`display.status`)と台本の生出力(`raw`、2000字まで)を返す。
+./DESIGN.md:12720:`ok === false` と `accounts.isEmpty` を混ぜると、台本の出力形式が変わった日に
+./DESIGN.md:12726:文面を電話側で組み立てないのも同じ理由(`src/account.mjs` の `selectionMessage` が正本)。
+./DESIGN.md:12735:(`AccountClient.Wire` / `.Row` / `.Row.RowDisplay` / `.Display`)。其の為に
+./DESIGN.md:12736:`src/wire.mjs` の `accountRow` を export した —— 封筒の `accounts[].display` を辿るには
+./DESIGN.md:12740:④が赤くなる事を確かめてある。加えて⑦が「3つの口の 200 が全部 `accountBody` を通る」を
+./DESIGN.md:12746:上の設定画面を書いた後、`AccountUITests` の2本が赤くなった。原因は無関係な2つ。
+./DESIGN.md:12752:Other,  identifier: 'settings.account.row.sdgs'          <- 容器。Disabled の印を持たない
+./DESIGN.md:12753:  Button, identifier: 'settings.account.blocked', Disabled
+./DESIGN.md:12759:子から畳む時に**子の識別子まで吸い上げる**ので、行の Button が `settings.account.blocked` を
+./DESIGN.md:12763:★`AccountBar` の註と矛盾して見えるので、和解を書いておく。あちらは
+./DESIGN.md:12769:| 中の子を**別々の要素として**読みたい(`account.label` 等) | 容器 + `children: .contain`。容器自身の enabled/disabled は測れない |
+./DESIGN.md:12777:**② fixture の註だけが実装されていた** —— `AccountFixture` の `.listingUnreadable` は
+./DESIGN.md:12787:`AccountClient` は `decodeAccount` と `decodeError` の中に `struct Wire` を1つずつ持っていた。
+./DESIGN.md:12789:後勝ちで潰れ、`AccountClient.Wire` は `{ error }` の1鍵の型を指していた。
+./DESIGN.md:12797:`ios/tools/account-ui-control.sh` は口座の層に欠陥を5つ植え、**名指しした検査**が
+./DESIGN.md:12807:| A5 `.idle` を空で描く | `case .idle, .loading:`(**12桁**の字下げ) | `AccountBar` は 8桁。12桁で在るのは**別 file の同じ一行**(`SettingsView.swift`) |
+./DESIGN.md:12810:過去の誰かの改名ではなく、**今出そうとしている此の変更の中**。`AccountBar` の相の
+./DESIGN.md:12823:★同時に、宣言の側の穴も1つ塞いだ。`# controls-for:` は `AccountBar.swift` までしか
+./DESIGN.md:12834:`Failed to tap "settings.account.row.biz" Any: No matches found`。
+./DESIGN.md:12847:ならない。**待ち合わせ点を枠から節へ移す**: `settings.account.loading` が消えるまで
+./DESIGN.md:12861:其の時の A5 の変異は `AccountBar.swift` の `case .idle, .loading:` を
+./DESIGN.md:12872:- 残った差は「読み込み中の一瞬が空白か回転印か」だけ。`AccountFixture` の
+./DESIGN.md:12885:`account.label` が永久に出ないので `testTheAccountIsActuallyOnTheScreen` が赤になる。
+./DESIGN.md:12889:読み取りを保留する fixture の状態を1つ足し、其の間 `account.loading` が居る事を
+./DESIGN.md:12896:同じ走行の log に `./tools/account-ui-control.sh: line 218: [: : integer expression expected`
+./DESIGN.md:12955:最初から正しく、`account-ui` 側だけが古い形のまま残っていた。
+./DESIGN.md:13044:    account = "rc-backend"
+./DESIGN.md:13053:`KeychainCredentialStore` に `init(service:account:)` を足し、既定値を
+./DESIGN.md:13054:`productionService` / `productionAccount` に置いた。`AppState.init(store:…)` の既定引数も
+./DESIGN.md:13059:外向きの穴を開けたのではない事の確認: `service` / `account` は `internal` なので、
+./DESIGN.md:13090:`account-ui-control.sh` を回したら、A3 の所で走行が返らなくなった。観測:
+./DESIGN.md:13096:`AccountViewModel.select()` の失敗経路から `await load()` を削る変異で、消すと
+./DESIGN.md:13097:門付きの読み取りが**そもそも始まらない**。二重 `GatedAccountAPI` は其の開始を
+./DESIGN.md:13104:停止は読めない。しかも `account-ui-control.sh` は pre-commit の門の中でも回るので、
+./DESIGN.md:13132:`account-ui-control.sh` と `signout-notice-control.sh` の両方)。
+./DESIGN.md:13148:`/api/account` を「台本の標準出力をそのまま返す」から「解析した封筒を返す」へ変えた
+./DESIGN.md:13152:FAIL account passthrough        # 期待: acct.account === "account=testacct"
+./DESIGN.md:13155:e2e の偽 `fleet-account` は `echo account=testacct` の1行だった。素通しの時代は之で
+./DESIGN.md:13166:1. 偽 `fleet-account` を**本物の printf の形**にした(現用行 / `優先順 (.order):` /
+./DESIGN.md:13167:   `トークン:有|欠` の行)。加えて**状態を file に持たせた** —— `/api/account/select` が
+./DESIGN.md:13172:   (`wire.mjs` の `accountRow` は `display` の下に入れ、iOS も `$0.display.blocked`
+./DESIGN.md:13238:呼び出しは4箇所しか無い(`SettingsView` の `.task` と再試行ボタン、`AccountBar` の
+./DESIGN.md:13576:   log の項は別途 `client=` を 2026-08-27 に追加(種類のみ、生の User-Agent は記録しない)。
+./DESIGN.md:13582:「account/select・next を電話から外す」は §9-3(電話から CodexBar 同様に切替)の
+./DESIGN.md:13717:一覧の定義は `isPhoneVisible = meta.entrypoint === "cli"`(`src/sessions.mjs`)。
+./DESIGN.md:13732:   Jervis から `GET /api/sessions` が **1 件**を返した(`cwd=/Users/athenas/Athenas`)
+./research/asset-survey.md:134:  -> account=sdgs / {"result":"TEST1",...,"session_id":"<SID>",...}   (新規セッション作成、成功)
+./research/asset-survey.md:160:    `"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":
+./research/asset-survey.md:169:- 使ったアカウント: `account=sdgs`(`~/個人/heartbeat/tokens/claude-token-sdgs`
+./research/asset-survey.md:197:  機能していることは今回の実測(`account=sdgs`)で裏付けられた。対話 TUI 経由(非 `-p`)での
+./research/asset-survey.md:210:| `claude-work` | 実測で動作確認(account=sdgs) | RC backend は素の `claude` でなく必ずこれ経由にする |
+./ios/Sources/Screens/Conversation/ConversationViewModel.swift:608:    func applyInitial(_ result: Result<HistoryResponse, SessionsFetchError>) {
+./ios/Sources/Screens/Conversation/ConversationViewModel.swift:754:            // of the draft. Same rule as `SessionsFetchError.cancelled` everywhere else
+./ios/Sources/Screens/Conversation/ConversationViewModel.swift:874:    /// **読みだけ**(`healthz` / `history` / `sessions`)。`BackendSession` の doc が
+./ios/Sources/Screens/Conversation/ConversationViewModel.swift:1283:        _ result: Result<HistoryResponse, SessionsFetchError>,
+./ios/Sources/Screens/Conversation/ConversationViewModel.swift:1605:    /// had accumulated), and resets the poll loop's cursor to empty.
+./rc-backend/src/titles.mjs:6:// 掲げていたのに、明示名の機構が製品のどこにも無かった。sessions.mjs の註が
+./WORKLOG.md:26:`poison()` が終了コードだけを見ていた。一方 `fleet-account-cswap.sh` は **7 箇所の die() を
+./WORKLOG.md:268:| `6b3e3ad`/`a4bdf00` | 口座欄が Friday で動く(M1) | `fleet-account` が無い機体へ `cswap` 翻訳層 |
+./WORKLOG.md:493:| `api/sessions` → `api/session` | `SessionsClientTests` が `requestedURLs` を 0 回読む | 本物の穴 |
+./WORKLOG.md:508:Sessions 0**。規約は既に在って、守るかどうかが手書きだった。しかも数えて初めて
+./WORKLOG.md:519:`SessionsClient: requestedURLs` を名指し。陰性対照は緑(免除が client を跨がない事まで)。
+./WORKLOG.md:691:  - `HealthzClientTests` / `SessionsAuthProbeTests` は delegate **無し**の道を測っていた
+./WORKLOG.md:724:| `SessionsAuthProbe` 変異2本 | 2件赤 / 3件赤 —— Evaluator が予算で残した UNVERIFIED を1つ閉じた |
+./WORKLOG.md:1233:- `POST /api/sessions/:id/choice` を生やし、`/status` と一覧の `CHOICE` 行に `choice` を載せた。
+./WORKLOG.md:1680:1. ★★**罠1**: `scanSessions({only})` は `:111` で `only` に無い id を**開く前に落とす**。
+./WORKLOG.md:1852:★ただし `:190` の注釈が明記している通り stderr には `claude-work` の **`account=` 行**が流れる =
+./WORKLOG.md:1985:| 一覧 | 枝が別行として湧く | **壊れるが形が違う**。`isPhoneVisible`(`sessions.mjs:100` = `entrypoint === "cli"`)で枝は落ちる公算が高く、代わりに**祖先の行が更新されなくなる** |
+./WORKLOG.md:2034:fork 点で止まる。さらに一覧は `scanSessions()` = **転写 file の走査**なので、枝が
+./WORKLOG.md:3648:→ edith へ配備し、4層 + `DEPLOYED-REV` を基準値(`22e957e` @14:57 / node ppid 1 / `/api/sessions` 200・14件 /
+./WORKLOG.md:3667:- `(data.sessions || [])` / `(d.history || [])` = 形が違う 200 が**偽の「0件」**になる
+./WORKLOG.md:3668:  → (11) で私自身が `d.get("sessions", [])` に騙されたのと同じ形
+./WORKLOG.md:3682:- `/api/sessions` → 200 / `sessions` は配列・14件 / 行の鍵10種そろい
+./WORKLOG.md:3719:`/api/sessions` **200・14件** / 鍵なし **401**(fail-closed の真陽性)/ `/healthz` 404(Phase P 未実装=期待通り)
+./WORKLOG.md:4515:- 一覧 `/api/sessions` は `screenOf()` を**1枚だけ**撮る(`server.mjs:240` の戻り値に `work` は無い)。
+./WORKLOG.md:4525:本番の実データ14行(`.harness/evidence-2026-08-02/api-sessions-after-deploy-20260802-0956.json`)で
+./WORKLOG.md:4736:「2026-08-02 の配備後に route:tmux になった(1/14)が、それを測るのは `/api/sessions` 側であってこの job ではない」
+./WORKLOG.md:4935:4. **本番の `/api/sessions` を実際に引いた**(port 8787、pid 93561、鍵は `~/.rc-backend/api.key`)。
+./WORKLOG.md:5149:2. edith へ配る → `bash tools/verify-on-edith.sh` → 再起動(PID 同一性を確認)→ `/api/sessions` 再取得。
+./WORKLOG.md:5222:割り込み / account-next の4つで、**キーを送る口が無い**。送信は CHOICE を検出したら必ず断る
+
+exec
+/bin/zsh -lc "sed -n '13520,13620p' DESIGN.md
+sed -n '13620,13820p' DESIGN.md
+tail -n 260 WORKLOG.md
+git status --short" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+| 電話からの `--force` 禁止 | 設計で担保(未実装) | サーバの口に force 引数を**作らない**(渡す道が構造的に無い) |
+
+#### 2相化の中身(`~/.claude/tools/remote-mini.sh`、この repo の外)
+
+旧形は `rsync --delete` を作業木へ直撃ちしていた。テザリング(Tom の常態)で途中切断
+すると木が「半分向こう・半分手元」で残り、--delete が先に消した分は戻らない。
+新形: 相1 = ネットワークから **staging へ**受ける(木は無傷のまま何度でも死ねる)。
+相2 = staging → 木をローカル同士で適用(ネットワークに依存しない)。
+厳密な rename(2) 一発ではない — cwd に居るプロセスと .git の inode を壊さない為に
+ディレクトリ交換はしない。「切断で木が裂ける」窓を相1に閉じ、相1は木に触らない。
+
+実測(2026-08-16、使い捨ての git 木で edith と実往復):
+- 往復: 向こうで足した行が手元に着く / untracked が生きる / staging は成功後に畳まれる
+- 敵対: 宛先を届かない住所にして back → 門(sentinel)で止まり、**木は1バイトも変わらない**
+- 検証残骸は両機とも撤去済み
+
+#### 電話側の形(未実装 — 次の切片)
+
+- 「戻す」は電話からは**依頼**であって実行ではない。`back` は MBP の上でしか走れず、
+  MBP は寝ている事が在る。誠実な形 = サーバ(edith)に return-request を置き、
+  電話には「戻し待ち(MBP が開いた時に実行)」と**状態が読める**事を先に出す(§9-2 の
+  「押せる事より、状態が読める事が先」)。
+- GET /api/checkouts = mirror root の sentinel から「何が持ち出されて来ているか」を列挙
+- POST /api/checkouts/<pid>/return-request = 依頼の印を置く(force という語彙は API に無い)
+- MBP 側は `remote-mini.sh back`(手動 or 既存セッション)が依頼を拾う。拒否
+  (指紋不一致・会話進行)は従来どおり MBP 側で止まり、その文言を依頼の状態に書き戻す
+
+### 2.102 安全既定(spec-audit D1/D2)— Codex 裁定で v1 案を棄却。実装は本節を正本に次で行う(2026-08-16)
+
+私の v1 案(device-id 白名簿 + TOFU + 30日 lastSeen 失効)は Codex が **REJECT**。
+理由の要点(全文 = scratchpad/codex-auth.txt、要旨をここに正本化):
+
+1. 静的鍵 + UUID は**再生可能な bearer が2つ**になるだけ。Trusted Device 認証とは呼べない
+   (per-device allowlist と呼ぶのが正直)。
+2. **TOFU は不可**。「最初に名乗った者が勝つ」+ tailnet の広さは競走になる。
+   devices.json の欠損・破損で登録が再び開く形も不可(fail-closed 必須)。
+   机側の一回限りの pairing code(5分・単回・原子的消費)で足りるので TOFU は要らない。
+3. 30日 lastSeen 失効はどちらの誓約も満たさない(polling が永遠に更新する。盗んだ者も更新できる)。
+4. 「自律フリートを起動しない」は誤り — `POST /messages` は tool を持つ Claude の turn を
+   起こす。1プロンプトでファイル変更も外部呼び出しも起きる。
+5. **誓約(1)の最小の誠実な形**: Face ID の明示操作で **30分の絶対 executeUntil リース**。
+   要求で延長されない。要るのは `messages` と `return-request`。
+   interrupt / queue-clear はリース切れ後も押せる(緊急停止を無効化しない)。
+   permission/trust/bypass/課金系の choice は今の fail-closed 白名簿のまま(良い)。
+6. **誓約(2)の最小形**: Secure Enclave 鍵 + 机側 one-time code で pairing + Face ID が
+   server nonce に署名 → 不透明 session token(authUntil ~18h)。api.key は机/bootstrap 専用に
+   格下げし、通常要求に載せない。
+7. 追加の穴: /messages に冪等鍵が無い(曖昧な再送で二重注入)/ 認可が route 分類の前の
+   1枚だけ(scope 別 allowlist + unknown deny が要る)/ 未知 UUID を永続化しない / log は
+   device 前置き・auth 年齢・scope・拒否理由まで(資格情報は決して)。
+
+   ★2026-08-27 訂正(この 7 の前半のみ): **冪等鍵は実装された**。`src/idem.mjs` の
+   `createIdemStore` / `begin(sendId, text)` / `abandon`、検査は `test/idem.test.mjs` 14 件全緑。
+   `sendId` を伴う再送は同じ結果へ合流する。API としては任意だが、**電話は必ず載せる**
+   (`SendClient.send` の `sendId: String` は省略不可)。穴が残るのは、付けない呼び手を後から足した時だけ。
+   ★机の再起動を跨いだ再送は**穴ではなく裁定**(同日訂正。理由は上記 §「守りの範囲」)。
+   log の項は別途 `client=` を 2026-08-27 に追加(種類のみ、生の User-Agent は記録しない)。
+   ★この訂正が要った理由: 不在の主張を `idempot|clientMsgId|client_message` の grep 一発で
+   確かめようとして外した。**実装の呼び名は `sendId` / `idem`** で、3 語のどれでもない。
+   不在を主張する前に、それを実装する筈の場所(handler・module 一覧)を開く事。
+
+★Codex 提案のうち1点は **Tom の裁定と衝突**するので採らない:
+「account/select・next を電話から外す」は §9-3(電話から CodexBar 同様に切替)の
+Tom 指示の逆。リースの対象に含める形(執行系に格上げ)を代案として次の実装で試す。
+
+**実装状態: 未実装(このセッションでは着手しない)。** 中途半端な鍵配りは
+security theater になる(Codex 1)。本節を spec として次のセッションが
+SE 鍵 → pairing → lease → scope allowlist → 冪等鍵 の順で入れる。
+
+---
+
+## 2.103 配備先を edith から Friday へ移す —— **常時稼働でない機体の上では、この道具は成立しない**(2026-08-25、実測)
+
+### なぜ移すのか(前提が崩れた)
+
+この道具の定義は「**常時動いている機械の Claude Code を、外から見て打つ**」(§1)。
+edith はその前提を満たす艦隊機だったが、2026-08-20 に**家族(家族)の日常機**になった。
+日常機は持ち主が寝かせれば落ちる。落ちた機械の上では、道具そのものが成立しない。
+
+実測(2026-08-25 14:5x CDT / Jervis から):
+
+| 観測 | 値 |
+|---|---|
+| `ssh edith@10.0.0.0` | connect timeout |
+| Tailscale の見え方 | `edith … offline, last seen 9h ago` |
+| Friday(athenas)の見張りが記録した rc-backend の生死 | **`{"status":"down","fails":202,"firstFailAt":1787565019}`** = 2026-08-24 04:50 CDT から 34 時間 down |
+| `ssh athenas` | OK(`Friday.local`, up 1 day 15:22) |
+
+★見張り(`com.fleet.rc-health-observer`、Friday 上で 10 分毎)は down を**正しく検出していたが、
+一度も鳴っていない**(log は全行「ng — 鳴らさない」)。つまり **Tom には道具が死んだ事を
+知る手段が無かった**。これは配備先とは別の欠陥で、別途潰す(§2.103-c)。
+
+### 移設先の決め方 —— 軸は「機体の生死」ではなく「触りたい Claude が住んでいる場所」
+
+最初に立てた問い(「edith 復電待ちか Friday 移設か」)は**軸を間違えていた**。
+生きているから置くのではない。**Tom がスマホから触りたい Claude がどの機体に居るか**で決まる。
+Friday は米国(Tom と同じ大陸)に在る Tom 自身の艦隊機なので、両方の意味で正しい。
+
+### この機体の固有事情 —— 入口が 443 ではない
+
+Friday の `tailscale serve` 443 は既に埋まっていた(実測):
+Friday の `tailscale serve` 443 は既に埋まっていた(実測):
+
+```
+"Web": {"desk.tailnet.example:443": {"Handlers": {
+    "/":   {"Proxy": "http://127.0.0.1:8799"},
+    "/ja": {"Proxy": "http://127.0.0.1:8801"}}}},
+"AllowFunnel": {"desk.tailnet.example:443": true}
+```
+
+持ち主は `~/Personal/resonance-os`(Tom 自身の別 PJ)。そして **`AllowFunnel: true` =
+公開インターネットへ露出している**。ここへ相乗りすると、パス配下に置こうが
+**Claude Code の操縦面が公開される**。却下。
+
+平文 HTTP で tailnet IP へ直接繋ぐ案(`RC_BIND=10.0.0.0` + `http://…:8787`)も却下 ——
+iOS アプリの `Info.plist` に `NSAppTransportSecurity` の例外が**1つも無い**(実測)ので
+iOS が cleartext を止める。直すには実機再ビルドが要る = Tom の電話と Xcode を占有する。
+
+**採った形: 別ポートの tailnet 限定 HTTPS = 9443。**
+
+```
+tailscale serve --bg --https=9443 http://127.0.0.1:8787
+  → Available within your tailnet:
+     https://desk.tailnet.example:9443/
+```
+
+実測で確かめた性質(2026-08-25、Codex 追認):
+
+1. 任意の HTTPS ポートで serve は張れる。**443/8443/10000 の制限は Funnel の話であって
+   serve の話ではない**
+2. **Funnel が使えるのはその3ポートだけ**。9443 を選ぶ事で「うっかり公開する」が
+   構造的に起こせなくなる(現行 Tailscale が強制する性質であって、将来の保証ではない)
+3. 追加は**加算的**で 443 の設定を壊さない(前後の JSON を保存して確認)
+4. ★`tailscale serve reset` は**使わない**。共有設定を全部消すので resonance-os を巻き込む。
+   撤去は `serve` の `https=9443` 旗を off で**ポート単位**に行う
+
+### 常設(launchd)
+
+`~/Library/LaunchAgents/com.fleet.rc-backend.plist`(現物 = `rc-backend/tools/com.fleet.rc-backend.plist`)。
+
+`com.edith.*` を名乗らせなかった理由: Friday には**未 load の `com.edith.*` が 23 本残骸として
+残っている**ので、同じ名前空間に生きた job を混ぜると残骸と見分けが付かなくなる。
+この機体で既に動いている `com.fleet.rc-health-observer` と対にした。
+
+再起動を跨ぐか(実測): FileVault = Off / `autoLoginUser` = athenas → 無人再起動でも
+GUI セッションが立ち `gui/501` が存在する = この LaunchAgent は人が触らなくても読まれる。
+
+据え方:
+
+```
+bash rc-backend/tools/deploy-to-friday.sh
+ssh athenas 'mkdir -p /Users/athenas/Library/Logs/rc-backend'
+scp rc-backend/tools/com.fleet.rc-backend.plist athenas:/Users/athenas/Library/LaunchAgents/
+ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-backend.plist'
+curl https://desk.tailnet.example:9443/healthz
+```
+
+撤去は plist 冒頭の TEARDOWN。
+
+### 2.103-b 台本から機体名を剥がした3箇所(と、剥がさなかった物)
+
+| 直した物 | 何が直火だったか |
+|---|---|
+| `deploy-to-edith.sh` | launchd の Label が `job=gui/501/com.edith.rc-backend` の直書き。`RC_JOB_LABEL` へ。`gui/501` も `id -u` で測る |
+| 同上 | 遠隔のログ path が直書き → `RC_REMOTE_LOG_DIR` |
+| `serve-decision.sh` / `rc-backend-launch.sh` | 入口ポートが 443 の直書き → 第2引数 / `RC_SERVE_PORT`(既定 443) |
+
+**剥がさなかった物: 台本名 `deploy-to-edith.sh` と `RC_EDITH_*` という env 名。**
+14 file(対照4本を含む)が名前を**検査の錨**として持っている(`RC_EDITH_HOST` だけで 17 箇所)。
+改名は錨 27 本の付け替えを、機能を1つも増やさずに発生させる —— 2026-08-18 に文言の
+英語化で錨 40 本を付け替えたのと同じ代金。**名前が古い事より、検査が外れる事の方が高い。**
+Friday への入口は薄い殻 `deploy-to-friday.sh`(env を被せて呼ぶだけ)で足りる。
+
+### 2.103-c 判定が Funnel を一度も見ていなかった(Codex 2026-08-25 が掴んだ実バグ)
+
+`serve-decision.sh` は「その入口の `/` が自分の宛先か」しか見ていなかった。
+つまり **自分のポートが Funnel で公開されても `ok` を返す** = 操縦面が公開面に化けても
+誰も気付けない。5語目 **`funneled`** を新設し、宛先が自分でも独立に断る様にした。
+`foreign`(他人が居る)と分けたのは、人が取る次の手が違うから —— 前者は「退けるか
+ポートを変える」、後者は「Funnel を外すか、Funnel が使えないポートへ移す」。
+検査は `serve-decision-check.sh` に 6 ケース追加(計 25)。
+
+**未了(この節が閉じていない部分)**: 見張りが down を検出しても鳴らない件(冒頭 ★)。
+検出は生きているので、欠かけているのは通知の一段だけ。
+
+### 2.103-d 移設して初めて見えた事 —— **Friday には人間のセッションが1本も無い**(2026-08-25 実測)
+
+配備が通り `/healthz` が 200 を返した後、電話がやる事と同じ呼び方で一覧を引いたら
+**0 件**だった。サーバは健康で、映す物が無い。
+
+| 測った物 | 値 |
+|---|---|
+| `~/.claude/projects/**/*.jsonl` の総数(Friday) | **9792** |
+| そのうち `"entrypoint":"cli"`(= 人間の TUI)を含む物 | **0** |
+| 内訳(先頭400本の抽出) | `sdk-cli` のみ 2430 件 |
+| tmux サーバ | 不在(`no server running`) |
+| `rc-claude` / `claude-work` | 無し |
+
+一覧の定義は `isPhoneVisible = meta.entrypoint === "cli"`(`src/sessions.mjs`)。
+edith は 642 本中 `cli` が 6 本で、**そもそも細かった**。Friday はゼロ = 構造的に空。
+
+**機構**: この道具が映すのは「その機体で人が開いた Claude Code」。Tom は Friday の前に
+座らないので、Friday は自動化ログしか産まない。だから鎖②③④を据えるまで、
+配備がどれだけ健康でも電話には何も出ない。**サーバの健康と一覧の中身は別の物**で、
+`/healthz` が 200 な事はこの空を1ミリも説明しない。
+
+実測で通した鎖(2026-08-25):
+
+1. `rc-claude` + `rc-pane-register.sh` を Jervis の `~/.claude/tools/` から Friday へ配り、
+   `~/.local/bin/rc-claude` に symlink
+2. tmux で起こして 14 秒後に画面を読むと、**認証を通って TUI が立ち**、
+   status 行に `[rc %0]` = ペイン登録済み。既定は `bypass permissions on`(この機体の設定)
+3. `~/.rc-backend/panes/<session_id>.json` が生まれ、
+   Jervis から `GET /api/sessions` が **1 件**を返した(`cwd=/Users/athenas/Athenas`)
+
+常設化 = `com.fleet.rc-phone-window`(鎖②③を1つの job で持つ)。
+★edith では鎖② を既存の `com.tom.work-tmux` が持っていたが Friday には無いので、
+`tools/ensure-work-session.sh` を新設して repo 側に持たせた。鎖②が欠けたまま③だけ
+据えると `ensure-phone-window.sh` は永久に exit 10(= 異常ではない、と定義された値)を
+返し続け、**静かに永久に何もしない**状態になる。
+
+### 2.103-e 常設した窓が **Claude Code の初回プロンプトで固まる**(2026-08-25 実測 → 2026-08-26 に見張りで解決)
+
+`com.fleet.rc-phone-window` が窓を作った直後、その窓の claude は登録簿に載らなかった。
+画面を読むと **`Try the new fullscreen renderer?` の 1/2 選択**で止まっていた
+(Claude Code v2.1.245 / `~/.claude.json` の `fullscreenUpsellSeenCount` が数えている)。
+
+**この穴の形**: 電話の一覧は登録済みの会話しか出さない。会話は初回プロンプトに答えるまで
+登録されない。→ **電話からは答える道が無い**。DESIGN §3 が `exit 20`(未信頼の cwd)で
+避けている穴と同じ形だが、`ensure-phone-window.sh` の信頼判定は `~/.claude.json` の
+`projects` しか見ないので、**版が上がって新しいプロンプトが増えるとすり抜ける**。
+
+今回の手当て(手で1回):
+
+```
+tmux send-keys -t work:phone "2"; tmux send-keys -t work:phone Enter
+```
+
+`2 = Not now` を選んだ。fullscreen renderer は alternate screen を使うので、
+電話側が `capture-pane` で読む前提を壊しうる。**この選択は意図的**。
+
+**残る性質**: 再起動で窓を作り直す度に、その時点の版が持つ初回プロンプトで再発しうる。
+`ensure-phone-window.sh` は今も「窓が在るか」で冪等を取っており、**窓の中の claude が
+登録まで到達したか**は見ていない —— それは意図的で、あちらの仕事は「窓を1つに保つ」事だから
+(状態で冪等を取ると、上限画面の窓が増え続ける)。
+
+★**宿題は 2026-08-26 に片付いた。上の 2 択のうち「別の見張りに持たせる」方**を採った:
+  - 検出 = `tools/phone-window-health.sh`。窓の有無だけでなく
+    ① そのペイン id が登録簿 `panes/*.json` のどれかと一致するか
+    ② その登録の pid が生きているか
+    ③ **その pid がペインの子孫か**(pane id は世代で再利用されるので、一致だけでは偽造できる)
+    まで見る。exit 0=使える / 1=固着 / 10=会話が無い / 11=窓が無い / 3=監視が壊れている。
+  - 配達 = `tools/phone-window-notify.sh`。固着が続く間ずっとは鳴らさず、直った時に 1 回鳴らし、
+    監視自体が壊れた時も鳴らす(沈黙と正常を同じ顔にしない)。
+  - 常設 = `com.fleet.rc-phone-window` の 3 本目として 60 秒ごと。
+  ★**検出と配達を分けた**のは、1 本にすると「通知を黙らせる為に検出ごと止める」事になるから。
+
+実測 2026-08-26 23:0x: `rc-phone-window.log` の直近 6 行が全て
+`使える: window=work:phone pane=%1 session=7c625b3e...` = 同じペインが安定継続。
+固着は現に再現していない。
+
+### 2.104 机が返事を待って止まっている事を、電話を開かせずに届ける(2026-08-26)
+
+**動機は実測**: 常駐が `attention=input / action=soon` のまま **60 分**座っていた。
+Tom は「待たれている」事を知らないので、電話を開くまでその時間は丸ごと死ぬ。
+ここが取り戻すのは**その死に時間だけ**で、それ以上の物ではない。
+
+常設化 = `com.fleet.rc-digest-notify`(`tools/digest-notify.sh` を 150 秒ごと)。
+据え方 / 外し方は plist の頭のコメントに書いてある(`launchctl bootstrap` /
+`launchctl bootout gui/501/com.fleet.rc-digest-notify`)。
+
+#### 鳴らす条件(Codex 2026-08-26。**同日 本人が amend した後の版**を採用)
+
+初版の裁定は「`now` のみ、`soon` は決して鳴らすな」だった。だが上の実測を見せた所
+本人が amend した —— 60 分の死に時間はまさにこれが取り戻すべき損で、`now` には
+一度もならなかったから。改訂後:
+
+| 状態 | 扱い | 理由 |
+|---|---|---|
+| `unknown` | **永久に鳴らさない** | 正直だが役に立たない信号を人に見せると、信号ごと無視される様になる = 次に本当に要る時に届かない |
+| `now` | 同じ指紋が **2 回続いたら**(刻み 150 秒 = 5 分前後の確認遅れ) | 速い方の意味を残す。刻みを 10 分にすると確認遅れが 20 分になり `now` と `soon` の差が消える |
+| `soon` | 同じ指紋が **実経過 20 分**続いたら | ★**回数ではなく時間**。同じ画面を 2 回読んでも独立した証拠にならない(Codex) |
+
+**指紋** = `sessionId + attention + lastAt`。Tom が返せば `lastAt` が動く = 指紋が変わる =
+状態を捨てる。別の会話が同じ文面でも `sessionId` が違う。台本が再起動しても状態は
+disk に在る。★**本文は指紋に入れない** —— この repo が引いている「打った物の中身を
+残さない」線を、ここでも越えない。
+
+#### ★「直りました」を出さない —— 同じ言葉で別の判断をしている所
+
+`com.fleet.rc-phone-window` の 3 本目(`phone-window-notify.sh`)は「**直った時に 1 回
+鳴らす**」を規約にしている。理由は「まだ壊れているのかを人に確かめさせない」。
+**この job はその規約を意図的に採らない。** 此処の「直った」は *Tom が返事をした* で
+あって、本人が知っている。知らせれば騒音になり、騒音は次の本物を埋める。
+
+同じ「復旧通知」という語で反対の結論になるので、両方の file に理由を書いた。
+規約は場所ではなく**信号の性質**(本人が知り得るか)で決まる。
+
+#### 此処が答えない事
+
+見張りは**事後にしか気付かない**。刻みの隙間に出て消えた要求は残らない。
+防止ではなく検出であり、防止を名乗らない。
+台帳が止めた / 蒔いたが載らない)、**画面はどの道を通ったかを一文字も名乗らない**。
+`#if DEBUG` の1行を足して真偽だけ吐かせた(値は出さない):
+
+```
+seed path: bundled=true storeReadable=true ledger=set resolved=false
+```
+
+台帳が「蒔いた」を持ち、金庫だけが空。犯人は `KeychainCredentialStoreTests` の後始末で、
+**製品の金庫の項目を拭いていた**(検査の隔離が壊れている = 別件として残す)。
+だが同じ形は**端末の復元**でも起きる —— `UserDefaults` は新しい iPhone へ移り、
+`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` の項目は移らない。
+
+### 直した形
+
+「蒔いた」を覚える設計は、金庫と台帳が**必ず一緒に死ぬ**事を前提にしていた。前提は偽で、
+しかも壊れた側に復帰路が無い(人が鍵を打つまで戻れない)。塞ぎたかった輪(401 の鍵を
+蒔き直す)は、**拒まれた事実そのもの**で塞ぐ方が近い。設計の全文は DESIGN §2.94。
+
+- `SeedLedgerStoring.rejectedSeedDigest` —— 持つのは 401 を貰った種1本だけ
+- 蒔いた事は**何処にも記録しない**(冪等なので要らない = 台帳と金庫がずれる余地が無い)
+- 鍵は `provisioning.rejected-seed.v1` へ**新設**。旧 `provisioning.planted-seed.v1` は
+  `legacyPlantedKey` として残すが読まない —— 使い回すと #56 を入れてある電話の
+  「蒔いた指紋」が更新後そのまま「拒否」として効き、**直しに来た欠陥を更新で恒久化**する
+- `clearCredentials(rejected:)` が**何が拒まれたか**を引数で受ける(既に別の鍵へ
+  入れ替えた後に届いた古い要求の 401 が、今の鍵を拒否として記録するのを止める)
+- 記録するのは拒まれた鍵が**束の種と同じ**時だけ / 起動時に拒まれた鍵を金庫から掃く /
+  同じ値が通ったら拒否を降ろす
+
+### 計器も同じ変更の中で引き直した
+
+`plantedSeedDigest` が消えたので M14 / M16 / M20 の探し文は当たらなくなり、
+放置すれば **UNMEASURED(赤ではなく「測っていない」)** へ静かに落ちる —— §2.91 と同じ形。
+的を引き直し、新しい4枝へ M21〜M24 を足した。対照 script が抱えていた手書きの本数
+(「単体、20本」「錨は21本在り」)も潰して `--which` と `$WANT_N` の印字を正本にした。
+
+### 実測
+
+| 何を見たか | 出た値 |
+|---|---|
+| 単体 | **633件 実行 / 失敗 0件**(版 `e5e15a3-dirty` / 番号 56) |
+| 増分 | 627 → 633 = 足した6本(⑭-b ⑰ ⑱ ⑲ ⑳ + `ProvisioningTests` ⑫)と一致 |
+| ⑯ `testAKeychainThatLostItsItemWithoutARejectionIsSeededAgain` | 反転を動機付けた「設計上の赤」→ **緑** |
+| 変異の的 | `--which` が「回す 24 本 / 繰り延べ 0 本」 |
+
+### 同じ日、其の症状を**起こしていた側**も直した(DESIGN §2.95)
+
+反転を決めた時に見ていた `resolved=false` の出所が `KeychainCredentialStoreTests` だった。
+本物の Security framework を叩くのは意図通りで、混ぜていたのは其の先 —— **座標**まで
+製品と同じで、`setUp`/`tearDown` の `clear()` が電話の項目そのものを消していた。
+
+- `KeychainCredentialStore` に `init(service:account:)`。既定値は
+  `productionService` / `productionAccount`。製品の経路に引数は1つも現れない。
+- 検査だけ別の座標へ。生の `SecItemDelete` を使う負の対照も向け直した。
+- 足した検査2本 = 「検査の後始末が製品に届かない」+「製品の座標を動かさない」。
+  後者が要るのは**座標の変更が移行案件**だから(鍵の改名と同じ形)。
+- 対照へ M25 / M26。`# controls-for:` と `UNIT_ONLY` を広げた —— ★入れられる様に
+  なったのが先で、座標を分けるまでは変異の度に simulator の資格情報を消す事だった。
+
+此れを入れた後の実測: **635件 実行 / 失敗 0件**(版 `e5e15a3-dirty` / 番号 56)。
+上の表の 633 は反転だけを入れた時点の値で、差の2本は此処で足した検査と一致する。
+変異は `--which` が「回す 26 本 / 繰り延べ 0 本」。
+
+### 対照の全走行(出す直前に実際に回した値)
+
+`ios/tools/signout-notice-control.sh` = **PASS 27 / FAIL 0 / UNMEASURED 0**(基準1 + 変異26)。
+基準の行は「的の検査が 29 本とも緑(この走行の緑は全部で 73 本)」—— 29 は
+`KeychainCredentialStoreTests` が `UNIT_ONLY` に加わった後の本数で、加わる前より2本多い。
+走行後に「復元を確認(対象 8 file すべて走る前のバイトと一致)」。
+
+反転の4枝と座標の2本は全部当たった:
+
+| 変異 | 赤くなった検査 | 同じ走行で**緑のまま**だった兄弟 |
+|---|---|---|
+| M21-rejected-key-not-swept | `testARejectedKeyLeftInTheKeychainIsSweptOnLaunch` | — |
+| M22-stale-401-drops-current | `testA401ForAKeyThatIsNoLongerInUseIsIgnored` | — |
+| M23-rejection-never-lifted | `testAKeyThatWorksAgainClearsTheRejection` | `testARejectedSeedIsNotPlantedAgainOnTheNextLaunch` |
+| M24-any-rejection-recorded | `testARejectedHandTypedKeyIsNotRecordedInTheLedger` | `testARejectedSeedIsNotPlantedAgainOnTheNextLaunch` |
+| M25-tests-share-the-item | `testTheseTestsAddressADifferentKeychainItemThanTheProduct` | `testSaveThenLoadRoundTrips` |
+| M26-production-item-renamed | `testTheProductionItemKeepsTheCoordinatesAlreadyInstalledOnThePhone` | `testSaveThenLoadRoundTrips` |
+
+★右列が此の変更の要点そのもの: **往復の検査(`testSaveThenLoadRoundTrips`)は
+どんな座標でも緑**なので、M25 でも M26 でも緑のまま通る。「保存して読み戻せた」を
+何本積んでも、座標を取り違えた欠陥は1本も掴めない。
+
+★`account-ui-control.sh` は最初の起動を **UNMEASURED で拒否**した ——
+「測る対象が既に汚れている」。此の台本は復元の正本を git の**索引**に置いているので
+(2026-08-12 に SIGKILL で変異が残った事故の後にそう書き直した)、
+未 stage の変更が的の上に在ると走れない。順序は「stage → 対照 → commit」が正しく、
+拒否は欠陥ではなく設計通りの入口の門。stage 後に回した値が下。
+
+#### 其の stage 後の走行で、対照が**返らなくなった**(16分26秒)
+
+`account-ui-control.sh` を stage 後に回したら A3 の所で止まった。観測値:
+
+- 単体の `xcodebuild` が 10:58:17 開始で **16分26秒 生きたまま**(兄弟の検査は 0.001 秒台)
+- log に赤は一行も無い。画面は「対照を回している」としか出ない
+
+原因は変異ではなく**検査の二重**の側。A3 は `select()` の失敗経路から `await load()` を
+削る変異で、消すと門付きの読み取りが始まらない。二重が其の開始を
+`withCheckedContinuation` で**期限なし**に待っていたので、誰も resume せず永久に待った。
+
+`account-ui-control.sh` は pre-commit の門の中でも回る。直さずに commit すると
+**commit 自体が永久に返らない**ので、此処で止めて直した(設計 DESIGN §2.96):
+
+- 二重の待ちを旗 + 期限付き `waitUntilTrue`(5秒)に置換。期限切れは `XCTFail` =
+  **停止ではなく赤**。吊っていたのは1箇所だが、`current()` 側の門の解放待ちにも同じ期限を置いた
+- 期限そのものを固定する検査を3本追加(諦める / 既に真なら即返す / 後から真になった条件を拾う)
+
+#### 同じ走行で計器の欠陥がもう1本(`ran_count`)
+
+`grep -c` は一件も無い時 `0` を出力**した上で**終了コード 1 を返すので、
+`|| printf '0'` の右も走り戻り値が `0\n0` になっていた。実測 `ran_count の戻り値 = [0\n0]`
+/ `門が発火しない`。「検査が一本も走っていない」を掴む門が、`[: 0\n0: integer expression
+expected` で評価に失敗して次の枝へ落ちる —— commit message に書いた `$rc` 空の件
+(DESIGN §2.93-b)と一字一句同じ流れ方。`signout-notice-control.sh` は最初から
+正しい形だったので、`account-ui-control.sh` を其れに揃えた(DESIGN §2.93-c)。
+直した後の実測: 空の log で `[0]` / 門が発火、一件在る log で `[1]`。
+
+★私が SIGTERM/SIGKILL で止めた後に出た `UNMEASURED A4 (rc='')` と
+`UNMEASURED A6 (rc=143)` は**私が殺した痕**で、計器の所見ではない。
+殺す前に自力で報告していたのは A1 と A3 の OK まで。
+
+#### 直したのは1箇所、塞いだのは型 —— 対照の台本に上限を置いた
+
+二重の待ちを直しても、期限の無い待ちを次に誰かが書けば同じ事が起きる。出口も同じ
+(pre-commit が永久に返り、画面には何も出ない)。両方の対照台本に
+`CONTROL_RUN_LIMIT_S`(既定 1200 秒)を置いた。
+
+- macOS に GNU `timeout` は無いので `perl -e 'alarm shift; exec @ARGV'`。
+  実測: 吊る場合 `rc=142` / 正常 `0` / `exit 65` はそのまま `65` で素通り
+- 判定の各所に `rc = 142` の枝を置き **必ず UNMEASURED**。置かないと、上限より前に
+  的が赤くなっていた走行が `OK` を出す(§2.93-b と同じ落ち方)
+- 上限は根本の直しの代わりではない。変えるのは**次に同じ型が生まれた時に何が起きるか**
+  だけ: 永久に黙って止まる → 20分で「測れなかった」と言って commit を止める
+
+## 2026-08-16 — 「1枚目がフォーム」は製品ではなく**窓**の欠陥だった。残っていた本物を直した
+
+前セッションの引き継ぎ(§0-0)は「§9-5 は 1px も動いていない / 未着手」と書いていた。
+其の前提を、§0-2 が命じていた (a)/(b) を分けて実測したら**覆った**。
+
+### 実測(全部この日)
+
+| 問い | 観測値 | 取り方 |
+|---|---|---|
+| (a) 本物の初回起動 | **入力欄に落ちない。一覧に着く** | 器を `simctl erase` → `build.sh --sim-app` → 初回起動。`root flow:normal` / `seed path: bundled=true storeReadable=true rejected=empty resolved=true` |
+| (b) fixture の面だけか | **そう。構造的にそうなる** | Tom に見せた画を出した束の `Info.plist` に `RCBaseURL` / `RCAPIKey` が無い |
+
+機構: `shots.sh` は `build.sh` を `--print-rev` でしか呼ばず、自分で `xcodegen` と
+`xcodebuild` を撃つ = **種を刻む段を構造的に通らない**。加えて全撮影が `RC_UI_FIXTURE` 付き。
+**撮影器が製品の入口を迂回していた。** 8/11 の指摘は本物の欠陥で其の日に直っており、
+8/15 に「設計が変わらない」と見えたのは私が見せた画が製品でなかったから。
+
+★「Tom の目が検証器」は、撮影器が製品を映していて初めて成り立つ。規約は守られていた ——
+守った事は効いている事の証拠ではない。
+
+### 残っていた本物の欠陥と、直した形
+
+資格情報が無い時の面が「なぜ此処に居るか」を一文字も名乗らなかった。道は4本
+(種が無い / 種が拒まれた / 金庫が読めない / 手で入れた鍵が拒まれた)在り次の一手が
+全部違うのに、全部同じ白紙 = 見た人には「打て」としか読めない。
+
+- `Sources/Screens/KeyEntry/DisconnectedView.swift`(新設)= 理由1文 + 主行動1つ + 退避路
+- `AppState.DisconnectedReason` + 純関数 `disconnectedReason(...)` + `retryWithBundledSeed()`
+- 打つ欄は**消さずに別画面へ**(机が鍵を回したら手入力が唯一の復旧路。§9-3 の矢印と同じ判断)
+
+### 計器の追従(製品が変わったら計器も動く)
+
+- `FirstRunUITests` に §9-5 の合格条件そのものを1本 + 錨1本(欄は奥に**在る**)
+- `signout-notice-control.sh`: **M9 の的が私の差分で外れた**ので付け直し、
+  M27(1枚目を打つ欄へ戻す変異)を新設。費用の註が「21回」のまま嘘になっていたので数え直した
+- `KeyEntryUITests` / `LiveSmokeUITests` / `BuildIdentityUITests` は一段降りる形へ
+
+## 2026-08-16(夕〜夜)— 文書 vs 製品の全件照合 → 未達17件のうち顔と§9を一括実装
+
+起点 = Tom 2日連続の「論外」(シミュレータの見た目の全体)+「文書の計画は全部達成したのか?
+そこすら怪しい」。後者が正しかった: 50項目照合(24エージェント、各未達は敵対検証)で
+**DONE 29 / 未達 17**。正本 = `.harness/spec-audit-2026-08-16.md`。
+
+実装(全て同日): A1 rename / A2 人間語 / A3 机アイコン+緑点 / A4 計器→設定 /
+A5 常設状態帯1枠 / B1 保管 / B2 機体バッジ+戻し依頼(edith 実往復で全鎖実測)/ C2 Task 題名。
+D は Codex 裁定で v1 棄却 → 設計確定・未実装(DESIGN §2.102)。
+
+★Codex の敵対レビューが**到達不能バグ**を掴んだ: 新 route 3本が SESSION_ROUTE_RE に
+入っておらず、handler 実在 + 静的検査全緑のまま 404 だった。教訓 = 「到達できる」は
+字面でなく **regex を実行して**測る(title-route.test.mjs)。
+
+★自分の失敗2件(次の担当へ): ①走行中の ios 木に2回書いた(錠が2回目を正しく拒んだ —
+自分で作った錠に自分が掴まった)。②検証残骸の掃除で mirror root ごと消した(空だったので
+実害なし。glob の対象を root 自身にしない)。
+
+---
+
+## 2026-08-27 02:00-03:30 — 使用実績を初めて測った。ゼロだった
+
+**この製品を Tom は一度も使っていない。**19 件出荷した後で初めて測った。
+
+| 測った物 | 実測 |
+|---|---|
+| 常駐への Tom の発言 | 0 件(user 行 7 件中、中身が在る 1 件は私が送った診断質問) |
+| 22:41 の Discord 通知への返信 | 無し |
+| `history`(会話を開いた記録)11 件 | 全部私。03:58Z の 2 件は 03:57:40 に私が起こした UITest |
+| `/api/sessions` 毎時 25-30 件 | digest-notify 24/h + health-observer 6/h で全件説明が付く |
+
+Codex 裁定: **アプリ機能の最適化は床に到達**。系を保全し、自然な証拠を集め、
+次の目標は Tom が名指しするまで待て。「能力を頼まれた」を「別の入口が欲しい」と
+読み違えている可能性が在る。
+
+★19 件はすべて**系の内部状態**を根拠にしていた(見張りが誤報した / 検査が空虚だった /
+札が一度も出ていなかった)。**Tom の行動を根拠にした物は 1 件も無い。**
+
+### 出荷 (aa3f86a) — 記録に `client=` を足した
+
+出所が一切残っていなかったので、「Tom は開いたのか」に答えるのに自分の作業記録との
+時刻突き合わせを 6 回やる羽目になり、それでも Simulator と実機を区別できなかった。
+
+- `clientClass()` は閉じた 4 語(`app` / `tool` / `none` / `other`)しか返さない。
+  **生の User-Agent は記録しない** —— 端末の型番と OS の版が入る。§3-U の
+  「行に中身が乗らない」は端末の指紋にも掛かる。
+- 実物の CFNetwork を喋らせて `app` に分類される事を**観測**した(文献からの推論ではない)。
+  `swift-frontend (unknown version) CFNetwork/3860.600.21 Darwin/25.5.0` → `app`。
+- `app` を出せる物が他に無い事も確認: 机を叩く常駐 3 本は全て curl。repo 内で
+  `URLSession` に当たる 3 件は、その語を**検査する側**の script。
+- 読み方: **私がビルドしていない時間帯に `client=app` が出たら、それが Tom**。
+
+`★行に出る欄は決まった5つだけ` が赤くなった —— この検査は今回の様な追加を掴む為に
+在る。その本文が要求する通り「増やすなら『中身が乗らない』の検査も一緒に足す」を
+同じ commit で満たした(T:電話と機械が別の語になる / 生の名乗りは出ない / 知らない
+名乗りは other へ畳む)。陰性対照は 2 通り: 欄を外すと 6 件赤、生を載せると 3 件赤。
+
+★`test/e2e-local.mjs` の `POST /api/sessions/:id/messages` を当てる正規表現が
+`route=\S+ code=` と地続きで読んでいたので一緒に直した。
+**`npm test` に入らない**(`.test.mjs` ではない)ので 965 件緑のまま配布で落ちる形だった。
+
+### 機械側の修理 2 件(この repo の外、`~/.claude/tools/`)
+
+1. **`attest-isolation.verify.sh` の偽赤**。loop-suite が 2 件 FAIL していたが、
+   機械は何も壊れていなかった。`declog()` は drift か未祝別の時しか呼ばれないのに、
+   検査は「正常な run は必ず記録する」と仮定していた。2026-08-26 22:56 に別 session が
+   木を祝別して前提が失効しただけ。引き金を「必ず書く道」へ変えて 6/6。
+   ★**放置すれば今後の全 session が幽霊を追う**種類の赤だった。
+
+2. **`discharge` の構造穴**。`install` は admissible==0 の時、既存キューを壊さない為に
+   キューを書かずに抜ける。結果その task はキューでの status を持てず、`reclassify`
+   (status=="gated" を要求)も `discharge`(status=="done" を要求)も届かない ——
+   **完了済みで検証器も緑の作業が永久に閉じられない**。権限を「呼び手の言葉」ではなく
+   **門が台帳に記録した検証器の実行結果**へ移す道を足した。呼び手は検証器を渡せず、
+   キューに居る task は対象外、記録が無い/切れている/落ちるなら拒否。
+   `loop-suite.sh` ALL GREEN (97) の前後で確認。
+
+   ★その新しい道が**自分の実装の欠陥を掴んだ**: 最初 `bash -lc` で走らせていた。
+   login shell は PATH を焼き直すのでこの機体の node が消え、**緑の検証器が偽の赤で返る**。
+   門の他の実行箇所(`t["verify"]` を走らせる 3 箇所)は全て `bash -c`。揃えた。
+
+### 未解決 — 設計判断として残した
+
+`F3-phone` が門に `structural:invalid_task` で登録されていて、門が指示する `reclassify` は
+①キューに行が無い ②そもそも「自分でやれる」と書く動詞、の 2 重の理由で使えない。
+分類を書き換える verb を作ると「停止の権限は状態から取る、散文からではない」という
+設計原則を崩すので、深夜に patch せず記録した。
+全文: `~/.claude/loop/BUG-stranded-obligation-2026-08-01.md` の第 4 事例。
+ M rc-backend/test/app-usage-census-controls.sh
+ M rc-backend/tools/app-usage-census.sh
+?? .harness/evidence-2026-08-30/codex-census-detail-review.txt
+?? .ota-approved-build
+
+codex
+実データの解釈だけでなく、作業木に該当する変更があるので、集計キーと merge 実装を直接確認します。ここで「理論上あり得る」ではなく、今のコードで起きる誤計上に限定します。
+exec
+/bin/zsh -lc "git diff -- rc-backend/tools/app-usage-census.sh rc-backend/test/app-usage-census-controls.sh
+sed -n '1,280p' rc-backend/tools/app-usage-census.sh
+sed -n '1,360p' rc-backend/test/app-usage-census-controls.sh
+sed -n '1,240p' .harness/evidence-2026-08-30/codex-census-detail-review.txt 2>/dev/null || true" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+diff --git a/rc-backend/test/app-usage-census-controls.sh b/rc-backend/test/app-usage-census-controls.sh
+index e992b9a..f2725f5 100755
+--- a/rc-backend/test/app-usage-census-controls.sh
++++ b/rc-backend/test/app-usage-census-controls.sh
+@@ -130,6 +130,52 @@ if [ "$(count_for 2026-08-31 "$O2")" = "1" ]; then
+     ok "C7 client=apple を app と数えない(語として当てている)"
+ else ng "C7 語として当てる" "8/31 = $(count_for 2026-08-31 "$O2")(2 なら前方一致で拾っている)"; fi
+ 
++# ── C9-C12 時刻 × 版 の副台帳(2026-08-30)────────────────────────────────
++# ★H-3 の解除条件は「**起きている時間**に本物の機会が来た時に使うか」。日次の合計だけでは
++#   1日 100 件が深夜の常駐なのか昼の実使用なのかを復元できず、条件を評価できない。
++# ★測る中心は「副台帳が出来るか」ではなく **日次の形が変わっていないか**。
++#   既に積んである履歴を壊す変更なら、後から読めなくなる方が損失が大きい。
++D="$(mktemp -d)"; L="$D/x.log"; O="$D/day.tsv"; DO="$D/detail.tsv"
++# ★版は `row` の外で足さない(2026-08-30、sed で後から差し込んで効かず C11 が赤くなった)。
++#   検体は**作る時に完成させる** —— 後から書き換える形は、書き換えが効いたかを
++#   別途確かめないと判らず、検査が自分の検体を信じられなくなる。
++rowb() {  # rowb <ISO日時> <client> <build>
++    printf '[rc-backend] req %s GET /api/sessions route=x client=%s build=%s code=200 reason=- ms=1\n' "$1" "$2" "$3"
++}
++{ rowb 2026-08-30T05:33:00.000Z app 99; rowb 2026-08-30T05:40:00.000Z app 99
++  rowb 2026-08-30T14:02:00.000Z app 99; rowb 2026-08-30T14:09:00.000Z tool -; } > "$L"
++RC_CENSUS_LOG="$L" RC_CENSUS_OUT="$O" RC_CENSUS_DETAIL_OUT="$DO" bash "$SUT" >/dev/null 2>&1
++
++# app は 3 件、tool は入らない。
++if [ "$(count_for 2026-08-30 "$O")" = "3" ]; then
++    ok "C9 日次の合計は形も値も変わらない(app 3 件 / client=tool は入らない)"
++else ng "C9 日次の合計" "$(cat "$O" | tr '\n' ' ')"; fi
++
++h05="$(awk -F'\t' '$1=="2026-08-30" && $2=="05" {print $4}' "$DO")"
++h14="$(awk -F'\t' '$1=="2026-08-30" && $2=="14" {print $4}' "$DO")"
++if [ "$h05" = "2" ] && [ "$h14" = "1" ]; then
++    ok "C10 時刻ごとに分かれる(05 時 2 件 / 14 時 1 件)"
++else ng "C10 時刻の分解" "05=$h05 14=$h14"; fi
++
++if awk -F'\t' '$3=="99"{f=1} END{exit !f}' "$DO"; then
++    ok "C11 版が記録される"
++else ng "C11 版の記録" "$(cat "$DO" | tr '\n' ' ')"; fi
++
++# ★`build=` が無い古い行を捨てない。「版が判らない要求が在った」事自体が情報。
++{ row 2026-08-31T03:00:00.000Z app; } > "$L"
++RC_CENSUS_LOG="$L" RC_CENSUS_OUT="$O" RC_CENSUS_DETAIL_OUT="$DO" bash "$SUT" >/dev/null 2>&1
++if awk -F'\t' '$1=="2026-08-31" && $3=="-" {f=1} END{exit !f}' "$DO"; then
++    ok "C12 build= が無い行はハイフンとして残す(捨てない)"
++else ng "C12 版なしの行" "$(grep 2026-08-31 "$DO" | tr '\n' ' ')"; fi
++
++# ★積む事(切られても減らない)は副台帳でも成り立つか。日次と同じ機構に乗っている事の確認。
++{ row 2026-08-31T03:00:00.000Z app; } > "$L"
++RC_CENSUS_LOG="$L" RC_CENSUS_OUT="$O" RC_CENSUS_DETAIL_OUT="$DO" bash "$SUT" >/dev/null 2>&1
++if awk -F'\t' '$1=="2026-08-30" && $2=="05" && $4=="2" {f=1} END{exit !f}' "$DO"; then
++    ok "C13 log から消えた時刻の行も副台帳に残る(積む機構に乗っている)"
++else ng "C13 副台帳の積み" "$(grep 2026-08-30 "$DO" | tr '\n' ' ')"; fi
++/bin/rm -rf "$D"
++
+ echo ""
+ echo "APP-USAGE-CENSUS-CONTROLS: pass=$pass fail=$fail"
+ exit $(( fail > 0 ))
+diff --git a/rc-backend/tools/app-usage-census.sh b/rc-backend/tools/app-usage-census.sh
+index b102f8f..75df978 100755
+--- a/rc-backend/tools/app-usage-census.sh
++++ b/rc-backend/tools/app-usage-census.sh
+@@ -34,6 +34,13 @@ LOG="${RC_CENSUS_LOG:-$HOME/Library/Logs/rc-backend/rc-backend.log}"
+ # ★置き場は `~/Library/Logs/rc-backend` でも `~/.rc-backend` でもない ——
+ #   どちらも `com.fleet.rc-log-cap` が掃く。掃かれる場所に「掃かれると困る物」を置かない。
+ OUT="${RC_CENSUS_OUT:-$HOME/rc-census/app-usage.tsv}"
++# ★時刻と版まで分けた副台帳(2026-08-30)。日次の合計だけだと H-3 の解除条件
++# (「**起きている時間**に本物の機会が来た時、Tom がアプリ経由で動くか」)を後から評価できない ——
++#   1日 100 件が深夜の常駐なのか昼の実使用なのかが、合計からは復元できない。
++#   `build` も併せて持つ: 版が変わった前後で使い方が変わったかは、版を捨てた台帳では問えない。
++# ★**日次の合計は形を変えない**。既に 4 日ぶん積んであり、形を変えると其の履歴が読めなくなる。
++#   足すのは別 file。壊さずに増やす。
++DETAIL_OUT="${RC_CENSUS_DETAIL_OUT:-${OUT%.tsv}-detail.tsv}"
+ 
+ if [ ! -f "$LOG" ]; then
+     echo "app-usage-census: $LOG が無い = 測定不成立(0 件と読ませない)" >&2
+@@ -70,7 +77,40 @@ else
+ fi
+ 
+ mv -f "$tmp.new" "$OUT" || { echo "app-usage-census: 書けない: $OUT" >&2; exit 1; }
++
++# ── 副台帳: 日 / 時 / 版 ────────────────────────────────────────────────────
++# ★`build=` が無い行(2026-08-30 より前の机)は `-` として数える。捨てない ——
++#   「版が判らない要求が在った」事自体が、後から読む人に要る情報。
++dtmp="$(mktemp "$(dirname "$DETAIL_OUT")/.census-detail.XXXXXX" 2>/dev/null)" || \
++    dtmp="$(mktemp "$(dirname "$OUT")/.census-detail.XXXXXX")"
++awk '
++    /client=app([[:space:]]|$)/ {
++        d = ""; h = ""; b = "-"
++        for (i = 1; i <= NF; i++) {
++            if ($i ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T/) { split($i, p, "T"); d = p[1]; h = substr(p[2], 1, 2) }
++            else if ($i ~ /^build=/) { b = substr($i, 7) }
++        }
++        if (d != "" && h != "") n[d "\t" h "\t" b]++
++    }
++    END { for (k in n) printf "%s\t%d\n", k, n[k] }
++' "$LOG" | sort > "$dtmp"
++
++# 既存と**鍵ごとの max** で畳む(日次と同じ理由: 切られた後の走行では数が減って見える)。
++if [ -f "$DETAIL_OUT" ]; then
++    awk -F'\t' '
++        NR == FNR { if (NF >= 4) old[$1 "\t" $2 "\t" $3] = $4 + 0; next }
++        { k = $1 "\t" $2 "\t" $3; cur = $4 + 0
++          if (k in old && old[k] > cur) cur = old[k]
++          seen[k] = 1; printf "%s\t%d\n", k, cur }
++        END { for (k in old) if (!(k in seen)) printf "%s\t%d\n", k, old[k] }
++    ' "$DETAIL_OUT" "$dtmp" | sort > "$dtmp.new"
++else
++    cp "$dtmp" "$dtmp.new"
++fi
++mv -f "$dtmp.new" "$DETAIL_OUT" || { echo "app-usage-census: 副台帳を書けない: $DETAIL_OUT" >&2; /bin/rm -f "$dtmp"; exit 1; }
++/bin/rm -f "$dtmp"
+ days="$(wc -l < "$OUT" | tr -d ' ')"
+ total="$(awk -F'\t' '{s += $2} END {print s + 0}' "$OUT")"
+-echo "app-usage-census: $days 日 / 述べ $total 件を $OUT に積んだ"
++drows="$(wc -l < "$DETAIL_OUT" 2>/dev/null | tr -d ' ')"
++echo "app-usage-census: $days 日 / 述べ $total 件を $OUT に積んだ(時刻×版 $drows 行 = $DETAIL_OUT)"
+ exit 0
+#!/bin/bash
+# app-usage-census.sh — 電話(client=app)からの要求を**日ごとに数えて積む**。
+#
+# ── なぜ要るか(2026-08-30)──────────────────────────────────────────────────
+# CONTINUITY の H-3 は OPEN で、解除条件が「合成の通知を送らずに 3〜7 日の起きている時間に
+# 本物の機会が来た時、Tom がアプリ経由で動くか観測する」。その観測の手立ては
+# **人が思い出して grep する**事だけだった —— 木を全部 grep しても `client=app` を
+# **読む道具は1つも無い**(書き手 `src/reqlog.mjs` と其の検査だけ)。
+#
+# ★同じ日に据えた上限が、その観測窓を消しに来る。`rc-backend.log` は約 260KB/日で伸び、
+#   5MB に当たるのは2週間ほど先。切ると末尾の半分だけが `<file>.tail` に残り、
+#   **次に切った時に其の退避も上書きされる**(1世代しか持たない)。
+#   つまり「数え終わる前に、数える元が消える」。
+#
+# だから**上限の外**へ、日ごとの数だけを積む。生の行は運ばない(要らないし、
+# 運べば同じ大きさの問題を別の場所に作るだけ)。
+#
+# ★積み方は**日ごとの max**。和ではない。
+#   log は切られるので、切った後の走行では過去の日の数が**減って**見える。
+#   和にすると二重に数え、上書きにすると減る。max なら
+#   「一度観測した数より下がらない」= 窓が消えても記録が残る。
+#   同じ日に本当に増えた時も max で伸びる。
+#
+# 使い方:
+#   bash rc-backend/tools/app-usage-census.sh
+#   RC_CENSUS_LOG=<log> RC_CENSUS_OUT=<tsv> bash …     # 検査の継ぎ目
+#
+# 出力: `<date>\t<count>` の TSV(日付順)。既定の置き場は **上限を掛けている dir の外**。
+#
+# 終了コード: 0=積んだ / 1=書けない / 2=元 log が無い(測定不成立。0 に丸めない)
+set -uo pipefail
+
+LOG="${RC_CENSUS_LOG:-$HOME/Library/Logs/rc-backend/rc-backend.log}"
+# ★置き場は `~/Library/Logs/rc-backend` でも `~/.rc-backend` でもない ——
+#   どちらも `com.fleet.rc-log-cap` が掃く。掃かれる場所に「掃かれると困る物」を置かない。
+OUT="${RC_CENSUS_OUT:-$HOME/rc-census/app-usage.tsv}"
+# ★時刻と版まで分けた副台帳(2026-08-30)。日次の合計だけだと H-3 の解除条件
+# (「**起きている時間**に本物の機会が来た時、Tom がアプリ経由で動くか」)を後から評価できない ——
+#   1日 100 件が深夜の常駐なのか昼の実使用なのかが、合計からは復元できない。
+#   `build` も併せて持つ: 版が変わった前後で使い方が変わったかは、版を捨てた台帳では問えない。
+# ★**日次の合計は形を変えない**。既に 4 日ぶん積んであり、形を変えると其の履歴が読めなくなる。
+#   足すのは別 file。壊さずに増やす。
+DETAIL_OUT="${RC_CENSUS_DETAIL_OUT:-${OUT%.tsv}-detail.tsv}"
+
+if [ ! -f "$LOG" ]; then
+    echo "app-usage-census: $LOG が無い = 測定不成立(0 件と読ませない)" >&2
+    exit 2
+fi
+
+mkdir -p "$(dirname "$OUT")" 2>/dev/null || { echo "app-usage-census: 置き場を作れない: $(dirname "$OUT")" >&2; exit 1; }
+umask 077
+
+tmp="$(mktemp "$(dirname "$OUT")/.census.XXXXXX")" || { echo "app-usage-census: 一時 file を作れない" >&2; exit 1; }
+trap 'rm -f "$tmp" "$tmp.new"' EXIT
+
+# 今の log から日ごとに数える。
+# 行の形(`src/reqlog.mjs`): `[rc-backend] req <ISO8601> <METHOD> <path> route=… client=… code=… …`
+# ★`client=app` を**語として**当てる。`client=apple` の様な将来の語に巻き込まれない為。
+awk '
+    /client=app([[:space:]]|$)/ {
+        for (i = 1; i <= NF; i++) {
+            if ($i ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T/) { split($i, d, "T"); n[d[1]]++; break }
+        }
+    }
+    END { for (k in n) printf "%s\t%d\n", k, n[k] }
+' "$LOG" | sort > "$tmp"
+
+# 既にある記録と**日ごとの max** で畳む。
+if [ -f "$OUT" ]; then
+    awk -F'\t' '
+        NR == FNR { if ($1 != "") old[$1] = $2 + 0; next }
+        { cur = $2 + 0; if ($1 in old && old[$1] > cur) cur = old[$1]; seen[$1] = 1; printf "%s\t%d\n", $1, cur }
+        END { for (k in old) if (!(k in seen)) printf "%s\t%d\n", k, old[k] }
+    ' "$OUT" "$tmp" | sort > "$tmp.new"
+else
+    cp "$tmp" "$tmp.new"
+fi
+
+mv -f "$tmp.new" "$OUT" || { echo "app-usage-census: 書けない: $OUT" >&2; exit 1; }
+
+# ── 副台帳: 日 / 時 / 版 ────────────────────────────────────────────────────
+# ★`build=` が無い行(2026-08-30 より前の机)は `-` として数える。捨てない ——
+#   「版が判らない要求が在った」事自体が、後から読む人に要る情報。
+dtmp="$(mktemp "$(dirname "$DETAIL_OUT")/.census-detail.XXXXXX" 2>/dev/null)" || \
+    dtmp="$(mktemp "$(dirname "$OUT")/.census-detail.XXXXXX")"
+awk '
+    /client=app([[:space:]]|$)/ {
+        d = ""; h = ""; b = "-"
+        for (i = 1; i <= NF; i++) {
+            if ($i ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T/) { split($i, p, "T"); d = p[1]; h = substr(p[2], 1, 2) }
+            else if ($i ~ /^build=/) { b = substr($i, 7) }
+        }
+        if (d != "" && h != "") n[d "\t" h "\t" b]++
+    }
+    END { for (k in n) printf "%s\t%d\n", k, n[k] }
+' "$LOG" | sort > "$dtmp"
+
+# 既存と**鍵ごとの max** で畳む(日次と同じ理由: 切られた後の走行では数が減って見える)。
+if [ -f "$DETAIL_OUT" ]; then
+    awk -F'\t' '
+        NR == FNR { if (NF >= 4) old[$1 "\t" $2 "\t" $3] = $4 + 0; next }
+        { k = $1 "\t" $2 "\t" $3; cur = $4 + 0
+          if (k in old && old[k] > cur) cur = old[k]
+          seen[k] = 1; printf "%s\t%d\n", k, cur }
+        END { for (k in old) if (!(k in seen)) printf "%s\t%d\n", k, old[k] }
+    ' "$DETAIL_OUT" "$dtmp" | sort > "$dtmp.new"
+else
+    cp "$dtmp" "$dtmp.new"
+fi
+mv -f "$dtmp.new" "$DETAIL_OUT" || { echo "app-usage-census: 副台帳を書けない: $DETAIL_OUT" >&2; /bin/rm -f "$dtmp"; exit 1; }
+/bin/rm -f "$dtmp"
+days="$(wc -l < "$OUT" | tr -d ' ')"
+total="$(awk -F'\t' '{s += $2} END {print s + 0}' "$OUT")"
+drows="$(wc -l < "$DETAIL_OUT" 2>/dev/null | tr -d ' ')"
+echo "app-usage-census: $days 日 / 述べ $total 件を $OUT に積んだ(時刻×版 $drows 行 = $DETAIL_OUT)"
+exit 0
+#!/bin/bash
+# controls-for: tools/app-usage-census.sh
+#
+# app-usage-census.sh の**挙動**対照。
+#
+# ★測る中心は「数えられるか」ではない —— それは1行の awk でも通る。
+#   測るのは **log が切られた後も、既に観測した数が残るか**。
+#   此の道具が在る理由がそれだから(H-3 の観測窓を、同じ日に据えた上限が消しに来る)。
+#
+#   C1 日ごとに数え、client=tool を混ぜない
+#   C2a ★日が log から丸ごと消えても残る(畳み込みの引き継ぎ節)
+#   C2b ★日は残るが件数が減って見えても下がらない(日ごとの max)
+#   C3  ★変異対照を機構ごとに2本。1本にまとめると片方が死んでいても緑が出る
+#   C4 同じ日が本当に増えたら**伸びる**(max が固まって止まらない事)
+#   C5 元 log が無ければ rc=2(0 件と読ませない)
+#   C6 置き場が上限を掛けている dir の**外**である事(既定値の検査)
+#   C7 client=apple の様な語に巻き込まれない(語として当てている)
+#
+# 使い方: bash rc-backend/test/app-usage-census-controls.sh
+# 終了コード: 0=全部緑 / 1=1本でも赤
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # = rc-backend/
+SUT="$HERE/tools/app-usage-census.sh"
+[ -f "$SUT" ] || { echo "測る対象が無い: $SUT"; exit 1; }
+
+pass=0; fail=0
+ok() { echo "PASS  $1"; pass=$((pass + 1)); }
+ng() { echo "FAIL  $1  ($2)"; fail=$((fail + 1)); }
+SB="$(mktemp -d)"; trap 'rm -rf "$SB"' EXIT
+
+row() {  # row <ISO日時> <client>
+    # ★`build=` を含める(2026-08-30)。本番の行は 2852f6c 以降この形。
+    #   検体が本番の出さない形だと、対照は「本番に無い形」に対して緑になる。
+    printf '[rc-backend] req %s GET /api/sessions route=x client=%s build=- code=200 reason=- ms=1\n' "$1" "$2"
+}
+count_for() { awk -F'\t' -v d="$1" '$1==d {print $2}' "$2" 2>/dev/null; }
+
+# ── C1 日ごとに数え、tool を混ぜない ──────────────────────────────────────
+L="$SB/a.log"; O="$SB/a.tsv"
+{ row 2026-08-29T20:00:00.000Z app; row 2026-08-29T21:00:00.000Z tool
+  row 2026-08-29T22:00:00.000Z app; row 2026-08-30T05:33:00.000Z app; } > "$L"
+RC_CENSUS_LOG="$L" RC_CENSUS_OUT="$O" bash "$SUT" >/dev/null 2>&1
+if [ "$(count_for 2026-08-29 "$O")" = "2" ] && [ "$(count_for 2026-08-30 "$O")" = "1" ]; then
+    ok "C1 日ごとに数え、client=tool を混ぜない"
+else ng "C1 日ごとの数" "$(cat "$O" 2>/dev/null | tr '\n' ' ')"; fi
+
+# ── C2 log を切っても前に数えた日が減らない ★中核 ─────────────────────────
+# ★守っている機構は**2つ在り、別々に測らないと片方が空虚になる**(初版はここを取り違え、
+#   C3 の変異が赤くならない事で判った):
+#     (a) 日が log から**丸ごと消えた**時 → 畳み込みの END 節が古い行を引き継ぐ
+#     (b) 日は残っているが**件数が減った**時 → 日ごとの max
+#   初版は (a) だけを測って「max を測っている」と註記していた。註記が実装とずれていた。
+
+# (a) 日が丸ごと消える(上限が古い方を捨てた形)
+{ row 2026-08-30T06:00:00.000Z app; } > "$L"
+RC_CENSUS_LOG="$L" RC_CENSUS_OUT="$O" bash "$SUT" >/dev/null 2>&1
+if [ "$(count_for 2026-08-29 "$O")" = "2" ]; then
+    ok "C2a 日が log から消えても 8/29 の 2 件が残る(引き継ぎ節)"
+else ng "C2a 日が消えた後も残る" "8/29 = $(count_for 2026-08-29 "$O")"; fi
+
+# (b) 日は残っているが件数が減った(切り口が日の途中に来た形)
+{ row 2026-08-29T22:00:00.000Z app; row 2026-08-30T06:00:00.000Z app; } > "$L"
+RC_CENSUS_LOG="$L" RC_CENSUS_OUT="$O" bash "$SUT" >/dev/null 2>&1
+if [ "$(count_for 2026-08-29 "$O")" = "2" ]; then
+    ok "C2b 件数が 2→1 に減って見えても 2 のまま(日ごとの max)"
+else ng "C2b 減って見えた時" "8/29 = $(count_for 2026-08-29 "$O")"; fi
+
+# ── C3 変異対照(2つ・機構ごとに1本ずつ)───────────────────────────────────
+# ★1本にまとめると、片方の機構が死んでいても緑が出る。実際 初版は max だけを変異させ、
+#   (a) が引き継ぎ節に守られていた為に**赤くならず**、それで取り違えに気付いた。
+mutate_and_check() {   # $1=説明 $2=消す綴り $3=場面(a|b)
+    local md mut ml mo
+    md="$(mktemp -d)"; mut="$md/mut.sh"
+    python3 - "$SUT" "$mut" "$2" <<'PY2'
+import sys
+s = open(sys.argv[1]).read()
+target = sys.argv[3]
+if target not in s:
+    sys.exit(9)
+open(sys.argv[2], "w").write(s.replace(target, ''))
+PY2
+    if [ $? -eq 9 ] || ! bash -n "$mut" 2>/dev/null; then
+        ng "C3 $1" "変異の当て先が動いた(対照を直す事)"; /bin/rm -rf "$md"; return
+    fi
+    ml="$md/m.log"; mo="$md/m.tsv"
+    { row 2026-08-29T20:00:00.000Z app; row 2026-08-29T22:00:00.000Z app; } > "$ml"
+    RC_CENSUS_LOG="$ml" RC_CENSUS_OUT="$mo" bash "$mut" >/dev/null 2>&1
+    if [ "$3" = "a" ]; then { row 2026-08-30T06:00:00.000Z app; } > "$ml"
+    else { row 2026-08-29T22:00:00.000Z app; } > "$ml"; fi
+    RC_CENSUS_LOG="$ml" RC_CENSUS_OUT="$mo" bash "$mut" >/dev/null 2>&1
+    if [ "$(count_for 2026-08-29 "$mo")" = "2" ]; then
+        ng "C3 $1" "変異しても 2 のまま = その場面を測れていない"
+    else ok "C3 $1(変異で 2 が失われる = 対応する検査は本物)"; fi
+    /bin/rm -rf "$md"
+}
+mutate_and_check "引き継ぎ節を外すと C2a が崩れる" \
+    'for (k in old) if (!(k in seen)) printf "%s\t%d\n", k, old[k]' a
+mutate_and_check "max を外すと C2b が崩れる" \
+    'if ($1 in old && old[$1] > cur) cur = old[$1];' b
+
+# ── C4 同じ日が本当に増えたら伸びる ───────────────────────────────────────
+# max が「一度観測した数で固まって動かない」物になっていない事。
+{ row 2026-08-30T06:00:00.000Z app; row 2026-08-30T07:00:00.000Z app
+  row 2026-08-30T08:00:00.000Z app; } > "$L"
+RC_CENSUS_LOG="$L" RC_CENSUS_OUT="$O" bash "$SUT" >/dev/null 2>&1
+if [ "$(count_for 2026-08-30 "$O")" = "3" ]; then
+    ok "C4 同じ日が本当に増えたら伸びる(max が固まらない)"
+else ng "C4 増えたら伸びる" "8/30 = $(count_for 2026-08-30 "$O")"; fi
+
+# ── C5 元 log が無ければ測定不成立 ────────────────────────────────────────
+RC_CENSUS_LOG="$SB/no-such.log" RC_CENSUS_OUT="$SB/x.tsv" bash "$SUT" >/dev/null 2>&1
+[ $? -eq 2 ] && ok "C5 元 log が無ければ rc=2(0 件と読ませない)" \
+             || ng "C5 元 log が無い時" "rc=$?"
+
+# ── C6 置き場が上限の外 ───────────────────────────────────────────────────
+# ★能力ではなく**既定値**を測る。掃かれる場所に置いたら、この道具は自分の目的を裏切る。
+defout="$(grep -m1 'OUT="\${RC_CENSUS_OUT:-' "$SUT" | sed 's/.*RC_CENSUS_OUT:-//; s/}.*//')"
+case "$defout" in
+    *"Library/Logs/rc-backend"*|*"/.rc-backend/"*)
+        ng "C6 置き場が上限の外" "既定が掃かれる dir の中: $defout" ;;
+    *) ok "C6 既定の置き場は上限を掛けている dir の外($defout)" ;;
+esac
+
+# ── C7 client=apple の様な語に巻き込まれない ──────────────────────────────
+L2="$SB/b.log"; O2="$SB/b.tsv"
+{ row 2026-08-31T01:00:00.000Z apple; row 2026-08-31T02:00:00.000Z app; } > "$L2"
+RC_CENSUS_LOG="$L2" RC_CENSUS_OUT="$O2" bash "$SUT" >/dev/null 2>&1
+if [ "$(count_for 2026-08-31 "$O2")" = "1" ]; then
+    ok "C7 client=apple を app と数えない(語として当てている)"
+else ng "C7 語として当てる" "8/31 = $(count_for 2026-08-31 "$O2")(2 なら前方一致で拾っている)"; fi
+
+# ── C9-C12 時刻 × 版 の副台帳(2026-08-30)────────────────────────────────
+# ★H-3 の解除条件は「**起きている時間**に本物の機会が来た時に使うか」。日次の合計だけでは
+#   1日 100 件が深夜の常駐なのか昼の実使用なのかを復元できず、条件を評価できない。
+# ★測る中心は「副台帳が出来るか」ではなく **日次の形が変わっていないか**。
+#   既に積んである履歴を壊す変更なら、後から読めなくなる方が損失が大きい。
+D="$(mktemp -d)"; L="$D/x.log"; O="$D/day.tsv"; DO="$D/detail.tsv"
+# ★版は `row` の外で足さない(2026-08-30、sed で後から差し込んで効かず C11 が赤くなった)。
+#   検体は**作る時に完成させる** —— 後から書き換える形は、書き換えが効いたかを
+#   別途確かめないと判らず、検査が自分の検体を信じられなくなる。
+rowb() {  # rowb <ISO日時> <client> <build>
+    printf '[rc-backend] req %s GET /api/sessions route=x client=%s build=%s code=200 reason=- ms=1\n' "$1" "$2" "$3"
+}
+{ rowb 2026-08-30T05:33:00.000Z app 99; rowb 2026-08-30T05:40:00.000Z app 99
+  rowb 2026-08-30T14:02:00.000Z app 99; rowb 2026-08-30T14:09:00.000Z tool -; } > "$L"
+RC_CENSUS_LOG="$L" RC_CENSUS_OUT="$O" RC_CENSUS_DETAIL_OUT="$DO" bash "$SUT" >/dev/null 2>&1
+
+# app は 3 件、tool は入らない。
+if [ "$(count_for 2026-08-30 "$O")" = "3" ]; then
+    ok "C9 日次の合計は形も値も変わらない(app 3 件 / client=tool は入らない)"
+else ng "C9 日次の合計" "$(cat "$O" | tr '\n' ' ')"; fi
+
+h05="$(awk -F'\t' '$1=="2026-08-30" && $2=="05" {print $4}' "$DO")"
+h14="$(awk -F'\t' '$1=="2026-08-30" && $2=="14" {print $4}' "$DO")"
+if [ "$h05" = "2" ] && [ "$h14" = "1" ]; then
+    ok "C10 時刻ごとに分かれる(05 時 2 件 / 14 時 1 件)"
+else ng "C10 時刻の分解" "05=$h05 14=$h14"; fi
+
+if awk -F'\t' '$3=="99"{f=1} END{exit !f}' "$DO"; then
+    ok "C11 版が記録される"
+else ng "C11 版の記録" "$(cat "$DO" | tr '\n' ' ')"; fi
+
+# ★`build=` が無い古い行を捨てない。「版が判らない要求が在った」事自体が情報。
+{ row 2026-08-31T03:00:00.000Z app; } > "$L"
+RC_CENSUS_LOG="$L" RC_CENSUS_OUT="$O" RC_CENSUS_DETAIL_OUT="$DO" bash "$SUT" >/dev/null 2>&1
+if awk -F'\t' '$1=="2026-08-31" && $3=="-" {f=1} END{exit !f}' "$DO"; then
+    ok "C12 build= が無い行はハイフンとして残す(捨てない)"
+else ng "C12 版なしの行" "$(grep 2026-08-31 "$DO" | tr '\n' ' ')"; fi
+
+# ★積む事(切られても減らない)は副台帳でも成り立つか。日次と同じ機構に乗っている事の確認。
+{ row 2026-08-31T03:00:00.000Z app; } > "$L"
+RC_CENSUS_LOG="$L" RC_CENSUS_OUT="$O" RC_CENSUS_DETAIL_OUT="$DO" bash "$SUT" >/dev/null 2>&1
+if awk -F'\t' '$1=="2026-08-30" && $2=="05" && $4=="2" {f=1} END{exit !f}' "$DO"; then
+    ok "C13 log から消えた時刻の行も副台帳に残る(積む機構に乗っている)"
+else ng "C13 副台帳の積み" "$(grep 2026-08-30 "$DO" | tr '\n' ' ')"; fi
+/bin/rm -rf "$D"
+
+echo ""
+echo "APP-USAGE-CENSUS-CONTROLS: pass=$pass fail=$fail"
+exit $(( fail > 0 ))
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a0547d-d093-7351-88e2-b873b6c8a41a
+--------
+user
+Attack this. A small change to a script that runs hourly, unattended, on a production Mac mini. Be brief — the two or three things actually wrong.
+
+## Context
+
+A phone app talks to a Claude Code session on the owner's Mac mini. The backend writes one line per request; a `client=` field classifies the caller (`app`/`tool`/`probe`/`none`), and as of today a `build=` field carries the app's build number, parsed from the product User-Agent (raw UA is never logged, by standing rule).
+
+An open hypothesis, H-3, asks: **does the owner actually use this app?** Its stated discharge condition is to observe, over 3-7 waking days and without sending a synthetic notification, whether he acts through it. The recorded premise was: `client=app` rows are his real phone, because simulator builds lack the baked-in server URL and structurally cannot reach the desk.
+
+An hourly job accumulates a per-day count of `client=app` requests into a file outside the log-rotation scope, so a size cap cannot eat the evidence. Day totals only.
+
+## The change
+
+A second file, same job, same accumulation rule: `date <TAB> hour <TAB> build <TAB> count`. Day totals are untouched (four days already accumulated; changing that shape would make the history unreadable). Both files use per-key max-merge rather than sum, because the source log gets truncated and a later run sees fewer rows for a day already counted.
+
+## What it immediately showed, and why I am asking you
+
+Real production data, first run:
+
+```
+2026-08-30  13時(CDT)  build=1    48
+2026-08-30  13時(CDT)  build=96   36
+2026-08-30  13時(CDT)  build=100   6
+2026-08-30  15時(CDT)  build=1    12
+2026-08-30  15時(CDT)  build=102  10
+```
+
+`build=96` is the owner's phone: a 38-second burst at 18:15 UTC where he opened a conversation, sent three messages, switched accounts and sent again.
+
+`build=1` is 60 requests, only `/api/sessions` + `/api/account` in pairs, running before and after his session and stopping 17 minutes ago — at which point two iOS simulators are still booted on my machine from UI control runs. So `build=1` is **my own automated control runs reaching the real backend**.
+
+That falsifies H-3's premise: `client=app` is not "the owner's phone". His own count for today is 36 of the 593 accumulated, not 593.
+
+## Attack these
+
+1. **Is `build` a sound discriminator, or did I just replace one wrong premise with another?** The owner's build number changes every time I publish (96 → 102 → 105). A rule like "app rows whose build equals the last published build are his" breaks the moment I publish while he is still on the old one — which is the normal state. What is the right way to separate his traffic from my harness's, using only per-request metadata that never includes a raw device identifier?
+
+2. **The day totals are now known to be contaminated** — four accumulated days mixing his phone with my control runs, with no way to split them retroactively because the old rows have no build. Do I leave them (a record that is honest about what it is), annotate them, or discard and restart? Discarding loses the only evidence spanning the window H-3 asks about.
+
+3. **max-merge on a per-hour key.** A day's rows can only grow. If the log is truncated mid-hour and the job runs, that hour's count is preserved — good. But if a genuinely *new* hour arrives with fewer requests than an old identical key... there is no collision, keys include the date. Is there a case where max-merge silently overstates?
+
+4. Anything about accumulating a growing per-hour record outside the rotation scope that I am underweighting — it is unbounded by construction, one row per (day, hour, build).
+2026-08-30T21:05:27.545516Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T21:05:27.563421Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T21:05:28.018968Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+論点を「識別の妥当性」「証拠の保存」「集計の故障条件」に絞ります。Claude/Mac mini の運用前提を外さないため `claude-workspace-context`、仮説の崩れ方を点検するため `issue-driven` を使い、実害のある2〜3点だけ返します。
+exec
+/bin/zsh -lc "sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/SKILL.md && sed -n '1,260p' /Users/tomtim/.codex/skills/issue-driven/SKILL.md" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+---
+name: claude-workspace-context
+description: "Tomtim の Claude 側グローバル設定を Codex でも参照するためのワークスペース文脈スキル。Mac mini 運用、保護ファイル、AI 連携、Claude Code との役割分担、ハーネス、ルーティング、デプロイ前提、作業スタイル、Claude 由来の制約を踏まえて進める必要がある時に必ず使用。"
+---
+
+# Claude Workspace Context
+
+`~/.claude/CLAUDE.md` と主要エージェント定義を Codex から参照できるようにしたブリッジスキル。
+
+## いつ使うか
+
+- `/Users/tomtim` 配下で、Claude 側の運用前提を踏まえて作業する時
+- Mac mini、launchd、SSH、handoff、複数 AI 連携が絡む時
+- `.env`、設定ファイル、依存関係、デプロイ周辺の変更可否を慎重に判断したい時
+
+## 最重要ルール
+
+- 日本語でやり取りする。
+- ユーザー向けテキストでは絵文字や装飾的な Unicode を避ける。
+- 触ってはいけないもの:
+  - `~/.claude/settings.json`
+  - `~/.zshrc`, `~/.bashrc`, `~/.zprofile`, `~/.bash_profile`
+  - あらゆる `.env`
+- 次は事前確認が必要:
+  - 依存関係の追加/削除/ダウングレード
+  - メジャーアップグレード
+  - ビルド設定変更
+  - DB 接続設定やマイグレーション
+  - launchd、Docker、CI/CD、ポート、認証、SSL 周辺
+- 症状回避ではなく根本原因修正を優先する。
+- 長い文脈共有はファイルベースで残す発想を優先する。
+- Claude 側の routing banner / Harness / Agent Teams は設計思想として参照する。ただし Codex では上位ルールを優先し、明示的な許可なしに sub-agent を起動しない。
+- Claude 側の設定や設計を同期目的で変更しない。反映が必要な場合は Codex 側の skill、memory、reference にだけ写す。
+- 複数 AI が絡む作業では、同じファイルを同時編集しないように担当範囲を明確にする。
+
+## Mac mini 文脈
+
+- SSH: `ssh athenas@10.0.0.0`
+- Node: `/opt/homebrew/bin/node`
+- sudo が必要な作業は、基本的にユーザー実行前提
+
+## 読むべき参照
+
+- コピー索引: `references/README.md`
+- 元のグローバル設定: `references/claude-global.md`
+- Claude 側ルールコピー:
+  - `references/rules/protected-files.md`
+  - `references/rules/workflow-principles.md`
+  - `references/rules/mac-mini-ops.md`
+  - `references/rules/harness-rules.md`
+  - `references/rules/parallel-ai-rules.md`
+  - `references/rules/session-resume.md`
+- ハーネス系エージェント:
+  - `references/agents/planner.md`
+  - `references/agents/generator.md`
+  - `references/agents/evaluator.md`
+  - `references/agents/meta-agent.md`
+- Claude 側の追加エージェント文脈:
+  - `references/agents/mac-mini-deployer.md`
+  - `references/agents/pica-connector.md`
+  - `references/agents/x-bookmark-manager.md`
+- Claude 側コマンド/テンプレート/メモリのコピー:
+  - `references/commands/`
+  - `references/templates/`
+  - `references/memory/`
+  - `references/claude-skills/`
+
+## 注意
+
+- Claude 側のルールが Codex の system/developer 指示と衝突する場合は、Codex 側の上位指示を優先する。
+- このスキルは Claude の運用文脈を持ち込むためのものだが、Codex の権限モデルや sub-agent ルールまでは上書きしない。
+---
+name: issue-driven
+description: "安宅和人『イシューからはじめよ』に基づき、課題・アイデア・計画の本質イシューを見極める思考支援スキル。問題設定、仮説整理、犬の道チェック、一次情報確認、既存プランの点検を行いたい時に使用。"
+---
+
+# issue-driven -- 本質を捉えるスキル
+
+安宅和人「イシューからはじめよ」に基づく、本質を捉えるための思考支援スキル。
+ユーザーが持ちかけた課題・アイデア・計画に対して、表面ではなく本質のイシューを炙り出す。
+
+Codex 版では `/issue-driven` のようなコマンド名は読み替えであり、ユーザーがこのスキル名を指定するか、「本質を見極めたい」「イシューを整理したい」と依頼した時に使う。
+
+## 基本公式
+
+```
+バリュー = イシュー度 x 解の質
+```
+
+- イシュー度: 今この局面で、この問題に答えを出す必要性の高さ
+- 解の質: そのイシューに対して、どこまで明確に答えを出せているか
+
+**順序が全て。** イシュー度を先に上げ、その後に解の質を磨く。逆にすると犬の道（大量の作業で勝負する無駄な道）に陥る。
+
+## 補完関係
+
+- `/issue-driven`: イシューの質を上げる（問題設定）
+- `/visionary-council`: 解の質を評価する（ソリューション評価）
+
+この2つは対になる。issue-drivenでイシューを確定した後、visionary-councilでソリューション案を評価するのが理想的な流れ。
+
+---
+
+## モード一覧
+
+| モード | コマンド例 | 動作 |
+|---|---|---|
+| デフォルト | `/issue-driven [入力]` | 入力タイプに応じてStep 0-4を実行 |
+| クイック | `/issue-driven --quick [入力]` | Step 1のみ（3条件 + 犬の道チェック） |
+| 深掘り | `/issue-driven --deep [入力]` | Step 1を対話形式で深掘り |
+| 点検 | `/issue-driven --check [ファイルパス]` | 既存の計画・分析のイシュー度を診断 |
+
+---
+
+## 実行フロー
+
+### 入口ルーティング（自動判定）
+
+スキル起動時、ユーザー入力を以下の4タイプに自動分類し、適切なStepにルーティングする。
+
+| タイプ | 判定基準 | 開始Step |
+|---|---|---|
+| A: 明確な課題 | 「Xが問題」「Xを解決したい」「Xを改善したい」 | Step 1 |
+| B: 漠然とした欲求 | 「Xしたい」「何がいいか分からない」「方向性を決めたい」 | Step 0 |
+| C: 既存分析あり | ファイルパス添付、既に構造化された計画・分析がある | Step 1（検証モード） |
+| D: 技術課題 | CI/CD、パフォーマンス、リファクタ、バグ等の技術的問題 | Step 1（技術フレーム） |
+
+判定に迷った場合はタイプAとして扱う。
+
+**入力が空の場合**: ユーザーに「何について本質を見極めたいか？」と問いかけ、回答を待ってからルーティングする。
+
+### --check モード（タイプC）の動作
+
+`/issue-driven --check [ファイルパス]` で起動した場合:
+1. 指定ファイルを読み込む
+2. ファイル内容からイシューと仮説を抽出
+3. Step 1の全チェック（3条件、犬の道、一次情報）を適用
+4. 「このプランのイシュー度」を診断結果として出力
+5. イシュー度が低い部分を指摘し、改善案を提示
+
+---
+
+## Step 0: プレイシュー（タイプBのみ）
+
+イシューが存在しない状態から、イシューの種を見つける。
+
+### 実行手順
+
+1. **欲求の特定**
+   ユーザーに問いかける: 「何を得たいか」ではなく「何が満たされていないか」
+   - 収入 / 成長 / 自由 / 承認 / 知的刺激 / 社会貢献 / 安定
+   - 文脈自動読み込みでプロジェクト情報があれば、それも参照する
+
+2. **制約の整理**
+   - 時間（1日何時間使えるか）
+   - スキル（何ができるか、何ができないか）
+   - リソース（資金、人脈、ツール）
+   - リスク許容度（失敗しても大丈夫か）
+
+3. **仮イシュー候補の生成**
+   欲求と制約から、「○○は××ではないか」の形で仮イシューを3つ生成する。
+   各候補に「なぜこれがイシューになりうるか」の1行説明を付ける。
+
+4. **ユーザーの選択**
+   「この中で最も"そうかもしれない"と感じるのはどれか？」と問い、選択されたものをStep 1に渡す。
+
+### Step 0 の出力
+
+```
+## プレイシュー分析
+
+### 満たされていないもの
+- [特定された欲求]
+
+### 制約
+- [整理された制約]
+
+### 仮イシュー候補
+
+exec
+/bin/zsh -lc "rg -n 'clientClass|build|User-Agent|user-agent|req ' rc-backend/src rc-backend/test --glob '*.mjs' --glob '*.sh' | sed -n '1,240p'
+sed -n '1,260p' rc-backend/src/reqlog.mjs
+rg -n 'app-usage-census|rc-census|H-3|使用実績|client=app' DESIGN.md WORKLOG.md HANDOFF-NEXT-SESSION.md PRE-DEPARTURE-2026-08-20.md rc-backend/tools rc-backend/test | tail -n 220" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+rc-backend/test/fixture-labels-producible.test.mjs:33:// 取らなかった道: Swift 側から JSON を生成して突き合わせる。xcodebuild が要るので commit の
+rc-backend/src/server.mjs:17:import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords } from "./sessions.mjs";
+rc-backend/src/server.mjs:1287:      const scanned = [...buildListing(scan.entries, explicitTitles), ...scan.unreadable];
+rc-backend/src/server.mjs:1302:        // ★明示名と保管の絞りは**合流後に一括で**当てる(生産者は buildListing /
+rc-backend/src/server.mjs:1985:          //   `display.choice` を `screen` に揃える規則も builder 側の1箇所に在る。
+rc-backend/src/server.mjs:2070:        //   builder の側で見える —— 此処に2つの literal を並べていた間は、差が**意図か
+rc-backend/test/departure-survivability-controls.sh:170:# 読ませない理由は build.sh の時と同じ —— 対照が「今日の電話の中身」に依存して明日壊れる。
+rc-backend/test/departure-survivability-controls.sh:181:# `ios/tools/build.sh --print-build-num` へ番号を訊きに行く —— 其処を偽物へ向ける。
+rc-backend/test/departure-survivability-controls.sh:186:cat > "$T/bin/fake-build.sh" <<'EOB'
+rc-backend/test/departure-survivability-controls.sh:188:[ "${1:-}" = "--print-build-num" ] || { echo "偽 build.sh に知らない引数: ${1:-(無)}" >&2; exit 2; }
+rc-backend/test/departure-survivability-controls.sh:191:chmod +x "$T/bin/fake-build.sh"
+rc-backend/test/departure-survivability-controls.sh:200:BSH="$T/bin/fake-build.sh"
+rc-backend/test/departure-survivability-controls.sh:373:# BJ: 番号が "1" = project.yml の直値のまま = **build.sh を通さずに焼いた物**。
+rc-backend/test/departure-survivability-controls.sh:376:if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q "build.sh を通さずに焼いた"; then
+rc-backend/test/departure-survivability-controls.sh:396:# BM: 期待値が出せない(build.sh が git から数えられず 0 を返した)-> 未測定。
+rc-backend/test/departure-survivability-controls.sh:413:BSH="$T/no-such-dir/build.sh"; run "$GOOD" --days 30; BSH="$T/bin/fake-build.sh"
+rc-backend/test/departure-survivability-controls.sh:432:# BP: req が消えた -> **赤**。旅程で使う物が電話から消えたのを注記に落とさない。
+rc-backend/test/departure-survivability-controls.sh:435:    ok "BP req が消えた -> 赤、名指しで出る"
+rc-backend/test/departure-survivability-controls.sh:436:else ng "BP req 欠落: 終了 $RC"; fi
+rc-backend/test/departure-survivability-controls.sh:484:#     此処を素直に読むと「req が2本とも消えた」= 嘘の赤が2件出る。道具の矛盾は
+rc-backend/src/sessions.mjs:105:export function buildListing(entries, titles = {}) {
+rc-backend/src/sessions.mjs:127: * `buildListing` の隣に置く理由: 一覧の行を作る生産者は**この file と registry.mjs の
+rc-backend/src/wire.mjs:20: * 一覧の1行。`row` は生産者3つ(buildListing / registryOnlySessions / unreadableRow)の
+rc-backend/test/session-guard.test.mjs:114:  const builds = new Set();
+rc-backend/test/session-guard.test.mjs:120:      if (/URLRequest\(url:/.test(line)) builds.add(rel);
+rc-backend/test/session-guard.test.mjs:127:    builds.size > 0,
+rc-backend/test/session-guard.test.mjs:132:    [...builds].filter((f) => !declares.has(f)).sort(),
+rc-backend/src/digest.mjs:249: *   `wire-key-agreement` の突き合わせ表に載せられない —— 表は「builder を呼んで出た鍵名」と
+rc-backend/test/risk-tier.test.mjs:17:  assert.equal(classifyRisk("rm -fr build").tier, "danger");
+rc-backend/test/jssrc.mjs:5: * `reqlog.test.mjs` の中の関数で、`view.mjs` の builder 本文を読む検査を書いた時に
+rc-backend/test/wire-vocabulary-agreement.test.mjs:4:// phase 2 を締める時、残る8件(誤り応答4本)も「封筒を builder へ切り出せば同じ手が効く」
+rc-backend/src/reqlog.mjs:141: * ★**生の User-Agent は決して記録しない。** あれには端末の型番と OS の版が入る。
+rc-backend/src/reqlog.mjs:150:export function clientClass(userAgent) {
+rc-backend/src/reqlog.mjs:169: * 製品アプリの build 番号だけを取り出す。**閉じた形しか返さない**(数字か `-`)。
+rc-backend/src/reqlog.mjs:172: *   実際 2026-08-30 に、配布口が build 89 を配り Tom の電話が 96 を動かし HEAD が 99、
+rc-backend/src/reqlog.mjs:176: * ★**生の User-Agent は決して記録しない**(上の §3-U と同じ線)。UA には端末の型番と
+rc-backend/src/reqlog.mjs:181: * ★頭に錨を打つ(`^RemoteMini/`)。`clientClass` が `rc-live-` を頭で外しているのと同じ理由で、
+rc-backend/src/reqlog.mjs:200:  const client = clientClass((req.headers || {})["user-agent"]);
+rc-backend/src/reqlog.mjs:203:  const build = appBuild((req.headers || {})["user-agent"]);
+rc-backend/src/reqlog.mjs:213:      `[rc-backend] req ${now().toISOString()} ${method} ${shape}` +
+rc-backend/src/reqlog.mjs:214:        `${sid ? ` sid=${sid}` : ""} route=${st.route || "-"} client=${client} build=${build} code=${code} reason=${reason} ms=${Date.now() - t0}`,
+rc-backend/test/seed-digest-recipe.test.mjs:5:// `ios/tools/build.sh` は焼く時に `Info.plist` へ URL と鍵を刻み、その指紋を1行出す:
+rc-backend/test/seed-digest-recipe.test.mjs:11:// ★一致は**設計上の願い**であって、これまで誰も測っていなかった。build.sh の
+rc-backend/test/seed-digest-recipe.test.mjs:20://   - ⑪ の期待値を壊れた側へ書き換える → 此の検査が赤(build.sh は古い値を出す)
+rc-backend/test/seed-digest-recipe.test.mjs:21://   - build.sh の計算が壊れる   → 此の検査が赤
+rc-backend/test/seed-digest-recipe.test.mjs:24:// 走らせているのは build.sh の python 断片**そのもののバイト**で、build.sh 全体では
+rc-backend/test/seed-digest-recipe.test.mjs:35:const BUILD = "ios/tools/build.sh";
+rc-backend/test/seed-digest-recipe.test.mjs:50: * build.sh から、刻んで読み戻して指紋を出す python 断片を**そのまま**切り出す。
+rc-backend/test/seed-digest-recipe.test.mjs:53: * ★終端から探す。build.sh には python の断片が複数在り(机の名前を取り出す方が先)、
+rc-backend/test/seed-digest-recipe.test.mjs:85:    assert.ok(py, "build.sh から python 断片を切り出せない(綴りが動いた)");
+rc-backend/test/seed-digest-recipe.test.mjs:94:        "build.sh の指紋が Swift 側の契約値と違う(片側だけ直った日)");
+rc-backend/test/no-linerefs.test.mjs:71: * ★消えた項を赤にする**逆向きは撃っていない**。`build` は綺麗な複製には存在しないのが
+rc-backend/test/no-linerefs.test.mjs:90:    ["build", "xcodebuild の出力"],
+rc-backend/test/wire-key-agreement.test.mjs:14://   `src/view.mjs` の builder は export されていて単体から呼べる。側B(電話)は
+rc-backend/test/wire-key-agreement.test.mjs:20://   一度も出ない」。だから builder の原文からも鍵位置の名前を拾い、実行で出た
+rc-backend/test/wire-key-agreement.test.mjs:46:import { buildListing, unreadableRow } from "../src/sessions.mjs";
+rc-backend/test/wire-key-agreement.test.mjs:64:// --- 側A: サーバの builder を実際に呼ぶ ---------------------------------------
+rc-backend/test/wire-key-agreement.test.mjs:92:  ...buildListing(LISTING_ENTRIES),
+rc-backend/test/wire-key-agreement.test.mjs:216:  buildListing: [[LISTING_ENTRIES], [[]]],
+rc-backend/test/wire-key-agreement.test.mjs:244:  // 枝が1本しか無い唯一の builder。分岐が無い(`ok` は定数、残り3つは受けた値をそのまま)
+rc-backend/test/wire-key-agreement.test.mjs:289:  buildListing: ["sessions", "src/sessions.mjs", ".map((e) => ("],
+rc-backend/test/wire-key-agreement.test.mjs:327:/** 物か、物の配列かを、鍵を持つ物の並びに均す。返り値が「行の並び」の builder が居るので要る。 */
+rc-backend/test/wire-key-agreement.test.mjs:377:/** builder 群を `at` の位置で呼んで、出た鍵名の和を返す。 */
+rc-backend/test/wire-key-agreement.test.mjs:384:/** builder 1本が出す**葉名**の全部(入れ子の中も含む)。②で使う。 */
+rc-backend/test/wire-key-agreement.test.mjs:522: * `swift` の鍵名 = `builders` を `at` の位置で呼んで出た鍵名。
+rc-backend/test/wire-key-agreement.test.mjs:533:  { swift: "RouteLabel", builders: ["routeLabel"], at: "" },
+rc-backend/test/wire-key-agreement.test.mjs:537:  { swift: "DigestEnvelope", builders: ["digestBody"], at: "" },
+rc-backend/test/wire-key-agreement.test.mjs:538:  { swift: "DigestEnvelope.Digest", builders: ["digestBody"], at: "digest",
+rc-backend/test/wire-key-agreement.test.mjs:543:  { swift: "DigestEnvelope.Digest.Window", builders: ["digestBody"], at: "digest.window",
+rc-backend/test/wire-key-agreement.test.mjs:546:  { swift: "DigestEnvelope.Digest.Counts", builders: ["digestBody"], at: "digest.counts" },
+rc-backend/test/wire-key-agreement.test.mjs:547:  { swift: "DigestEnvelope.Action", builders: ["digestBody"], at: "action" },
+rc-backend/test/wire-key-agreement.test.mjs:548:  { swift: "ChoiceView", builders: ["choiceView"], at: "" },
+rc-backend/test/wire-key-agreement.test.mjs:549:  { swift: "ChoiceOption", builders: ["choiceView"], at: "options[]" },
+rc-backend/test/wire-key-agreement.test.mjs:550:  { swift: "ChoiceButton", builders: ["choiceView"], at: "buttons[]" },
+rc-backend/test/wire-key-agreement.test.mjs:552:  { swift: "ChoiceRisk", builders: ["choiceView"], at: "risk" },
+rc-backend/test/wire-key-agreement.test.mjs:555:    swift: "AttachClient.Envelope", builders: ["attachBody"], at: "",
+rc-backend/test/wire-key-agreement.test.mjs:561:  { swift: "ChoiceRiskSignal", builders: ["choiceView"], at: "risk.signals[]" },
+rc-backend/test/wire-key-agreement.test.mjs:562:  { swift: "SessionsResponse.PaneFault.Display", builders: ["paneFaultView"], at: "" },
+rc-backend/test/wire-key-agreement.test.mjs:563:  { swift: "ResultDisplay", builders: ["sendResult", "interruptResult", "choiceResult", "clearQueueResult"], at: "" },
+rc-backend/test/wire-key-agreement.test.mjs:566:    swift: "SessionsResponse", builders: ["sessionsBody"], at: "",
+rc-backend/test/wire-key-agreement.test.mjs:571:  { swift: "SessionsResponse.OuterDisplay", builders: ["sessionsBody"], at: "display" },
+rc-backend/test/wire-key-agreement.test.mjs:574:  { swift: "SessionRow.Machine", builders: ["sessionRow"], at: "machine" },
+rc-backend/test/wire-key-agreement.test.mjs:575:  { swift: "SessionsResponse.PaneFault", builders: ["sessionsBody"], at: "paneFault" },
+rc-backend/test/wire-key-agreement.test.mjs:581:    builders: ["buildListing", "registryOnlySessions", "unreadableRow", "sessionRow"], at: "",
+rc-backend/test/wire-key-agreement.test.mjs:586:  { swift: "SessionRow.RowDisplay", builders: ["sessionRow"], at: "display" },
+rc-backend/test/wire-key-agreement.test.mjs:592:    swift: "PollResponse", builders: ["pollBodyTmux", "pollBodyWorker"], at: "",
+rc-backend/test/wire-key-agreement.test.mjs:597:  { swift: "PollDisplay", builders: ["pollBodyTmux"], at: "display" },
+rc-backend/test/wire-key-agreement.test.mjs:600:    swift: "MessageItem", builders: ["messageItem"], at: "",
+rc-backend/test/wire-key-agreement.test.mjs:607:    swift: "GapItem", builders: ["gapItem"], at: "",
+rc-backend/test/wire-key-agreement.test.mjs:613:  { swift: "GapItem.DisplayBox", builders: ["gapItem"], at: "display" },
+rc-backend/test/wire-key-agreement.test.mjs:614:  { swift: "HistoryResponse", builders: ["historyBody"], at: "" },
+rc-backend/test/wire-key-agreement.test.mjs:615:  { swift: "HistoryEntry", builders: ["withWho"], at: "" },
+rc-backend/test/wire-key-agreement.test.mjs:616:  { swift: "HistoryEntry.EntryDisplay", builders: ["withWho"], at: "display" },
+rc-backend/test/wire-key-agreement.test.mjs:621:  { swift: "HealthzClient.Wire", builders: ["healthzBody"], at: "" },
+rc-backend/test/wire-key-agreement.test.mjs:629:    swift: "AccountClient.Wire", builders: ["accountBody"], at: "",
+rc-backend/test/wire-key-agreement.test.mjs:641:  { swift: "AccountClient.Wire.Row", builders: ["accountRow"], at: "" },
+rc-backend/test/wire-key-agreement.test.mjs:642:  { swift: "AccountClient.Wire.Row.Usage", builders: ["accountUsage"], at: "" },
+rc-backend/test/wire-key-agreement.test.mjs:643:  { swift: "AccountClient.Wire.Row.RowDisplay", builders: ["accountRow"], at: "display" },
+rc-backend/test/wire-key-agreement.test.mjs:644:  { swift: "AccountClient.Wire.Display", builders: ["accountBody"], at: "display" },
+rc-backend/test/wire-key-agreement.test.mjs:678:    + "同じ2鍵(`reason` / `code`)を複数のルートが別々に出す。1つの builder に"
+rc-backend/test/wire-key-agreement.test.mjs:681:    + "archive 分岐が `json(res, 200, { archived })` を直に書く(builder ではない)。"
+rc-backend/test/wire-key-agreement.test.mjs:689:    + "title 分岐が `json(res, 200, { title })` を直に書く(builder ではない)。"
+rc-backend/test/wire-key-agreement.test.mjs:704:  RecoveryCode: "誤り本文の `code` だけを読む小さな型。builder が作る物ではない。"
+rc-backend/test/wire-key-agreement.test.mjs:712:    + "系統Bの builder ではない。★片側が動いた時に赤を出すのは `test/view.test.mjs` の "
+rc-backend/test/wire-key-agreement.test.mjs:716:    + "`json(res, N, { error: ... })` を `src/server.mjs` の中で直に組む(builder では無い)。"
+rc-backend/test/wire-key-agreement.test.mjs:742:test("側A: builder は全部呼べて、どれも鍵を1つ以上出す(空の和を一致と読ませない)", () => {
+rc-backend/test/wire-key-agreement.test.mjs:748:    const keys = emittedKeys(p.builders, p.at);
+rc-backend/test/wire-key-agreement.test.mjs:749:    assert.ok(keys.size > 0, `${p.swift} に当たる ${p.builders.join("/")}(${p.at || "直下"})が空`);
+rc-backend/test/wire-key-agreement.test.mjs:755:test("側A: builder の原文に在る鍵位置の名前は、実行で全部出ている(狭い入力で緑にしない)", () => {
+rc-backend/test/wire-key-agreement.test.mjs:799:    const server = emittedKeys(p.builders, p.at);
+rc-backend/test/wire-key-agreement.test.mjs:838:  const used = new Set(PAIRS.flatMap((p) => p.builders));
+rc-backend/test/wire-key-agreement.test.mjs:840:  assert.deepEqual(idle, [], "CASES に在るのにどの組でも使われていない builder(測ったつもりの死に枝)");
+rc-backend/test/wire-key-agreement.test.mjs:843:// --- ⑦ 切り出した builder を、本番のハンドラが本当に通っている --------------------
+rc-backend/test/wire-key-agreement.test.mjs:847: * 上の照合は**全部飾りになる**(検査は builder を測り、線に出るのは別物)。
+rc-backend/test/wire-key-agreement.test.mjs:850:test("ハンドラは切り出した builder を通って封筒を組んでいる(直書きへ戻っていない)", () => {
+rc-backend/test/sessions.test.mjs:8:  buildListing,
+rc-backend/test/sessions.test.mjs:61:test("buildListing: titles 台帳の明示名が行の title に乗る", () => {
+rc-backend/test/sessions.test.mjs:65:  assert.equal(buildListing(entries, { a: "俺の名前" })[0].title, "俺の名前");
+rc-backend/test/sessions.test.mjs:66:  assert.equal(buildListing(entries)[0].title, "AI題"); // 台帳なしは従来どおり
+rc-backend/test/sessions.test.mjs:75:  const list = buildListing(entries);
+rc-backend/test/ota-freshness-controls.sh:129:head_num="$(bash "$HERE/../ios/tools/build.sh" --print-build-num 2>/dev/null | tr -d '[:space:]')"
+rc-backend/test/danger-confirm.test.mjs:19:  const v = choiceView(screenOf(["Claude requests permission to run:", "  rm -rf ./build"], "d1"));
+rc-backend/test/danger-confirm.test.mjs:46:    "rm -rf ./build",
+rc-backend/test/remote-mini-root-controls.sh:530:old = '''    local req raw
+rc-backend/test/mutation-recovery-copy.test.mjs:30://   dod-sprint-6 側は 13 変異 x xcodebuild の 27 分物で、書き換えたら丸ごと回して
+rc-backend/test/app-usage-census-controls.sh:33:    # ★`build=` を含める(2026-08-30)。本番の行は 2852f6c 以降この形。
+rc-backend/test/app-usage-census-controls.sh:35:    printf '[rc-backend] req %s GET /api/sessions route=x client=%s build=- code=200 reason=- ms=1\n' "$1" "$2"
+rc-backend/test/app-usage-census-controls.sh:142:rowb() {  # rowb <ISO日時> <client> <build>
+rc-backend/test/app-usage-census-controls.sh:143:    printf '[rc-backend] req %s GET /api/sessions route=x client=%s build=%s code=200 reason=- ms=1\n' "$1" "$2" "$3"
+rc-backend/test/app-usage-census-controls.sh:164:# ★`build=` が無い古い行を捨てない。「版が判らない要求が在った」事自体が情報。
+rc-backend/test/app-usage-census-controls.sh:168:    ok "C12 build= が無い行はハイフンとして残す(捨てない)"
+rc-backend/test/e2e-local.mjs:2363:  const reqLines = svlog.split("\n").filter((l) => l.includes("[rc-backend] req "));
+rc-backend/test/e2e-local.mjs:2364:  check("★ログに 1リクエスト1行が残っている", reqLines.length >= 10, `req 行=${reqLines.length}`);
+rc-backend/test/e2e-local.mjs:2366:    // ★`build=` は 2026-08-30 に足した欄。行を末尾まで固定したまま新しい形へ張り直す ——
+rc-backend/test/e2e-local.mjs:2370:    reqLines.some((l) => / POST \/api\/sessions\/:id\/messages sid=\S+ route=\S+ client=\S+ build=\S+ code=\d+ reason=\S+ ms=\d+$/.test(l)),
+rc-backend/test/e2e-local.mjs:2392:    !/req .*(scope=registered|limit=)/.test(svlog), "?以降がログに複製されている");
+rc-backend/test/e2e-local.mjs:2406:      const k = l.replace(/^.*req \S+ /, "").replace(/sid=\S+ /, "").replace(/ ms=\d+$/, "");
+rc-backend/test/fixture-reader-declared.test.mjs:25:// 取らなかった道: 宣言を ios/Sources/** の様な glob へ広げる。対照は xcodebuild を
+rc-backend/test/reqlog.test.mjs:38:  const req = ua === undefined ? { url, method } : { url, method, headers: { "user-agent": ua } };
+rc-backend/test/reqlog.test.mjs:61:  // ★`build=` は 2026-08-30 に足した欄。行を末尾まで固定したまま**新しい形に対して**厳密に保つ
+rc-backend/test/reqlog.test.mjs:63:  assert.match(l[0], /^\[rc-backend\] req 2026-08-03T12:00:00\.000Z GET \/api\/sessions route=- client=none build=- code=200 reason=- ms=\d+$/);
+rc-backend/test/reqlog.test.mjs:86:  assert.match(l[0], / POST \/api\/sessions\/:id\/messages sid=0a1b2c3d route=tmux client=none build=- code=202 /);
+rc-backend/test/reqlog.test.mjs:232:  // ★`build` は 2026-08-30 に同じ手続きで足した。此の番人は正しく私を止めた ——
+rc-backend/test/reqlog.test.mjs:237:  assert.deepEqual(fields, ["build", "client", "code", "ms", "reason", "route", "sid"],
+rc-backend/test/reqlog.test.mjs:249: * ★同時に**端末の指紋を残さない**事も測る。生の User-Agent には型番と OS の版が
+rc-backend/test/reqlog.test.mjs:282:    "生の User-Agent が行に漏れている(端末の型番と OS の版が記録に残る)");
+rc-backend/test/reqlog.test.mjs:371:// ── build 番号(2026-08-30)───────────────────────────────────────────────────
+rc-backend/test/reqlog.test.mjs:372:// ★測る中心は「番号が出るか」ではなく **生の User-Agent が行に出ないか**。
+rc-backend/test/reqlog.test.mjs:373://   前者だけなら `build=${ua}` と書いても通る。
+rc-backend/test/reqlog.test.mjs:374:test("★製品の名乗りから build 番号だけを取り、生の User-Agent は行に出さない", () => {
+rc-backend/test/reqlog.test.mjs:378:    { url: "/api/sessions", method: "GET", headers: { "user-agent": "RemoteMini/96 CFNetwork/3860.600.21 Darwin/25.5.0" } },
+rc-backend/test/reqlog.test.mjs:383:  assert.match(lines[0], / build=96 /, "製品の build 番号が記録されていない");
+rc-backend/test/reqlog.test.mjs:390:test("★製品でない名乗りは build=- に落ちる(検査道具・道具・名乗り無し)", () => {
+rc-backend/test/reqlog.test.mjs:395:      { url: "/api/sessions", method: "GET", headers: ua ? { "user-agent": ua } : {} },
+rc-backend/test/reqlog.test.mjs:400:    assert.match(lines[0], / build=- /, `製品でない名乗りが番号を名乗った: ${ua || "(無し)"}`);
+rc-backend/test/scrub.test.mjs:140:  const build = (id) => Buffer.concat([
+rc-backend/test/scrub.test.mjs:144:  assert.ok(containsAscii(scrubJpeg(build("ICC_PROFILE\0")).out, "payloadbytes"), "ICC を落とした");
+rc-backend/test/scrub.test.mjs:145:  assert.ok(!containsAscii(scrubJpeg(build("MPF\0")).out, "payloadbytes"), "MPF を残した");
+rc-backend/test/scrub.test.mjs:146:  assert.ok(!containsAscii(scrubJpeg(build("????????????")).out, "payloadbytes"),
+/**
+ * 常設のログに **1リクエスト1行**(DESIGN §3-U)。
+ *
+ * ★なぜ足すか: 2026-08-03 時点の `~/Library/Logs/rc-backend/rc-backend.log`(7.4 KB)は
+ *   **起動行しか無い**。送信も割り込みも経路の分岐も拒否も、1件も残っていない。
+ *   §3-W はまさにこれで刺さった —— ワーカー経路が `202 accepted` を返した直後に死に、
+ *   唯一の診断行は捨てられ、壊れたまま出荷されて**誰も気づけなかった**。
+ *   ログが無い事は不便ではなく、**欠陥が発見されない条件そのもの**。
+ *
+ * ★★書かない物(こちらが本体。足す物より厳しく決める):
+ *   - **本文 / プロンプト / 会話の中身** —— 電話に見える物をログへ複製しない。
+ *   - **生のパス** —— パスは外から来る任意の文字列。表に在る形に当たった時だけその形を出し、
+ *     当たらなければ `(other)`。「知らない物は出さない」= fail-closed。
+ *   - **問い合わせ文字列**(`?…`)—— 丸ごと捨てる。
+ *   - **自由文の理由** —— `reason` は語彙(小文字+数字+ハイフン、24字まで)に当たった物だけ。
+ *     当たらなければ `-`。
+ *   - **§3-W が足す stderr の尾**(DESIGN §2.21-b)—— 画面に出るだけの物を disk に残さない。
+ *   - `sessionId` は**先頭8文字だけ**。
+ *
+ * ★`src/redact.mjs` との違い(混同すると片方の設計が壊れる):
+ *   redact は**拒否一覧**。自由書式の stderr を Tom の電話へ出す為の網で、知っている形しか
+ *   捕まえられない事を明記した上で緩い側に倒してある。ここは逆に**許可一覧**にできる ——
+ *   出す欄も語彙も此方が決める側だから。自由書式を通す口を1つも作らないのが要点で、
+ *   だから「読めない値は `-` にする」であって「伏せ字にして出す」ではない。
+ */
+
+/**
+ * 会話に紐づく道。`:id` は伏せ、動作名だけ残す。
+ *
+ * ★**server.mjs の振り分けもこれを使う**(写しを持たない)。最初は各々が同じ正規表現を
+ *   持つ形にしかけたが、それは此処で何度も踏んだ型 —— 道を1本足した時に片方だけが古くなり、
+ *   ログは新しい道を `(other)` と書き続ける。しかも**ログが静かなだけ**なので誰も気づかない。
+ *   一覧は1箇所に集める。置き場を此処にしたのは「パスの型」を決める責任が此処だから。
+ */
+// ★action は**白名簿**(2026-08-16 に title / archive / return-request を追加)。
+// 追加を忘れると handler が在っても**到達不能**になる — 実際に其の状態で3本を
+// 出荷しかけ、Codex の敵対レビューが掴んだ(静的検査は字面の存在しか見ないので素通り)。
+// 検体 = test/title-route.test.mjs の「到達できる」検査(regex に当てて実測する)。
+export const SESSION_ROUTE_RE = /^\/api\/sessions\/([^/]+)\/(history|messages|stream|poll|interrupt|status|choice|queue|title|archive|return-request|digest|attach)$/;
+
+/**
+ * 語彙 = 小文字で始まり、小文字/数字/ハイフン/下線だけ、24字まで。
+ *
+ * ★下線を許すのは飾りではない: 実物の理由は `cwd_unknown` / `cwd_missing` / `cwd_untrusted` /
+ *   `spawn_failed`(trust.mjs / server.mjs)と `pane-gone` / `composer-mismatch`(blocked.mjs)が
+ *   **綴りを分けて**混在している。下線を弾いた初版は、e2e の実物のログで
+ *   `route=worker code=409 reason=-` を出した —— 拒否の理由が定数として在るのに欄が空、
+ *   つまり**一番読みたい行だけが黙る**形。緩めても網は緩まない(空白も `:` も依然弾く)。
+ *   出す時はハイフンに寄せる。ログの中で同じ物が2通りに綴られると grep が二度要る。
+ */
+const TOKEN = /^[a-z][a-z0-9_-]{0,23}$/;
+
+/** 記録の置き場。`res` に生の名前で生やすと将来 node 側の property と衝突しうる。 */
+export const LOG = Symbol("rc-reqlog");
+
+/**
+ * パスの**型**。表に在る物はそのまま、会話の道は `:id` に畳む、それ以外は `(other)`。
+ * @param {string} path 生のパス(`?` より前)
+ * @param {Set<string>} [known] 表に在るパス(server.mjs が配る表 + 固定の api から作る)
+ */
+export function pathShape(path, known) {
+  if (known && known.has(path)) return path;
+  const m = SESSION_ROUTE_RE.exec(path);
+  if (m) return `/api/sessions/:id/${m[2]}`;
+  return "(other)";
+}
+
+/** 会話の道なら sessionId の**先頭8文字**。それ以外は空。 */
+export function sessionOf(path) {
+  const m = SESSION_ROUTE_RE.exec(path);
+  return m ? m[1].slice(0, 8) : "";
+}
+
+/** 語彙に当たれば返す(下線はハイフンに寄せる)。当たらなければ空(= 行では `-`)。 */
+export function token(v) {
+  if (typeof v !== "string") return "";
+  const s = v.trim().toLowerCase();
+  return TOKEN.test(s) ? s.replace(/_/g, "-") : "";
+}
+
+/**
+ * `error` の**定数**だけを語彙へ寄せる。`bad body: <構文解析器の言い分>` の様に
+ * 外来の文字が混じった物は `:` や `"` で弾かれて空になる —— それが正しい。
+ * 40字を超える物も空。長い error は説明であって語彙ではない。
+ */
+export function errSlug(v) {
+  if (typeof v !== "string" || v.length > 40) return "";
+  if (!/^[A-Za-z0-9 _-]+$/.test(v)) return "";
+  const s = v.trim().toLowerCase().replace(/[ _]+/g, "-");
+  return TOKEN.test(s) ? s : "";
+}
+
+/** method も外から来る。表に在る形だけ出す。 */
+function methodOf(m) {
+  return /^[A-Z]{3,10}$/.test(String(m || "")) ? String(m) : "(other)";
+}
+
+/**
+ * 枝が**自分で**名乗る。応答の中身から拾えない物(経路の判定が本文に出ない場合)と、
+ * 拾わせたくない物(500 の生の例外文)の為に在る。先に名乗った方が勝つ。
+ */
+export function markResult(res, fields) {
+  const st = res && res[LOG];
+  if (!st || st.emitted || !fields) return;
+  if (!st.route) st.route = token(fields.route);
+  if (!st.reason) st.reason = token(fields.reason);
+}
+
+/**
+ * `json()` から呼ぶ。本文の `route` / `reason` / `error` は**この repo の定数**なので
+ * 語彙に当たる。当たらない物(自由文)は落ちて `-` になる = 中身が漏れない。
+ */
+export function noteBody(res, obj) {
+  const st = res && res[LOG];
+  if (!st || st.emitted || !obj || typeof obj !== "object") return;
+  if (!st.route) st.route = token(obj.route);
+  if (!st.reason) st.reason = token(obj.reason) || errSlug(obj.error);
+}
+
+/**
+ * 1リクエスト1行を仕掛ける。`createServer` の handler の**最初**で呼ぶ(try の外)。
+ *
+ * ★行が出る合図は `writeHead`。`finish` ではない —— SSE は何分も開いたままなので、
+ *   終わりで書くと「電話が繋がった」が**繋がっている間ずっとログに出ない**。
+ *   その代わり、頭を書く前に落ちた要求(電話が切った等)は `close` で拾って `aborted` にする。
+ *   ★`writeHead` の時点で全部の欄が決まっている事が要る。ストリームの経路判定を
+ *   `writeHead` の**前**へ動かしたのはこの為(server.mjs の `action === "stream"`)。
+ *
+ * @param {import("node:http").IncomingMessage} req
+ * @param {import("node:http").ServerResponse} res
+ * @param {{knownPaths?: Set<string>, out?: (line: string) => void, now?: () => Date}} [opt]
+ */
+/**
+ * 要求を出した**種類**だけを返す(2026-08-27 新設)。閉じた4語しか返さない。
+ *
+ * ★なぜ要るか(実測 2026-08-27): この記録は「誰が叩いたか」を一切残していなかった。
+ *   その為「Tom はこのアプリを開いたのか」に答えるのに、私は自分の作業記録との
+ *   時刻突き合わせを 6 回やる羽目になった —— しかも **Simulator と実機を最後まで
+ *   区別できなかった**。答えが要る問いに、記録が答えられない状態だった。
+ *
+ * ★**生の User-Agent は決して記録しない。** あれには端末の型番と OS の版が入る。
+ *   §3-U の「行に中身が乗らない」は、本文やパスだけでなく端末の指紋にも掛かる。
+ *   だから分類器は**閉じた語**を返し、呼び出し側は返り値しか書かない。
+ *
+ *   app   iOS の URLSession(実機でも Simulator でも CFNetwork を名乗る)
+ *   tool  curl / node など —— この機体の常駐(digest-notify・health-observer)がこれ
+ *   none  名乗りが無い
+ *   other 上のどれでもない
+ */
+export function clientClass(userAgent) {
+  const ua = String(userAgent || "");
+  if (!ua) return "none";
+  // ★検査道具を **app より先に**外す(2026-08-27)。
+  //   `ios/tools/live-*-check.sh` が建てる殻は**電話の製品 Swift をそのまま**使うので、
+  //   URLSession が `CFNetwork/… Darwin/…` を名乗る = 下の分岐で `app` に落ちる。
+  //   それを許すと「私がビルドしていない時間帯に app が出たら、それが Tom」という
+  //   **この計器の唯一の読み方が壊れる** —— 実際に今日壊した(自分の検査 20 件が
+  //   `client=app` として記録され、Tom が使ったのかを区別できなくなった)。
+  //   分ける鍵は UA の頭に出る**実行ファイル名**(実測: `rc-live-poll (unknown version)
+  //   CFNetwork/3860.600.21 Darwin/25.5.0`)。製品は `RemoteMini/<番号>` を名乗るので衝突しない。
+  if (/^rc-live-/i.test(ua)) return "probe";
+  // ★app を先に見る。curl は Darwin を名乗らないので取り違えない。
+  if (/CFNetwork|Darwin/i.test(ua)) return "app";
+  if (/curl|wget|node|undici|python|libwww/i.test(ua)) return "tool";
+  return "other";
+}
+
+/**
+ * 製品アプリの build 番号だけを取り出す。**閉じた形しか返さない**(数字か `-`)。
+ *
+ * ★なぜ要るか(2026-08-30): `client=app` は「電話から来た」までしか言わない。
+ *   実際 2026-08-30 に、配布口が build 89 を配り Tom の電話が 96 を動かし HEAD が 99、
+ *   という**3つの版が同時に存在する**状態を2日間誰も気付かなかった。
+ *   記録に版が無いと、後から「その要求はどの版から来たか」を誰も答えられない。
+ *
+ * ★**生の User-Agent は決して記録しない**(上の §3-U と同じ線)。UA には端末の型番と
+ *   OS の版が入る。だから此処は**数字だけ**を通す —— 返り値が閉じているので、
+ *   呼び出し側がどう書いても UA の断片が行に出る道が無い。
+ *   長さも縛る(9 桁まで): 「数字なら何でも通す」だと、細工した UA で行を膨らませられる。
+ *
+ * ★頭に錨を打つ(`^RemoteMini/`)。`clientClass` が `rc-live-` を頭で外しているのと同じ理由で、
+ *   URLSession の名乗りは**実行ファイル名から始まる**。検査用の殻(`rc-live-poll …`)や
+ *   `curl/8.4.0` は此処に当たらないので `-` に落ちる。
+ */
+export function appBuild(userAgent) {
+  const m = /^RemoteMini\/(\d{1,9})(?:\s|$)/.exec(String(userAgent || ""));
+  return m ? m[1] : "-";
+}
+
+export function attachRequestLog(req, res, opt = {}) {
+  const out = opt.out || ((line) => console.log(line));
+  const now = opt.now || (() => new Date());
+  const t0 = Date.now();
+  // 生のパスはここで**型に畳んでから**しか使わない。`?` から後ろは見ない。
+  const rawPath = String(req.url || "").split("?")[0];
+  const shape = pathShape(rawPath, opt.knownPaths);
+  const sid = sessionOf(rawPath);
+  const method = methodOf(req.method);
+  // ★分類は要求ごとに1回。生の名乗りはこの行から先へ**出さない**。
+  const client = clientClass((req.headers || {})["user-agent"]);
+  // ★同じ header を2回読むが、**どちらも閉じた語しか返さない**ので生の名乗りは
+  //   此の2行から先へ出ない。
+  const build = appBuild((req.headers || {})["user-agent"]);
+
+  const st = { route: "", reason: "", emitted: false };
+  res[LOG] = st;
+
+  const emit = (code, why) => {
+    if (st.emitted) return;
+    st.emitted = true;
+    const reason = why || st.reason || "-";
+    out(
+      `[rc-backend] req ${now().toISOString()} ${method} ${shape}` +
+        `${sid ? ` sid=${sid}` : ""} route=${st.route || "-"} client=${client} build=${build} code=${code} reason=${reason} ms=${Date.now() - t0}`,
+    );
+  };
+
+  const orig = res.writeHead.bind(res);
+  res.writeHead = (code, ...rest) => {
+    const r = orig(code, ...rest);
+    emit(code);
+    return r;
+  };
+  // 頭を書く前に切れた = 応答を1つも返していない。`code=0` は「答えていない」の意。
+  res.on("close", () => emit(0, "aborted"));
+  return st;
+}
+WORKLOG.md:249:使用実績ゼロ」と判り取り下げた機能。**未実装のままが正しい記述**なので直さず、検査の方を絞った。
+WORKLOG.md:13624:## 2026-08-27 02:00-03:30 — 使用実績を初めて測った。ゼロだった
+WORKLOG.md:13654:- 読み方: **私がビルドしていない時間帯に `client=app` が出たら、それが Tom**。
+rc-backend/test/app-usage-census-controls.sh:2:# controls-for: tools/app-usage-census.sh
+rc-backend/test/app-usage-census-controls.sh:4:# app-usage-census.sh の**挙動**対照。
+rc-backend/test/app-usage-census-controls.sh:8:#   此の道具が在る理由がそれだから(H-3 の観測窓を、同じ日に据えた上限が消しに来る)。
+rc-backend/test/app-usage-census-controls.sh:17:#   C7 client=apple の様な語に巻き込まれない(語として当てている)
+rc-backend/test/app-usage-census-controls.sh:19:# 使い方: bash rc-backend/test/app-usage-census-controls.sh
+rc-backend/test/app-usage-census-controls.sh:24:SUT="$HERE/tools/app-usage-census.sh"
+rc-backend/test/app-usage-census-controls.sh:125:# ── C7 client=apple の様な語に巻き込まれない ──────────────────────────────
+rc-backend/test/app-usage-census-controls.sh:130:    ok "C7 client=apple を app と数えない(語として当てている)"
+rc-backend/test/app-usage-census-controls.sh:134:# ★H-3 の解除条件は「**起きている時間**に本物の機会が来た時に使うか」。日次の合計だけでは
+rc-backend/test/log-cap-controls.sh:211:    line="$(grep -m1 'app-usage-census.sh' "$PL" || true)"
+rc-backend/test/log-cap-controls.sh:214:    elif printf '%s' "$line" | awk '{ c = index($0, "app-usage-census.sh"); l = index($0, "log-cap-all.sh"); exit !(c > 0 && l > 0 && c < l) }'; then
+rc-backend/test/reqlog.test.mjs:255:  assert.match(phone[0], / client=app /, "iOS のアプリが機械と同じ顔で記録されている");
+rc-backend/test/reqlog.test.mjs:265:  //   検査を1回回すたびに `client=app` の行が増えていた。
+rc-backend/test/reqlog.test.mjs:272:  assert.match(probe[0], / client=probe /, "検査道具が app を名乗っている = Tom の使用実績を測れない");
+rc-backend/test/reqlog.test.mjs:273:  assert.match(phone[0], / client=app /, "本物のアプリまで probe に落ちた(分けすぎ)");
+rc-backend/test/reqlog.test.mjs:283:  assert.match(l[0], / client=app /, "分類だけは残っている事");
+rc-backend/tools/app-usage-census.sh:2:# app-usage-census.sh — 電話(client=app)からの要求を**日ごとに数えて積む**。
+rc-backend/tools/app-usage-census.sh:5:# CONTINUITY の H-3 は OPEN で、解除条件が「合成の通知を送らずに 3〜7 日の起きている時間に
+rc-backend/tools/app-usage-census.sh:7:# **人が思い出して grep する**事だけだった —— 木を全部 grep しても `client=app` を
+rc-backend/tools/app-usage-census.sh:25:#   bash rc-backend/tools/app-usage-census.sh
+rc-backend/tools/app-usage-census.sh:36:OUT="${RC_CENSUS_OUT:-$HOME/rc-census/app-usage.tsv}"
+rc-backend/tools/app-usage-census.sh:37:# ★時刻と版まで分けた副台帳(2026-08-30)。日次の合計だけだと H-3 の解除条件
+rc-backend/tools/app-usage-census.sh:46:    echo "app-usage-census: $LOG が無い = 測定不成立(0 件と読ませない)" >&2
+rc-backend/tools/app-usage-census.sh:50:mkdir -p "$(dirname "$OUT")" 2>/dev/null || { echo "app-usage-census: 置き場を作れない: $(dirname "$OUT")" >&2; exit 1; }
+rc-backend/tools/app-usage-census.sh:53:tmp="$(mktemp "$(dirname "$OUT")/.census.XXXXXX")" || { echo "app-usage-census: 一時 file を作れない" >&2; exit 1; }
+rc-backend/tools/app-usage-census.sh:58:# ★`client=app` を**語として**当てる。`client=apple` の様な将来の語に巻き込まれない為。
+rc-backend/tools/app-usage-census.sh:60:    /client=app([[:space:]]|$)/ {
+rc-backend/tools/app-usage-census.sh:79:mv -f "$tmp.new" "$OUT" || { echo "app-usage-census: 書けない: $OUT" >&2; exit 1; }
+rc-backend/tools/app-usage-census.sh:87:    /client=app([[:space:]]|$)/ {
+rc-backend/tools/app-usage-census.sh:110:mv -f "$dtmp.new" "$DETAIL_OUT" || { echo "app-usage-census: 副台帳を書けない: $DETAIL_OUT" >&2; /bin/rm -f "$dtmp"; exit 1; }
+rc-backend/tools/app-usage-census.sh:115:echo "app-usage-census: $days 日 / 述べ $total 件を $OUT に積んだ(時刻×版 $drows 行 = $DETAIL_OUT)"
+rc-backend/tools/run-controls.sh:971:    test/app-usage-census-controls.sh
+rc-backend/tools/run-controls.sh:972:                                     # ★2026-08-30。`client=app` の行を日ごとに数えて
+rc-backend/tools/run-controls.sh:973:                                     #   上限の外へ積む道具の対照。H-3 の解除条件が
+rc-backend/tools/com.fleet.rc-log-cap.plist:33:  ★**数えてから切る**(2026-08-30)。`app-usage-census.sh` を先に、`log-cap-all.sh` を後に
+rc-backend/tools/com.fleet.rc-log-cap.plist:34:    同じ job で回す。順序に意味が在る —— 数える元(`rc-backend.log` の client=app 行)を
+rc-backend/tools/com.fleet.rc-log-cap.plist:38:    ディスクを溢れさせる理由にならない)。census の置き場 `~/rc-census/` は
+rc-backend/tools/com.fleet.rc-log-cap.plist:65:    <string>/bin/bash /Users/athenas/rc-backend/tools/app-usage-census.sh; exec /bin/bash /Users/athenas/rc-backend/tools/log-cap-all.sh /Users/athenas/Library/Logs/rc-backend /Users/athenas/.rc-backend</string>
+
+exec
+/bin/zsh -lc "sed -n '1,280p' rc-backend/tools/log-cap-all.sh
+sed -n '1,280p' rc-backend/test/log-cap-controls.sh
+bash rc-backend/test/app-usage-census-controls.sh" in /Users/tomtim/Infra/mobile-work
+ succeeded in 428ms:
+PASS  C3 引き継ぎ節を外すと C2a が崩れる(変異で 2 が失われる = 対応する検査は本物)
+PASS  C3 max を外すと C2b が崩れる(変異で 2 が失われる = 対応する検査は本物)
+PASS  C4 同じ日が本当に増えたら伸びる(max が固まらない)
+PASS  C5 元 log が無ければ rc=2(0 件と読ませない)
+PASS  C6 既定の置き場は上限を掛けている dir の外($HOME/rc-census/app-usage.tsv)
+PASS  C7 client=apple を app と数えない(語として当てている)
+PASS  C9 日次の合計は形も値も変わらない(app 3 件 / client=tool は入らない)
+PASS  C10 時刻ごとに分かれる(05 時 2 件 / 14 時 1 件)
+PASS  C11 版が記録される
+PASS  C12 build= が無い行はハイフンとして残す(捨てない)
+PASS  C13 log から消えた時刻の行も副台帳に残る(積む機構に乗っている)
+
+APP-USAGE-CENSUS-CONTROLS: pass=14 fail=0
+
+exec
+/bin/zsh -lc "sed -n '1,260p' rc-backend/tools/log-size-cap.sh
+nl -ba rc-backend/tools/app-usage-census.sh | sed -n '34,130p'
+nl -ba rc-backend/src/reqlog.mjs | sed -n '132,224p'
+nl -ba rc-backend/test/app-usage-census-controls.sh | sed -n '130,220p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+#!/bin/bash
+# log-size-cap.sh — ログ1本を上限内に収める(root 不要・追記者を殺さない)。
+#
+# ── なぜ要るか(2026-08-30、Codex の指摘)──────────────────────────────────────
+# `rc-ota.log` は**認証を付けられない配布口**の記録で、tailnet に居れば誰でも 404 を連打でき、
+# URL も長くできる。回転が1つも無いので素直に伸びる。同じディスクに机の tmux 転写も載る。
+#
+# ★ただし**常用では溢れない**。実測(friday 2026-08-30):
+#     rc-backend.log 1,034,264 B / 起動から4日 = 約 260KB/日 ・ 空き 32Gi
+#   これは「今すぐ溢れる」対策ではなく、**暴走に上限を置く**物。
+#   `newsyslog` は `/etc/newsyslog.d/` に置くので root が要る(この環境では sudo が構造的に不可)。
+#
+# ── 形の選択(2回変えた。両方とも実測と外部の指摘で)────────────────────────────
+# (1) **mv 回転は採らない**。追記者は file を開いたままなので、mv すると fd が古い inode に
+#     残り、新しい file には1行も書かれない。実測: mv 後の新 file **0 B** / 旧 inode 7,488,895 B。
+# (2) **tail を同じ file へ書き戻すのも採らない**(初版はこれだった)。
+#     `cat "$tmp" > "$F"` は**追記 mode ではなく offset 0 から**書くので、書いている最中に
+#     追記された行を後続の write が**上書きし得る**。
+#     ★私の「fd が生きている」の実測は**追記が続く事**しか示しておらず、
+#       **行が失われない事は測っていなかった**(大きさが増えるのは上書きでも起きる)。
+#     採るのは Codex の助言どおり「**退避してから1回だけ空にする**」:
+#       末尾を**別 file**へ写す → `: > "$F"` を1回。
+#     残る損失は「写した後・空にする前」に入った行だけで、上書きは起きない。
+#
+# ★この上限が**押さえられない物**(正直に): 悪意ある連打。次の実行までの1時間に書ける量が
+#   そのまま上乗せされるので、実効の上限は「CAP + 1時間ぶん」。本当の対策は配布口側の
+#   認証か流量制限で、それは此の台本の役目ではない。
+#
+# 使い方:
+#   bash tools/log-size-cap.sh <file> [上限バイト]     # 既定 5MB
+#   退避先 = <file>.tail(1世代だけ。次に切る時に上書きされる)
+#
+# 終了コード: 0=上限内(切ったかは問わない) / 1=失敗 / 2=引数が不正
+set -uo pipefail
+
+F="${1:-}"
+CAP="${2:-5242880}"
+KEEP_FRAC="${LOG_CAP_KEEP_FRAC:-2}"   # 退避に残す量 = 上限の 1/KEEP_FRAC
+
+[ -n "$F" ] || { echo "usage: log-size-cap.sh <file> [bytes]"; exit 2; }
+[ -f "$F" ] || { echo "log-size-cap: $F が無い(何もしない)"; exit 0; }
+# ★symlink の判定は**大きさを測るより前**に置く(2026-08-30、対照 C12b が捕まえた)。
+#   `stat -f%z` は symlink を辿らないので、link 自身の小さな大きさが返り、
+#   `[ "$now" -le "$CAP" ] && exit 0` で**先に抜けてしまう**。
+#   結果は「切らなかった」で一見安全だが、理由が偶然で rc も 0 —— 呼んだ側は
+#   「上限内だった」と読む。安全に見える緑が一番たちが悪い。
+if [ -L "$F" ]; then
+    echo "log-size-cap: $F は symlink = 別の file を切りに行く恐れ。触らない" >&2; exit 1
+fi
+case "$CAP" in ''|*[!0-9]*) echo "log-size-cap: 上限が数値でない: $CAP"; exit 2 ;; esac
+[ "$CAP" -gt 1024 ] || { echo "log-size-cap: 上限が小さすぎる($CAP)"; exit 2; }
+
+size() { stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null; }
+
+now="$(size "$F")"
+case "$now" in ''|*[!0-9]*) echo "log-size-cap: 大きさを測れない: $F"; exit 1 ;; esac
+[ "$now" -le "$CAP" ] && exit 0
+
+keep=$((CAP / KEEP_FRAC))
+snap="$F.tail"
+
+# ★★symlink 経由の上書きを拒む(2026-08-30、Codex が**実演して**見せた)。
+#   `>` は symlink を辿るので、予測できる名前 `<file>.tail.new` に細工を置かれると
+#   その先が上書きされる。Codex の実測: `live.log.tail.new -> api.key` を置くと
+#   **api.key が 11 B から 1024 B に上書きされ、しかも exit 0**。
+#   ★私はこの直前に掃引を `~/.rc-backend` へ向けた —— **api.key が在る dir**。
+#     「大きい file の在る場所ではなく暴走の起きる場所へ」は正しかったが、
+#     其処は同時に**壊されて困る物が在る場所**でもあった。片方だけ見ていた。
+#   入口(元 log)と出口(退避)の両方で、symlink と hardlink を拒む。
+for side in "$snap" "$snap.new"; do
+    if [ -L "$side" ]; then
+        echo "log-size-cap: 退避先 $side が symlink = 別の file を上書きする経路。触らない" >&2
+        exit 1
+    fi
+    if [ -e "$side" ]; then
+        links="$(stat -f%l "$side" 2>/dev/null || stat -c%h "$side" 2>/dev/null)"
+        case "$links" in ''|*[!0-9]*) links=1 ;; esac
+        if [ "$links" -gt 1 ]; then
+            echo "log-size-cap: 退避先 $side が hardlink($links 本)= 別の名前も同じ中身を指す。触らない" >&2
+            exit 1
+        fi
+    fi
+done
+
+# ★退避先の権限を**元 log に合わせる**(2026-08-30、自分の差分を読み直して見つけた)。
+#   `>` は umask 任せなので、既定の 022 だと **600 の log の中身が 644 の file に写る**。
+#   実測: 元 `-rw-------` → 退避 `-rw-r--r--`。dir が 700 なので実害は小さいが、
+#   `rc-ota.log` の権限を 600 に揃えた判断(2026-08-30)と矛盾する。
+#   umask ではなく元 file の mode を写す —— log ごとに違っても追随する。
+mode="$(stat -f%Lp "$F" 2>/dev/null || stat -c%a "$F" 2>/dev/null)"
+case "$mode" in [0-7][0-7][0-7]) ;; *) mode=600 ;; esac
+umask 077
+
+# 1) 末尾を**別 file** へ退避(ここでは元 file を1バイトも触らない)。
+# ★予測できる名前へ `>` しない。同じ dir に mktemp で作って最後に rename する ——
+#   mktemp は存在しない名前を原子的に作るので、先回りして symlink を置く手が効かない。
+tmpsnap="$(mktemp "$(dirname "$F")/.log-size-cap.XXXXXX" 2>/dev/null)" || {
+    echo "log-size-cap: 一時 file を作れない: $(dirname "$F")" >&2; exit 1; }
+cleanup_tmp() { [ -n "${tmpsnap:-}" ] && /bin/rm -f "$tmpsnap" "$tmpsnap.body" 2>/dev/null; }
+trap cleanup_tmp EXIT
+if ! tail -c "$keep" "$F" > "$tmpsnap" 2>/dev/null; then
+    echo "log-size-cap: 末尾を退避できない: $F" >&2; exit 1
+fi
+# 先頭の欠けた行は落とす。**ただし、それで殆ど全部消えるなら落とさない** ——
+# 2026-08-30 に実測で踏んだ: 検体が巨大な1行だったので `sed 1d` が 500KB を **81 B** にした。
+# task の verifier は「上限以下かつ 0 でない」しか見ないので **PASS のまま**通った。
+dropped="$(sed '1d' "$tmpsnap" | wc -c | tr -d ' ')"
+whole="$(wc -c < "$tmpsnap" | tr -d ' ')"
+{ printf '[log-size-cap] %s に %s B から切り詰め(上限 %s B。以降は元の file に続く)\n' \
+      "$(date '+%Y-%m-%d %H:%M:%S')" "$now" "$CAP"
+  if [ "$whole" -gt 0 ] && [ "$((dropped * 2))" -lt "$whole" ]; then
+      cat "$tmpsnap"         # 1行が長すぎる: 途中から始まるが、捨てるよりまし
+  else
+      sed '1d' "$tmpsnap"
+  fi
+} > "$tmpsnap.body" 2>/dev/null || { echo "log-size-cap: 退避を書けない" >&2; exit 1; }
+chmod "$mode" "$tmpsnap.body" 2>/dev/null || echo "log-size-cap: 退避の権限を $mode に出来ない" >&2
+# ★rename で置く。`mv` は宛先が symlink でも**その symlink を置き換える**ので、
+#   辿って別の file を壊す道が無い。
+mv -f "$tmpsnap.body" "$snap" || { echo "log-size-cap: 退避を置けない: $snap" >&2; exit 1; }
+
+# 2) 元 file を**1回だけ**空にする。offset 0 から書き戻さないので、追記との競合で
+#    行を上書きする道が無い(失うのは 1) と 2) の間に入った行だけ)。
+: > "$F" || { echo "log-size-cap: 空にできない: $F"; exit 1; }
+
+# 3) 何処へ消えたかを本体に1行だけ残す。**`>>` は O_APPEND = 常に EOF へ書く**ので、
+#    同時に追記している writer の行を上書きしない(offset 0 へ書き戻す初版とはここが違う)。
+#    此の1行が無いと、log を開いた人には「空 = 何も起きていない」としか見えない。
+printf '[log-size-cap] %s 時点で %s B を切り詰め。以前の末尾 %s B は %s に在る\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$now" "$(size "$snap")" "$snap" >> "$F" \
+    || { echo "log-size-cap: 註記を追記できない: $F"; exit 1; }
+
+after="$(size "$F")"
+echo "log-size-cap: $F  $now B -> $after B(退避 $(size "$snap") B = $snap / 上限 $CAP)"
+[ "${after:-0}" -le "$CAP" ] || { echo "log-size-cap: 切ったのに上限を超えている"; exit 1; }
+exit 0
+    34	# ★置き場は `~/Library/Logs/rc-backend` でも `~/.rc-backend` でもない ——
+    35	#   どちらも `com.fleet.rc-log-cap` が掃く。掃かれる場所に「掃かれると困る物」を置かない。
+    36	OUT="${RC_CENSUS_OUT:-$HOME/rc-census/app-usage.tsv}"
+    37	# ★時刻と版まで分けた副台帳(2026-08-30)。日次の合計だけだと H-3 の解除条件
+    38	# (「**起きている時間**に本物の機会が来た時、Tom がアプリ経由で動くか」)を後から評価できない ——
+    39	#   1日 100 件が深夜の常駐なのか昼の実使用なのかが、合計からは復元できない。
+    40	#   `build` も併せて持つ: 版が変わった前後で使い方が変わったかは、版を捨てた台帳では問えない。
+    41	# ★**日次の合計は形を変えない**。既に 4 日ぶん積んであり、形を変えると其の履歴が読めなくなる。
+    42	#   足すのは別 file。壊さずに増やす。
+    43	DETAIL_OUT="${RC_CENSUS_DETAIL_OUT:-${OUT%.tsv}-detail.tsv}"
+    44	
+    45	if [ ! -f "$LOG" ]; then
+    46	    echo "app-usage-census: $LOG が無い = 測定不成立(0 件と読ませない)" >&2
+    47	    exit 2
+    48	fi
+    49	
+    50	mkdir -p "$(dirname "$OUT")" 2>/dev/null || { echo "app-usage-census: 置き場を作れない: $(dirname "$OUT")" >&2; exit 1; }
+    51	umask 077
+    52	
+    53	tmp="$(mktemp "$(dirname "$OUT")/.census.XXXXXX")" || { echo "app-usage-census: 一時 file を作れない" >&2; exit 1; }
+    54	trap 'rm -f "$tmp" "$tmp.new"' EXIT
+    55	
+    56	# 今の log から日ごとに数える。
+    57	# 行の形(`src/reqlog.mjs`): `[rc-backend] req <ISO8601> <METHOD> <path> route=… client=… code=… …`
+    58	# ★`client=app` を**語として**当てる。`client=apple` の様な将来の語に巻き込まれない為。
+    59	awk '
+    60	    /client=app([[:space:]]|$)/ {
+    61	        for (i = 1; i <= NF; i++) {
+    62	            if ($i ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T/) { split($i, d, "T"); n[d[1]]++; break }
+    63	        }
+    64	    }
+    65	    END { for (k in n) printf "%s\t%d\n", k, n[k] }
+    66	' "$LOG" | sort > "$tmp"
+    67	
+    68	# 既にある記録と**日ごとの max** で畳む。
+    69	if [ -f "$OUT" ]; then
+    70	    awk -F'\t' '
+    71	        NR == FNR { if ($1 != "") old[$1] = $2 + 0; next }
+    72	        { cur = $2 + 0; if ($1 in old && old[$1] > cur) cur = old[$1]; seen[$1] = 1; printf "%s\t%d\n", $1, cur }
+    73	        END { for (k in old) if (!(k in seen)) printf "%s\t%d\n", k, old[k] }
+    74	    ' "$OUT" "$tmp" | sort > "$tmp.new"
+    75	else
+    76	    cp "$tmp" "$tmp.new"
+    77	fi
+    78	
+    79	mv -f "$tmp.new" "$OUT" || { echo "app-usage-census: 書けない: $OUT" >&2; exit 1; }
+    80	
+    81	# ── 副台帳: 日 / 時 / 版 ────────────────────────────────────────────────────
+    82	# ★`build=` が無い行(2026-08-30 より前の机)は `-` として数える。捨てない ——
+    83	#   「版が判らない要求が在った」事自体が、後から読む人に要る情報。
+    84	dtmp="$(mktemp "$(dirname "$DETAIL_OUT")/.census-detail.XXXXXX" 2>/dev/null)" || \
+    85	    dtmp="$(mktemp "$(dirname "$OUT")/.census-detail.XXXXXX")"
+    86	awk '
+    87	    /client=app([[:space:]]|$)/ {
+    88	        d = ""; h = ""; b = "-"
+    89	        for (i = 1; i <= NF; i++) {
+    90	            if ($i ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T/) { split($i, p, "T"); d = p[1]; h = substr(p[2], 1, 2) }
+    91	            else if ($i ~ /^build=/) { b = substr($i, 7) }
+    92	        }
+    93	        if (d != "" && h != "") n[d "\t" h "\t" b]++
+    94	    }
+    95	    END { for (k in n) printf "%s\t%d\n", k, n[k] }
+    96	' "$LOG" | sort > "$dtmp"
+    97	
+    98	# 既存と**鍵ごとの max** で畳む(日次と同じ理由: 切られた後の走行では数が減って見える)。
+    99	if [ -f "$DETAIL_OUT" ]; then
+   100	    awk -F'\t' '
+   101	        NR == FNR { if (NF >= 4) old[$1 "\t" $2 "\t" $3] = $4 + 0; next }
+   102	        { k = $1 "\t" $2 "\t" $3; cur = $4 + 0
+   103	          if (k in old && old[k] > cur) cur = old[k]
+   104	          seen[k] = 1; printf "%s\t%d\n", k, cur }
+   105	        END { for (k in old) if (!(k in seen)) printf "%s\t%d\n", k, old[k] }
+   106	    ' "$DETAIL_OUT" "$dtmp" | sort > "$dtmp.new"
+   107	else
+   108	    cp "$dtmp" "$dtmp.new"
+   109	fi
+   110	mv -f "$dtmp.new" "$DETAIL_OUT" || { echo "app-usage-census: 副台帳を書けない: $DETAIL_OUT" >&2; /bin/rm -f "$dtmp"; exit 1; }
+   111	/bin/rm -f "$dtmp"
+   112	days="$(wc -l < "$OUT" | tr -d ' ')"
+   113	total="$(awk -F'\t' '{s += $2} END {print s + 0}' "$OUT")"
+   114	drows="$(wc -l < "$DETAIL_OUT" 2>/dev/null | tr -d ' ')"
+   115	echo "app-usage-census: $days 日 / 述べ $total 件を $OUT に積んだ(時刻×版 $drows 行 = $DETAIL_OUT)"
+   116	exit 0
+   132	 */
+   133	/**
+   134	 * 要求を出した**種類**だけを返す(2026-08-27 新設)。閉じた4語しか返さない。
+   135	 *
+   136	 * ★なぜ要るか(実測 2026-08-27): この記録は「誰が叩いたか」を一切残していなかった。
+   137	 *   その為「Tom はこのアプリを開いたのか」に答えるのに、私は自分の作業記録との
+   138	 *   時刻突き合わせを 6 回やる羽目になった —— しかも **Simulator と実機を最後まで
+   139	 *   区別できなかった**。答えが要る問いに、記録が答えられない状態だった。
+   140	 *
+   141	 * ★**生の User-Agent は決して記録しない。** あれには端末の型番と OS の版が入る。
+   142	 *   §3-U の「行に中身が乗らない」は、本文やパスだけでなく端末の指紋にも掛かる。
+   143	 *   だから分類器は**閉じた語**を返し、呼び出し側は返り値しか書かない。
+   144	 *
+   145	 *   app   iOS の URLSession(実機でも Simulator でも CFNetwork を名乗る)
+   146	 *   tool  curl / node など —— この機体の常駐(digest-notify・health-observer)がこれ
+   147	 *   none  名乗りが無い
+   148	 *   other 上のどれでもない
+   149	 */
+   150	export function clientClass(userAgent) {
+   151	  const ua = String(userAgent || "");
+   152	  if (!ua) return "none";
+   153	  // ★検査道具を **app より先に**外す(2026-08-27)。
+   154	  //   `ios/tools/live-*-check.sh` が建てる殻は**電話の製品 Swift をそのまま**使うので、
+   155	  //   URLSession が `CFNetwork/… Darwin/…` を名乗る = 下の分岐で `app` に落ちる。
+   156	  //   それを許すと「私がビルドしていない時間帯に app が出たら、それが Tom」という
+   157	  //   **この計器の唯一の読み方が壊れる** —— 実際に今日壊した(自分の検査 20 件が
+   158	  //   `client=app` として記録され、Tom が使ったのかを区別できなくなった)。
+   159	  //   分ける鍵は UA の頭に出る**実行ファイル名**(実測: `rc-live-poll (unknown version)
+   160	  //   CFNetwork/3860.600.21 Darwin/25.5.0`)。製品は `RemoteMini/<番号>` を名乗るので衝突しない。
+   161	  if (/^rc-live-/i.test(ua)) return "probe";
+   162	  // ★app を先に見る。curl は Darwin を名乗らないので取り違えない。
+   163	  if (/CFNetwork|Darwin/i.test(ua)) return "app";
+   164	  if (/curl|wget|node|undici|python|libwww/i.test(ua)) return "tool";
+   165	  return "other";
+   166	}
+   167	
+   168	/**
+   169	 * 製品アプリの build 番号だけを取り出す。**閉じた形しか返さない**(数字か `-`)。
+   170	 *
+   171	 * ★なぜ要るか(2026-08-30): `client=app` は「電話から来た」までしか言わない。
+   172	 *   実際 2026-08-30 に、配布口が build 89 を配り Tom の電話が 96 を動かし HEAD が 99、
+   173	 *   という**3つの版が同時に存在する**状態を2日間誰も気付かなかった。
+   174	 *   記録に版が無いと、後から「その要求はどの版から来たか」を誰も答えられない。
+   175	 *
+   176	 * ★**生の User-Agent は決して記録しない**(上の §3-U と同じ線)。UA には端末の型番と
+   177	 *   OS の版が入る。だから此処は**数字だけ**を通す —— 返り値が閉じているので、
+   178	 *   呼び出し側がどう書いても UA の断片が行に出る道が無い。
+   179	 *   長さも縛る(9 桁まで): 「数字なら何でも通す」だと、細工した UA で行を膨らませられる。
+   180	 *
+   181	 * ★頭に錨を打つ(`^RemoteMini/`)。`clientClass` が `rc-live-` を頭で外しているのと同じ理由で、
+   182	 *   URLSession の名乗りは**実行ファイル名から始まる**。検査用の殻(`rc-live-poll …`)や
+   183	 *   `curl/8.4.0` は此処に当たらないので `-` に落ちる。
+   184	 */
+   185	export function appBuild(userAgent) {
+   186	  const m = /^RemoteMini\/(\d{1,9})(?:\s|$)/.exec(String(userAgent || ""));
+   187	  return m ? m[1] : "-";
+   188	}
+   189	
+   190	export function attachRequestLog(req, res, opt = {}) {
+   191	  const out = opt.out || ((line) => console.log(line));
+   192	  const now = opt.now || (() => new Date());
+   193	  const t0 = Date.now();
+   194	  // 生のパスはここで**型に畳んでから**しか使わない。`?` から後ろは見ない。
+   195	  const rawPath = String(req.url || "").split("?")[0];
+   196	  const shape = pathShape(rawPath, opt.knownPaths);
+   197	  const sid = sessionOf(rawPath);
+   198	  const method = methodOf(req.method);
+   199	  // ★分類は要求ごとに1回。生の名乗りはこの行から先へ**出さない**。
+   200	  const client = clientClass((req.headers || {})["user-agent"]);
+   201	  // ★同じ header を2回読むが、**どちらも閉じた語しか返さない**ので生の名乗りは
+   202	  //   此の2行から先へ出ない。
+   203	  const build = appBuild((req.headers || {})["user-agent"]);
+   204	
+   205	  const st = { route: "", reason: "", emitted: false };
+   206	  res[LOG] = st;
+   207	
+   208	  const emit = (code, why) => {
+   209	    if (st.emitted) return;
+   210	    st.emitted = true;
+   211	    const reason = why || st.reason || "-";
+   212	    out(
+   213	      `[rc-backend] req ${now().toISOString()} ${method} ${shape}` +
+   214	        `${sid ? ` sid=${sid}` : ""} route=${st.route || "-"} client=${client} build=${build} code=${code} reason=${reason} ms=${Date.now() - t0}`,
+   215	    );
+   216	  };
+   217	
+   218	  const orig = res.writeHead.bind(res);
+   219	  res.writeHead = (code, ...rest) => {
+   220	    const r = orig(code, ...rest);
+   221	    emit(code);
+   222	    return r;
+   223	  };
+   224	  // 頭を書く前に切れた = 応答を1つも返していない。`code=0` は「答えていない」の意。
+   130	    ok "C7 client=apple を app と数えない(語として当てている)"
+   131	else ng "C7 語として当てる" "8/31 = $(count_for 2026-08-31 "$O2")(2 なら前方一致で拾っている)"; fi
+   132	
+   133	# ── C9-C12 時刻 × 版 の副台帳(2026-08-30)────────────────────────────────
+   134	# ★H-3 の解除条件は「**起きている時間**に本物の機会が来た時に使うか」。日次の合計だけでは
+   135	#   1日 100 件が深夜の常駐なのか昼の実使用なのかを復元できず、条件を評価できない。
+   136	# ★測る中心は「副台帳が出来るか」ではなく **日次の形が変わっていないか**。
+   137	#   既に積んである履歴を壊す変更なら、後から読めなくなる方が損失が大きい。
+   138	D="$(mktemp -d)"; L="$D/x.log"; O="$D/day.tsv"; DO="$D/detail.tsv"
+   139	# ★版は `row` の外で足さない(2026-08-30、sed で後から差し込んで効かず C11 が赤くなった)。
+   140	#   検体は**作る時に完成させる** —— 後から書き換える形は、書き換えが効いたかを
+   141	#   別途確かめないと判らず、検査が自分の検体を信じられなくなる。
+   142	rowb() {  # rowb <ISO日時> <client> <build>
+   143	    printf '[rc-backend] req %s GET /api/sessions route=x client=%s build=%s code=200 reason=- ms=1\n' "$1" "$2" "$3"
+   144	}
+   145	{ rowb 2026-08-30T05:33:00.000Z app 99; rowb 2026-08-30T05:40:00.000Z app 99
+   146	  rowb 2026-08-30T14:02:00.000Z app 99; rowb 2026-08-30T14:09:00.000Z tool -; } > "$L"
+   147	RC_CENSUS_LOG="$L" RC_CENSUS_OUT="$O" RC_CENSUS_DETAIL_OUT="$DO" bash "$SUT" >/dev/null 2>&1
+   148	
+   149	# app は 3 件、tool は入らない。
+   150	if [ "$(count_for 2026-08-30 "$O")" = "3" ]; then
+   151	    ok "C9 日次の合計は形も値も変わらない(app 3 件 / client=tool は入らない)"
+   152	else ng "C9 日次の合計" "$(cat "$O" | tr '\n' ' ')"; fi
+   153	
+   154	h05="$(awk -F'\t' '$1=="2026-08-30" && $2=="05" {print $4}' "$DO")"
+   155	h14="$(awk -F'\t' '$1=="2026-08-30" && $2=="14" {print $4}' "$DO")"
+   156	if [ "$h05" = "2" ] && [ "$h14" = "1" ]; then
+   157	    ok "C10 時刻ごとに分かれる(05 時 2 件 / 14 時 1 件)"
+   158	else ng "C10 時刻の分解" "05=$h05 14=$h14"; fi
+   159	
+   160	if awk -F'\t' '$3=="99"{f=1} END{exit !f}' "$DO"; then
+   161	    ok "C11 版が記録される"
+   162	else ng "C11 版の記録" "$(cat "$DO" | tr '\n' ' ')"; fi
+   163	
+   164	# ★`build=` が無い古い行を捨てない。「版が判らない要求が在った」事自体が情報。
+   165	{ row 2026-08-31T03:00:00.000Z app; } > "$L"
+   166	RC_CENSUS_LOG="$L" RC_CENSUS_OUT="$O" RC_CENSUS_DETAIL_OUT="$DO" bash "$SUT" >/dev/null 2>&1
+   167	if awk -F'\t' '$1=="2026-08-31" && $3=="-" {f=1} END{exit !f}' "$DO"; then
+   168	    ok "C12 build= が無い行はハイフンとして残す(捨てない)"
+   169	else ng "C12 版なしの行" "$(grep 2026-08-31 "$DO" | tr '\n' ' ')"; fi
+   170	
+   171	# ★積む事(切られても減らない)は副台帳でも成り立つか。日次と同じ機構に乗っている事の確認。
+   172	{ row 2026-08-31T03:00:00.000Z app; } > "$L"
+   173	RC_CENSUS_LOG="$L" RC_CENSUS_OUT="$O" RC_CENSUS_DETAIL_OUT="$DO" bash "$SUT" >/dev/null 2>&1
+   174	if awk -F'\t' '$1=="2026-08-30" && $2=="05" && $4=="2" {f=1} END{exit !f}' "$DO"; then
+   175	    ok "C13 log から消えた時刻の行も副台帳に残る(積む機構に乗っている)"
+   176	else ng "C13 副台帳の積み" "$(grep 2026-08-30 "$DO" | tr '\n' ' ')"; fi
+   177	/bin/rm -rf "$D"
+   178	
+   179	echo ""
+   180	echo "APP-USAGE-CENSUS-CONTROLS: pass=$pass fail=$fail"
+   181	exit $(( fail > 0 ))
+
+codex
+現在の対照は14件とも緑ですが、肝心の「同じ時刻キーが切断の前後に分割される」場面を測っていません。そこを再現し、加えて常設ジョブが集計失敗時に本当に切断を止める配線か確認しています。
+exec
+/bin/zsh -lc 'd=$(mktemp -d)
+l="$d/live.log"
+o="$d/day.tsv"
+detail="$d/detail.tsv"
+for m in 01 02 03; do printf '"'[rc-backend] req 2026-08-30T18:%s:00.000Z GET /api/sessions route=x client=app build=96 code=200 reason=- ms=1\\n' \""'$m"; done > "$l"
+RC_CENSUS_LOG="$l" RC_CENSUS_OUT="$o" RC_CENSUS_DETAIL_OUT="$detail" bash rc-backend/tools/app-usage-census.sh >/dev/null
+for m in 31 32; do printf '"'[rc-backend] req 2026-08-30T18:%s:00.000Z GET /api/sessions route=x client=app build=96 code=200 reason=- ms=1\\n' \""'$m"; done > "$l"
+RC_CENSUS_LOG="$l" RC_CENSUS_OUT="$o" RC_CENSUS_DETAIL_OUT="$detail" bash rc-backend/tools/app-usage-census.sh >/dev/null
+printf '"'detail after 3-before + 2-after: '
+awk -F'\\t' '"'$1=="2026-08-30" && $2=="18" && $3=="96" {print $4}'"' \""'$detail"
+printf '"'plist command: '
+sed -n '65p' rc-backend/tools/com.fleet.rc-log-cap.plist
+/bin/rm -rf \""'$d"' in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+detail after 3-before + 2-after: 3
+plist command:     <string>/bin/bash /Users/athenas/rc-backend/tools/app-usage-census.sh; exec /bin/bash /Users/athenas/rc-backend/tools/log-cap-all.sh /Users/athenas/Library/Logs/rc-backend /Users/athenas/.rc-backend</string>
+
+codex
+結論: `build` の副台帳は有用ですが、H-3 の識別子にはなりません。実害があるのは3点です。
+
+1. `build` は版であって主体ではない  
+   現実装も `app` が実機と Simulator の両方だと明記しています。[reqlog.mjs](/Users/tomtim/Infra/mobile-work/rc-backend/src/reqlog.mjs:145)  
+   owner 用と harness 用で認証資格を分け、サーバ側で `principal=owner|control|unknown` に分類して、閉じた語だけログへ出すべきです。`build` は診断軸として併記。未知は owner に倒さない。
+
+   旧日次台帳は消さず、「2026-08-30以前は client=app 混合集計」と sidecar で注記し、H-3 の3〜7日窓は正しい principal 導入時点から再開します。確認済み36件の行動は個別証拠として残せますが、旧593件を浄化はできません。
+
+2. `max` は過大より過少になる  
+   同じ `(日,時,build)` が切断前後に分かれると、前半3件＋後半2件が `max(3,2)=3` になります。実際に現行スクリプトで再現しました。[app-usage-census.sh](/Users/tomtim/Infra/mobile-work/rc-backend/tools/app-usage-census.sh:98)  
+   max が正しいのは後の観測が前の完全な上位集合である場合だけです。rotation epochまたは処理済みoffsetを持ち、epoch間は加算する必要があります。過大になるのは、元ログの重複・誤分類を一度拾った場合で、max がその誤りを永久固定するときです。
+
+3. 集計失敗でもログを切る配線になっている  
+   plist が `census; cap` なので、副台帳の書込み失敗後も cap が実行され、復旧材料を消せます。[com.fleet.rc-log-cap.plist](/Users/tomtim/Infra/mobile-work/rc-backend/tools/com.fleet.rc-log-cap.plist:65)  
+   少なくとも `census && exec cap` にして失敗を通知対象にすべきです。
+
+副台帳の無制限成長自体は低リスクです。増加率は最大でも `24 × 版数/日` 程度で、上の識別・欠損・失敗時切断より優先度は低いです。
+tokens used
+98,597
+結論: `build` の副台帳は有用ですが、H-3 の識別子にはなりません。実害があるのは3点です。
+
+1. `build` は版であって主体ではない  
+   現実装も `app` が実機と Simulator の両方だと明記しています。[reqlog.mjs](/Users/tomtim/Infra/mobile-work/rc-backend/src/reqlog.mjs:145)  
+   owner 用と harness 用で認証資格を分け、サーバ側で `principal=owner|control|unknown` に分類して、閉じた語だけログへ出すべきです。`build` は診断軸として併記。未知は owner に倒さない。
+
+   旧日次台帳は消さず、「2026-08-30以前は client=app 混合集計」と sidecar で注記し、H-3 の3〜7日窓は正しい principal 導入時点から再開します。確認済み36件の行動は個別証拠として残せますが、旧593件を浄化はできません。
+
+2. `max` は過大より過少になる  
+   同じ `(日,時,build)` が切断前後に分かれると、前半3件＋後半2件が `max(3,2)=3` になります。実際に現行スクリプトで再現しました。[app-usage-census.sh](/Users/tomtim/Infra/mobile-work/rc-backend/tools/app-usage-census.sh:98)  
+   max が正しいのは後の観測が前の完全な上位集合である場合だけです。rotation epochまたは処理済みoffsetを持ち、epoch間は加算する必要があります。過大になるのは、元ログの重複・誤分類を一度拾った場合で、max がその誤りを永久固定するときです。
+
+3. 集計失敗でもログを切る配線になっている  
+   plist が `census; cap` なので、副台帳の書込み失敗後も cap が実行され、復旧材料を消せます。[com.fleet.rc-log-cap.plist](/Users/tomtim/Infra/mobile-work/rc-backend/tools/com.fleet.rc-log-cap.plist:65)  
+   少なくとも `census && exec cap` にして失敗を通知対象にすべきです。
+
+副台帳の無制限成長自体は低リスクです。増加率は最大でも `24 × 版数/日` 程度で、上の識別・欠損・失敗時切断より優先度は低いです。
