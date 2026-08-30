@@ -17,6 +17,7 @@
 #   C5 掃き手    — 0 本を舐めた時に「全部上限内」と読ませない
 #   C6 退避      — 末尾が `<file>.tail` に在り、本体には行方を示す1行が残る
 #   C7 権限      — 退避先の mode が元 log と一致する(600 の中身を 644 に写さない)
+#   C8 掃引の継続 — 1本失敗しても後ろの log は切られ、失敗は非 0 で帰る
 #
 # 使い方: bash rc-backend/test/log-cap-controls.sh
 # 終了コード: 0=全部緑 / 1=1本でも赤
@@ -131,6 +132,23 @@ out="$(bash "$CAP_ALL" "$D" 100000 2>&1)"
 if printf '%s' "$out" | grep -q "2 本を見て 1 本を切った"; then
     ok "C5 見た本数と切った本数を別々に言う"
 else ng "C5 件数の報告" "$out"; fi
+/bin/rm -rf "$D"
+
+# ── C8 1本の失敗が掃引を止めない ───────────────────────────────────────────
+# ★名前順で**前**に在る file が失敗した時、後ろの file が上限なしのまま残らないか。
+#   初版は最初の失敗で exit していたので、`a-broken.log` の後ろは全部素通りだった。
+#   しかも1時間ごとに同じ所で失敗するので、その状態が自動では解けない。
+D="$(mktemp -d)"
+printf 'x%.0s' $(seq 1 300000) > "$D/a-broken.log"; chmod 000 "$D/a-broken.log"
+printf 'x%.0s' $(seq 1 300000) > "$D/z-ok.log"
+out="$(bash "$CAP_ALL" "$D" 100000 2>&1)"; rc=$?
+chmod 644 "$D/a-broken.log"
+zs="$(size "$D/z-ok.log")"
+if [ "${zs:-999999}" -le 100000 ]; then ok "C8 前の1本が失敗しても後ろは切られる (z-ok=$zs B)"
+else ng "C8 前の1本が失敗しても後ろは切られる" "z-ok=$zs B = 掃引が止まった"; fi
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "失敗"; then
+    ok "C8 失敗は握り潰さず非 0 で帰る (rc=$rc)"
+else ng "C8 失敗を非 0 で帰す" "rc=$rc / $out"; fi
 /bin/rm -rf "$D"
 
 echo ""

@@ -25,17 +25,27 @@ CAP="${2:-5242880}"
 
 [ -d "$DIR" ] || { echo "log-cap-all: $DIR が無い"; exit 0; }
 
-n=0; capped=0
+n=0; capped=0; failed=0
 for f in "$DIR"/*.log; do
     [ -f "$f" ] || continue
     n=$((n + 1))
     before="$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)"
-    bash "$HERE/log-size-cap.sh" "$f" "$CAP" || { echo "log-cap-all: $f で失敗"; exit 1; }
+    # ★1本で止めない(2026-08-30、自分の差分を読み直して直した)。
+    #   初版は最初の失敗で `exit 1` していた。掃引は名前順に回るので、
+    #   壊れた1本より**後ろの log が全部上限なしのまま残る**。しかも此の job は
+    #   1時間ごとに同じ場所で失敗し続けるので、その状態が自動で解けない。
+    #   失敗は数えて最後に非 0 で帰る —— 止めるのは報告であって、掃引ではない。
+    if ! bash "$HERE/log-size-cap.sh" "$f" "$CAP"; then
+        echo "log-cap-all: ★$f で失敗(残りは続ける)"
+        failed=$((failed + 1))
+        continue
+    fi
     after="$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)"
     [ "${before:-0}" != "${after:-0}" ] && capped=$((capped + 1))
 done
 
 # ★件数を言う。0 本を舐めて「全部上限内」に見えるのを防ぐ(此の repo が繰り返し踏んだ型)。
-echo "log-cap-all: $DIR の $n 本を見て $capped 本を切った(上限 $CAP B)"
+echo "log-cap-all: $DIR の $n 本を見て $capped 本を切った(上限 $CAP B)$([ "$failed" -gt 0 ] && echo "★失敗 $failed 本")"
 [ "$n" -gt 0 ] || { echo "log-cap-all: 対象が 0 本 = 測定不成立(dir か glob を疑う事)"; exit 2; }
+[ "$failed" -eq 0 ] || exit 1
 exit 0
