@@ -165,6 +165,28 @@ export function clientClass(userAgent) {
   return "other";
 }
 
+/**
+ * 製品アプリの build 番号だけを取り出す。**閉じた形しか返さない**(数字か `-`)。
+ *
+ * ★なぜ要るか(2026-08-30): `client=app` は「電話から来た」までしか言わない。
+ *   実際 2026-08-30 に、配布口が build 89 を配り Tom の電話が 96 を動かし HEAD が 99、
+ *   という**3つの版が同時に存在する**状態を2日間誰も気付かなかった。
+ *   記録に版が無いと、後から「その要求はどの版から来たか」を誰も答えられない。
+ *
+ * ★**生の User-Agent は決して記録しない**(上の §3-U と同じ線)。UA には端末の型番と
+ *   OS の版が入る。だから此処は**数字だけ**を通す —— 返り値が閉じているので、
+ *   呼び出し側がどう書いても UA の断片が行に出る道が無い。
+ *   長さも縛る(9 桁まで): 「数字なら何でも通す」だと、細工した UA で行を膨らませられる。
+ *
+ * ★頭に錨を打つ(`^RemoteMini/`)。`clientClass` が `rc-live-` を頭で外しているのと同じ理由で、
+ *   URLSession の名乗りは**実行ファイル名から始まる**。検査用の殻(`rc-live-poll …`)や
+ *   `curl/8.4.0` は此処に当たらないので `-` に落ちる。
+ */
+export function appBuild(userAgent) {
+  const m = /^RemoteMini\/(\d{1,9})(?:\s|$)/.exec(String(userAgent || ""));
+  return m ? m[1] : "-";
+}
+
 export function attachRequestLog(req, res, opt = {}) {
   const out = opt.out || ((line) => console.log(line));
   const now = opt.now || (() => new Date());
@@ -176,6 +198,9 @@ export function attachRequestLog(req, res, opt = {}) {
   const method = methodOf(req.method);
   // ★分類は要求ごとに1回。生の名乗りはこの行から先へ**出さない**。
   const client = clientClass((req.headers || {})["user-agent"]);
+  // ★同じ header を2回読むが、**どちらも閉じた語しか返さない**ので生の名乗りは
+  //   此の2行から先へ出ない。
+  const build = appBuild((req.headers || {})["user-agent"]);
 
   const st = { route: "", reason: "", emitted: false };
   res[LOG] = st;
@@ -186,7 +211,7 @@ export function attachRequestLog(req, res, opt = {}) {
     const reason = why || st.reason || "-";
     out(
       `[rc-backend] req ${now().toISOString()} ${method} ${shape}` +
-        `${sid ? ` sid=${sid}` : ""} route=${st.route || "-"} client=${client} code=${code} reason=${reason} ms=${Date.now() - t0}`,
+        `${sid ? ` sid=${sid}` : ""} route=${st.route || "-"} client=${client} build=${build} code=${code} reason=${reason} ms=${Date.now() - t0}`,
     );
   };
 

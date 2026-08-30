@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
 import {
-  attachRequestLog, markResult, noteBody, pathShape, sessionOf, token, errSlug, SESSION_ROUTE_RE,
+  attachRequestLog, appBuild, markResult, noteBody, pathShape, sessionOf, token, errSlug, SESSION_ROUTE_RE,
 } from "../src/reqlog.mjs";
 import { stripComments } from "./jssrc.mjs";
 
@@ -58,7 +58,9 @@ const SID = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
 test("応答1つにつき行は1本(`writeHead` が合図)", () => {
   const l = run({ url: "/api/sessions", paths: KNOWN });
   assert.equal(l.length, 1);
-  assert.match(l[0], /^\[rc-backend\] req 2026-08-03T12:00:00\.000Z GET \/api\/sessions route=- client=none code=200 reason=- ms=\d+$/);
+  // ★`build=` は 2026-08-30 に足した欄。行を末尾まで固定したまま**新しい形に対して**厳密に保つ
+  //   —— 欄が増えたからと `$` を外すと、以後は行末に何が付いても通る検査になる。
+  assert.match(l[0], /^\[rc-backend\] req 2026-08-03T12:00:00\.000Z GET \/api\/sessions route=- client=none build=- code=200 reason=- ms=\d+$/);
 });
 
 test("★頭を書く前に切れた要求も1本出る(code=0 reason=aborted)", () => {
@@ -81,7 +83,7 @@ test("`writeHead` を2回呼んでも行は増えない(500 が SSE の頭の後
 test("枝が名乗った経路と理由が行に乗る(§3-W が刺さった当の欄)", () => {
   const l = run({ url: `/api/sessions/${SID}/messages`, method: "POST", code: 202,
     body: { accepted: true, route: "tmux", pane: "%7" }, paths: KNOWN });
-  assert.match(l[0], / POST \/api\/sessions\/:id\/messages sid=0a1b2c3d route=tmux client=none code=202 /);
+  assert.match(l[0], / POST \/api\/sessions\/:id\/messages sid=0a1b2c3d route=tmux client=none build=- code=202 /);
 });
 
 test("先に名乗った方が勝つ(500 の生の例外文が語彙に流れない)", () => {
@@ -227,7 +229,12 @@ test("★行に出る欄は決まった5つだけ(新しい欄が黙って増え
   const fields = [...new Set([...m[1].matchAll(/\b([a-z]+)=/g)].map((x) => x[1]))].sort();
   // ★`client` は 2026-08-27 に**宣言して**足した欄。この検査が要求する通り、
   //   「中身が乗らない」の対照(下の3件)を同じ commit で一緒に入れている。
-  assert.deepEqual(fields, ["client", "code", "ms", "reason", "route", "sid"],
+  // ★`build` は 2026-08-30 に同じ手続きで足した。此の番人は正しく私を止めた ——
+  //   欄を増やす commit で此処を書き換える事自体が、「増やすと決めた」の記録になる。
+  //   一緒に入れた対照: 生の名乗りの断片(CFNetwork / Darwin / 型番 / 版)が
+  //   1つでも行に出たら赤、製品でない名乗りは `-` へ落ちる、桁数を縛って
+  //   細工した名乗りで行を膨らませられない、の3件。
+  assert.deepEqual(fields, ["build", "client", "code", "ms", "reason", "route", "sid"],
     "行の欄が増減した —— 増やすなら『中身が乗らない』の検査も一緒に足す事");
 });
 
@@ -359,4 +366,45 @@ test("陰性対照: 下線を許しても網は緩んでいない(自由文は�
   for (const bad of ["bad body: {\"a\":1}", "cwd unknown", "Cwd_Unknown!", "x".repeat(30), "_lead"]) {
     assert.equal(token(bad), "", `語彙に通ってはいけない物が通った: ${bad}`);
   }
+});
+
+// ── build 番号(2026-08-30)───────────────────────────────────────────────────
+// ★測る中心は「番号が出るか」ではなく **生の User-Agent が行に出ないか**。
+//   前者だけなら `build=${ua}` と書いても通る。
+test("★製品の名乗りから build 番号だけを取り、生の User-Agent は行に出さない", () => {
+  const lines = [];
+  const res = fakeRes();
+  attachRequestLog(
+    { url: "/api/sessions", method: "GET", headers: { "user-agent": "RemoteMini/96 CFNetwork/3860.600.21 Darwin/25.5.0" } },
+    res,
+    { out: (l) => lines.push(l), now: () => new Date("2026-08-03T12:00:00.000Z") },
+  );
+  res.writeHead(200);
+  assert.match(lines[0], / build=96 /, "製品の build 番号が記録されていない");
+  // ★端末の指紋が1つでも行に出たら赤。`CFNetwork` も `Darwin` も型番も版も、全部。
+  for (const leak of ["CFNetwork", "Darwin", "3860", "25.5.0", "RemoteMini/"]) {
+    assert.ok(!lines[0].includes(leak), `生の名乗りの断片が行に出た: ${leak}`);
+  }
+});
+
+test("★製品でない名乗りは build=- に落ちる(検査道具・道具・名乗り無し)", () => {
+  for (const ua of ["rc-live-poll (unknown version) CFNetwork/3860 Darwin/25.5.0", "curl/8.4.0", ""]) {
+    const lines = [];
+    const res = fakeRes();
+    attachRequestLog(
+      { url: "/api/sessions", method: "GET", headers: ua ? { "user-agent": ua } : {} },
+      res,
+      { out: (l) => lines.push(l), now: () => new Date("2026-08-03T12:00:00.000Z") },
+    );
+    res.writeHead(200);
+    assert.match(lines[0], / build=- /, `製品でない名乗りが番号を名乗った: ${ua || "(無し)"}`);
+  }
+});
+
+test("★細工した名乗りで行を膨らませられない(数字の桁数を縛っている)", () => {
+  // 9 桁を超える / 数字でない / 頭が違う —— どれも `-` へ落ちる事。
+  for (const ua of ["RemoteMini/12345678901 x", "RemoteMini/abc x", "xRemoteMini/96 y", "RemoteMini/" + "9".repeat(500)]) {
+    assert.equal(appBuild(ua), "-", `閉じていない値が通った: ${ua.slice(0, 40)}`);
+  }
+  assert.equal(appBuild("RemoteMini/999999999 x"), "999999999", "9 桁までは通る");
 });
