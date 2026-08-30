@@ -18,6 +18,9 @@
 #   C6 向こうが数字でない(PlistBuddy のエラー文が来る)→ 2
 #   C7 手元の plist が無い → 2
 #   C8 手元が数字でない → 2 ★PlistBuddy は file 不在時に stdout へ出して exit 0 する
+#   C9 配布 < **承認済み** → 赤(署名済みと同数でも通さない)
+#   C10 承認の記録が無い → 署名済みで代用し、その事を言う
+#   C11 承認が HEAD より古い → **3**(緑でも巻き戻りでもない第三の状態)
 #
 # 使い方: bash rc-backend/test/ota-freshness-controls.sh
 # 終了コード: 0=全部緑 / 1=1本でも赤
@@ -97,6 +100,46 @@ cat > "$SB/Info.plist" <<'XML'
 <plist version="1.0"><dict><key>Other</key><string>x</string></dict></plist>
 XML
 run 2 "C8 手元に版番号の欄が無ければ 2(エラー文を版番号にしない)"
+
+# ── C9-C11 承認済みの版(2026-08-30、Codex の指摘4)──────────────────────
+# ★以前は「配布 vs 最後に署名した物」しか見ていなかったので、**両方が同じ番号なら
+#   HEAD がどれだけ先でも緑**だった —— 「古くない」と言いながら、出来ている物が
+#   届いていない状態を通す。比べる相手を「配布してよいと決めた版」に変えた。
+mk_local 96
+
+export FAKE_RC=0 FAKE_OUT="96"
+printf '99\n' > "$SB/approved"
+out="$(RC_OTA_SSH="$FAKE" RC_SIGNED_PLIST="$SB/Info.plist" RC_OTA_APPROVED_FILE="$SB/approved" \
+       RC_OTA_SECRET=deadbeefdeadbeefdeadbeef bash "$SUT" 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "承認済み 99"; then
+    ok "C9 配布が**承認済み**より古ければ赤(署名済みと同数でも通さない)"
+else ng "C9 承認済みとの比較" "rc=$rc / $(printf '%s' "$out" | tail -1)"; fi
+
+# ★承認の記録がまだ無い時は署名済みで代用する(初回の配布より前 = 承認が起きていない)。
+/bin/rm -f "$SB/approved"
+out="$(RC_OTA_SSH="$FAKE" RC_SIGNED_PLIST="$SB/Info.plist" RC_OTA_APPROVED_FILE="$SB/approved" \
+       RC_OTA_SECRET=deadbeefdeadbeefdeadbeef bash "$SUT" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "承認の記録がまだ無い"; then
+    ok "C10 承認の記録が無い時は署名済みで代用し、その事を言う"
+else ng "C10 記録が無い時" "rc=$rc / $(printf '%s' "$out" | tail -1)"; fi
+
+# ★**承認そのものが HEAD より古い**時は 0 でも 1 でもなく 3。
+#   0 に混ぜると「届いている」と読まれ、1 に混ぜると巻き戻りと区別が付かない。
+#   HEAD の番号は本物の repo から引くので、承認を **1 つ小さく**置けば必ず成立する。
+head_num="$(bash "$HERE/../ios/tools/build.sh" --print-build-num 2>/dev/null | tr -d '[:space:]')"
+case "$head_num" in
+    ''|*[!0-9]*) echo "SKIP  C11(HEAD の番号を引けない = 測定不成立)" ;;
+    *)
+        printf '%s\n' "$((head_num - 1))" > "$SB/approved"
+        mk_local "$((head_num - 1))"
+        export FAKE_OUT="$((head_num - 1))"
+        out="$(RC_OTA_SSH="$FAKE" RC_SIGNED_PLIST="$SB/Info.plist" RC_OTA_APPROVED_FILE="$SB/approved" \
+               RC_OTA_SECRET=deadbeefdeadbeefdeadbeef bash "$SUT" 2>&1)"; rc=$?
+        if [ "$rc" -eq 3 ] && printf '%s' "$out" | grep -q "HEAD"; then
+            ok "C11 承認が HEAD より古ければ 3(緑でも巻き戻りでもない第三の状態)"
+        else ng "C11 承認が HEAD より古い時" "rc=$rc(3 が期待) / $(printf '%s' "$out" | tail -1)"; fi
+        ;;
+esac
 
 echo ""
 echo "OTA-FRESHNESS-CONTROLS: pass=$pass fail=$fail"
