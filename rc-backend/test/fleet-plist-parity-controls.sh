@@ -61,13 +61,32 @@ FAKE="$SB/fake-ssh.sh"
 cat > "$FAKE" <<'EOF'
 #!/bin/bash
 [ "${FAKE_RC:-0}" -ne 0 ] && exit "$FAKE_RC"
-printf '%s' "${FAKE_OUT:-}"
+# ★SUT は向こうを**2回**引く。1回目 = md5/登録/固定値、2回目 = launchd の有効定義
+#   (`python3 -` に台本を流し込む形)。同じ塊を両方へ返すと、2回目が
+#   「有効定義を読めない」に化けて全件が赤くなる(2026-08-30 に実際にそうなった)。
+case "$*" in
+    *python3*) printf '%s' "${FAKE_LOADED-}" ;;
+    *)         printf '%s' "${FAKE_OUT:-}" ;;
+esac
 exit 0
 EOF
 chmod +x "$FAKE"
 
 run() {  # run <期待 rc> <名前> ; FAKE_OUT / FAKE_RC は呼ぶ側が export する
     local want="$1" name="$2" out rc
+    # 有効定義は既定で「全部一致」を作る(其の次元を測りたい対照だけが上書きする)。
+    # ★自動生成にする理由: 既存の対照 14 本それぞれに手で書かせると、
+    #   label を1つ足した日に**書き忘れた対照だけ**が赤くなる。
+    if [ -z "${FAKE_LOADED_OVERRIDE-}" ]; then
+        FAKE_LOADED="$(printf '%s\n' "${FAKE_OUT:-}" | awk '
+            $1 == "MD5" { l[$3] = 1 }
+            $1 == "REG" { l[$3] = 1 }
+            $1 == "KV"  { l[$2] = 1 }
+            END { for (k in l) print "LOADED " k " same" }' | sort)"
+    else
+        FAKE_LOADED="$FAKE_LOADED_OVERRIDE"
+    fi
+    export FAKE_LOADED
     out="$(RC_FLEET_PLIST_DIR="$PDIR" RC_FLEET_SSH="$FAKE" bash "$SUT" 2>&1)"; rc=$?
     LAST_OUT="$out"
     if [ "$rc" = "$want" ]; then ok "$name (rc=$rc)"; else ng "$name" "期待 rc=$want 実測 rc=$rc / $(printf '%s' "$out" | tail -1)"; fi
@@ -198,6 +217,42 @@ export FAKE_OUT="LAUNCHCTL fail
 run 2 "C13 向こうの launchctl が動かなければ 2(全件を未登録に化けさせない)"
 printf '%s' "$LAST_OUT" | grep -q "嘘の赤" && ok "C13b 嘘の赤にしない事を文面で言う" \
                                           || ng "C13b 文面" "無い"
+
+# ── C14-C16 launchd が実際に読み込んでいる定義(2026-08-30 追加)────────────
+# ★此処までの対照は「disk が repo と一致」「登録済み」しか測っていなかった。
+#   plist を書き換えて **bootout+bootstrap を忘れる**と、disk も登録も緑のまま
+#   launchd は古い定義で走り続ける —— `kickstart` では定義は読み直されないので、
+#   之は「うっかり」ではなく**起こる方が普通**の取り違え。
+GREEN_OUT="LAUNCHCTL ok
+MD5 $MA com.fleet.rc-backend
+MD5 $MB com.fleet.rc-ota
+$OBS_LINES
+REG yes com.fleet.rc-backend
+REG yes com.fleet.rc-ota
+"
+
+export FAKE_RC=0
+export FAKE_OUT="$GREEN_OUT"
+export FAKE_LOADED_OVERRIDE="LOADED com.fleet.rc-backend differ
+LOADED com.fleet.rc-ota same
+LOADED $OBS same"
+run 1 "C14 disk は一致しているのに launchd が古い定義なら赤"
+printf '%s' "$LAST_OUT" | grep -q "古い定義で走っている" \
+    && ok "C14b 何が起きているかを名指しする(bootout+bootstrap の忘れ)" \
+    || ng "C14b 文面" "$(printf '%s' "$LAST_OUT" | tail -1)"
+
+export FAKE_LOADED_OVERRIDE=" "
+run 2 "C15 有効定義を読めなければ 2(disk の一致を根拠に緑を出さない)"
+
+export FAKE_LOADED_OVERRIDE="LOADED com.fleet.rc-ota same
+LOADED $OBS same"
+run 1 "C16 一覧に居ない label は緑にしない(黙って照合から抜けさせない)"
+
+export FAKE_LOADED_OVERRIDE="LOADED com.fleet.rc-backend na
+LOADED com.fleet.rc-ota same
+LOADED $OBS same"
+run 1 "C17 『比べられない』(na)も緑にしない —— 一致とは別物"
+unset FAKE_LOADED_OVERRIDE
 
 echo ""
 echo "FLEET-PLIST-PARITY-CONTROLS: pass=$pass fail=$fail"
