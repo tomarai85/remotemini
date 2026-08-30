@@ -23,6 +23,21 @@
     `com.tom.cswap-log-rotate` は `~/.claude-swap-backup/auto.log` 1本だけ。
     どちらも rc-backend の log を見ていないので、既存に相乗りせず新設した。
 
+  ★**2つ目の dir `~/.rc-backend` を 2026-08-30 に足した**。初版は
+    `~/Library/Logs/rc-backend` だけで、理由は「大きい file が其処に在る」だった。
+    だが此の上限が防ぎたいのは大きさではなく**暴走**で、このレーンが実際に踏みかけた暴走
+    (H-4: 依存物を欠いた observer が日1回の誤報を **10 分毎**のループに化けさせる)が
+    書き込む先は `~/.rc-backend/health-observer.log` = **上限の外**だった。
+    上限は、大きい物の在る場所ではなく**暴走の起きる場所**に置く。
+
+  ★**数えてから切る**(2026-08-30)。`app-usage-census.sh` を先に、`log-cap-all.sh` を後に
+    同じ job で回す。順序に意味が在る —— 数える元(`rc-backend.log` の client=app 行)を
+    消しに来るのが後半だから。別 job に分けると2つが競り、たまたま切る方が先に走った回に
+    その日の観測が失われる。`com.fleet.rc-phone-window` が既に同じ形(`-c` で順に並べる)。
+    ★census が失敗しても `;` で続けるので、上限は必ず掛かる(数えられない事は
+    ディスクを溢れさせる理由にならない)。census の置き場 `~/rc-census/` は
+    **掃く対象に入れていない** —— 掃かれる場所に「掃かれると困る物」を置かない。
+
   ★この job は**自分の log も切る**(出力先が同じ dir で `*.log` に当たる)。
     切り方が「追記者を殺さない」形なので、launchd が握ったままの fd でも壊れない。
     退避先 `<file>.tail` は `*.log` に当たらないので二重に切られない。
@@ -46,7 +61,8 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/athenas/rc-backend/tools/log-cap-all.sh</string>
+    <string>-c</string>
+    <string>/bin/bash /Users/athenas/rc-backend/tools/app-usage-census.sh; exec /bin/bash /Users/athenas/rc-backend/tools/log-cap-all.sh /Users/athenas/Library/Logs/rc-backend /Users/athenas/.rc-backend</string>
   </array>
 
   <key>WorkingDirectory</key>

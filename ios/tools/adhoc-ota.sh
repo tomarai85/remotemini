@@ -55,7 +55,14 @@ step() { echo "==> $*"; }
 
 # ★無言で死ねなくする。`set -e` は止めた場所を言わないので、上の SIGPIPE の様な
 #   「途中まで出ているのに成果物が無い」を読み解く手掛かりが1つも残らなかった。
-trap 'rc=$?; [ "$rc" -ne 0 ] && echo "★ adhoc-ota.sh は rc=$rc で止まった(直前に出た行の次が犯人)" >&2; exit $rc' EXIT
+# ★掃除は**この一覧に積む**。後から `trap … EXIT` を書くと**此の診断ごと消える** ——
+#   実際 2026-08-30 に消えていた(下の ENT の掃除が上書きしていた)。結果、
+#   `ota-verify.sh` の rc=2 で `set -e` が中断した時に**1行も出ずに終わり**、
+#   呼び側が `| tail` を挟んでいた為に tail の 0 が真の rc を隠して「成功」に見えた。
+#   3つ重なって初めて嘘になる: 上書きされた trap / 未測定を失敗と読む / pipe の rc。
+CLEANUP=()
+cleanup_all() { local f; for f in ${CLEANUP+"${CLEANUP[@]}"}; do /bin/rm -f "$f"; done; }
+trap 'rc=$?; cleanup_all; [ "$rc" -ne 0 ] && echo "★ adhoc-ota.sh は rc=$rc で止まった(直前に出た行の次が犯人)" >&2; exit $rc' EXIT
 
 # --- 秘密の一段。**一度作ったら変えない** -----------------------------------
 # 変えると Tom の栞が死ぬ。焼き直しの度に URL が変わる導線は、結局
@@ -72,6 +79,33 @@ BASE="https://$DESK_HOST:$DESK_PORT$SERVE_PATH/$SECRET"
 if [ "$MODE" = "url" ]; then
   echo "$BASE/"
   exit 0
+fi
+
+# --- 0. 木が汚れていないか(2026-08-30、実際に踏みかけた)---------------------
+# ★変異試験の対照は `ios/Sources/**` を**その場で書き換えて**測り、trap で戻す。
+#   走行が殺されると trap は走らず、**変異が木に残る**(`account-ui-control.sh` の
+#   註記が既に其の事故を記録している)。気付く仕掛けは「次に其の対照を回した時」だけで、
+#   **焼く側は誰も見ていなかった**。
+#
+#   2026-08-30、全対照の掃引を SIGTERM で止めた直後に実際に残っていた:
+#     ConversationView.swift  `inFlight == key` -> `inFlight != nil`(全ボタンが一斉に回る)
+#     AccountBar.swift        `.task { await viewModel.load() }` -> `.task { }`(口座が永久に出ない)
+#   此処で止めなければ、**その壊れた版を Tom の電話へ配る**所だった。
+#
+# ★見るのは `ios/Sources` `ios/Tests` `ios/UITests` の3つ。道具(`ios/tools`)の
+#   未コミットは焼く物に入らないので止めない —— 止める理由の無い所で止める番人は外される。
+step "0. 木が汚れていないか(変異の残骸を配らない)"
+DIRTY="$(cd "$HERE/.." && git status --porcelain -- ios/Sources ios/Tests ios/UITests 2>/dev/null)"
+if [ -n "$DIRTY" ]; then
+    echo "$DIRTY" >&2
+    echo "★ ios/ の焼く対象に未コミットの差分が在る。**変異試験の残骸かもしれない**。" >&2
+    echo "  確かめる: git diff -- ios/Sources ios/Tests ios/UITests" >&2
+    echo "  戻す:     git checkout -- ios/Sources ios/Tests ios/UITests" >&2
+    echo "  意図した変更なら: RC_OTA_ALLOW_DIRTY=1 ./tools/adhoc-ota.sh" >&2
+    [ "${RC_OTA_ALLOW_DIRTY:-0}" = "1" ] || exit 1
+    echo "    RC_OTA_ALLOW_DIRTY=1 が立っているので続ける(意図した差分として扱う)"
+else
+    echo "    綺麗(焼く対象に未コミットの差分なし)"
 fi
 
 # --- 1. 焼く(build.sh をそのまま使う) --------------------------------------
@@ -113,7 +147,7 @@ SHORTVER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/
 # ★`get-task-allow` は **false**。開発署名との唯一で決定的な違いで、
 #   true のまま distribution 証明書で署名した束は OTA で入らない。
 ENT=$(mktemp -t rm-adhoc-ent)
-trap 'rm -f "$ENT"' EXIT
+CLEANUP+=("$ENT")   # ★trap を書き足さない(上の一覧に積む)
 cat > "$ENT" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -257,7 +291,26 @@ ssh -o ConnectTimeout=15 -o BatchMode=yes "$DESK_SSH" "chmod 700 ~/$DESK_DIR && 
 echo "    置いた"
 
 step "6. 確かめる(此処は机の LAN に居ない = 同一 WiFi 無しの実証)"
-bash "$HERE/tools/ota-verify.sh"
+# ★`ota-verify.sh` は **未測定が1件でも rc=2** を返す(電話の UDID は今聞けない、等)。
+#   未測定は失敗ではない —— それを `set -e` で中断に落とすと、**配り終わった後に
+#   黙って止まる**。実際 2026-08-30 の走行がそうなり、step 7 が一度も走らなかった。
+#   赤(1)は止める。未測定(2)は名指しして続ける。
+set +e
+bash "$HERE/tools/ota-verify.sh"; vrc=$?
+set -e
+case "$vrc" in
+    0) ;;
+    2) echo "    ※検証に**未測定**が在る(rc=2)。赤ではないので続ける" ;;
+    *) echo "★配る面の検証が赤い(rc=$vrc)" >&2; exit "$vrc" ;;
+esac
+
+# ★配った版が、手元の署名済みより古くない事を**別の道具で**確かめる(2026-08-30)。
+#   `ota-verify.sh` は「取りに行けるか」を見るが、**何番が置かれたかは見ない**。
+#   実際その隙で 2 日間ずれた: 配布 89 / Tom の電話 96 / HEAD なら 99。
+#   §11 は此の頁を「Tom が栞から自分で入れ直す道」と定めているので、
+#   古い版が載ったままだと**唯一の復旧経路が彼を巻き戻す**。
+step "7. 配った版が古くない事(rc-backend/tools/ota-freshness-check.sh)"
+bash "$HERE/../rc-backend/tools/ota-freshness-check.sh"
 
 echo
 echo "==> 電話で開く頁: $BASE/"

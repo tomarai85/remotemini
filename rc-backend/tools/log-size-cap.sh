@@ -39,6 +39,14 @@ KEEP_FRAC="${LOG_CAP_KEEP_FRAC:-2}"   # 退避に残す量 = 上限の 1/KEEP_FR
 
 [ -n "$F" ] || { echo "usage: log-size-cap.sh <file> [bytes]"; exit 2; }
 [ -f "$F" ] || { echo "log-size-cap: $F が無い(何もしない)"; exit 0; }
+# ★symlink の判定は**大きさを測るより前**に置く(2026-08-30、対照 C12b が捕まえた)。
+#   `stat -f%z` は symlink を辿らないので、link 自身の小さな大きさが返り、
+#   `[ "$now" -le "$CAP" ] && exit 0` で**先に抜けてしまう**。
+#   結果は「切らなかった」で一見安全だが、理由が偶然で rc も 0 —— 呼んだ側は
+#   「上限内だった」と読む。安全に見える緑が一番たちが悪い。
+if [ -L "$F" ]; then
+    echo "log-size-cap: $F は symlink = 別の file を切りに行く恐れ。触らない" >&2; exit 1
+fi
 case "$CAP" in ''|*[!0-9]*) echo "log-size-cap: 上限が数値でない: $CAP"; exit 2 ;; esac
 [ "$CAP" -gt 1024 ] || { echo "log-size-cap: 上限が小さすぎる($CAP)"; exit 2; }
 
@@ -51,6 +59,29 @@ case "$now" in ''|*[!0-9]*) echo "log-size-cap: 大きさを測れない: $F"; e
 keep=$((CAP / KEEP_FRAC))
 snap="$F.tail"
 
+# ★★symlink 経由の上書きを拒む(2026-08-30、Codex が**実演して**見せた)。
+#   `>` は symlink を辿るので、予測できる名前 `<file>.tail.new` に細工を置かれると
+#   その先が上書きされる。Codex の実測: `live.log.tail.new -> api.key` を置くと
+#   **api.key が 11 B から 1024 B に上書きされ、しかも exit 0**。
+#   ★私はこの直前に掃引を `~/.rc-backend` へ向けた —— **api.key が在る dir**。
+#     「大きい file の在る場所ではなく暴走の起きる場所へ」は正しかったが、
+#     其処は同時に**壊されて困る物が在る場所**でもあった。片方だけ見ていた。
+#   入口(元 log)と出口(退避)の両方で、symlink と hardlink を拒む。
+for side in "$snap" "$snap.new"; do
+    if [ -L "$side" ]; then
+        echo "log-size-cap: 退避先 $side が symlink = 別の file を上書きする経路。触らない" >&2
+        exit 1
+    fi
+    if [ -e "$side" ]; then
+        links="$(stat -f%l "$side" 2>/dev/null || stat -c%h "$side" 2>/dev/null)"
+        case "$links" in ''|*[!0-9]*) links=1 ;; esac
+        if [ "$links" -gt 1 ]; then
+            echo "log-size-cap: 退避先 $side が hardlink($links 本)= 別の名前も同じ中身を指す。触らない" >&2
+            exit 1
+        fi
+    fi
+done
+
 # ★退避先の権限を**元 log に合わせる**(2026-08-30、自分の差分を読み直して見つけた)。
 #   `>` は umask 任せなので、既定の 022 だと **600 の log の中身が 644 の file に写る**。
 #   実測: 元 `-rw-------` → 退避 `-rw-r--r--`。dir が 700 なので実害は小さいが、
@@ -60,26 +91,33 @@ mode="$(stat -f%Lp "$F" 2>/dev/null || stat -c%a "$F" 2>/dev/null)"
 case "$mode" in [0-7][0-7][0-7]) ;; *) mode=600 ;; esac
 umask 077
 
-# 1) 末尾を**別 file** へ退避(ここでは元 file を1バイトも触らない)
-if ! tail -c "$keep" "$F" > "$snap.new" 2>/dev/null; then
-    /bin/rm -f "$snap.new"
-    echo "log-size-cap: 末尾を退避できない: $F"; exit 1
+# 1) 末尾を**別 file** へ退避(ここでは元 file を1バイトも触らない)。
+# ★予測できる名前へ `>` しない。同じ dir に mktemp で作って最後に rename する ——
+#   mktemp は存在しない名前を原子的に作るので、先回りして symlink を置く手が効かない。
+tmpsnap="$(mktemp "$(dirname "$F")/.log-size-cap.XXXXXX" 2>/dev/null)" || {
+    echo "log-size-cap: 一時 file を作れない: $(dirname "$F")" >&2; exit 1; }
+cleanup_tmp() { [ -n "${tmpsnap:-}" ] && /bin/rm -f "$tmpsnap" "$tmpsnap.body" 2>/dev/null; }
+trap cleanup_tmp EXIT
+if ! tail -c "$keep" "$F" > "$tmpsnap" 2>/dev/null; then
+    echo "log-size-cap: 末尾を退避できない: $F" >&2; exit 1
 fi
 # 先頭の欠けた行は落とす。**ただし、それで殆ど全部消えるなら落とさない** ——
 # 2026-08-30 に実測で踏んだ: 検体が巨大な1行だったので `sed 1d` が 500KB を **81 B** にした。
 # task の verifier は「上限以下かつ 0 でない」しか見ないので **PASS のまま**通った。
-dropped="$(sed '1d' "$snap.new" | wc -c | tr -d ' ')"
-whole="$(wc -c < "$snap.new" | tr -d ' ')"
+dropped="$(sed '1d' "$tmpsnap" | wc -c | tr -d ' ')"
+whole="$(wc -c < "$tmpsnap" | tr -d ' ')"
 { printf '[log-size-cap] %s に %s B から切り詰め(上限 %s B。以降は元の file に続く)\n' \
       "$(date '+%Y-%m-%d %H:%M:%S')" "$now" "$CAP"
   if [ "$whole" -gt 0 ] && [ "$((dropped * 2))" -lt "$whole" ]; then
-      cat "$snap.new"        # 1行が長すぎる: 途中から始まるが、捨てるよりまし
+      cat "$tmpsnap"         # 1行が長すぎる: 途中から始まるが、捨てるよりまし
   else
-      sed '1d' "$snap.new"
+      sed '1d' "$tmpsnap"
   fi
-} > "$snap" 2>/dev/null || { /bin/rm -f "$snap.new"; echo "log-size-cap: 退避を書けない"; exit 1; }
-/bin/rm -f "$snap.new"
-chmod "$mode" "$snap" 2>/dev/null || echo "log-size-cap: 退避の権限を $mode に出来ない: $snap"
+} > "$tmpsnap.body" 2>/dev/null || { echo "log-size-cap: 退避を書けない" >&2; exit 1; }
+chmod "$mode" "$tmpsnap.body" 2>/dev/null || echo "log-size-cap: 退避の権限を $mode に出来ない" >&2
+# ★rename で置く。`mv` は宛先が symlink でも**その symlink を置き換える**ので、
+#   辿って別の file を壊す道が無い。
+mv -f "$tmpsnap.body" "$snap" || { echo "log-size-cap: 退避を置けない: $snap" >&2; exit 1; }
 
 # 2) 元 file を**1回だけ**空にする。offset 0 から書き戻さないので、追記との競合で
 #    行を上書きする道が無い(失うのは 1) と 2) の間に入った行だけ)。

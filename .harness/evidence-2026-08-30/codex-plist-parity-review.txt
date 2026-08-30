@@ -1,0 +1,1960 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a05387-6a84-7b13-a1b9-2d380b783286
+--------
+user
+Attack this. A read-only parity check that will be run against a production Mac mini. Be brief — the two or three things actually wrong, not a survey.
+
+## What it is for
+`rc-backend` runs on a Mac mini ("friday") as six user LaunchAgents (`com.fleet.*`). The repo holds the canonical plists in `rc-backend/tools/`. Nothing until now compared what is installed on the box with what is in the repo.
+
+Two things happened the same day that motivated it, both measured:
+1. A separate directory (`~/rc-observer/`) fell outside the deploy script's scope, so the host ran a script **139 lines / 22 days** older than the repo. It failed a lookup and fired a "monitoring is broken" alert into the owner's Discord **every day** until it was noticed by someone diffing md5 by hand.
+2. `com.edith.log-rotate-check` has a plist sitting in `~/Library/LaunchAgents/` but does **not** appear in `launchctl list`. Installed is not the same as running.
+
+On its first run the check found real drift: `com.fleet.rc-ota.plist` differed, and the difference was one line **inside an XML comment** — the host's copy still named an install path (`rc-backend/launchd/`) that no longer exists. Harmless in itself; the point is that nothing would have told anyone.
+
+## The script
+
+```bash
+set -uo pipefail
+HERE=<rc-backend/tools>
+HOST="${RC_FLEET_HOST:-athenas}"
+TEMPLATE_ONLY="com.fleet.rc-health-observer"   # repo only has a .example template
+
+repo_names=()                                   # glob, not a hand-written list
+for p in "$HERE"/com.fleet.*.plist; do repo_names+=("$(basename "$p" .plist)"); done
+[ ${#repo_names[@]} -eq 0 ] && exit 2
+
+remote="$(ssh -o ConnectTimeout=15 -o BatchMode=yes "$HOST" '
+    cd "$HOME/Library/LaunchAgents" || exit 9
+    for f in com.fleet.*.plist; do printf "MD5 %s %s\n" "$(md5 -q "$f")" "${f%.plist}"; done
+    launchctl list | awk "/com\\.fleet\\./ {printf \"LOADED %s\\n\", \$3}"
+' 2>/dev/null)"
+rc=$?
+[ $rc -ne 0 ] || [ -z "$remote" ] && exit 2      # cannot measure != match
+
+for name in "${repo_names[@]}"; do
+    want=$(md5 -q "$HERE/$name.plist"); got=$(awk '$1=="MD5" && $3==name {print $2}')
+    case "$got" in [0-9a-f][0-9a-f]*) measured=$((measured+1));; esac   # count only a valid md5
+    [ -z "$got" ]        && { echo "NG $name — not on host"; fail=1; continue; }
+    [ "$got" != "$want" ] && { echo "NG $name — drift"; fail=1; continue; }
+    is_loaded "$name" && echo "ok $name" || { echo "NG $name — matches but NOT loaded"; fail=1; }
+done
+
+# a job on the host with no repo counterpart: name it, never delete it
+for name in $(remote_names); do
+    [ "$name" = "$TEMPLATE_ONLY" ] && continue
+    case " ${repo_names[*]} " in *" $name "*) ;; *) echo "?  $name — on host, not in repo"; fail=1;; esac
+done
+
+# the template-only one: print that it is deliberately NOT compared, but still check it is loaded
+...
+[ "$measured" -ne "${#repo_names[@]}" ] && exit 2   # partial measurement != parity
+exit $fail
+```
+
+Exit codes: 0 = all match and all loaded / 1 = drift or not-loaded / 2 = **could not measure** (deliberately not folded into 0).
+
+## Attack these specifically
+
+1. **md5 over a whole plist file is the comparison.** It flags a changed XML comment as drift — which is what just happened. Is that the right granularity for a *production* check, or does it guarantee the check gets ignored as noisy? Would comparing parsed values (`plutil -convert json` then diff the dict) be better, or does that lose the thing worth catching?
+
+2. **`launchctl list` parsing.** I take column 3 as the label from lines matching `com\.fleet\.`. Is that stable across macOS versions and across job states? Is there a case where a loaded job is absent from `launchctl list` output, or present under a different form, that would make me print "NOT loaded" for a healthy job — i.e. a false red on production?
+
+3. **The `TEMPLATE_ONLY` escape hatch.** One job is excluded from content comparison because the repo only ships a `.example`. That is exactly the shape of an exclusion that quietly grows. Is printing `-- not compared` enough, or should the check instead compare the *structure* of the installed plist against the template (same keys, ProgramArguments pointing into the expected directory) so the exclusion is not total?
+
+4. **What it does NOT check, and whether that makes it misleading.** It does not verify that the program named in `ProgramArguments` exists on the host, nor that the `StandardOutPath` directory is writable, nor that the running process was started from the current plist (a job loaded before an edit keeps the old definition until reloaded — so "matches + loaded" can still mean the *running* job differs from the file). Is that last one severe enough that "ok" is a misleading word here?
+
+5. Anything about running this unattended against a production host that I am underweighting. If the honest answer is "this check gives false confidence, and the real fix is to deploy plists from the repo rather than compare them after the fact", say that.
+2026-08-30T16:36:20.059812Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T16:36:21.874968Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T16:36:23.826833Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+`claude-workspace-context` と `restart-services` を使い、Mac mini 運用上の前提と launchd の実態に照らして、実装の致命点だけ確認します。今回は読み取り専用で、ホストへの接続や変更はしません。
+exec
+/bin/zsh -lc "sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/SKILL.md && sed -n '1,260p' /Users/tomtim/.codex/skills/restart-services/SKILL.md" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+---
+name: claude-workspace-context
+description: "Tomtim の Claude 側グローバル設定を Codex でも参照するためのワークスペース文脈スキル。Mac mini 運用、保護ファイル、AI 連携、Claude Code との役割分担、ハーネス、ルーティング、デプロイ前提、作業スタイル、Claude 由来の制約を踏まえて進める必要がある時に必ず使用。"
+---
+
+# Claude Workspace Context
+
+`~/.claude/CLAUDE.md` と主要エージェント定義を Codex から参照できるようにしたブリッジスキル。
+
+## いつ使うか
+
+- `/Users/tomtim` 配下で、Claude 側の運用前提を踏まえて作業する時
+- Mac mini、launchd、SSH、handoff、複数 AI 連携が絡む時
+- `.env`、設定ファイル、依存関係、デプロイ周辺の変更可否を慎重に判断したい時
+
+## 最重要ルール
+
+- 日本語でやり取りする。
+- ユーザー向けテキストでは絵文字や装飾的な Unicode を避ける。
+- 触ってはいけないもの:
+  - `~/.claude/settings.json`
+  - `~/.zshrc`, `~/.bashrc`, `~/.zprofile`, `~/.bash_profile`
+  - あらゆる `.env`
+- 次は事前確認が必要:
+  - 依存関係の追加/削除/ダウングレード
+  - メジャーアップグレード
+  - ビルド設定変更
+  - DB 接続設定やマイグレーション
+  - launchd、Docker、CI/CD、ポート、認証、SSL 周辺
+- 症状回避ではなく根本原因修正を優先する。
+- 長い文脈共有はファイルベースで残す発想を優先する。
+- Claude 側の routing banner / Harness / Agent Teams は設計思想として参照する。ただし Codex では上位ルールを優先し、明示的な許可なしに sub-agent を起動しない。
+- Claude 側の設定や設計を同期目的で変更しない。反映が必要な場合は Codex 側の skill、memory、reference にだけ写す。
+- 複数 AI が絡む作業では、同じファイルを同時編集しないように担当範囲を明確にする。
+
+## Mac mini 文脈
+
+- SSH: `ssh athenas@10.0.0.0`
+- Node: `/opt/homebrew/bin/node`
+- sudo が必要な作業は、基本的にユーザー実行前提
+
+## 読むべき参照
+
+- コピー索引: `references/README.md`
+- 元のグローバル設定: `references/claude-global.md`
+- Claude 側ルールコピー:
+  - `references/rules/protected-files.md`
+  - `references/rules/workflow-principles.md`
+  - `references/rules/mac-mini-ops.md`
+  - `references/rules/harness-rules.md`
+  - `references/rules/parallel-ai-rules.md`
+  - `references/rules/session-resume.md`
+- ハーネス系エージェント:
+  - `references/agents/planner.md`
+  - `references/agents/generator.md`
+  - `references/agents/evaluator.md`
+  - `references/agents/meta-agent.md`
+- Claude 側の追加エージェント文脈:
+  - `references/agents/mac-mini-deployer.md`
+  - `references/agents/pica-connector.md`
+  - `references/agents/x-bookmark-manager.md`
+- Claude 側コマンド/テンプレート/メモリのコピー:
+  - `references/commands/`
+  - `references/templates/`
+  - `references/memory/`
+  - `references/claude-skills/`
+
+## 注意
+
+- Claude 側のルールが Codex の system/developer 指示と衝突する場合は、Codex 側の上位指示を優先する。
+- このスキルは Claude の運用文脈を持ち込むためのものだが、Codex の権限モデルや sub-agent ルールまでは上書きしない。
+---
+name: restart-services
+description: "Mac mini（ssh athenas@10.0.0.0）上の自動返信システムサービスの再起動・状態確認・ログ確認手順。サービス再起動、launchctl、Mac miniサービス、自動返信システム、プロセス確認の時に使用。"
+user-invocable: true
+argument-hint: "[service-name] [--status | --restart | --logs]"
+---
+
+# Mac mini サービス再起動手順
+
+Mac mini: `athenas@10.0.0.0`（Tailscale経由）
+Node.js: `/opt/homebrew/bin/node`（PATHに含まれないため明示必要）
+
+---
+
+## 接続
+
+```bash
+ssh athenas@10.0.0.0
+```
+
+---
+
+## launchctl 基本操作
+
+### サービス一覧確認
+
+```bash
+# 全launchd jobを表示
+launchctl list | grep -i "auto\|bot\|slack\|discord\|openclaw"
+
+# 特定サービスの状態
+launchctl list com.example.servicename
+# → PID列が数値: 稼働中 / "-": 停止中
+# → Status列が0以外: 異常終了
+```
+
+### サービス再起動
+
+```bash
+# 停止してから起動（確実な再起動）
+launchctl unload ~/Library/LaunchAgents/com.example.servicename.plist
+launchctl load ~/Library/LaunchAgents/com.example.servicename.plist
+
+# または kickstart（launchd 2.0以降）
+launchctl kickstart -k gui/$(id -u)/com.example.servicename
+# -k: kill & restart
+```
+
+### plistファイルの場所
+
+```bash
+# ユーザーのLaunchAgents
+ls ~/Library/LaunchAgents/
+
+# システムのLaunchDaemons（要sudo）
+ls /Library/LaunchDaemons/
+```
+
+---
+
+## プロセス確認
+
+```bash
+# Nodeプロセス確認
+ps aux | grep node
+
+# ポート使用確認
+lsof -i :3000   # ポート番号を適宜変更
+
+# メモリ・CPU使用状況
+top -l 1 -n 0 | head -15
+ps aux | grep -E "node|python" | awk '{print $2, $3, $4, $11}'
+```
+
+---
+
+## ログ確認
+
+```bash
+# launchd経由のログ（plistにStandardOutPath/StandardErrorPath指定がある場合）
+tail -f ~/logs/servicename.log
+tail -f ~/logs/servicename.err
+
+# system.log
+log show --last 30m --predicate 'process == "node"'
+
+# console経由（全ログ）
+log stream --process node
+```
+
+---
+
+## よくあるトラブルシュート
+
+### サービスが起動しない
+
+```bash
+# エラーログを確認
+log show --last 5m --predicate 'eventMessage contains "servicename"'
+
+# plistの文法チェック
+plutil -lint ~/Library/LaunchAgents/com.example.servicename.plist
+
+# 手動実行でエラーを確認
+/opt/homebrew/bin/node /path/to/app.js
+```
+
+### Nodeが見つからない
+
+plistに環境変数を明示:
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+</dict>
+```
+
+### 環境変数が読み込まれない
+
+```bash
+# .envの場所を確認
+ls ~/macmini-openclaw-claudeode-/.env
+
+# plistで直接指定するか、スクリプト内でdotenvを使う
+```
+
+---
+
+## sudoが必要な操作
+
+以下はAIには実行不可。ユーザーがターミナルでSSHして直接実行すること:
+
+- `sudo launchctl load /Library/LaunchDaemons/...`
+- `sudo systemsetup`
+- ポート80/443へのbind
+
+AIに実行させる場合: `! ssh athenas@10.0.0.0 "コマンド"` をユーザーに提示する。
+
+exec
+/bin/zsh -lc "sed -n '1,260p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/mac-mini-ops.md && sed -n '1,220p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/workflow-principles.md && rg -n -i 'rc-backend|launchctl|mac mini|launchagent|athenas' /Users/tomtim/.codex/memories/MEMORY.md || true && rg --files -g 'AGENTS.md' -g 'com.fleet*.plist' -g '*parity*' -g '*.sh' . | sed -n '1,240p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+---
+name: mac-mini-ops
+description: SSH operations, service management, and deploy procedures for the Mac mini (athenas@10.0.0.0)
+---
+
+# Mac mini Operation Rules
+
+## Connection
+- SSH: `ssh athenas@10.0.0.0` (via Tailscale)
+- Tailscale: App Store version, so `tailscale set --ssh` is not available
+
+## Node.js
+- Path: `/opt/homebrew/bin/node`
+- Not in PATH under launchd; always use the absolute path
+
+## .env location
+- Shared: `~/macmini-openclaw-claudeode-/.env`
+- Copy to each subsystem as needed
+
+## Directory layout
+- `~/個人/` — personal projects (x-bookmark etc.)
+- `~/Disocrod/` — Discord X-posting bot
+- client-a lives in a separate directory (do not conflate)
+
+## launchd service management
+```bash
+# Load
+launchctl load ~/Library/LaunchAgents/<plist>
+# Unload
+launchctl unload ~/Library/LaunchAgents/<plist>
+# Status
+launchctl list | grep <label>
+```
+
+## Tasks requiring sudo
+Not executable by AI. User runs `! ssh athenas@... sudo <command>` directly in the terminal.
+---
+name: workflow-principles
+description: Task execution, completion, and self-improvement workflow principles
+---
+
+# Workflow Principles
+
+## Current-state confirmation
+When asked for a fix, do not execute immediately. First inspect the current state, propose, get approval, then execute.
+
+## Task planning
+- Tasks with 3+ steps or design decisions: plan via Plan mode before starting
+- Write the plan in `~/.claude/tasks/todo.md` as a checklist
+- On any problem, stop and re-plan immediately (do not push through)
+
+## Plan Mode Enumeration Checklist
+Before calling ExitPlanMode, walk through the 10 items below.
+Ask all ambiguous items via AskUserQuestion inside Plan mode.
+Do not surface additional confirmations after entering implementation phase
+(if one leaks out, recognize it as a failure of upfront enumeration).
+
+1. Tech / library choice
+2. Architecture approach
+3. UX / design preferences
+4. Scope boundary (how far to go)
+5. Intrusion scope into existing code / environment
+6. Edge case handling policy
+7. Error behavior
+8. Completion criteria
+9. Deploy / delivery target
+10. Conflicts with existing settings / rules
+
+Contract: Plan mode is the batch confirmation phase. Missed questions here destroy the value of autonomous execution. No shortcuts on this checklist.
+
+## Definition of done
+Writing code is not done. Must include log verification and proof of behavior.
+
+## Self-Improvement Loop
+- On user corrections or feedback, record the pattern in `~/.claude/projects/<PJ-slug>/memory/feedback_*.md`
+- Auto-referenced via MEMORY.md pointers; no manual review at session start
+
+## Demand Elegance
+- On noticing a hacky fix, self-question "is there a deeper solution?" before proceeding
+- Skip for trivially obvious simple fixes
+1:# Task Group: Conductor setup, workflow usage, and Claude/Mac mini clarification
+26:## Task 3: Mac mini への SSH 到達性と Claude Code subscription/auth の境界を切り分けて説明した
+34:- ssh, athenas@10.0.0.0, Friday.local, Claude Code, subscription, auth, claude --version, codex --version, Mac mini
+49:- 今回の環境では `ssh athenas@10.0.0.0` が通り、応答は `Friday.local` と `/Users/athenas` だった。Conductor は local `claude` CLI を orchestration するだけで、subscription 自体を所有しない [Task 3]
+./rc-backend/test/phone-window-notify-controls.sh
+./rc-backend/test/vacuous-scan-controls.sh
+./rc-backend/test/disposable-reap-controls.sh
+./rc-backend/test/departure-survivability-controls.sh
+./rc-backend/test/poll-spend-controls.sh
+./rc-backend/test/port-coverage-controls.sh
+./rc-backend/test/verify-state-judgment-controls.sh
+./rc-backend/test/fork-check-controls.sh
+./rc-backend/test/no-linerefs-controls.sh
+./rc-backend/test/post-gate-batch-controls.sh
+./rc-backend/test/mutation-verdict-controls.sh
+./rc-backend/test/disposable-session-controls.sh
+./rc-backend/test/install-hooks-controls.sh
+./rc-backend/test/test-discovery-controls.sh
+./rc-backend/test/mutation-timeout-controls.sh
+./rc-backend/test/run-controls-controls.sh
+./rc-backend/test/mutation-run-live-controls.sh
+./rc-backend/test/child-reaping-controls.sh
+./rc-backend/test/deploy-to-edith-controls.sh
+./rc-backend/test/tunnel-observer-controls.sh
+./rc-backend/test/pre-commit-gates-controls.sh
+./rc-backend/test/phone-window-controls.sh
+./rc-backend/test/prewarm-controls.sh
+./rc-backend/test/limit-lifted-controls.sh
+./rc-backend/test/pii-controls.sh
+./rc-backend/test/health-observer-controls.sh
+./rc-backend/test/commit-suite-gate-controls.sh
+./rc-backend/test/rsync-exclude-controls.sh
+./rc-backend/test/account-nonblocking-controls.sh
+./rc-backend/test/deploy-to-friday-controls.sh
+./rc-backend/test/prove-control-controls.sh
+./rc-backend/test/orphan-instrument-scan-controls.sh
+./rc-backend/test/verify-script-controls.sh
+./rc-backend/test/env-death-controls.sh
+./rc-backend/test/interrupt-honesty-control.sh
+./rc-backend/test/restart-epoch-controls.sh
+./rc-backend/test/gui-run-controls.sh
+./rc-backend/test/deploy-dirt-controls.sh
+./rc-backend/test/remote-mini-root-controls.sh
+./rc-backend/test/mutation-target-controls.sh
+./rc-backend/test/prove-all-scope-controls.sh
+./rc-backend/test/vacuous-gate-controls.sh
+./rc-backend/test/copied-tree-controls.sh
+./rc-backend/test/rsync-exclude-edith-controls.sh
+./rc-backend/test/verdict-mutants.sh
+./rc-backend/test/fleet-account-cswap-controls.sh
+./rc-backend/test/deploy-to-edith-behavior-controls.sh
+./rc-backend/test/verify-log-controls.sh
+./rc-backend/test/cited-testnames-gate-controls.sh
+./rc-backend/test/port-coverage-gate-controls.sh
+./rc-backend/test/design-supersede-world-controls.sh
+./rc-backend/test/fleet-plist-parity-controls.sh
+./rc-backend/test/session-guard-controls.sh
+./rc-backend/test/log-cap-controls.sh
+./rc-backend/test/phone-window-judgment-controls.sh
+./rc-backend/test/coldboot-chain-controls.sh
+./rc-backend/test/staged-controls-gate-controls.sh
+./rc-backend/test/phone-window-health-controls.sh
+./rc-backend/test/ota-server-controls.sh
+./rc-backend/test/wire-shape-controls.sh
+./rc-backend/test/doc-linerefs-gate-controls.sh
+./rc-backend/test/mutation-freeze-controls.sh
+./rc-backend/test/resume-cwd-controls.sh
+./rc-backend/test/controls-registration-gate-controls.sh
+./rc-backend/test/warn-ledger-controls.sh
+./rc-backend/test/example-artifacts-controls.sh
+./rc-backend/tools/check-no-pii.sh
+./rc-backend/tools/log-cap-all.sh
+./rc-backend/tools/cited-testnames-gate.sh
+./rc-backend/tools/verify-phone-window.sh
+./rc-backend/tools/desktop-attach-control.sh
+./rc-backend/tools/digest-notify.sh
+./rc-backend/tools/delivery-check.sh
+./rc-backend/tools/verify-rc-backend-state.sh
+./rc-backend/tools/prove-control.sh
+./rc-backend/tools/departure-survivability-check.sh
+./rc-backend/tools/ensure-phone-window.sh
+./rc-backend/tools/prove-all-controls.sh
+./rc-backend/tools/deploy-to-friday.sh
+./rc-backend/tools/desktop-attach.sh
+./rc-backend/tools/funnel-exposure-check-control.sh
+./rc-backend/tools/post-gate-batch.sh
+./rc-backend/tools/ensure-work-session.sh
+./rc-backend/tools/exposure-standing-control.sh
+./rc-backend/tools/com.fleet.rc-ota.plist
+./rc-backend/tools/coldboot-chain.sh
+./rc-backend/tools/commit-suite-gate.sh
+./rc-backend/tools/doc-linerefs-gate.sh
+./rc-backend/tools/tunnel-observer.sh
+./rc-backend/tools/port-coverage-gate.sh
+./rc-backend/tools/orphan-instrument-scan.sh
+./rc-backend/tools/check-mutation-targets.sh
+./rc-backend/tools/vacuous-gate.sh
+./rc-backend/tools/verify-log.sh
+./rc-backend/tools/com.fleet.rc-digest-notify.plist
+./rc-backend/tools/deploy-dirt.sh
+./rc-backend/tools/tailnet-key-expiry.sh
+./rc-backend/tools/staged-controls-gate.sh
+./rc-backend/tools/log-size-cap.sh
+./rc-backend/tools/health-observer.sh
+./rc-backend/tools/mutation-run-live.sh
+./rc-backend/tools/edith-gui-run.sh
+./rc-backend/tools/observer-parity-check.sh
+./rc-backend/tools/rc-backend-launch.sh
+./rc-backend/tools/pre-commit-gates.sh
+./rc-backend/tools/run-controls.sh
+./rc-backend/tools/com.fleet.rc-log-cap.plist
+./rc-backend/tools/digest-notify-control.sh
+./rc-backend/tools/commit-msg-guard.sh
+./rc-backend/tools/tunnel-observer-control.sh
+./rc-backend/tools/rc-backend-launch-check.sh
+./rc-backend/tools/com.fleet.rc-phone-window.plist
+./rc-backend/tools/verify-on-edith.sh
+./rc-backend/tools/deploy-observer-to-friday.sh
+./rc-backend/tools/rollback-friday-control.sh
+./rc-backend/tools/mutation-verdict.sh
+./rc-backend/tools/install-hooks.sh
+./rc-backend/tools/funnel-exposure-check.sh
+./rc-backend/tools/serve-decision-check.sh
+./rc-backend/tools/phone-window-notify.sh
+./rc-backend/tools/serve-decision.sh
+./rc-backend/tools/warn-ledger.sh
+./rc-backend/tools/mixed-index-control.sh
+./rc-backend/tools/deploy-to-edith.sh
+./rc-backend/tools/controls-registration-gate.sh
+./rc-backend/tools/fleet-account-cswap.sh
+./rc-backend/tools/com.fleet.rc-backend.plist
+./rc-backend/tools/rollback-friday.sh
+./rc-backend/tools/phone-window-health.sh
+./rc-backend/tools/fleet-plist-parity-check.sh
+./ios/tools/live-send-check.sh
+./ios/tools/conversation-ui-control.sh
+./ios/tools/ota-verify.sh
+./ios/tools/list-return-refresh-control.sh
+./ios/tools/disposable-session-name.sh
+./ios/tools/xcode-tree-guard.sh
+./ios/tools/mutation-deferral-control.sh
+./ios/tools/live-interrupt-check.sh
+./ios/tools/sim-device.sh
+./ios/tools/sim-log-summary-control.sh
+./ios/tools/build-device-pick-control.sh
+./ios/tools/account-ui-control.sh
+./ios/tools/ui-fixture-absence-control.sh
+./ios/tools/sim-log-summary.sh
+./ios/tools/initial-load-narration-control.sh
+./ios/tools/xcode-tree-lock-controls.sh
+./ios/tools/xcode-tree-lock.sh
+./ios/tools/adhoc-ota.sh
+./ios/tools/ui-fixture-behavior-control.sh
+./ios/tools/live-send-check-control.sh
+./ios/tools/live-poll-check-control.sh
+./ios/tools/live-interrupt-check-control.sh
+./ios/tools/inflight-sentence-control.sh
+./ios/tools/bar-material-control.sh
+./ios/tools/shots.sh
+./ios/tools/build.sh
+./ios/tools/signout-notice-control.sh
+./ios/tools/sim-device-control.sh
+./ios/tools/live-poll-check.sh
+
+codex
+実装と制御テストが既にあります。要点は、比較方式そのものよりも「loaded の測り方」と「ロード済み定義の世代」を区別できているかです。そこを実ファイルで確認しています。
+exec
+/bin/zsh -lc "nl -ba rc-backend/tools/fleet-plist-parity-check.sh | sed -n '1,280p' && nl -ba rc-backend/test/fleet-plist-parity-controls.sh | sed -n '1,360p' && git -C rc-backend status --short && git -C rc-backend log -5 --oneline -- tools/fleet-plist-parity-check.sh test/fleet-plist-parity-controls.sh" in /Users/tomtim/Infra/mobile-work
+ succeeded in 101ms:
+exec
+/bin/zsh -lc "MANWIDTH=100 man launchctl | col -bx | rg -n -C 5 'legacy subcommands|list \\[|print domain|print-disabled|bootstrap|gui/|user/' | sed -n '1,280p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 129ms:
+14-     structures are domains, services, and endpoints. A domain manages the execution policy for a
+15-     collection of services.  A service may be thought of as a virtual process that is always
+16-     available to be spawned in response to demand. Each service has a collection of endpoints, and
+17-     sending a message to one of those endpoints will cause the service to launch on demand. Domains
+18-     advertise these endpoints in a shared namespace and may be thought of as synonymous with Mach
+19:     bootstrap subsets.
+20-
+21-     Many subcommands in launchctl take a specifier which indicates the target domain or service for
+22-     the subcommand. This specifier may take one of the following forms:
+23-
+24-     system/[service-name]
+25-              Targets the system domain or a service within the system domain. The system domain
+26:              manages the root Mach bootstrap and is considered a privileged execution context.
+27-              Anyone may read or query the system domain, but root privileges are required to make
+28-              modifications.
+29-
+30:     user/<uid>/[service-name]
+31-              Targets the user domain for the given UID or a service within that domain. A user
+32-              domain may exist independently of a logged-in user. User domains do not exist on iOS.
+33-
+34-     login/<asid>/[service-name]
+35-              Targets a user-login domain or service within that domain. A user-login domain is
+36-              created when the user logs in at the GUI and is identified by the audit session
+37-              identifier associated with that login. If a user domain has an associated login
+38-              domain, the print subcommand will display the ASID of that login domain. User-login
+39-              domains do not exist on iOS.
+40-
+41:     gui/<uid>/[service-name]
+42-              Another form of the login specifier. Rather than specifying a user-login domain by its
+43-              ASID, this specifier targets the domain based on which user it is associated with and
+44-              is generally more convenient.
+45-
+46-              Note: GUI domains and user domains share many resources. For the purposes of the Mach
+47:              bootstrap name lookups, they are "flat", so they share the same set of registered
+48-              names. But they still have discrete sets of services. So when printing the user
+49:              domain's contents, you may see many Mach bootstrap name registrations from services
+50-              that exist in the GUI domain for that user, but you will not see the services
+51-              themselves in that list.
+52-
+53-     pid/<pid>/[service-name]
+54-              Targets the domain for the given PID or a service within that domain. Each process on
+55-              the system will have a PID domain associated with it that consists of the XPC services
+56-              visible to that process which can be reached with xpc_connection_create(3).
+57-
+58-     For instance, when referring to a service with the identifier com.apple.example loaded into the
+59:     GUI domain of a user with UID 501, domain-target is gui/501/, service-name is
+60:     com.apple.example, and service-target is gui/501/com.apple.example.
+61-
+62-SUBCOMMANDS
+63:     bootstrap | bootout domain-target [service-path service-path2 ...] | service-target
+64-              Bootstraps or removes domains and services. When service arguments are present,
+65:              bootstraps and correspondingly removes their definitions into the domain.  Services
+66-              may be specified as a series of paths or a service identifier.  Paths may point to XPC
+67-              service bundles, launchd.plist(5) s, or a directories containing a collection of
+68:              either. If there were one or more errors while bootstrapping or removing a collection
+69-              of services, the problematic paths will be printed with the errors that occurred.
+70-
+71:              If no paths or service target are specified, these commands can either bootstrap or
+72:              remove a domain specified as a domain target. Some domains will implicitly bootstrap
+73-              pre-defined paths as part of their creation.
+74-
+75-     enable | disable service-target
+76-              Enables or disables the service in the requested domain. Once a service is disabled,
+77-              it cannot be loaded in the specified domain until it is once again enabled. This state
+--
+176-              firing, this subcommand will print that reason, irrespective of whether there were
+177-              messages waiting on the service's various endpoints. This subcommand is only intended
+178-              for debugging and profiling use and its output should not be relied upon in production
+179-              scenarios.
+180-
+181:     print domain-target | service-target
+182-              Prints information about the specified service or domain. Domain output includes
+183-              various properties about the domain as well as a list of services and endpoints in the
+184-              domain with state pertaining to each. Service output includes various properties of
+185-              the service, including information about its origin on-disk, its current state,
+186-              execution context, and last exit status.
+--
+190-              warning.
+191-
+192-     print-cache
+193-              Prints the contents of the launchd service cache.
+194-
+195:     print-disabled domain-target
+196-              Prints the list of disabled services in the specified domain.
+197-
+198:     plist [segment,section] Mach-O
+199-              Prints the the property list embedded in the __TEXT,__info_plist segment/section of
+200-              the target Mach-O or the specified segment/section.
+201-
+202-     procinfo pid
+203-              Prints information about the execution context of the specified PID. This information
+204-              includes Mach task-special ports and exception ports (and when run against a
+205:              DEVELOPMENT launchd, what names the ports are advertised as in the Mach bootstrap
+206-              namespace, if they are known to launchd) and audit session context. This subcommand is
+207-              intended for diagnostic purposes only, and its output should not be relied upon in
+208-              production scenarios. This command requires root privileges.
+209-
+210-     hostinfo
+--
+282-              With the apps argument given, launchd will terminate all apps running in the caller's
+283-              GUI login session that did not come from a launchd.plist(5) on-disk. Apps like Finder,
+284-              Dock and SystemUIServer will be unaffected. Apps are terminated in the same manner as
+285-              the logout argument, and all the same caveats apply.
+286-
+287:     error [posix|mach|bootstrap] code
+288-              Prints a human-readable string of the given error code.  By default, launchctl will
+289-              attempt to guess which error domain the code given belongs to. The caller may
+290:              optionally specify which domain (either posix, mach, or bootstrap) to interpret the
+291-              given code as an error from that subsystem.
+292-
+293-     variant  Prints the launchd variant currently active on the system. Possible variants include
+294-              RELEASE, DEVELOPMENT and DEBUG.
+295-
+--
+298-LEGACY SUBCOMMANDS
+299-     Legacy subcommands select the target domain based on whether they are executed as root or not.
+300-     When executed as root, they target the system domain.
+301-
+302-     load | unload [-wF] [-S sessiontype] [-D searchpath] paths ...
+303:              Recommended alternative subcommands: bootstrap | bootout | enable | disable
+304-
+305-              Load the specified configuration files or directories of configuration files.  Jobs
+306-              that are not on-demand will be started as soon as possible. All specified jobs will be
+307-              loaded before any of them are allowed to start. Note that per-user configuration files
+308-              (LaunchAgents) must be owned by root (if they are located in /Library/LaunchAgents) or
+--
+379-
+380-     stop label
+381-              Stop the specified job by label. If a job is on-demand, launchd may immediately
+382-              restart the job if launchd finds any criteria that is satisfied.
+383-
+384:     list [-x] [label]
+385-              Recommended alternative subcommand: print
+386-
+387-              With no arguments, list all of the jobs loaded into launchd in three columns. The
+388-              first column displays the PID of the job if it is running.  The second column displays
+389-              the last exit status of the job. If the number in this column is negative, it
+--
+424-              implemented.
+425-
+426-     umask [newmask]
+427-              Get or optionally set the umask(2) of launchd.  This subcommand is not implemented.
+428-
+429:     bslist [PID | ..] [-j]
+430-              This subcommand is not implemented and has been superseded by the print subcommand,
+431-              which provides much richer information.
+432-
+433-     bsexec PID command [args]
+434-              This executes the given command in as similar an execution context as possible to the
+435:              target PID. Adopted attributes include the Mach bootstrap namespace, exception server
+436-              and security audit session. It does not modify the process' credentials (UID, GID,
+437-              etc.) or adopt any environment variables from the target process. It affects only the
+438:              Mach bootstrap context and directly-related attributes.
+439-
+440-     asuser UID command [args]
+441-              This executes the given command in as similar an execution context as possible to that
+442:              of the target user's bootstrap. Adopted attributes include the Mach bootstrap
+443-              namespace, exception server and security audit session. It does not modify the
+444-              process' credentials (UID, GID, etc.) or adopt any user-specific environment
+445:              variables. It affects only the Mach bootstrap context and directly- related
+446-              attributes.
+447-
+448-     bstree   This subcommand is not implemented and has been superseded by the print subcommand,
+449-              which provides much richer information.
+450-
+451-     managerpid
+452:              This prints the PID of the launchd which manages the current bootstrap. In prior
+453-              implementations, there could be multiple launchd processes each managing their own
+454:              Mach bootstrap subsets. In the current implementation, all bootstraps are managed by
+455-              one process, so this subcommand will always print "1".
+456-
+457-     manageruid
+458-              This prints the UID associated with the caller's launchd context.
+459-
+
+exec
+/bin/zsh -lc "MANWIDTH=100 man launchctl | col -bx | sed -n '378,405p'; MANWIDTH=100 man launchd.plist | col -bx | rg -n -C 4 'ProgramArguments|StandardOutPath|KeepAlive|RunAtLoad|Label' | sed -n '1,260p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 157ms:
+53-     The following keys can be used to describe the configuration details of your daemon or agent.
+54-     Property lists are Apple's standard configuration file format.  Please see plist(5) for more
+55-     information. Please note: property list files are expected to have their name end in ".plist".
+56-     Also please note that it is the expected convention for launchd property list files to be named
+57:     <Label>.plist. Thus, if your job label is "com.apple.sshd", your plist file should be named
+58-     "com.apple.sshd.plist".
+59-
+60:     Label <string>
+61-     This required key uniquely identifies the job to launchd.
+62-
+63-     Disabled <boolean>
+64-     This optional key specifies whether the job should be loaded by default. Note that this key may
+--
+111-
+112-     Program <string>
+113-     This key maps to the first argument of execv(3) and indicates the absolute path to the
+114-     executable for the job. If this key is missing, then the first element of the array of strings
+115:     provided to the ProgramArguments will be used instead. This key is required in the absence of
+116:     the ProgramArguments and BundleProgram keys.
+117-
+118-     BundleProgram <string>
+119-     This key maps to the first argument of execv(3) and is an app-bundle relative path to the
+120-     executable for the job. This key is only supported for plists that are installed using
+121-     SMAppService.
+122-
+123:     ProgramArguments <array of strings>
+124-     This key maps to the second argument of execvp(3) and specifies the argument vector to be
+125-     passed to the job when a process is spawned. This key is required in the absence of the Program
+126-     key.  IMPORTANT: Many people are confused by this key. Please read execvp(3) very carefully!
+127-
+128-     NOTE: The Program key must be an absolute path. Previous versions of launchd did not enforce
+129-     this requirement but failed to run the job. In the absence of the Program key, the first
+130:     element of the ProgramArguments array may be either an absolute path, or a relative path which
+131-     is resolved using _PATH_STDPATH.
+132-
+133-     EnableGlobbing <boolean>
+134-     This flag causes launchd to use the glob(3) mechanism to update the program arguments before
+--
+148-     EnableTransactions , and also lets the system consider process eligible for reclamation under
+149-     memory pressure when it's inactive. See xpc_main(3) for details. Jobs that opt into Pressured
+150-     Exit will be automatically relaunched if they exit or crash while holding open transactions.
+151-
+152:     NOTE: launchd(8) does not respect EnablePressuredExit for jobs that have KeepAlive set to true.
+153-
+154-     IMPORTANT: Jobs which opt into Pressured Exit will ignore SIGTERM rather than exiting by
+155-     default, so a dispatch(3) source must be used when handling this signal.
+156-
+157-     OnDemand <boolean>
+158-     This key does nothing if set to true. If set to false, this key is equivalent to specifying a
+159:     true value for the KeepAlive key. This key should not be used. Please remove this key from your
+160-     launchd.plist.
+161-
+162-     ServiceIPC <boolean>
+163-     Please remove this key from your launchd.plist.
+164-
+165:     KeepAlive <boolean or dictionary of stuff>
+166-     This optional key is used to control whether your job is to be kept continuously running or to
+167-     let demand and conditions control the invocation. The default is false and therefore only
+168-     demand will start the job. The value may be set to true to unconditionally keep the job alive.
+169-     Alternatively, a dictionary of conditions may be specified to selectively control whether
+170-     launchd keeps a job alive or not. If multiple keys are provided, launchd ORs them, thus
+171-     providing maximum flexibility to the job to refine the logic and stall if necessary. If launchd
+172-     finds no reason to restart the job, it falls back on demand based invocation.  Jobs that exit
+173-     quickly and frequently when configured to be kept alive will be throttled to conserve system
+174:     resources. The use of this key implicitly implies RunAtLoad, causing launchd to speculatively
+175-     launch the job.
+176-
+177-           SuccessfulExit <boolean>
+178-           If true, the job will be restarted as long as the program exits and with an exit status
+179-           of zero.  If false, the job will be restarted in the inverse condition.  This key implies
+180:           that "RunAtLoad" is set to true, since the job needs to run at least once before an exit
+181-           status can be determined.
+182-
+183-           NetworkState <boolean>
+184-           This key is no longer implemented as it never acted how most users expected.
+--
+189-           alive in the inverse condition. The intent of this feature is that two or more jobs may
+190-           create semaphores in the file- system namespace. The following example keeps the job
+191-           alive as long as the file /path/to/file exists.
+192-
+193:                 <key>KeepAlive</key>
+194-                 <dict>
+195-                      <key>PathState</key>
+196-                      <dict>
+197-                           <key>/path/to/file</key>
+--
+215-           If true, the the job will be restarted as long as it exited due to a signal which is
+216-           typically associated with a crash (SIGILL, SIGSEGV, etc.). If false, the job will be
+217-           restarted in the inverse condition.
+218-
+219:     RunAtLoad <boolean>
+220-     This optional key is used to control whether your job is launched once at the time the job is
+221-     loaded. The default is false. This key should be avoided, as speculative job launches have an
+222-     adverse effect on system-boot and user-login scenarios.
+223-
+--
+340-     This optional key specifies that the given path should be mapped to the job's stdin(4), and
+341-     that the contents of that file will be readable from the job's stdin(4).  If the file does not
+342-     exist, no data will be delivered to the process' stdin(4).
+343-
+344:     StandardOutPath <string>
+345-     This optional key specifies that the given path should be mapped to the job's stdout(4), and
+346-     that any writes to the job's stdout(4) will go to the given file. If the file does not exist,
+347-     it will be created with writable permissions and ownership reflecting the user and/or group
+348-     specified as the UserName and/or GroupName, respectively (if set) and permissions reflecting
+--
+610-           <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN"
+611-           "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+612-           <plist version="1.0">
+613-           <dict>
+614:                <key>Label</key>
+615-                <string>com.example.exampled</string>
+616-                <key>Program</key>
+617-                <string>/path/tp/exampled</string>
+618:                <key>ProgramArguments</key>
+619-                <array>
+620-                     <string>exampled</string>
+621-                     <string>argv1</string>
+622-                     <string>argv2</string>
+
+exec
+/bin/zsh -lc "rg -n -C 5 'LaunchAgents|launchctl|bootstrap|bootout|load |unload |com\\.fleet' rc-backend/tools/deploy-to-friday.sh rc-backend/tools/*.sh | sed -n '1,360p' && for f in rc-backend/tools/com.fleet.*.plist rc-backend/tools/com.fleet*.example; do [ -f \""'$f" ] && { echo "FILE $f"; plutil -p "$f"; }; done' in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+rc-backend/tools/deploy-to-friday.sh-16-#   1. serve の入口が 443 ではなく **9443**。443 は `~/Personal/resonance-os` が持っていて
+rc-backend/tools/deploy-to-friday.sh-17-#      AllowFunnel = true(公開インターネットへ露出)= 相乗りすると操縦面が公開される。
+rc-backend/tools/deploy-to-friday.sh-18-#      Funnel が使えるのは 443 / 8443 / 10000 の3つだけなので、9443 は構造的に公開できない。
+rc-backend/tools/deploy-to-friday.sh-19-#      入口ポートは plist の `RC_SERVE_PORT` が持つ(起動ラッパが読む)。ここでは指定しない
+rc-backend/tools/deploy-to-friday.sh-20-#      —— 配備台本は serve を触らないので、ここで持つと**読まれない設定**になる。
+rc-backend/tools/deploy-to-friday.sh:21:#   2. launchd の Label が `com.fleet.rc-backend`。Friday には未 load の `com.edith.*` が
+rc-backend/tools/deploy-to-friday.sh-22-#      23 本残っているので、同名前空間に生きた job を混ぜない。
+rc-backend/tools/deploy-to-friday.sh-23-#   3. HOME が /Users/athenas。
+rc-backend/tools/deploy-to-friday.sh-24-#
+rc-backend/tools/deploy-to-friday.sh-25-# 使い方:
+rc-backend/tools/deploy-to-friday.sh-26-#   bash tools/deploy-to-friday.sh            # 仮置き → Friday で緑 → 入れ替え → 再起動を観測
+--
+rc-backend/tools/deploy-to-friday.sh-40-RC_EDITH_DIR="/Users/athenas/rc-backend" \
+rc-backend/tools/deploy-to-friday.sh-41-RC_EDITH_STAGE="/Users/athenas/rc-staging" \
+rc-backend/tools/deploy-to-friday.sh-42-RC_EDITH_RELEASES="/Users/athenas/rc-releases" \
+rc-backend/tools/deploy-to-friday.sh-43-RC_DEPLOY_MARK="/Users/athenas/.rc-backend/deploy-in-progress" \
+rc-backend/tools/deploy-to-friday.sh-44-RC_DEPLOY_LOCK="/Users/athenas/.rc-backend/deploy.lock" \
+rc-backend/tools/deploy-to-friday.sh:45:RC_JOB_LABEL="com.fleet.rc-backend" \
+rc-backend/tools/deploy-to-friday.sh-46-RC_REMOTE_LOG_DIR="/Users/athenas/Library/Logs/rc-backend" \
+rc-backend/tools/deploy-to-friday.sh:47:RC_COLDBOOT_PLIST="/Users/athenas/Library/LaunchAgents/com.fleet.rc-backend.plist" \
+rc-backend/tools/deploy-to-friday.sh-48-RC_COLDBOOT_USER="athenas" \
+rc-backend/tools/deploy-to-friday.sh-49-exec bash "$HERE/deploy-to-edith.sh" "$@"
+--
+rc-backend/tools/deploy-observer-to-friday.sh-1-#!/bin/bash
+rc-backend/tools/deploy-observer-to-friday.sh-2-# deploy-observer-to-friday.sh — friday の `~/rc-observer/tools/` を repo に追随させる。
+rc-backend/tools/deploy-observer-to-friday.sh-3-#
+rc-backend/tools/deploy-observer-to-friday.sh-4-# ── なぜ別の台本なのか(2026-08-30)───────────────────────────────────────────
+rc-backend/tools/deploy-observer-to-friday.sh-5-# `deploy-to-friday.sh` は **`~/rc-backend/` しか運ばない**。監視器は別ディレクトリ
+rc-backend/tools/deploy-observer-to-friday.sh:6:# (`~/rc-observer/`)に住み、別の launchd label(`com.fleet.rc-health-observer`)で走るので、
+rc-backend/tools/deploy-observer-to-friday.sh-7-# あの台本の守備範囲の外に落ちていた。その死角のせいで、friday の `health-observer.sh` は
+rc-backend/tools/deploy-observer-to-friday.sh-8-# repo より **139 行・22 日**古いまま動き、`KEY_PEER` が人間向けラベルを機体名として
+rc-backend/tools/deploy-observer-to-friday.sh-9-# 引きに行って失敗し、**毎日** Tom の Discord へ「監視が壊れている」を投げていた
+rc-backend/tools/deploy-observer-to-friday.sh-10-# (実発火 2026-08-28 11:18 / 2026-08-29 11:19。台帳 CF-7 / H-4)。
+rc-backend/tools/deploy-observer-to-friday.sh-11-#
+--
+rc-backend/tools/deploy-to-friday.sh-16-#   1. serve の入口が 443 ではなく **9443**。443 は `~/Personal/resonance-os` が持っていて
+rc-backend/tools/deploy-to-friday.sh-17-#      AllowFunnel = true(公開インターネットへ露出)= 相乗りすると操縦面が公開される。
+rc-backend/tools/deploy-to-friday.sh-18-#      Funnel が使えるのは 443 / 8443 / 10000 の3つだけなので、9443 は構造的に公開できない。
+rc-backend/tools/deploy-to-friday.sh-19-#      入口ポートは plist の `RC_SERVE_PORT` が持つ(起動ラッパが読む)。ここでは指定しない
+rc-backend/tools/deploy-to-friday.sh-20-#      —— 配備台本は serve を触らないので、ここで持つと**読まれない設定**になる。
+rc-backend/tools/deploy-to-friday.sh:21:#   2. launchd の Label が `com.fleet.rc-backend`。Friday には未 load の `com.edith.*` が
+rc-backend/tools/deploy-to-friday.sh-22-#      23 本残っているので、同名前空間に生きた job を混ぜない。
+rc-backend/tools/deploy-to-friday.sh-23-#   3. HOME が /Users/athenas。
+rc-backend/tools/deploy-to-friday.sh-24-#
+rc-backend/tools/deploy-to-friday.sh-25-# 使い方:
+rc-backend/tools/deploy-to-friday.sh-26-#   bash tools/deploy-to-friday.sh            # 仮置き → Friday で緑 → 入れ替え → 再起動を観測
+--
+rc-backend/tools/deploy-to-friday.sh-40-RC_EDITH_DIR="/Users/athenas/rc-backend" \
+rc-backend/tools/deploy-to-friday.sh-41-RC_EDITH_STAGE="/Users/athenas/rc-staging" \
+rc-backend/tools/deploy-to-friday.sh-42-RC_EDITH_RELEASES="/Users/athenas/rc-releases" \
+rc-backend/tools/deploy-to-friday.sh-43-RC_DEPLOY_MARK="/Users/athenas/.rc-backend/deploy-in-progress" \
+rc-backend/tools/deploy-to-friday.sh-44-RC_DEPLOY_LOCK="/Users/athenas/.rc-backend/deploy.lock" \
+rc-backend/tools/deploy-to-friday.sh:45:RC_JOB_LABEL="com.fleet.rc-backend" \
+rc-backend/tools/deploy-to-friday.sh-46-RC_REMOTE_LOG_DIR="/Users/athenas/Library/Logs/rc-backend" \
+rc-backend/tools/deploy-to-friday.sh:47:RC_COLDBOOT_PLIST="/Users/athenas/Library/LaunchAgents/com.fleet.rc-backend.plist" \
+rc-backend/tools/deploy-to-friday.sh-48-RC_COLDBOOT_USER="athenas" \
+rc-backend/tools/deploy-to-friday.sh-49-exec bash "$HERE/deploy-to-edith.sh" "$@"
+--
+rc-backend/tools/delivery-check.sh-36-printf '  手元=%s 本番=%s 電話=%s\n' "$LOCAL" "$LIVE" "$PHONE"
+rc-backend/tools/delivery-check.sh-37-# ★`-dirty` を許さない。汚れた木で焼いた物は、どの commit とも突き合わせられない。
+rc-backend/tools/delivery-check.sh-38-case "$LIVE" in *-dirty) bad "本番が汚れた木の版" "$LIVE";; "$LOCAL") good "本番が手元と一致";; *) bad "本番が手元と違う" "$LIVE != $LOCAL";; esac
+rc-backend/tools/delivery-check.sh-39-case "$PHONE" in *-dirty) bad "電話が汚れた木の版" "$PHONE";; "$LOCAL") good "電話が手元と一致";; *) bad "電話が手元と違う" "$PHONE != $LOCAL";; esac
+rc-backend/tools/delivery-check.sh-40-
+rc-backend/tools/delivery-check.sh:41:echo "=== 2. 常設が全部 load されているか ==="
+rc-backend/tools/delivery-check.sh:42:for j in com.fleet.rc-backend com.fleet.rc-phone-window com.fleet.rc-health-observer; do
+rc-backend/tools/delivery-check.sh:43:    if rexec "launchctl print gui/501/$j >/dev/null 2>&1"; then good "$j"; else bad "$j" "未 load"; fi
+rc-backend/tools/delivery-check.sh-44-done
+rc-backend/tools/delivery-check.sh:45:if launchctl print "gui/$(id -u)/com.tomtim.rc-tunnel-observer" >/dev/null 2>&1; then
+rc-backend/tools/delivery-check.sh-46-    good "com.tomtim.rc-tunnel-observer(手元)"
+rc-backend/tools/delivery-check.sh-47-else
+rc-backend/tools/delivery-check.sh:48:    bad "com.tomtim.rc-tunnel-observer(手元)" "未 load = 外からトンネルを見る目が無い"
+rc-backend/tools/delivery-check.sh-49-fi
+rc-backend/tools/delivery-check.sh-50-
+rc-backend/tools/delivery-check.sh-51-echo "=== 3. 設定 file が机に在るか(在っても『効いている』とは限らない)==="
+rc-backend/tools/delivery-check.sh-52-# ★repo に例が在る物は、本番に**実物**が在るべき。例だけ在って実物が無い =
+rc-backend/tools/delivery-check.sh-53-#   「作ったが配っていない」の一番よく出る形(2026-08-26 の拒否規則がこれ)。
+--
+rc-backend/tools/coldboot-chain.sh-11-#   これは DESIGN (19)「規則は、それを回す物が無いと効かない」の測定版 ——
+rc-backend/tools/coldboot-chain.sh-12-#   「見張っている」と書いた物が本当に見張っているかを、見張る物が要る。
+rc-backend/tools/coldboot-chain.sh-13-#
+rc-backend/tools/coldboot-chain.sh-14-# 測る 7 つ。どれか 1 つ落ちるだけで「停電 = 二度と戻らない」に変わる:
+rc-backend/tools/coldboot-chain.sh-15-#   (1) FileVault が Off      … On だと起動時に解錠する人を待つ。渡米後は誰も居ない
+rc-backend/tools/coldboot-chain.sh:16:#   (2) 自動ログインが $CB_USER … GUI session が立たないと gui/501 の job が load されない
+rc-backend/tools/coldboot-chain.sh:17:#   (3) plist が $CB_PLIST に在る … login 時に load される物が無ければ何も起きない
+rc-backend/tools/coldboot-chain.sh:18:#   (4) RunAtLoad = true      … load されても起動しない
+rc-backend/tools/coldboot-chain.sh-19-#   (5) KeepAlive = true      … 落ちた時に戻らない(冷起動で tailscaled が後から来る形に効く)
+rc-backend/tools/coldboot-chain.sh-20-#   (6) pmset autorestart = 1 … 通電しても電源が入らない
+rc-backend/tools/coldboot-chain.sh-21-#   (7) pmset sleep = 0       … 眠ると tailnet から消える(= 電話から届かない)
+rc-backend/tools/coldboot-chain.sh-22-#
+rc-backend/tools/coldboot-chain.sh-23-# 終了コード: 0=鎖が繋がっている / 1=切れている / **2=測れなかった**。
+--
+rc-backend/tools/coldboot-chain.sh-39-#   焼いてあり、friday で回すと「自動ログインが athenas(欲しいのは edith)」「plist が無い」の
+rc-backend/tools/coldboot-chain.sh-40-#   **2件が誤報**として赤になった —— 実際の性質(FileVault off / 通電で起動 / 眠らない)は全部緑。
+rc-backend/tools/coldboot-chain.sh-41-#   この道具は自分で「走らせる場所 = 見たい機械そのもの」と書いているのに、
+rc-backend/tools/coldboot-chain.sh-42-#   期待値だけが特定の機体に固定されていた。
+rc-backend/tools/coldboot-chain.sh-43-#   ・自動ログインすべき利用者 = **この検査を走らせている利用者**(単独利用の mini ではこれが正)
+rc-backend/tools/coldboot-chain.sh:44:#   ・plist = LaunchAgents の中の `*rc-backend.plist` を**探す**(ラベルは機体で違う)
+rc-backend/tools/coldboot-chain.sh:45:PLIST="${CB_PLIST:-$(ls "$HOME/Library/LaunchAgents/"*rc-backend.plist 2>/dev/null | head -1)}"
+rc-backend/tools/coldboot-chain.sh-46-WANT_USER="${CB_USER:-$(id -un)}"
+rc-backend/tools/coldboot-chain.sh-47-
+rc-backend/tools/coldboot-chain.sh-48-broken=0; unmeasured=0; ok=0
+rc-backend/tools/coldboot-chain.sh-49-ng()  { echo "★NG   $*" >&2; broken=$((broken+1)); }
+rc-backend/tools/coldboot-chain.sh-50-unm() { echo "?     $*" >&2; unmeasured=$((unmeasured+1)); }
+--
+rc-backend/tools/coldboot-chain.sh-67-# 「自動ログインが設定されていない」は、測れなかったのではなく、はっきり切れている。
+rc-backend/tools/coldboot-chain.sh-68-al="$("$DEFAULTS" read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null)"
+rc-backend/tools/coldboot-chain.sh-69-if [ "$al" = "$WANT_USER" ]; then
+rc-backend/tools/coldboot-chain.sh-70-    good "自動ログイン: $al"
+rc-backend/tools/coldboot-chain.sh-71-elif [ -z "$al" ]; then
+rc-backend/tools/coldboot-chain.sh:72:    ng "自動ログイン: 無効 = GUI の session が立たない → gui/501 の job も load されない"
+rc-backend/tools/coldboot-chain.sh-73-else
+rc-backend/tools/coldboot-chain.sh-74-    ng "自動ログイン: ${al}(欲しいのは ${WANT_USER})= 別の人の session が立つ"
+rc-backend/tools/coldboot-chain.sh-75-fi
+rc-backend/tools/coldboot-chain.sh-76-
+rc-backend/tools/coldboot-chain.sh-77-# ── (3)(4)(5) plist と、その中の 2 つ ─────────────────────────────────────
+--
+rc-backend/tools/coldboot-chain.sh-94-        Dict*)   unm  "KeepAlive: 辞書の形 = 条件付き。自動では裁かないので中身を人が見る事" ;;
+rc-backend/tools/coldboot-chain.sh-95-        "")      ng   "KeepAlive: 鍵が無い = 一度落ちたら戻らない" ;;
+rc-backend/tools/coldboot-chain.sh-96-        *)       ng   "KeepAlive: ${ka} = 一度落ちたら戻らない" ;;
+rc-backend/tools/coldboot-chain.sh-97-    esac
+rc-backend/tools/coldboot-chain.sh-98-else
+rc-backend/tools/coldboot-chain.sh:99:    ng  "plist が $PLIST に無い = login 時に load される物が無い"
+rc-backend/tools/coldboot-chain.sh-100-    unm "RunAtLoad: plist が無いので測れない"
+rc-backend/tools/coldboot-chain.sh-101-    unm "KeepAlive: plist が無いので測れない"
+rc-backend/tools/coldboot-chain.sh-102-fi
+rc-backend/tools/coldboot-chain.sh-103-
+rc-backend/tools/coldboot-chain.sh-104-# ── (6)(7) pmset ──────────────────────────────────────────────────────────
+--
+rc-backend/tools/edith-gui-run.sh-40-# 終了コード: 中で走ったコマンドの終了コードをそのまま返す。
+rc-backend/tools/edith-gui-run.sh-41-#   ただし 90-94 は**この台本自身**の失敗(下の EXIT_* 参照)。中のコマンドが 90 台を
+rc-backend/tools/edith-gui-run.sh-42-#   返す設計なら、この台本は使わない事。
+rc-backend/tools/edith-gui-run.sh-43-#
+rc-backend/tools/edith-gui-run.sh-44-# ── 決して破らない事 ───────────────────────────────────────────────────
+rc-backend/tools/edith-gui-run.sh:45:#   - `bootout` するのは**自分で作った使い捨て label だけ**。本番 `com.edith.rc-backend`
+rc-backend/tools/edith-gui-run.sh-46-#     には触れない(そもそも label の接頭辞で機械的に弾く)。
+rc-backend/tools/edith-gui-run.sh-47-#   - 秘密を印字しない。keychain の**中身**を読む形(`-w`)は受け付けない = fail-closed。
+rc-backend/tools/edith-gui-run.sh-48-#   - remote へ渡す物は base64 で運ぶ。二重引用符で組み立てると**送る前に手元の shell に
+rc-backend/tools/edith-gui-run.sh-49-#     食われる**(2026-08-01 の run7 が実際に踏んだ。逆引用符がこちらで実行された)。
+rc-backend/tools/edith-gui-run.sh-50-set -u
+--
+rc-backend/tools/edith-gui-run.sh-141-</dict>
+rc-backend/tools/edith-gui-run.sh-142-</plist>
+rc-backend/tools/edith-gui-run.sh-143-PL
+rc-backend/tools/edith-gui-run.sh-144-
+rc-backend/tools/edith-gui-run.sh-145-cleanup() {
+rc-backend/tools/edith-gui-run.sh:146:  launchctl bootout "gui/$UID_N/$LABEL" 2>/dev/null
+rc-backend/tools/edith-gui-run.sh-147-  # ★消す物の**一覧を書き写さない**。写しを持つと、後で file を1つ足した時に必ず
+rc-backend/tools/edith-gui-run.sh-148-  #   片方だけ置き去りになる —— 2026-08-02、最初の版が実際にこれで転んだ:
+rc-backend/tools/edith-gui-run.sh-149-  #   `args.list` を足したのに消す側に書き足さず、rmdir が落ちて DIRT=94 になった。
+rc-backend/tools/edith-gui-run.sh-150-  #   (救われたのは「不在を確認する」検査が在ったから。消したつもりで終わっていたら
+rc-backend/tools/edith-gui-run.sh-151-  #    edith に残骸が溜まり続けていた)
+--
+rc-backend/tools/edith-gui-run.sh-159-  #   再帰的な削除(`rm -rf`)は使わない —— 深い順に**空 dir だけ**畳む。
+rc-backend/tools/edith-gui-run.sh-160-  find "$DIR" -type d 2>/dev/null | awk '{print length, $0}' | sort -rn | cut -d' ' -f2- |
+rc-backend/tools/edith-gui-run.sh-161-    while read -r d; do rmdir "$d" 2>/dev/null; done
+rc-backend/tools/edith-gui-run.sh-162-  # ★不在を**確認**する。消したつもりで終わらない。
+rc-backend/tools/edith-gui-run.sh-163-  if [ -e "$DIR" ]; then echo "DIRT $DIR が残っている"; fi
+rc-backend/tools/edith-gui-run.sh:164:  if launchctl print "gui/$UID_N/$LABEL" >/dev/null 2>&1; then echo "DIRT job $LABEL が残っている"; fi
+rc-backend/tools/edith-gui-run.sh-165-}
+rc-backend/tools/edith-gui-run.sh-166-
+rc-backend/tools/edith-gui-run.sh:167:if ! launchctl bootstrap "gui/$UID_N" "$PLIST" 2>/dev/null; then
+rc-backend/tools/edith-gui-run.sh-168-  echo "BOOTSTRAP-FAILED"; cleanup; exit 92
+rc-backend/tools/edith-gui-run.sh-169-fi
+rc-backend/tools/edith-gui-run.sh-170-
+rc-backend/tools/edith-gui-run.sh-171-waited=0
+rc-backend/tools/edith-gui-run.sh-172-while [ ! -f "$RCFILE" ] && [ "$waited" -lt "$TIMEOUT" ]; do
+--
+rc-backend/tools/departure-survivability-check.sh-20-#   (1) tailnet の鍵の期限 … 切れると tailnet から落ち、復旧用の ssh も同じ経路なので同時に死ぬ
+rc-backend/tools/departure-survivability-check.sh-21-#   (2) job が今この瞬間 動いている事 … plist が正しくても、落ちて再起動を繰り返す形は別問題
+rc-backend/tools/departure-survivability-check.sh-22-#   (3) 面が 401 を返す事      … 200 は鍵が外れている印。tailnet 内の誰でも読める状態
+rc-backend/tools/departure-survivability-check.sh-23-#   (4) 空き容量               … 3週間分のログと OS 更新の置き場
+rc-backend/tools/departure-survivability-check.sh-24-#   (5) 鎖②③を戻す物が在る事 … 電話の窓を戻す job が
+rc-backend/tools/departure-survivability-check.sh:25:#         launchctl に居るか。①(rc-backend)だけ見て「電話が使える」と読むのが
+rc-backend/tools/departure-survivability-check.sh-26-#         DESIGN §6 が名指しで警告している誤読。サーバが上がっても、tmux と
+rc-backend/tools/departure-survivability-check.sh-27-#         その中の会話が戻らなければ「読めるが送れない」で止まる
+rc-backend/tools/departure-survivability-check.sh-28-#   (6) 今この瞬間、tmux 経路で話せる相手が居る事 … /api/sessions?scope=registered を
+rc-backend/tools/departure-survivability-check.sh-29-#         **本番の判定コードそのもの**に数えさせる(生死判定を此処で作り直さない)。
+rc-backend/tools/departure-survivability-check.sh-30-#         0 件 = 「読めるが送れない」(DESIGN §6 の表)
+--
+rc-backend/tools/departure-survivability-check.sh-63-#   ここが死ぬと電話も死ぬ。機会ではなく**測っている性質**の方が生きているので、宛先を移す。
+rc-backend/tools/departure-survivability-check.sh-64-#   env 名 `RC_EDITH_HOST` は据え置き(他の道具と揃える。改名の代金は機能を増やさない)。
+rc-backend/tools/departure-survivability-check.sh-65-HOST="${RC_EDITH_HOST:-athenas}"
+rc-backend/tools/departure-survivability-check.sh-66-# ★2026-08-28: job のラベルも**焼き込まない**。宛先だけ friday へ移して
+rc-backend/tools/departure-survivability-check.sh-67-#   ラベルを edith 時代のまま残していたら、**赤3件が全部誤報**になった
+rc-backend/tools/departure-survivability-check.sh:68:#   (friday の実体は com.fleet.*、`com.tom.work-tmux` はそもそも存在しない)。
+rc-backend/tools/departure-survivability-check.sh-69-#   誤報を出す道具は、出さない道具より悪い —— 読む人が赤を無視する様になる。
+rc-backend/tools/departure-survivability-check.sh:70:JOB_RC="${RC_JOB_BACKEND:-com.fleet.rc-backend}"
+rc-backend/tools/departure-survivability-check.sh:71:JOB_PHONE="${RC_JOB_PHONE_WINDOW:-com.fleet.rc-phone-window}"
+rc-backend/tools/departure-survivability-check.sh-72-# 旅程。帰国が延びた時に「余裕がある」と嘘を吐かない為、上書きできる
+rc-backend/tools/departure-survivability-check.sh-73-TRIP_DAYS="${RC_TRIP_DAYS:-30}"
+rc-backend/tools/departure-survivability-check.sh-74-
+rc-backend/tools/departure-survivability-check.sh-75-while [ $# -gt 0 ]; do
+rc-backend/tools/departure-survivability-check.sh-76-    case "$1" in
+--
+rc-backend/tools/departure-survivability-check.sh-127-    else
+rc-backend/tools/departure-survivability-check.sh-128-        p cb_rc missing
+rc-backend/tools/departure-survivability-check.sh-129-    fi
+rc-backend/tools/departure-survivability-check.sh-130-    p pw_sha "$(shasum -a 256 "$HOME/rc-backend/tools/ensure-phone-window.sh" 2>/dev/null | awk "{print \$1}")"
+rc-backend/tools/departure-survivability-check.sh-131-
+rc-backend/tools/departure-survivability-check.sh:132:    p job_rc  "$(launchctl list 2>/dev/null | awk -v L="$JOB_RC" "\$3 == L { print \$2; exit }")"
+rc-backend/tools/departure-survivability-check.sh:133:    p job_pid "$(launchctl list 2>/dev/null | awk -v L="$JOB_RC" "\$3 == L { print \$1; exit }")"
+rc-backend/tools/departure-survivability-check.sh-134-
+rc-backend/tools/departure-survivability-check.sh-135-    # 鎖②③を戻す物。値の意味: 空=居ない / - =まだ終了コードが無い(走行中) / 数字=最後の終了コード
+rc-backend/tools/departure-survivability-check.sh:136:    p phone_job "$(launchctl list 2>/dev/null | awk -v L="$JOB_PHONE" "\$3 == L { print \$2; exit }")"
+rc-backend/tools/departure-survivability-check.sh-137-
+rc-backend/tools/departure-survivability-check.sh-138-    # 鎖④。生死判定は**本番の /api/sessions にやらせる**(此処で aliveKind を作り直さない)。
+rc-backend/tools/departure-survivability-check.sh-139-    # 鍵は argv にも env にも置かない(ps から見える)。python が鍵ファイルを直接読む。
+rc-backend/tools/departure-survivability-check.sh-140-    #
+rc-backend/tools/departure-survivability-check.sh-141-    # ★`limit` を付けない。一度 `limit=50` と書いて、根拠を「生きた会話は心拍で先頭に
+--
+rc-backend/tools/departure-survivability-check.sh-271-
+rc-backend/tools/departure-survivability-check.sh-272-# --- 今この瞬間 上がっているか -----------------------------------------------
+rc-backend/tools/departure-survivability-check.sh-273-echo
+rc-backend/tools/departure-survivability-check.sh-274-echo "面が上がっている事(冷起動の鎖とは別の問い = 今の状態)"
+rc-backend/tools/departure-survivability-check.sh-275-if [ -z "$(g job_pid)" ]; then
+rc-backend/tools/departure-survivability-check.sh:276:    say_bad "$JOB_RC が launchctl に居ない"
+rc-backend/tools/departure-survivability-check.sh-277-elif [ "$(g job_rc)" = "0" ]; then
+rc-backend/tools/departure-survivability-check.sh-278-    say_ok "稼働中(最後の終了コード 0)"
+rc-backend/tools/departure-survivability-check.sh-279-else
+rc-backend/tools/departure-survivability-check.sh-280-    say_bad "最後の終了コードが $(g job_rc) —— 落ちて再起動を繰り返している疑い"
+rc-backend/tools/departure-survivability-check.sh-281-fi
+--
+rc-backend/tools/departure-survivability-check.sh-292-# 「打ち込む / 割り込む」が成立する(DESIGN §6 の鎖4本)。
+rc-backend/tools/departure-survivability-check.sh-293-echo
+rc-backend/tools/departure-survivability-check.sh-294-echo "再起動の後、鎖②③ を戻す物(此処が空だと「読めるが送れない」で止まる)"
+rc-backend/tools/departure-survivability-check.sh-295-job_line() {   # job_line <表示名> <値> <終了コードの読み方の在処>
+rc-backend/tools/departure-survivability-check.sh-296-    case "$2" in
+rc-backend/tools/departure-survivability-check.sh:297:        '')  say_bad "$1 が launchctl に居ない —— 再起動の後、鎖を戻す物が誰も居ない" ;;
+rc-backend/tools/departure-survivability-check.sh-298-        -)   say_unm "$1 の終了コードがまだ無い(走っている最中に見た)。測り直す" ;;
+rc-backend/tools/departure-survivability-check.sh-299-        0)   say_ok  "$1(最後の終了コード 0)" ;;
+rc-backend/tools/departure-survivability-check.sh-300-        *)   say_bad "$1 の最後の終了コードが $2 —— 読み方は $3" ;;
+rc-backend/tools/departure-survivability-check.sh-301-    esac
+rc-backend/tools/departure-survivability-check.sh-302-}
+--
+rc-backend/tools/departure-survivability-check.sh-626-    say_note "★見張りが**見張られる側と同じ機体**に居る($MON_HOST)= 機体ごと落ちれば誰も知らせない"
+rc-backend/tools/departure-survivability-check.sh-627-    say_note "  元は二機の前提(edith を athenas が見張る)。edith 譲渡で机が friday へ移り、"
+rc-backend/tools/departure-survivability-check.sh-628-    say_note "  両方が同じ機体を指す様になった。直すには**別の機体**か外部の見張りが要る"
+rc-backend/tools/departure-survivability-check.sh-629-    say_note "  (下の緑は『監視の常駐が動いている』までで、落ちた時に届くかは別問題)"
+rc-backend/tools/departure-survivability-check.sh-630-fi
+rc-backend/tools/departure-survivability-check.sh:631:MON_LABEL="com.fleet.rc-health-observer"
+rc-backend/tools/departure-survivability-check.sh-632-# ssh は host ごとに1本。edith の1本目と混ぜない = 向こうが落ちても此処までの判定は残る
+rc-backend/tools/departure-survivability-check.sh-633-MRAW=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$MON_HOST" '
+rc-backend/tools/departure-survivability-check.sh-634-    p() { printf "%s=%s\n" "$1" "$2"; }
+rc-backend/tools/departure-survivability-check.sh-635-    L="$HOME/.rc-backend/health-observer.log"
+rc-backend/tools/departure-survivability-check.sh:636:    PL="$HOME/Library/LaunchAgents/com.fleet.rc-health-observer.plist"
+rc-backend/tools/departure-survivability-check.sh-637-
+rc-backend/tools/departure-survivability-check.sh:638:    if launchctl list com.fleet.rc-health-observer >/dev/null 2>&1; then
+rc-backend/tools/departure-survivability-check.sh-639-        p job loaded
+rc-backend/tools/departure-survivability-check.sh-640-    else
+rc-backend/tools/departure-survivability-check.sh-641-        p job absent
+rc-backend/tools/departure-survivability-check.sh-642-    fi
+rc-backend/tools/departure-survivability-check.sh-643-
+--
+rc-backend/tools/departure-survivability-check.sh-672-if [ -z "$MRAW" ]; then
+rc-backend/tools/departure-survivability-check.sh-673-    say_unm "監視の居る機械に届かない(${MON_HOST})—— **赤ではない**。此処の回線かもしれず、"
+rc-backend/tools/departure-survivability-check.sh-674-    say_note "  届かない事は「監視が死んでいる」の証拠にならない。繋がる所で測り直す"
+rc-backend/tools/departure-survivability-check.sh-675-else
+rc-backend/tools/departure-survivability-check.sh-676-    case "$(mg job)" in
+rc-backend/tools/departure-survivability-check.sh:677:        absent) say_bad "${MON_LABEL} が launchctl に居ない —— 旅程中ずっと黙る。据え直す" ;;
+rc-backend/tools/departure-survivability-check.sh:678:        loaded) say_note "${MON_LABEL} は launchctl に居る(居る事と回っている事は別。下で測る)" ;;
+rc-backend/tools/departure-survivability-check.sh-679-        *)      say_unm "監視の登録状態が読めない" ;;
+rc-backend/tools/departure-survivability-check.sh-680-    esac
+rc-backend/tools/departure-survivability-check.sh-681-
+rc-backend/tools/departure-survivability-check.sh-682-    iv=$(mg interval); age=$(mg age)
+rc-backend/tools/departure-survivability-check.sh-683-    case "$(mg log)" in
+--
+rc-backend/tools/departure-survivability-check.sh-701-                                say_note "此処の緑が言うのは「監視が動いている」まで。**Discord まで出るか**は"
+rc-backend/tools/departure-survivability-check.sh-702-                                say_note "  此処では測れない(据付日に注入した失敗で経路は通っている、が最後)"
+rc-backend/tools/departure-survivability-check.sh-703-                            else
+rc-backend/tools/departure-survivability-check.sh-704-                                say_bad "監視が止まっている —— 最新の刻みが ${age} 秒前(上限 ${lim} 秒 = 刻み ${iv} の2回分+余裕)"
+rc-backend/tools/departure-survivability-check.sh-705-                                say_note "  此処が赤の間、旅程中の沈黙は「無事」と区別が付かない。"
+rc-backend/tools/departure-survivability-check.sh:706:                                say_note "  直す = ${MON_HOST} で launchctl kickstart -k gui/\$(id -u)/${MON_LABEL}"
+rc-backend/tools/departure-survivability-check.sh-707-                            fi ;;
+rc-backend/tools/departure-survivability-check.sh-708-                    esac ;;
+rc-backend/tools/departure-survivability-check.sh-709-            esac ;;
+rc-backend/tools/departure-survivability-check.sh-710-        *) say_unm "監視のログの在否が読めない" ;;
+rc-backend/tools/departure-survivability-check.sh-711-    esac
+--
+rc-backend/tools/rollback-friday.sh-42-
+rc-backend/tools/rollback-friday.sh-43-HOST="${RC_FRIDAY_HOST:-athenas}"
+rc-backend/tools/rollback-friday.sh-44-REMOTE_HOME="${RC_REMOTE_HOME:-/Users/athenas}"
+rc-backend/tools/rollback-friday.sh-45-RELEASES="${RC_ROLLBACK_RELEASES:-$REMOTE_HOME/rc-releases}"
+rc-backend/tools/rollback-friday.sh-46-LIVE="${RC_ROLLBACK_LIVE:-$REMOTE_HOME/rc-backend}"
+rc-backend/tools/rollback-friday.sh:47:JOB="${RC_ROLLBACK_JOB:-com.fleet.rc-backend}"
+rc-backend/tools/rollback-friday.sh-48-HEALTH="${RC_ROLLBACK_HEALTH:-https://desk.tailnet.example:9443/healthz}"
+rc-backend/tools/rollback-friday.sh-49-LOCK="${RC_ROLLBACK_LOCK:-$REMOTE_HOME/.rc-backend/deploy.lock}"
+rc-backend/tools/rollback-friday.sh-50-PINS="${RC_ROLLBACK_PINS:-$RELEASES/.pinned}"
+rc-backend/tools/rollback-friday.sh-51-AUDIT="${RC_ROLLBACK_AUDIT:-$REMOTE_HOME/.rc-backend/rollback.log}"
+rc-backend/tools/rollback-friday.sh-52-KEEP_DEFAULT="${RC_ROLLBACK_KEEP:-8}"
+--
+rc-backend/tools/rollback-friday.sh-171-torev="$(r "head -1 '$RELEASES/$want/DEPLOYED-REV' 2>/dev/null" || echo '?')"
+rc-backend/tools/rollback-friday.sh-172-fromrev="$(r "head -1 '$LIVE/DEPLOYED-REV' 2>/dev/null" || echo '?')"
+rc-backend/tools/rollback-friday.sh-173-echo "戻す: $fromrev → $torev  ($want)"
+rc-backend/tools/rollback-friday.sh-174-
+rc-backend/tools/rollback-friday.sh-175-if [ "$DRY" -eq 1 ]; then
+rc-backend/tools/rollback-friday.sh:176:    echo "DRY: 錠を取り / rsync --delete で書き戻し / launchctl kickstart -k で再起動 / healthz が $torev を返すまで確認"
+rc-backend/tools/rollback-friday.sh-177-    exit 0
+rc-backend/tools/rollback-friday.sh-178-fi
+rc-backend/tools/rollback-friday.sh-179-
+rc-backend/tools/rollback-friday.sh-180-# 1) 錠。配備と重ならない事。★`--delete` を撃つので、重なると片方の木が混ざる。
+rc-backend/tools/rollback-friday.sh-181-if ! r "mkdir '$LOCK' 2>/dev/null"; then
+--
+rc-backend/tools/rollback-friday.sh-192-fi
+rc-backend/tools/rollback-friday.sh-193-audit "rollback rsync-done $want ($fromrev -> $torev)"
+rc-backend/tools/rollback-friday.sh-194-
+rc-backend/tools/rollback-friday.sh-195-# 3) 写し終えて**から**再起動。★`unload` ではなく `kickstart -k`(この機体には
+rc-backend/tools/rollback-friday.sh-196-#    古い定義を掴んだ事故が在る)。窓番(rc-phone-window)は触らない。
+rc-backend/tools/rollback-friday.sh:197:r "launchctl kickstart -k gui/\$(id -u)/$JOB" >/dev/null 2>&1 || \
+rc-backend/tools/rollback-friday.sh-198-    echo "  (再起動の command が非ゼロ。下の健康確認で本当の所を見る)" >&2
+rc-backend/tools/rollback-friday.sh-199-
+rc-backend/tools/rollback-friday.sh-200-# 4) ★**本物の健康確認**。rsync が 0 で帰った事を成功と呼ばない。
+rc-backend/tools/rollback-friday.sh-201-#    版まで見る —— 200 が返るだけなら別の物が答えている可能性がある。
+rc-backend/tools/rollback-friday.sh-202-ok=0
+--
+rc-backend/tools/ensure-work-session.sh-2-# ensure-work-session.sh — 鎖②。tmux の `work` セッションが在る事だけを保証する。
+rc-backend/tools/ensure-work-session.sh-3-#
+rc-backend/tools/ensure-work-session.sh-4-# なぜ要るのか(2026-08-25、Friday への移設で判った)
+rc-backend/tools/ensure-work-session.sh-5-#   `ensure-phone-window.sh`(鎖③)は **window を1枚足すだけ**で、session は作らない。
+rc-backend/tools/ensure-work-session.sh-6-#   edith ではそこを `com.tom.work-tmux`(既存 job・60秒毎)が持っていたが、
+rc-backend/tools/ensure-work-session.sh:7:#   **Friday にはその job が無い**(実測: launchctl に tmux 系 job ゼロ / tmux サーバ自体が不在)。
+rc-backend/tools/ensure-work-session.sh-8-#   鎖②が欠けたまま鎖③だけ据えると、ensure-phone-window は永久に exit 10 を返し続ける ——
+rc-backend/tools/ensure-work-session.sh-9-#   それは「異常ではない」と定義されている終了コードなので、**静かに永久に何もしない**。
+rc-backend/tools/ensure-work-session.sh-10-#   この repo が一番恐れている壊れ方そのもの(= 正常と見分けが付かない)。
+rc-backend/tools/ensure-work-session.sh-11-#
+rc-backend/tools/ensure-work-session.sh-12-# 冪等の取り方: `has-session` の成否だけ。中で何が走っているかは見ない(鎖③の担当)。
+--
+rc-backend/tools/deploy-to-edith.sh-24-#   採らない理由は2つ、どちらも Codex が知らなかった事実:
+rc-backend/tools/deploy-to-edith.sh-25-#     1. `/Users/edith/rc-backend` には**私の物ではない `.git` が居る**(2026-08-03 12:52、
+rc-backend/tools/deploy-to-edith.sh-26-#        版管理外の本番コードを git 化する fleet の掃除が作った物。remote 無し・単発 commit)。
+rc-backend/tools/deploy-to-edith.sh-27-#        本番パスを symlink にすると、その repo を特定の release の中へ**黙って移す**事になる。
+rc-backend/tools/deploy-to-edith.sh-28-#     2. 本番パスを見ている plist が**2枚**ある(com.edith.rc-backend / com.edith.rc-phone-window)。
+rc-backend/tools/deploy-to-edith.sh:29:#        plist を書き換えると `bootout` + `bootstrap` が要る(この機械には 2026-07-17 に
+rc-backend/tools/deploy-to-edith.sh:30:#        `launchctl load` が古い定義を掴んだ事故が在る)= 依存している面を一度畳む事になる。
+rc-backend/tools/deploy-to-edith.sh-31-#   代わりに得た物: 「本番の木に触る前に緑を取る」と「戻せる複製が再起動を跨いで残る」。
+rc-backend/tools/deploy-to-edith.sh-32-#   諦めた物: 入れ替えそのものの原子性。走っている node は module をメモリに持っていて
+rc-backend/tools/deploy-to-edith.sh-33-#   rsync 中に `src/` を読み直さないので、この非原子の窓は**サービスからは観測されない**。
+rc-backend/tools/deploy-to-edith.sh-34-#
+rc-backend/tools/deploy-to-edith.sh-35-# ★戻し先を `$TMPDIR` に置かない(Codex 裁定)。tmp は再起動や掃除で消える =
+--
+rc-backend/tools/deploy-to-edith.sh-71-# ★9b(冷起動の鎖)が見に行く先。**渡していなかったので、移設先でも edith を探していた**
+rc-backend/tools/deploy-to-edith.sh-72-#   (2026-08-25 に Friday への初回配備で実際に鳴った: 「自動ログイン: athenas(欲しいのは
+rc-backend/tools/deploy-to-edith.sh-73-#   edith)」「plist が …/com.edith.rc-backend.plist に無い」)。coldboot-chain.sh 側は
+rc-backend/tools/deploy-to-edith.sh-74-#   CB_PLIST / CB_USER で既にパラメータ化されていて、**呼び出し側が繋いでいなかっただけ**。
+rc-backend/tools/deploy-to-edith.sh-75-#   直さないと、移設先では 9b が永久に赤を出す = 計器が嘘をつく(赤が壁紙になる)。
+rc-backend/tools/deploy-to-edith.sh:76:COLDBOOT_PLIST="${RC_COLDBOOT_PLIST:-\$HOME/Library/LaunchAgents/com.edith.rc-backend.plist}"
+rc-backend/tools/deploy-to-edith.sh-77-COLDBOOT_USER="${RC_COLDBOOT_USER:-edith}"
+rc-backend/tools/deploy-to-edith.sh-78-NODE="/opt/homebrew/bin/node"
+rc-backend/tools/deploy-to-edith.sh-79-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+rc-backend/tools/deploy-to-edith.sh-80-
+rc-backend/tools/deploy-to-edith.sh-81-DRY=""
+--
+rc-backend/tools/deploy-to-edith.sh-495-#   `lsof` や `sed` が空を返す場面も正常。`set -e` を足すと正常な分岐が中断に化ける。
+rc-backend/tools/deploy-to-edith.sh-496-#   代わりに、黙って進んで良い所が 1 箇所も無い**戻しの rsync** を明示的に見る(下)。
+rc-backend/tools/deploy-to-edith.sh-497-set -u
+rc-backend/tools/deploy-to-edith.sh-498-snapshot="$1"; live="$2"; mark="$3"; want_rev="$4"; owner="$5"
+rc-backend/tools/deploy-to-edith.sh-499-job="gui/$(id -u)/$6"; logdir="$7"
+rc-backend/tools/deploy-to-edith.sh:500:jobpid() { launchctl print "$job" 2>/dev/null | awk -F'= *' '/^[[:space:]]*pid =/ {print $2; exit}'; }
+rc-backend/tools/deploy-to-edith.sh-501-# 戻しの途中で launchd に起こされない為の印(step 6 と同じ物)。**自分が立てた印だけ**外す。
+rc-backend/tools/deploy-to-edith.sh-502-trap 'case "$(cat "$mark" 2>/dev/null)" in *" $owner") rm -f "$mark" ;; esac' EXIT
+rc-backend/tools/deploy-to-edith.sh-503-
+FILE rc-backend/tools/com.fleet.rc-backend.plist
+{
+  "EnvironmentVariables" => {
+    "HOME" => "/Users/athenas"
+    "PATH" => "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    "RC_APP_DIR" => "/Users/athenas/rc-backend"
+    "RC_BIND" => "127.0.0.1"
+    "RC_DEPLOY_MARK" => "/Users/athenas/.rc-backend/deploy-in-progress"
+    "RC_FLEET_ACCOUNT" => "/Users/athenas/rc-backend/tools/fleet-account-cswap.sh"
+    "RC_KEY_FILE" => "/Users/athenas/.rc-backend/api.key"
+    "RC_LOG_DIR" => "/Users/athenas/Library/Logs/rc-backend"
+    "RC_PORT" => "8787"
+    "RC_SERVE_PORT" => "9443"
+  }
+  "ExitTimeOut" => 10
+  "KeepAlive" => true
+  "Label" => "com.fleet.rc-backend"
+  "LimitLoadToSessionType" => [
+    0 => "Aqua"
+    1 => "Background"
+  ]
+  "ProcessType" => "Standard"
+  "ProgramArguments" => [
+    0 => "/bin/bash"
+    1 => "/Users/athenas/rc-backend/tools/rc-backend-launch.sh"
+  ]
+  "RunAtLoad" => true
+  "StandardErrorPath" => "/Users/athenas/Library/Logs/rc-backend/rc-backend.error.log"
+  "StandardOutPath" => "/Users/athenas/Library/Logs/rc-backend/rc-backend.log"
+  "ThrottleInterval" => 15
+  "WorkingDirectory" => "/Users/athenas/rc-backend"
+}
+FILE rc-backend/tools/com.fleet.rc-digest-notify.plist
+{
+  "EnvironmentVariables" => {
+    "HOME" => "/Users/athenas"
+    "PATH" => "/Users/athenas/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    "RC_DIGEST_API" => "http://127.0.0.1:8787"
+    "RC_DIGEST_NOW_OBS" => "2"
+    "RC_DIGEST_SOON_MIN" => "20"
+  }
+  "Label" => "com.fleet.rc-digest-notify"
+  "LimitLoadToSessionType" => [
+    0 => "Aqua"
+    1 => "Background"
+  ]
+  "ProcessType" => "Background"
+  "ProgramArguments" => [
+    0 => "/bin/bash"
+    1 => "/Users/athenas/rc-backend/tools/digest-notify.sh"
+  ]
+  "RunAtLoad" => true
+  "StandardErrorPath" => "/Users/athenas/Library/Logs/rc-backend/rc-digest-notify.error.log"
+  "StandardOutPath" => "/Users/athenas/Library/Logs/rc-backend/rc-digest-notify.log"
+  "StartInterval" => 150
+  "WorkingDirectory" => "/Users/athenas/rc-backend"
+}
+FILE rc-backend/tools/com.fleet.rc-log-cap.plist
+{
+  "EnvironmentVariables" => {
+    "HOME" => "/Users/athenas"
+    "PATH" => "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  }
+  "Label" => "com.fleet.rc-log-cap"
+  "LimitLoadToSessionType" => [
+    0 => "Aqua"
+    1 => "Background"
+  ]
+  "ProcessType" => "Background"
+  "ProgramArguments" => [
+    0 => "/bin/bash"
+    1 => "/Users/athenas/rc-backend/tools/log-cap-all.sh"
+  ]
+  "RunAtLoad" => true
+  "StandardErrorPath" => "/Users/athenas/Library/Logs/rc-backend/rc-log-cap.error.log"
+  "StandardOutPath" => "/Users/athenas/Library/Logs/rc-backend/rc-log-cap.log"
+  "StartInterval" => 3600
+  "WorkingDirectory" => "/Users/athenas/rc-backend"
+}
+FILE rc-backend/tools/com.fleet.rc-ota.plist
+{
+  "EnvironmentVariables" => {
+    "HOME" => "/Users/athenas"
+    "OTA_PORT" => "8788"
+    "OTA_ROOT" => "/Users/athenas/ota"
+    "PATH" => "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  }
+  "KeepAlive" => true
+  "Label" => "com.fleet.rc-ota"
+  "ProgramArguments" => [
+    0 => "/opt/homebrew/bin/node"
+    1 => "/Users/athenas/rc-backend/tools/ota-server.mjs"
+  ]
+  "RunAtLoad" => true
+  "StandardErrorPath" => "/Users/athenas/Library/Logs/rc-backend/rc-ota.log"
+  "StandardOutPath" => "/Users/athenas/Library/Logs/rc-backend/rc-ota.log"
+  "WorkingDirectory" => "/Users/athenas/rc-backend"
+}
+FILE rc-backend/tools/com.fleet.rc-phone-window.plist
+{
+  "EnvironmentVariables" => {
+    "HOME" => "/Users/athenas"
+    "PATH" => "/Users/athenas/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    "RC_PHONE_CMD" => "/Users/athenas/.local/bin/rc-claude"
+    "RC_PHONE_CWD" => "/Users/athenas/Athenas"
+    "RC_PHONE_PATH" => "/Users/athenas/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    "RC_PHONE_SESSION" => "work"
+    "RC_PHONE_TMUX" => "/opt/homebrew/bin/tmux"
+    "RC_PHONE_WINDOW" => "phone"
+    "RC_WORK_SESSION_CWD" => "/Users/athenas/Athenas"
+  }
+  "Label" => "com.fleet.rc-phone-window"
+  "LimitLoadToSessionType" => [
+    0 => "Aqua"
+    1 => "Background"
+  ]
+  "ProcessType" => "Background"
+  "ProgramArguments" => [
+    0 => "/bin/bash"
+    1 => "-c"
+    2 => "/bin/bash /Users/athenas/rc-backend/tools/ensure-work-session.sh; /bin/bash /Users/athenas/rc-backend/tools/ensure-phone-window.sh; exec /bin/bash /Users/athenas/rc-backend/tools/phone-window-notify.sh"
+  ]
+  "RunAtLoad" => true
+  "StandardErrorPath" => "/Users/athenas/Library/Logs/rc-backend/rc-phone-window.error.log"
+  "StandardOutPath" => "/Users/athenas/Library/Logs/rc-backend/rc-phone-window.log"
+  "StartInterval" => 60
+  "WorkingDirectory" => "/Users/athenas/rc-backend"
+}
+FILE rc-backend/tools/com.fleet.rc-health-observer.plist.example
+{
+  "EnvironmentVariables" => {
+    "PATH" => "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  }
+  "Label" => "com.fleet.rc-health-observer"
+  "ProgramArguments" => [
+    0 => "/bin/bash"
+    1 => "__台本の絶対パス__/tools/health-observer.sh"
+  ]
+  "RunAtLoad" => true
+  "StandardErrorPath" => "/tmp/rc-health-observer.err"
+  "StandardOutPath" => "/tmp/rc-health-observer.out"
+  "StartInterval" => 600
+}
+
+codex
+ここまでで、MD5 自体は誤りではありません。repo の plist が配布物そのものなら、コメント差分も「配布経路が追随していない」という実測です。むしろ production で危ないのは、SSH から暗黙の bootstrap domain を見ている点です。Apple の現行仕様も照合します。
+web search: 
+web search: site:apple.com launchctl man page list third column label print gui domain launchd ...
+exec
+/bin/zsh -lc 'bash -n rc-backend/tools/fleet-plist-parity-check.sh rc-backend/test/fleet-plist-parity-controls.sh && bash rc-backend/test/fleet-plist-parity-controls.sh' in /Users/tomtim/Infra/mobile-work
+ succeeded in 495ms:
+PASS  C1 一致して全部 load 済なら緑 (rc=0)
+PASS  C2 1本ずれたら赤 (rc=1)
+PASS  C2b ずれた事が文面に出る
+PASS  C3 1本が向こうに無い = 測定不成立(2) (rc=2)
+PASS  C4 中身は一致でも未 load なら赤(置いた≠動いている) (rc=1)
+PASS  C4b 未 load である事を名指しする
+PASS  C5 repo に無い job が居たら赤 (rc=1)
+PASS  C5b 見知らぬ job は**消さない**と明記する(所有者不明で消すのが最悪手)
+PASS  C6 ssh が失敗したら 2(一致とは言わない) (rc=2)
+PASS  C7 向こうの出力が空でも 2 (rc=2)
+PASS  C8 repo に1本も無ければ 2(『全部一致』に見せない)
+PASS  C9 雛形の1本が向こうに無ければ赤(除外が『見ていない』に化けない) (rc=1)
+
+FLEET-PLIST-PARITY-CONTROLS: pass=12 fail=0
+
+exec
+/bin/zsh -lc "rg -n -C 8 'bootout|bootstrap|kickstart|jobpid|plist' rc-backend/tools/deploy-to-edith.sh | sed -n '1,360p'; nl -ba rc-backend/tools/delivery-check.sh | sed -n '35,62p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+4-# 理由: edith は Node 25.9.0、MBP とは別の実行系。MBP の緑は edith の緑ではない。
+5-#
+6-# 使い方:
+7-#   bash tools/deploy-to-edith.sh            # 仮置き → edith で緑 → 入れ替え → 再起動を観測
+8-#   bash tools/deploy-to-edith.sh --dry-run  # 仮置きの rsync 差分だけ見る(転送しない)
+9-#
+10-# ============================================================================
+11-# ★2026-08-03 に**順序を作り直した**。旧版は
+12:#     rsync で本番の木を上書き → その木で npm test → e2e → kickstart
+13:#   だった。`set -e` なので edith 側の検査が赤なら kickstart の前で止まる。
+14-#   その時に残る状態が **disk=新しくて赤 / process=古くて正常** で、
+15-#   走っているサーバはメモリ上の古いコードで動き続けるから**その場では何も壊れない**。
+16-#   壊れるのは次に機械が落ちた時 —— KeepAlive や再起動が拾うのは
+17-#   「自分の検査に落ちた木」で、**赤い木が次回起動の木になっている**。
+18-#   Codex の裁定(同日): 「A failed deployment must not replace the next-boot tree.」
+19-#
+20-#   → 新しい順序は **仮置き(rc-staging)で緑を取るまで本番の木に触らない**。
+21-#     赤なら本番の木は前回の緑のまま = 次回起動も緑のまま。
+22-#
+23-# ★入れ替えの形について(Codex は当初「symlink を貼り替えろ」と言った。**採らなかった**)
+24-#   採らない理由は2つ、どちらも Codex が知らなかった事実:
+25-#     1. `/Users/edith/rc-backend` には**私の物ではない `.git` が居る**(2026-08-03 12:52、
+26-#        版管理外の本番コードを git 化する fleet の掃除が作った物。remote 無し・単発 commit)。
+27-#        本番パスを symlink にすると、その repo を特定の release の中へ**黙って移す**事になる。
+28:#     2. 本番パスを見ている plist が**2枚**ある(com.edith.rc-backend / com.edith.rc-phone-window)。
+29:#        plist を書き換えると `bootout` + `bootstrap` が要る(この機械には 2026-07-17 に
+30-#        `launchctl load` が古い定義を掴んだ事故が在る)= 依存している面を一度畳む事になる。
+31-#   代わりに得た物: 「本番の木に触る前に緑を取る」と「戻せる複製が再起動を跨いで残る」。
+32-#   諦めた物: 入れ替えそのものの原子性。走っている node は module をメモリに持っていて
+33-#   rsync 中に `src/` を読み直さないので、この非原子の窓は**サービスからは観測されない**。
+34-#
+35-# ★戻し先を `$TMPDIR` に置かない(Codex 裁定)。tmp は再起動や掃除で消える =
+36-#   **一番戻したい瞬間に無い**。`/Users/edith/rc-releases/` に実体で残す。
+37-#
+--
+54-RELEASES="${RC_EDITH_RELEASES:-/Users/edith/rc-releases}"
+55-# 配備中の印。**同期ツリーの外**に置く(`--delete` の巻き添えにならない為)。
+56-# 既定値は `tools/rc-backend-launch.sh` の `RC_DEPLOY_MARK` と一致していなければならない。
+57-MARK="${RC_DEPLOY_MARK:-/Users/edith/.rc-backend/deploy-in-progress}"
+58-LOCK="${RC_DEPLOY_LOCK:-/Users/edith/.rc-backend/deploy.lock}"
+59-LOCK_MAX_S="${RC_DEPLOY_LOCK_MAX_S:-7200}"
+60-# ★配備先の機体名を台本から剥がす(2026-08-25)。既定は edith の実物のまま =
+61-#   引数無しの既往の呼び方は 1 文字も変わらない。他機体へ向ける時だけ env で差し替える。
+62:#   `RC_JOB_LABEL` は **plist の Label と一致していなければならない**(kickstart の宛先)。
+63-JOB_LABEL="${RC_JOB_LABEL:-com.edith.rc-backend}"
+64-# ★値を検証する(Codex 2026-08-25)。遠隔へは `"'"'"'$VAR'"'"'"` の形で渡しており、値に単引用符が
+65-#   在ると引用が割れて任意コマンドになる。既存 5 引数と同じ構造の穴だが、**新しく開けた面は
+66-#   自分で塞ぐ**。launchd の Label が取り得る字だけ通す。
+67-case "$JOB_LABEL" in
+68-    *[!A-Za-z0-9._-]*|"") echo "★RC_JOB_LABEL に使えない字が在る: $JOB_LABEL" >&2; exit 1 ;;
+69-esac
+70-REMOTE_LOG_DIR="${RC_REMOTE_LOG_DIR:-/Users/edith/Library/Logs/rc-backend}"
+71-# ★9b(冷起動の鎖)が見に行く先。**渡していなかったので、移設先でも edith を探していた**
+72-#   (2026-08-25 に Friday への初回配備で実際に鳴った: 「自動ログイン: athenas(欲しいのは
+73:#   edith)」「plist が …/com.edith.rc-backend.plist に無い」)。coldboot-chain.sh 側は
+74-#   CB_PLIST / CB_USER で既にパラメータ化されていて、**呼び出し側が繋いでいなかっただけ**。
+75-#   直さないと、移設先では 9b が永久に赤を出す = 計器が嘘をつく(赤が壁紙になる)。
+76:COLDBOOT_PLIST="${RC_COLDBOOT_PLIST:-\$HOME/Library/LaunchAgents/com.edith.rc-backend.plist}"
+77-COLDBOOT_USER="${RC_COLDBOOT_USER:-edith}"
+78-NODE="/opt/homebrew/bin/node"
+79-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+80-
+81-DRY=""
+82-[ "${1:-}" = "--dry-run" ] && DRY="--dry-run"
+83-
+84-# ★変異の走行中は配備しない。**ただし理由は当初書いていた物ではない**(2026-08-02 17:1x に訂正)。
+--
+319-#   e2e は `RC_PORT: "0"`(= 借りる port は毎回別)で、状態も `mkdtemp` の砂場と
+320-#   `RC_KEY_DIR=<砂場>/keys` に閉じている。本番の鍵も登録簿も触らない。
+321-ssh "$EDITH" "cd '$STAGE' && PATH=/opt/homebrew/bin:\$PATH $NODE test/e2e-local.mjs"
+322-
+323-say "4b. 起動ラッパの分岐 (edith 上・仮置きで)"
+324-# ★`npm test` は `test/*.test.mjs` しか回さないので、**起動ラッパは単体の網に入っていない**。
+325-#   ところが配備で最後に効くのはこの台本で、間違えた時の症状は
+326-#   「edith の上では全部緑、電話からだけ永久に到達できない」= 一番気付けない形。
+327:#   step 8 の kickstart で気付く事は出来るが、その時にはもう本番の木を入れ替えた後 =
+328-#   **戻す羽目になってから知る**。ここで先に駆動しておけば、赤なら本番に触らずに止まる。
+329-#   この検査は偽の tailscale / node / dir を噛ませた砂場で完結する(本物の serve は撃たない)。
+330-ssh "$EDITH" "cd '$STAGE' && /bin/bash tools/rc-backend-launch-check.sh"
+331-
+332-say "5. e2e の作業場が残っていないか"
+333-# ★この確認が無かったせいで 364個 65MB を残した(WORKLOG 2026-08-02 02:10)。
+334-# 「転送先が消えたか」だけを見て「常設物なし」と書いたのが元の誤り。
+335-#
+--
+476-#   のプロセス版)。「転送した」を「反映された」と読み替えない為に、ここで機械に確かめさせる。
+477-#   まだ常設していない段階では job が無いので、何もせずそう言う。
+478-#
+479-# ★★2026-08-02 の Codex レビューで**この段の検査を作り直した**。初版は
+480-#   `curl` して `401` が返れば良し、としていた。**それは「新しいコードが動いている」を
+481-#   一切証明しない**: 8787 を掴んだままの**古いプロセス**も同じ 401 を返す。
+482-#   = 入れ替えに失敗しても緑で通る検査 = 今夜ずっと潰してきた型そのものを、
+483-#   30 分前に自分で書いていた。→ **応答コードではなく同一性(PID)で見る**。
+484:#     ① kickstart の前後で launchd job の PID が**変わる**事(= 本当に入れ替わった)
+485-#     ② 8787 を実際に掴んでいるプロセスが**その PID である**事(= 古い居座りではない)
+486-#     ③ その上で 401(= 認証が生きている)
+487-#   ①②が通らないのに③だけ通る状態こそが、この検査が捕まえたい状態。
+488-#
+489:# ★2026-08-03 追加: ここが赤なら**複製から戻して、もう一度 kickstart する**。
+490-#   「配ったが動かない」で終わらせない = 戻す判断を人の手に残さない(戻す事自体は可逆)。
+491-assert_lock_owner
+492-restart_rc=0
+493-ssh "$EDITH" bash -s -- "'$SNAPSHOT'" "'$LIVE'" "'$MARK'" "'$SRC_REV'" "'$OWNER'" "'$JOB_LABEL'" "'$REMOTE_LOG_DIR'" <<'REMOTE_RESTART' || restart_rc=$?
+494-# ★`set -e` は**足さない**。この段は `verify` が非零を返す事を前提に分岐しており、
+495-#   `lsof` や `sed` が空を返す場面も正常。`set -e` を足すと正常な分岐が中断に化ける。
+496-#   代わりに、黙って進んで良い所が 1 箇所も無い**戻しの rsync** を明示的に見る(下)。
+497-set -u
+498-snapshot="$1"; live="$2"; mark="$3"; want_rev="$4"; owner="$5"
+499-job="gui/$(id -u)/$6"; logdir="$7"
+500:jobpid() { launchctl print "$job" 2>/dev/null | awk -F'= *' '/^[[:space:]]*pid =/ {print $2; exit}'; }
+501-# 戻しの途中で launchd に起こされない為の印(step 6 と同じ物)。**自分が立てた印だけ**外す。
+502-trap 'case "$(cat "$mark" 2>/dev/null)" in *" $owner") rm -f "$mark" ;; esac' EXIT
+503-
+504-if ! launchctl print "$job" >/dev/null 2>&1; then
+505-    echo "常設なし($job を探したが無い)。入れ替えだけで終わり = 初回配備なら正常、"
+506-    echo "  既に常設している筈なら **Label の綴りが違う** = 走っている job は古い木のまま。"
+507-    exit 0
+508-fi
+509-
+510:# $1 = kickstart 前の PID / $2 = 走っていて欲しい版(空なら観測だけして判定しない)
+511-verify() {
+512-    local before="$1" want="$2" rc=0 after="" listener="" code="" health="" hver="" hpid=""
+513:    launchctl kickstart -k "$job" || { echo "★kickstart が失敗した" >&2; return 1; }
+514-    # 立ち上がるまで待つ。固定 sleep だと遅い機械で偽の赤、速い機械で無駄待ちになる。
+515-    for _ in 1 2 3 4 5 6 7 8 9 10; do
+516-        sleep 1
+517:        after=$(jobpid)
+518-        [ -n "$after" ] && [ "$after" != "$before" ] && break
+519-    done
+520-    if [ -z "$after" ]; then
+521-        echo "★10 秒待っても PID が付かない。crash loop の疑い" >&2; rc=1
+522-    elif [ "$after" = "$before" ]; then
+523-        echo "★PID が変わっていない(${before})= 入れ替わっていない" >&2; rc=1
+524-    else
+525-        echo "PID: ${before:-なし} → ${after}(入れ替わった)"
+--
+560-            echo "★走っているのは ${hver:-不明} で、動いていて欲しい版(${want})ではない。" >&2
+561-            echo "  = 木は入れ替わったのにプロセスが別の版を載せている(古いプロセスの居座り/起動失敗の後始末)" >&2
+562-            rc=1
+563-        fi
+564-    fi
+565-    return "$rc"
+566-}
+567-
+568:before=$(jobpid)
+569:echo "常設あり(pid=${before:-不明}) → kickstart -k で入れ替える(bootout はしない = 定義は触らない)"
+570-if verify "$before" "$want_rev"; then
+571-    exit 0
+572-fi
+573-
+574-echo "" >&2
+575-echo "★★新しい木で立ち上がらなかった。複製から戻す。" >&2
+576-if [ "$snapshot" = "NONE" ] || [ ! -d "$snapshot" ]; then
+577-    echo "★戻す複製が無い(${snapshot})。手で直す必要がある。" >&2
+--
+597-    echo "★戻しの rsync が 3 回失敗した(rc=${back_rc})。本番の木は版が混ざっている。" >&2
+598-    echo "  ここから先の検査は意味を持たない(前の版を名乗る混ざった木を緑と読む)ので、進まない。" >&2
+599-    echo "  ログ: $logdir/rc-backend.error.log" >&2
+600-    exit 3
+601-fi
+602-rm -f "$mark"
+603-echo "戻した: $snapshot → $live" >&2
+604-prev_rev="$(head -1 "$snapshot/DEPLOYED-REV" 2>/dev/null || true)"
+605:before=$(jobpid)
+606-if verify "$before" "$prev_rev"; then
+607-    echo "★戻した木では立ち上がった。配備は失敗、本番は前の版のまま = 安全側で止まっている。" >&2
+608-    exit 2
+609-fi
+610-echo "★★戻した木でも立ち上がらない。これは配備とは別の障害。" >&2
+611-echo "  ログ: $logdir/rc-backend.error.log" >&2
+612-exit 3
+613-REMOTE_RESTART
+    35	PHONE=$(/usr/libexec/PlistBuddy -c "Print :RCBuildRev" "$ROOT/ios/build/signed/RemoteMini.app/Info.plist" 2>/dev/null || echo "?")
+    36	printf '  手元=%s 本番=%s 電話=%s\n' "$LOCAL" "$LIVE" "$PHONE"
+    37	# ★`-dirty` を許さない。汚れた木で焼いた物は、どの commit とも突き合わせられない。
+    38	case "$LIVE" in *-dirty) bad "本番が汚れた木の版" "$LIVE";; "$LOCAL") good "本番が手元と一致";; *) bad "本番が手元と違う" "$LIVE != $LOCAL";; esac
+    39	case "$PHONE" in *-dirty) bad "電話が汚れた木の版" "$PHONE";; "$LOCAL") good "電話が手元と一致";; *) bad "電話が手元と違う" "$PHONE != $LOCAL";; esac
+    40	
+    41	echo "=== 2. 常設が全部 load されているか ==="
+    42	for j in com.fleet.rc-backend com.fleet.rc-phone-window com.fleet.rc-health-observer; do
+    43	    if rexec "launchctl print gui/501/$j >/dev/null 2>&1"; then good "$j"; else bad "$j" "未 load"; fi
+    44	done
+    45	if launchctl print "gui/$(id -u)/com.tomtim.rc-tunnel-observer" >/dev/null 2>&1; then
+    46	    good "com.tomtim.rc-tunnel-observer(手元)"
+    47	else
+    48	    bad "com.tomtim.rc-tunnel-observer(手元)" "未 load = 外からトンネルを見る目が無い"
+    49	fi
+    50	
+    51	echo "=== 3. 設定 file が机に在るか(在っても『効いている』とは限らない)==="
+    52	# ★repo に例が在る物は、本番に**実物**が在るべき。例だけ在って実物が無い =
+    53	#   「作ったが配っていない」の一番よく出る形(2026-08-26 の拒否規則がこれ)。
+    54	for pair in "deny.example.json:deny.json"; do
+    55	    ex="${pair%%:*}"; live="${pair##*:}"
+    56	    if [ ! -f "$REPO/tools/$ex" ]; then continue; fi
+    57	    if rexec "[ -f $REMOTE_HOME/.rc-backend/$live ]"; then good "$live が机に在る"
+    58	    else bad "$live" "repo に例($ex)は在るのに机に実物が無い = 層は動くが1本も効かない"; fi
+    59	done
+    60	
+    61	echo "=== 4. 拒否規則が**実際に効く**か(在る事と効く事は別)==="
+    62	if rexec "[ -f $REMOTE_HOME/.rc-backend/deny.json ]"; then
+
+exec
+/bin/zsh -lc "nl -ba rc-backend/tools/com.fleet.rc-health-observer.plist.example | sed -n '1,220p'; rg -n -C 5 'rc-health-observer\\.plist|LaunchAgents|__台本|bootstrap|bootout|kickstart' rc-backend/tools/deploy-observer-to-friday.sh rc-backend/tools/observer-parity-check.sh | sed -n '1,300p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+     1	<?xml version="1.0" encoding="UTF-8"?>
+     2	<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+     3	<!--
+     4	  rc-backend 生存監視の launchd 見本(DESIGN §7-P)。
+     5	
+     6	  ★★2026-08-08、athenas(Friday の Mac mini)へ**実際に据えた**。
+     7	     選んだ根拠は3つとも実測: 眠らない(pmset sleep 0 / autorestart 1)、日本に残る、
+     8	     そして**通知の出し先が Tom が毎朝読んでいる経路そのもの**(morning-brief と同じ
+     9	     bot と channel)。3つ目が yoda の46時間の真因(通知先)に直接効く。
+    10	     edith 自身には絶対に置かない: 対象ごと落ちた時に監視も一緒に死ぬ。
+    11	     別のノードへ据え直す時は:
+    12	
+    13	       cp tools/com.fleet.rc-health-observer.plist.example \
+    14	          ~/Library/LaunchAgents/com.fleet.rc-health-observer.plist
+    15	       # ProgramArguments の __台本の絶対パス__ を実物に書き換える
+    16	       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.fleet.rc-health-observer.plist
+    17	       launchctl kickstart -p gui/$(id -u)/com.fleet.rc-health-observer   # 1回撃って目で見る
+    18	
+    19	  ★据えたら**必ず1回、偽の失敗で経路を撃つ**:
+    20	       tools/health-observer.sh に inject-fail の旗(先頭にハイフン2つ)を付けて叩く。
+    21	       閾値どおり3回で鳴る。
+    22	     yoda が 46 時間気付けなかったのは閾値でも判定でもなく**通知先**だった。
+    23	     「Issue は作られた」は届いた事の証拠ではない —— Tom の画面に出るまでを見る。
+    24	
+    25	  ★この file 自身の構文を `test/example-artifacts-controls.sh` が測る。
+    26	     見本が壊れていると、据える人は**据える瞬間に初めて**それを知る事になる。
+    27	     (最初の版は3つ落としていた: DOCTYPE 無し / XML コメントにハイフン2連続 /
+    28	      置き換え箇所を山括弧で書いて**タグに化けていた**)
+    29	     ★2つ目は `plutil -lint` を**素通りする**。落とすのは `xmllint` だけ。だから
+    30	      対照は両方に通す(A1=plutil / A3=xmllint)。器が欠陥より弱い事が在る。
+    31	-->
+    32	<plist version="1.0">
+    33	<dict>
+    34	    <key>Label</key>
+    35	    <string>com.fleet.rc-health-observer</string>
+    36	
+    37	    <key>ProgramArguments</key>
+    38	    <array>
+    39	        <string>/bin/bash</string>
+    40	        <string>__台本の絶対パス__/tools/health-observer.sh</string>
+    41	    </array>
+    42	
+    43	    <!-- 10 分毎。閾値 3 と合わせて「約 30 分沈黙したら鳴る」。 -->
+    44	    <key>StartInterval</key>
+    45	    <integer>600</integer>
+    46	
+    47	    <key>RunAtLoad</key>
+    48	    <true/>
+    49	
+    50	    <!-- ★launchd の PATH は素。台本側も絶対パスを使うが、node の場所は設定でも渡す。
+    51	         `/usr/local/bin` は 2026-08-08 に足した。**足した時に書いた理由は間違っていた**ので
+    52	         測った結果を残す:「athenas の tailscale は /usr/local/bin に在るから、外すと鍵の枝が
+    53	         黙る」と書いたが、対照(新旧2つの PATH で同じ run を撃つ)は**両方とも鳴った**。
+    54	         真相 = この観測者は tailscale を PATH から引いていない。
+    55	         tailnet-key-expiry.sh が /Applications/Tailscale.app の絶対パスで持っており
+    56	         (`RC_TAILSCALE_BIN` で移せる)、health-observer.sh 自身は tailscale を一度も呼ばない。
+    57	         PATH に本当に要るのは curl(/usr/bin)だけで、node は $RC_HEALTH_NODE 側。
+    58	         それでも残すのは、`RC_TAILSCALE_BIN=tailscale` の様に**名前で**渡された時の保険。
+    59	         教訓の方が本体: 見本に理由を書く時も、書いた理由を1回撃って確かめる事。 -->
+    60	    <key>EnvironmentVariables</key>
+    61	    <dict>
+    62	        <key>PATH</key>
+    63	        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    64	    </dict>
+    65	
+    66	    <!-- 台本自身が壊れた時の受け皿。台本の通常ログ(RC_HEALTH_LOG)とは別物 —
+    67	         こちらに何か出ていたら「監視の外側」が壊れている。 -->
+    68	    <key>StandardOutPath</key>
+    69	    <string>/tmp/rc-health-observer.out</string>
+    70	    <key>StandardErrorPath</key>
+    71	    <string>/tmp/rc-health-observer.err</string>
+    72	</dict>
+    73	</plist>
+
+exec
+/bin/zsh -lc "nl -ba rc-backend/tools/deploy-observer-to-friday.sh | sed -n '1,280p' && nl -ba rc-backend/tools/observer-parity-check.sh | sed -n '1,260p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+     1	#!/bin/bash
+     2	# deploy-observer-to-friday.sh — friday の `~/rc-observer/tools/` を repo に追随させる。
+     3	#
+     4	# ── なぜ別の台本なのか(2026-08-30)───────────────────────────────────────────
+     5	# `deploy-to-friday.sh` は **`~/rc-backend/` しか運ばない**。監視器は別ディレクトリ
+     6	# (`~/rc-observer/`)に住み、別の launchd label(`com.fleet.rc-health-observer`)で走るので、
+     7	# あの台本の守備範囲の外に落ちていた。その死角のせいで、friday の `health-observer.sh` は
+     8	# repo より **139 行・22 日**古いまま動き、`KEY_PEER` が人間向けラベルを機体名として
+     9	# 引きに行って失敗し、**毎日** Tom の Discord へ「監視が壊れている」を投げていた
+    10	# (実発火 2026-08-28 11:18 / 2026-08-29 11:19。台帳 CF-7 / H-4)。
+    11	#
+    12	# ★依存物を**一緒に**運ぶのが此の台本の要点。`health-observer.sh` だけを配ると、
+    13	#   新版は `funnel-exposure-check.sh` が無い時に **閾値なしで** 通知を撃つ枝を持つ
+    14	#   (`health-observer.sh` の `[ ! -x "$EXP_CHECK" ]`)ので、日1回の誤報が **10 分毎**に化ける。
+    15	#   その枝は `test/health-observer-controls.sh` の §8 が測っている。
+    16	#
+    17	# ★配った事の**証拠は此の台本が出さない**。`tools/observer-parity-check.sh` が独立に測る ——
+    18	#   配る側の自己申告は、配れた事の証拠にならない(rc-backend 側の配備台本と同じ思想)。
+    19	#
+    20	# 使い方:
+    21	#   bash tools/deploy-observer-to-friday.sh            # 退避 -> 配る -> 独立の一致検査
+    22	#   bash tools/deploy-observer-to-friday.sh --dry-run  # 何が変わるかだけ見る(転送しない)
+    23	#
+    24	# 終了コード: 0=配って一致 / 1=失敗 / 2=測れなかった
+    25	set -uo pipefail
+    26	
+    27	HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # = rc-backend/(FILES が src/ に跨る為)
+    28	HOST="${RC_OBSERVER_HOST:-athenas}"
+    29	DRY=0
+    30	[ "${1:-}" = "--dry-run" ] && DRY=1
+    31	
+    32	# 運ぶ物 = observer が実行時に読む物の**連鎖ぜんぶ**。`observer-parity-check.sh` と同じ列挙。
+    33	#
+    34	# ★2026-08-30、Codex の指摘で訂正した。初版は「`health-step.mjs` は friday に在るが
+    35	#   repo に無い」と書いて除外していたが**事実と逆**で、`git ls-files` に
+    36	#   `tools/health-step.mjs` も `src/health.mjs` も在る。確かめずに書いた一文を除外の根拠に
+    37	#   していた為、判定の本体(`health-step.mjs` → `src/health.mjs`)が古くても
+    38	#   「一致」と言う台本になっていた —— 防ごうとしている壊れ方の一段上での再演。
+    39	FILES=(tools/health-observer.sh tools/funnel-exposure-check.sh tools/tailnet-key-expiry.sh
+    40	       tools/health-step.mjs src/health.mjs)
+    41	
+    42	# ★検査が落ちたら**自分で戻す**(Codex の指摘3)。初版は「戻す先」を印字して終わっていたが、
+    43	#   それは**壊れた本番を置いたまま人を待つ**形。無人で回る台本が production を壊したまま
+    44	#   帰るのは、配らないより悪い。
+    45	rollback() {
+    46	    echo "=== ROLLBACK: 退避から戻す(.bak-$STAMP)==="
+    47	    ssh -o ConnectTimeout=15 -o BatchMode=yes "$HOST" \
+    48	        "cd \$HOME/rc-observer/tools/.bak-$STAMP 2>/dev/null || exit 9
+    49	         cp health-observer.sh funnel-exposure-check.sh tailnet-key-expiry.sh health-step.mjs \
+    50	            \$HOME/rc-observer/tools/ 2>/dev/null
+    51	         cp health.mjs \$HOME/rc-observer/src/ 2>/dev/null
+    52	         cd \$HOME/rc-observer/tools && chmod +x ./*.sh 2>/dev/null; echo restored" \
+    53	      && echo "戻した" \
+    54	      || echo "★戻せなかった。手で: cp ~/rc-observer/tools/.bak-$STAMP/* ~/rc-observer/tools/"
+    55	    # 戻した事も**測る**(戻したという宣言を証拠にしない)。
+    56	    bash "$HERE/tools/observer-parity-check.sh" >/dev/null 2>&1 \
+    57	      && echo "  ※戻した結果 repo と一致した(= 配る前も一致していた事になる。列挙を疑う事)" \
+    58	      || echo "  ※戻した結果はまだ repo とずれている(= 配る前の状態に戻った)"
+    59	}
+    60	
+    61	for f in "${FILES[@]}"; do
+    62	    [ -f "$HERE/$f" ] || { echo "repo に $f が無い = 配れない"; exit 2; }
+    63	done
+    64	
+    65	echo "=== 1. 今のずれ ==="
+    66	bash "$HERE/tools/observer-parity-check.sh"; before=$?
+    67	if [ "$before" -eq 0 ]; then
+    68	    echo "既に一致している。配らない(無駄な再起動を起こさない)"
+    69	    exit 0
+    70	fi
+    71	[ "$before" -eq 2 ] && { echo "測れないまま配らない(届かない先へ配ると壊した事にすら気付けない)"; exit 2; }
+    72	
+    73	if [ "$DRY" -eq 1 ]; then
+    74	    echo "=== --dry-run: 上のずれを直す為に ${#FILES[@]} 本を送る(実行しない)==="
+    75	    exit 0
+    76	fi
+    77	
+    78	echo "=== 2. 退避(上書きの前に、戻せる形を作る)==="
+    79	STAMP="$(date +%Y%m%d-%H%M%S)"
+    80	ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
+    81	    "mkdir -p \$HOME/rc-observer/tools/.bak-$STAMP && cd \$HOME/rc-observer && \
+    82	     for f in ${FILES[*]}; do [ -f \"\$f\" ] && cp \"\$f\" \"tools/.bak-$STAMP/\$(basename \"\$f\")\"; done; \
+    83	     ls \$HOME/rc-observer/tools/.bak-$STAMP" || { echo "退避に失敗 = 配らない"; exit 1; }
+    84	
+    85	echo "=== 3. 配る ==="
+    86	# ★宛先で `$HOME` を使わない(2026-08-30、実測で踏んだ)。`ssh` は remote shell を通すので
+    87	#   `$HOME` が展開されるが、転送の宛先は sftp のパスとして扱われ、
+    88	#   `remote mkdir "$HOME/..."` と**そのままの文字列**で失敗する。実 path を先に引く。
+    89	RHOME="$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" 'printf %s "$HOME"')" || {
+    90	    echo "宛先の HOME を引けない = 配らない"; exit 2; }
+    91	[ -n "$RHOME" ] || { echo "宛先の HOME が空 = 配らない"; exit 2; }
+    92	# FILES は `tools/…` と `src/…` に跨るので、相対 path を保ったまま1本ずつ置く。
+    93	for f in "${FILES[@]}"; do
+    94	    ( cd "$HERE" && scp -q "$f" "$HOST:$RHOME/rc-observer/$f" ) \
+    95	      || { echo "転送に失敗: $f"; rollback; exit 1; }
+    96	done
+    97	ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
+    98	    "cd \$HOME/rc-observer/tools && chmod +x ./*.sh" || { echo "実行権を付けられない"; rollback; exit 1; }
+    99	
+   100	echo "=== 4. 一致したか(独立の測り手)==="
+   101	bash "$HERE/tools/observer-parity-check.sh"; after=$?
+   102	[ "$after" -ne 0 ] && { echo "配ったのに一致しない"; rollback; exit 1; }
+   103	
+   104	echo "=== 5. 配った物が実際に走るか(--dry-run で1回)==="
+   105	# ★「file が置けた」は「動く」ではない。通知は出さずに1周させて、
+   106	#   `監視が壊れている` を撃たない事まで見る(依存物が欠けていれば此処で判る)。
+   107	# ★自己検査は **nonce + 隔離 state + 単一 ssh** で行う(2026-08-30、Codex の指摘2)。
+   108	#
+   109	#   初版は「本番ログの行数を前後で数えて差分を読む」形だった。3つ壊れていた:
+   110	#   (a) `ssh "… | tail -5"` は **`tail` の終了コード**を返すので、観測器が exit 3 で
+   111	#       死んでも成功に見えた。
+   112	#   (b) 本番ログを読むので、**launchd の定時実行**(600秒毎)が窓に挟まると、
+   113	#       配った版が1行も書かなくても緑になる = 偽陽性。
+   114	#   (c) `--dry-run` は通知を出さないだけで**本番の state は書く**。実際この日、
+   115	#       検査の為の dry-run が `key-checked` を書き換え、日次の鍵チェックの時刻が
+   116	#       11:18 から 00:29 へ動いた。検査が本番の予定を動かすのは副作用として重い。
+   117	#
+   118	#   直し: `RC_HEALTH_STATE` を一時 path へ差すと、派生する mark 全部
+   119	#   (broken / last-ok / key-checked / exposure)が一緒に逃げる —— `health-observer.sh` の
+   120	#   `BROKEN_MARK` / `OK_MARK` / `KEY_MARK` / `EXP_MARK` が全部 `${...:-$STATE.…}` の形で
+   121	#   `STATE` から派生している為(行番号でなく綴りで引く: 行は動くが此の派生の形は動かない)。
+   122	#   ログも一時 path。判定は **rc=0 かつ その走行だけが書ける nonce がログに在る事**の両方。
+   123	#   ★「走った」の証拠は **隔離した一時ログに中身が在る事**そのもの。
+   124	#   初版は nonce を RC_HEALTH_HOST で渡してログに現れる事を期待したが、**実測したら
+   125	#   observer は健全時に HOST を1行も書かなかった**(書くのは「ok — 鳴らさない」等だけ)。
+   126	#   期待で組んだ印は印にならない。一時ログは**この走行しか書けない**ので、
+   127	#   中身が在る事自体が印になり、launchd の定時実行(本番ログへ書く)とも混ざらない。
+   128	#
+   129	# ★★remote へ渡す文字列の中に**コメントを置かない**(2026-08-30、同じ日に2回踏んだ)。
+   130	#   二重引用符の中ではバッククォートが**コマンド置換**として手元の shell で実行される。
+   131	#   1回目: 註で RC_HEALTH_HOST をバッククォートで括り → `RC_HEALTH_HOST: command not found`。
+   132	#   2回目: **その事故を説明する註を、同じ文字列の中に**書いて再演した(括りが2つ在ったので2行)。
+   133	#   ★原因の切り分けでも1回外した: 症状が env 代入の行に出たので「行継続の欠落」と推測して
+   134	#     書き換えたが、直らなかった。**症状の出る場所は原因の場所とは限らない。**
+   135	#   註は remote 文字列の外(此処)に置く。
+   136	NONCE="selftest-$STAMP-$RANDOM"
+   137	selftest="$(ssh -o ConnectTimeout=25 -o BatchMode=yes "$HOST" \
+   138	    "T=\$(mktemp -d) || exit 90
+   139	     env RC_HEALTH_STATE=\"\$T/state.json\" RC_HEALTH_LOG=\"\$T/observer.log\" RC_HEALTH_HOST='$NONCE' bash \$HOME/rc-observer/tools/health-observer.sh --dry-run >\"\$T/out\" 2>&1
+   140	     rc=\$?
+   141	     echo \"SELFTEST_RC:\$rc\"
+   142	     [ -s \"\$T/observer.log\" ] && grep -qE '鳴らさない|鍵の残日数|公開面' \"\$T/observer.log\" && echo 'SELFTEST_NONCE:yes'
+   143	     grep -h '監視が壊れている' \"\$T/observer.log\" \"\$T/out\" 2>/dev/null | head -2
+   144	     /bin/rm -rf \"\$T\"")"
+   145	echo "$selftest"
+   146	case "$selftest" in
+   147	    *"SELFTEST_RC:0"*) ;;
+   148	    *) echo "★配った版が 0 で帰らなかった"; rollback; exit 1 ;;
+   149	esac
+   150	case "$selftest" in
+   151	    *"SELFTEST_NONCE:yes"*) ;;
+   152	    *) echo "★配った版がこの走行の印を1つも書かなかった = **走った証拠が無い**(空を正常と読まない)"
+   153	          rollback; exit 1 ;;
+   154	esac
+   155	if printf '%s' "$selftest" | grep -q "監視が壊れている"; then
+   156	    echo "★配った版が『監視が壊れている』を出した"
+   157	    rollback; exit 1
+   158	fi
+   159	
+   160	echo "=== 完了(退避 = ~/rc-observer/tools/.bak-$STAMP)==="
+   161	exit 0
+     1	#!/bin/bash
+     2	# observer-parity-check.sh — friday の `~/rc-observer/tools/` が repo と**一致しているか**を測る。
+     3	#
+     4	# ── なぜ配備台本と分けるか(2026-08-30)────────────────────────────────────────
+     5	# 配る台本の自己申告(「配った」)は、配れた事の証拠にならない。実際 2026-08-30 に、
+     6	# `deploy-to-friday.sh` が **`~/rc-observer/` を守備範囲に持っていない**事を見落として
+     7	# いた為に、friday の `health-observer.sh` が repo より **139 行・22 日**古いまま動き、
+     8	# 毎日 Tom の Discord へ「監視が壊れている」の誤報を投げていた(実発火 08-28 / 08-29)。
+     9	# 古い事に気付いた経緯も配備の記録ではなく、**別レーンの Planner が md5 を突き合わせた**事だった。
+    10	#
+    11	# だから測る側を独立に置く。此の台本は何も配らない —— 配る台本が嘘をついても、
+    12	# 此処が赤くなる。
+    13	#
+    14	# ★測るのは**中身の一致**(md5)であって mtime ではない。0 バイトの file の mtime は
+    15	#   「最後に書いた時刻」ではなく「最後に開いた時刻」で、同じ日にそれで誤診している
+    16	#   (`/tmp/rc-health-observer.out` を見て「38 時間死んでいる」と読んだ)。
+    17	#
+    18	# 使い方:
+    19	#   bash tools/observer-parity-check.sh          # 一致 = rc 0 / ずれ = rc 1 / 測れない = rc 2
+    20	#   RC_OBSERVER_HOST=athenas bash tools/...      # 宛先を差す(検査の継ぎ目)
+    21	#
+    22	# 終了コード: 0=一致 / 1=ずれている(赤) / 2=**測れなかった**(0 に丸めない)
+    23	set -uo pipefail
+    24	
+    25	HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # = rc-backend/
+    26	HOST="${RC_OBSERVER_HOST:-athenas}"
+    27	REMOTE_DIR="${RC_OBSERVER_REMOTE_DIR:-\$HOME/rc-observer}"
+    28	
+    29	# 同期の対象 = **observer が実行時に読む物の連鎖ぜんぶ**。
+    30	#
+    31	# ★2026-08-30、Codex の指摘で1件訂正した。初版は
+    32	#   「`health-step.mjs` は friday に在るが repo に無い(由来不明)」と書いて除外していたが、
+    33	#   **事実と逆**だった: `git ls-files` に `tools/health-step.mjs` も `src/health.mjs` も在る。
+    34	#   確かめずに書いた一文を、除外の根拠に使っていた。
+    35	#   結果、この検査は「3/3 一致」と言いながら**判定の本体が古くても緑**になる ——
+    36	#   まさに此の台本が防ごうとしている壊れ方の、一段上での再演。
+    37	#
+    38	# 連鎖: health-observer.sh → tools/health-step.mjs → src/health.mjs
+    39	#   (`health-step.mjs` の `from "../src/health.mjs"` の import)
+    40	# 相対 path で列挙する(向こうでは `~/rc-observer/` が根)。
+    41	FILES=(tools/health-observer.sh tools/funnel-exposure-check.sh tools/tailnet-key-expiry.sh
+    42	       tools/health-step.mjs src/health.mjs)
+    43	
+    44	fail=0; measured=0
+    45	
+    46	local_md5() { md5 -q "$1" 2>/dev/null || md5sum "$1" 2>/dev/null | cut -d' ' -f1; }
+    47	
+    48	# 向こう側の md5 を1回の ssh でまとめて取る(file 毎に繋ぐと遅く、途中で切れた時に
+    49	# 「ずれ」と「届かない」の区別が付かなくなる)。
+    50	remote_out="$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
+    51	    "cd $REMOTE_DIR 2>/dev/null || exit 9; for f in ${FILES[*]}; do
+    52	       if [ -f \"\$f\" ]; then printf '%s %s\\n' \"\$(md5 -q \"\$f\")\" \"\$f\"; else printf 'MISSING %s\\n' \"\$f\"; fi
+    53	     done" 2>/dev/null)"
+    54	rc=$?
+    55	if [ $rc -ne 0 ] || [ -z "$remote_out" ]; then
+    56	    echo "observer-parity: 測れない(ssh rc=$rc / 出力が空)。**一致とは言わない**"
+    57	    exit 2
+    58	fi
+    59	
+    60	for f in "${FILES[@]}"; do
+    61	    lf="$HERE/$f"
+    62	    if [ ! -f "$lf" ]; then
+    63	        echo "  ?  $f — repo に無い(列挙が古い)"; fail=1; continue
+    64	    fi
+    65	    want="$(local_md5 "$lf")"
+    66	    got="$(printf '%s\n' "$remote_out" | awk -v n="$f" '$2==n {print $1}')"
+    67	    # ★数えるのは**有効な md5 を読めた後だけ**(2026-08-30、Codex の指摘)。
+    68	    #   解析の前に数えていた初版は、向こうの出力が壊れていても件数検査を通した ——
+    69	    #   「空の和を一致と読ませない」為の検査自体が空回りしていた。
+    70	    case "$got" in
+    71	        [0-9a-f][0-9a-f]*) measured=$((measured + 1)) ;;
+    72	    esac
+    73	    if [ -z "$got" ]; then
+    74	        echo "  NG $f — 向こうの値が読めない"; fail=1
+    75	    elif [ "$got" = "MISSING" ]; then
+    76	        echo "  NG $f — friday に**無い**(依存物が欠けると閾値なしで鳴る枝が在る)"; fail=1
+    77	    elif [ "$got" != "$want" ]; then
+    78	        echo "  NG $f — ずれている(repo=$want friday=$got)"; fail=1
+    79	    else
+    80	        echo "  ok $f"
+    81	    fi
+    82	done
+    83	
+    84	# ★件数を主張する。列挙が壊れて 0 件になっても「全部一致」に見えないようにする
+    85	# (此の repo が何度も踏んだ「空の和を一致と読ませない」型)。
+    86	if [ "$measured" -ne "${#FILES[@]}" ]; then
+    87	    echo "observer-parity: 測れた本数が $measured / ${#FILES[@]} = 測定不成立"
+    88	    exit 2
+    89	fi
+    90	
+    91	if [ "$fail" -eq 0 ]; then
+    92	    echo "observer-parity: 一致 $measured/${#FILES[@]}"
+    93	    exit 0
+    94	fi
+    95	echo "observer-parity: ずれている(配り直しは tools/deploy-observer-to-friday.sh)"
+    96	exit 1
+
+web search: 
+web search: site:support.apple.com/guide/terminal launchctl print gui LaunchAgents logged-in user ...
+codex
+結論: raw MD5 は残すべきです。ただし現状には false red と false green がそれぞれあります。
+
+1. `launchctl list` の問題は第3列ではなく domain です  
+現行 man page 上、第3列は Label で、停止中の定期 job も PID `-` で残ります。ただし SSH セッションの暗黙 domain と `~/Library/LaunchAgents` の GUI domain は同一とは限りません。後者はログインユーザー向けです。[Apple Support](https://support.apple.com/guide/terminal/script-management-with-launchd-apdc6c1077b-5d5d-4d35-9c19-60f2397b2369/mac)
+
+[現在の `list | awk`](/Users/tomtim/Infra/mobile-work/rc-backend/tools/fleet-plist-parity-check.sh:62) はやめ、既存の [delivery-check と同じ `launchctl print gui/$uid/$label`](/Users/tomtim/Infra/mobile-work/rc-backend/tools/delivery-check.sh:43) にすべきです。加えて現在の pipeline は `launchctl list` が失敗しても `awk` が 0 を返し、全件を「NOT loaded」にする false red があります。
+
+2. 「file一致 + loaded」は有効中の定義一致ではありません  
+plist 編集後に reload されていなければ、launchd はキャッシュした旧定義を使います。`kickstart` は reload ではありません。この repo 自身も [bootout + bootstrap が必要だった事故](/Users/tomtim/Infra/mobile-work/rc-backend/tools/deploy-to-edith.sh:29) を記録しています。
+
+したがって `ok` は「disk一致・job登録済・有効定義は未確認」と書くのが正確です。根本修正は、deploy が canonical plist を配置し、変更時に `bootout` + `bootstrap` すること。存在確認やログ書込可能性は別の起動前検査、実動作は health/last-run 検査に分けるべきです。
+
+3. `TEMPLATE_ONLY` の全除外は false green です  
+この example の可変部分は実質 [ProgramArguments のパス](/Users/tomtim/Infra/mobile-work/rc-backend/tools/com.fleet.rc-health-observer.plist.example:40) です。Friday 用期待値を生成して比較するのが最善です。難しければ、同じキーだけでなく Label、interval、全固定値、許可された実行パスを比較してください。`-- not compared` は説明であって検査ではありません。
+
+MD5 を parsed-value 比較へ置き換えるのは反対です。raw hash を配布物一致、正規化した plist を意味的一致として併記すれば、コメントだけの差を「byte-only drift」と分類できます。コメント差も今回のような配布漏れの証拠なので、消すべきではありません。
+
+なお [C3 が missing plist を rc=2 と期待](/Users/tomtim/Infra/mobile-work/rc-backend/test/fleet-plist-parity-controls.sh:94) していますが、不在は測定不能ではなく確定した parity failure、つまり rc=1 です。rc=2 は SSH・md5・解析自体が成立しない場合だけに限定してください。制御テストは12/12通過しましたが、この誤った契約を固定しています。
+tokens used
+113,955
+結論: raw MD5 は残すべきです。ただし現状には false red と false green がそれぞれあります。
+
+1. `launchctl list` の問題は第3列ではなく domain です  
+現行 man page 上、第3列は Label で、停止中の定期 job も PID `-` で残ります。ただし SSH セッションの暗黙 domain と `~/Library/LaunchAgents` の GUI domain は同一とは限りません。後者はログインユーザー向けです。[Apple Support](https://support.apple.com/guide/terminal/script-management-with-launchd-apdc6c1077b-5d5d-4d35-9c19-60f2397b2369/mac)
+
+[現在の `list | awk`](/Users/tomtim/Infra/mobile-work/rc-backend/tools/fleet-plist-parity-check.sh:62) はやめ、既存の [delivery-check と同じ `launchctl print gui/$uid/$label`](/Users/tomtim/Infra/mobile-work/rc-backend/tools/delivery-check.sh:43) にすべきです。加えて現在の pipeline は `launchctl list` が失敗しても `awk` が 0 を返し、全件を「NOT loaded」にする false red があります。
+
+2. 「file一致 + loaded」は有効中の定義一致ではありません  
+plist 編集後に reload されていなければ、launchd はキャッシュした旧定義を使います。`kickstart` は reload ではありません。この repo 自身も [bootout + bootstrap が必要だった事故](/Users/tomtim/Infra/mobile-work/rc-backend/tools/deploy-to-edith.sh:29) を記録しています。
+
+したがって `ok` は「disk一致・job登録済・有効定義は未確認」と書くのが正確です。根本修正は、deploy が canonical plist を配置し、変更時に `bootout` + `bootstrap` すること。存在確認やログ書込可能性は別の起動前検査、実動作は health/last-run 検査に分けるべきです。
+
+3. `TEMPLATE_ONLY` の全除外は false green です  
+この example の可変部分は実質 [ProgramArguments のパス](/Users/tomtim/Infra/mobile-work/rc-backend/tools/com.fleet.rc-health-observer.plist.example:40) です。Friday 用期待値を生成して比較するのが最善です。難しければ、同じキーだけでなく Label、interval、全固定値、許可された実行パスを比較してください。`-- not compared` は説明であって検査ではありません。
+
+MD5 を parsed-value 比較へ置き換えるのは反対です。raw hash を配布物一致、正規化した plist を意味的一致として併記すれば、コメントだけの差を「byte-only drift」と分類できます。コメント差も今回のような配布漏れの証拠なので、消すべきではありません。
+
+なお [C3 が missing plist を rc=2 と期待](/Users/tomtim/Infra/mobile-work/rc-backend/test/fleet-plist-parity-controls.sh:94) していますが、不在は測定不能ではなく確定した parity failure、つまり rc=1 です。rc=2 は SSH・md5・解析自体が成立しない場合だけに限定してください。制御テストは12/12通過しましたが、この誤った契約を固定しています。
