@@ -380,6 +380,18 @@ esac
 #     配ったという**出来事そのもの**を記録に使えば、ずれようが無い。
 printf '%s\n' "$BUILDNUM" > "$HERE/../.ota-approved-build"
 echo "    承認として記録: build $BUILDNUM (.ota-approved-build)"
+# ★同じ記録を**机の側にも**置く(2026-08-30)。観測器は friday に居るのに、
+#   比べる材料が此処(焼いた機体)にしか無かったので、friday の枝は切ってあった ——
+#   配布口が7ビルド遅れたまま2日誰も赤くならなかった穴(CF-11)がそのまま開いていた。
+#   束と同じ dir に置く = 承認の記録が**成果物と一緒に動く**(機体を跨いでずれない)。
+# ★**manifest の後**に置く。先に置くと「承認は新しいが manifest はまだ古い」窓が開き、
+#   其の窓で検査が「巻き戻っている」と誤報する。後なら窓は「承認が一瞬古い」側に開き、
+#   そちらは緑に倒れるので誤報しない。
+# ★秘密 path の下に置く事の露出: 版番号は、秘密を持つ相手なら束を落として
+#   `CFBundleVersion` から読める。増分の漏れは無い。
+printf '%s\n' "$BUILDNUM" > "$STAGE/.approved-build"
+put_atomic "$STAGE/.approved-build" ".approved-build"
+echo "    机にも記録: ~/$DESK_DIR/$SECRET/.approved-build"
 
 step "7. 配った版が古くない事(rc-backend/tools/ota-freshness-check.sh)"
 # ★rc=3(承認そのものが HEAD より古い)は、配った直後には起き得ない —— 今書いた記録が

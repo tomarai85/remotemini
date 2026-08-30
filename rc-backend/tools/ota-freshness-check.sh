@@ -50,6 +50,57 @@ num_or_empty() {  # 数字だけを通す。空や文字混じりは空にして
 #   dir が2つ在る時に「どれを読んだか」が判らないまま数字を1つ返す ——
 #   古い秘密の残骸が並んだ日に、**配っていない方の版**を「配布中」として読みうる。
 #   秘密は `ios/build/adhoc/.ota-path-secret` が正本(`ios/tools/adhoc-ota.sh` が作って変えない)。
+# ── `--local`: **配っている機体の上で**、ssh も repo も使わずに測る(2026-08-30)──
+# なぜ要るか: 観測器は friday に居るが、此の検査が読む材料(署名済み plist と
+#   承認の記録)は**焼いた機体(Jervis)にしか無かった**。だから CF-16 では
+#   friday の枝を `RC_HEALTH_OTA_CHECK=` で切るしかなく、**配布口が7ビルド遅れたまま
+#   2日誰も赤くならなかった穴(CF-11)がそのまま開いていた**。
+#
+# 局所で答えられる問いは1つ ——「**配っている版が、配ってよいと決めた版より古くないか**」。
+#   両方 friday の disk に在る(manifest.plist と `.approved-build`)。
+#   ★答えられない問い =「承認が HEAD に追いついているか」(rc=3)。木が要るので
+#     Jervis の担当のまま。局所では**測らない**と言う —— 測れない物を緑にしない為に、
+#     測っていない事を文面に出す。
+if [ "${1:-}" = "--local" ]; then
+    OTA_DIR_ROOT="${RC_OTA_DIR_ROOT:-$HOME/ota}"
+    # 秘密の dir は**ちょうど1つ**の時だけ採る。2つ在る時に選ぶと、古い秘密の残骸を
+    # 「配布中」として読みうる —— 下の ssh 経路が glob を避けているのと同じ理由。
+    n=0; dir=""
+    for cand in "$OTA_DIR_ROOT"/*/; do
+        [ -d "$cand" ] || continue
+        n=$((n + 1)); dir="${cand%/}"
+    done
+    if [ "$n" -ne 1 ]; then
+        echo "ota-freshness: $OTA_DIR_ROOT の下に配布 dir が $n 個 = 測定不成立(1つの時だけ測る)" >&2
+        exit 2
+    fi
+    pub_raw="$(/usr/libexec/PlistBuddy -c 'Print :items:0:metadata:bundle-version' "$dir/manifest.plist" 2>/dev/null | tr -d '[:space:]')"
+    case "${pub_raw:-}" in ''|*[!0-9]*) pub_raw='' ;; esac
+    if [ -z "$pub_raw" ]; then
+        echo "ota-freshness: 配っている版を読めない($dir/manifest.plist)= 測定不成立" >&2
+        exit 2
+    fi
+    # ★`tr ... < file` の `2>/dev/null` では**シェルが出すリダイレクト失敗**は消えない
+    #   (tr が走る前に落ちる)。存在を先に見る。
+    app_raw=""
+    [ -f "$dir/.approved-build" ] && app_raw="$(tr -d '[:space:]' < "$dir/.approved-build" 2>/dev/null)"
+    case "${app_raw:-}" in ''|*[!0-9]*) app_raw='' ;; esac
+    if [ -z "$app_raw" ]; then
+        # ★ssh 経路と違い、署名済みで代用**しない**。此処に署名済みの成果物は無いので、
+        #   代用元が無い。無い物を 0 や緑に丸めず、測定不成立と言う。
+        echo "ota-freshness: 配ってよいと決めた版の記録が無い($dir/.approved-build)= 測定不成立" >&2
+        echo "  ★次に ios/tools/adhoc-ota.sh で配れば置かれる(束と同じ原子的な置き方)" >&2
+        exit 2
+    fi
+    if [ "$pub_raw" -lt "$app_raw" ]; then
+        echo "ota-freshness: ★配布 $pub_raw < 承認済み $app_raw = **栞を叩くと $((app_raw - pub_raw)) ビルド巻き戻る**" >&2
+        exit 1
+    fi
+    echo "ota-freshness: 配布 $pub_raw >= 承認済み $app_raw(栞は巻き戻さない)"
+    echo "  ★局所では**承認が HEAD に追いついているか**は測っていない(木が要る = Jervis の担当)"
+    exit 0
+fi
+
 SECRET_FILE="${RC_OTA_SECRET_FILE:-$HERE/ios/build/adhoc/.ota-path-secret}"
 OTA_SECRET="${RC_OTA_SECRET:-}"
 if [ -z "$OTA_SECRET" ] && [ -f "$SECRET_FILE" ]; then
