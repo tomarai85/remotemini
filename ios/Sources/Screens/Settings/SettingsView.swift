@@ -184,6 +184,37 @@ struct SettingsView: View {
         return parts.joined(separator: " · ")
     }
 
+    /// 机が名乗る**測定の状態**を、切替の判断に使える1行にする。`ok` と nil は nil を返す
+    /// (足す事が無い = 数字の行がそのまま答え)。
+    ///
+    /// ★**未知の語を捨てない。** `usageStatus` は cswap が持つ**開いた語彙**で、
+    ///   `rc-backend/src/usage.mjs` は文字列ならそのまま通す。閉じた集合で switch して
+    ///   default を nil にすると、cswap が語を1つ増やした日に**その口座だけ画面から理由が消える**
+    ///   —— まさにこの関数が生まれた原因(CF-14)と同じ形。知らない語は、知らない語として出す。
+    ///
+    /// ★語ごとの重みが違う。`relogin_required` は**行動が要る**(机は答えられない)。
+    ///   `unavailable` / `keychain_unavailable` は**測れていない**だけで、口座は生きているかもしれない。
+    ///   この2つを同じ文にすると、Tom が 2026-08-30 に踏んだ「見分けが付かない」が残る。
+    static func statusLine(_ u: AccountUsage) -> String? {
+        guard let raw = u.usageStatus?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty, raw != "ok" else { return nil }
+        switch raw {
+        case "relogin_required":
+            return "Needs a re-login on the desk — it cannot answer until then"
+        case "unavailable", "keychain_unavailable":
+            return "The desk cannot read this account's usage right now"
+        default:
+            // 知らない語。**訳さずに見せる** —— 訳せない事と、何も無い事は違う。
+            return "The desk reports: \(raw)"
+        }
+    }
+
+    /// `relogin_required` だけは色で名指しする。「測れていない」と違って**机が止まっている**事の
+    /// 原因そのもので、切替の一手が直接効く。
+    static func statusIsActionable(_ u: AccountUsage) -> Bool {
+        u.usageStatus == "relogin_required"
+    }
+
     /// どちらかの窓が実質尽きているか(残り 2% 以下)。切替の判断に一番効く1ビットなので
     /// 色で名指しする。閾値はゼロ丸め(99.6% 使用 = 表示 0% left)を拾う為の物で、警告ではない。
     static func usageExhausted(_ u: AccountUsage) -> Bool {
@@ -214,6 +245,16 @@ struct SettingsView: View {
                     // セッション上限に当たり、電話は limit の文だけを受け取った。
                     // `nil`(未観測)の時は行を出さない: 「測れていない」を 0% にも 100% にも見せない。
                     if let usage = row.usage {
+                        // ★状態の行は**古さの判定より前**に出す。古さは「数字が信用できるか」の話で、
+                        //   `relogin_required` は「そもそも机が答えられない」話 —— 数字が古いかどうかに
+                        //   関係なく成り立つ。後ろに置くと、古い時に理由だけが消える。
+                        if let status = Self.statusLine(usage) {
+                            Text(status)
+                                .font(.caption2)
+                                .foregroundStyle(Self.statusIsActionable(usage)
+                                    ? AnyShapeStyle(RCTheme.danger) : AnyShapeStyle(.secondary))
+                                .accessibilityIdentifier("settings.account.status")
+                        }
                         if Self.usageTooStale(staleAge) {
                             // ★数字を薄く出す案は採らない —— 薄い数字も数字として読まれ、
                             //   切替の判断に使われる。消して、理由を置く。

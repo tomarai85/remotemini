@@ -145,4 +145,69 @@ final class AccountUsageTests: XCTestCase {
         //   此処で true を返すと「更新不能」の帯が常時出る机が生まれる。
         XCTAssertFalse(SettingsView.usageTooStale(nil))
     }
+
+    // ── 机が名乗る測定の状態(2026-08-30、CF-14)────────────────────────────
+    // ★測る中心は「文が出るか」ではなく **壊れた口座と未測定の口座が別の文になるか**。
+    //   前者だけなら、両方に同じ1文を返す実装でも通る —— そして其の実装が
+    //   2026-08-30 に Tom を壊れた口座へ導いた当の状態(どちらも空文字)と等価。
+
+    func test_健全と未指定は状態の行を出さない() {
+        XCTAssertNil(SettingsView.statusLine(
+            AccountUsage(usageStatus: "ok", sessionUsedPct: 20, weeklyUsedPct: 40,
+                         weeklyResetsIn: "3d", willLastToReset: true)))
+        XCTAssertNil(SettingsView.statusLine(
+            AccountUsage(sessionUsedPct: 20, weeklyUsedPct: 40,
+                         weeklyResetsIn: "3d", willLastToReset: true)),
+            "usageStatus 未指定の既定は nil であるべき(既定 ok は健全を騙る)")
+    }
+
+    func test_再ログインが要る口座と測れていない口座が別の文になる() {
+        let relogin = AccountUsage(usageStatus: "relogin_required", sessionUsedPct: nil,
+                                   weeklyUsedPct: nil, weeklyResetsIn: nil, willLastToReset: nil)
+        let unmeasured = AccountUsage(usageStatus: "unavailable", sessionUsedPct: nil,
+                                      weeklyUsedPct: nil, weeklyResetsIn: nil, willLastToReset: nil)
+        let a = SettingsView.statusLine(relogin)
+        let b = SettingsView.statusLine(unmeasured)
+        XCTAssertNotNil(a); XCTAssertNotNil(b)
+        XCTAssertNotEqual(a, b, "壊れた口座と未測定の口座が同じ文 = 2026-08-30 の見分けの付かなさが残る")
+        XCTAssertTrue(a?.contains("re-login") == true, "行動が要る事が文に出ていない: \(a ?? "nil")")
+        // ★数字が1つも無い時こそ此の行が要る。usageLine は空文字になり、行ごと消えるから。
+        XCTAssertTrue(SettingsView.usageLine(relogin).isEmpty,
+                      "この検体は usageLine が空である事が前提(空でないなら検体を直す)")
+    }
+
+    func test_色で名指しするのは再ログインだけ() {
+        XCTAssertTrue(SettingsView.statusIsActionable(
+            AccountUsage(usageStatus: "relogin_required", sessionUsedPct: nil,
+                         weeklyUsedPct: nil, weeklyResetsIn: nil, willLastToReset: nil)))
+        for s in ["unavailable", "keychain_unavailable", "ok"] {
+            XCTAssertFalse(SettingsView.statusIsActionable(
+                AccountUsage(usageStatus: s, sessionUsedPct: nil, weeklyUsedPct: nil,
+                             weeklyResetsIn: nil, willLastToReset: nil)),
+                "\(s) を行動が要る側に寄せると、赤が意味を失う")
+        }
+    }
+
+    func test_知らない語を捨てずに見せる() {
+        // ★`usageStatus` は cswap の**開いた語彙**。閉じた集合で switch して default を nil に
+        //   すると、語が1つ増えた日に其の口座だけ理由が画面から消える。
+        let unknown = AccountUsage(usageStatus: "quota_frozen_by_org", sessionUsedPct: nil,
+                                   weeklyUsedPct: nil, weeklyResetsIn: nil, willLastToReset: nil)
+        let line = SettingsView.statusLine(unknown)
+        XCTAssertNotNil(line, "知らない語を捨てている")
+        XCTAssertTrue(line?.contains("quota_frozen_by_org") == true,
+                      "生の語が文に出ていない = 訳せない事と何も無い事が同じになる: \(line ?? "nil")")
+        XCTAssertFalse(SettingsView.statusIsActionable(unknown),
+                       "知らない語を行動が要る側に寄せない(赤の意味が薄まる)")
+    }
+
+    func test_空白だけの状態は無いものとして扱う() {
+        for s in ["", "   "] {
+            XCTAssertNil(SettingsView.statusLine(
+                AccountUsage(usageStatus: s, sessionUsedPct: 10, weeklyUsedPct: 10,
+                             weeklyResetsIn: nil, willLastToReset: nil)),
+                "空白を語として出すと、空の行が画面に増える")
+        }
+    }
+
 }

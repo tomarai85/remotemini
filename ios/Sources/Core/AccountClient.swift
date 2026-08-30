@@ -33,11 +33,40 @@ struct AccountRow: Equatable, Identifiable {
 /// ★`weeklyResetsIn` は机側の道具が作った文字列("20h 50m")をそのまま描く —
 ///   期限の文言を電話で組み立て直すと語彙が2箇所に分かれる(`blocked` と同じ判断)。
 struct AccountUsage: Equatable {
+    /// 机の道具(`cswap`)が名乗る、この口座の**測定の状態**。
+    ///
+    /// ★**開いた語彙**。`rc-backend/src/usage.mjs` は `typeof a?.usageStatus === "string"` なら
+    ///   そのまま通すだけで、この repo は語を定義していない。だから閉じた集合で switch して
+    ///   知らない語を捨てる実装にはしない —— 捨てた語こそ、次に人が知る必要のある物になる。
+    ///   実測で見た語(2026-08-30): `ok` / `relogin_required` / `unavailable` / `keychain_unavailable`。
+    ///
+    /// ★**この欄が無かった間に実害が出た**(2026-08-30、CF-14)。線は復号までしていたのに
+    ///   写す時に落としていたので、**トークンが失効した口座**(`relogin_required`、pct は全部 nil)が
+    ///   **まだ測っていない口座**と画面上まったく同じに見えた —— どちらも `usageLine` が空文字で
+    ///   行ごと出ない。Tom は机が死んだ後に切替へ行き、その見分けの付かない一覧から
+    ///   壊れている方を選び、机は死んだままだった。
+    let usageStatus: String?
     let sessionUsedPct: Double?
     let weeklyUsedPct: Double?
     let weeklyResetsIn: String?
     /// この消費の速さのまま行くと、リセットまで持つか。
     let willLastToReset: Bool?
+
+    /// ★`usageStatus` の既定は **nil**(= 「机は何も名乗っていない」)。
+    ///   既定を `"ok"` にすると、状態を渡し忘れた検体が**健全を名乗る**事になり、
+    ///   この欄を足した理由(壊れているのを健全と見分けられない)がそのまま再演する。
+    ///   知らない事は知らないままにする。
+    init(usageStatus: String? = nil,
+         sessionUsedPct: Double?,
+         weeklyUsedPct: Double?,
+         weeklyResetsIn: String?,
+         willLastToReset: Bool?) {
+        self.usageStatus = usageStatus
+        self.sessionUsedPct = sessionUsedPct
+        self.weeklyUsedPct = weeklyUsedPct
+        self.weeklyResetsIn = weeklyResetsIn
+        self.willLastToReset = willLastToReset
+    }
 }
 
 /// `fleet-account` が名乗る、机の側の口座の状態(REQUIREMENTS §9-3)。
@@ -256,6 +285,7 @@ struct AccountClient: AccountReading, AccountAdvancing, AccountSelecting {
                     blocked: $0.display.blocked,
                     usage: $0.usage.map {
                         AccountUsage(
+                            usageStatus: $0.usageStatus,
                             sessionUsedPct: $0.sessionUsedPct,
                             weeklyUsedPct: $0.weeklyUsedPct,
                             weeklyResetsIn: $0.weeklyResetsIn,
