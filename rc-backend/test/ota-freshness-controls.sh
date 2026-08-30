@@ -58,7 +58,12 @@ chmod +x "$FAKE"
 
 run() {  # run <期待 rc> <名前>
     local want="$1" name="$2" out rc
-    out="$(RC_OTA_SSH="$FAKE" RC_SIGNED_PLIST="$SB/Info.plist" bash "$SUT" 2>&1)"; rc=$?
+    # ★承認の記録も**砂場に固定する**(2026-08-30 に踏んだ)。固定しないと
+    #   本物の repo の `.ota-approved-build` を読みに行き、私が版を上げた日から
+    #   C1/C2/C3b が赤くなる —— 検査が本番の状態に依存すると、
+    #   「壊れているから赤い」と「今日たまたま版が上がったから赤い」が区別できない。
+    out="$(RC_OTA_SSH="$FAKE" RC_SIGNED_PLIST="$SB/Info.plist" \
+           RC_OTA_APPROVED_FILE="$SB/approved-default" bash "$SUT" 2>&1)"; rc=$?
     LAST_OUT="$out"
     if [ "$rc" = "$want" ]; then ok "$name (rc=$rc)"
     else ng "$name" "期待 rc=$want 実測 rc=$rc / $(printf '%s' "$out" | tail -1)"; fi

@@ -55,6 +55,32 @@ fi
 for a in ${args+"${args[@]}"}; do DIRS+=("$a"); done
 [ "${#DIRS[@]}" -eq 0 ] && DIRS=("$HOME/Library/Logs/rc-backend")
 
+# ── 生存の印(2026-08-30、Codex の指摘2)──────────────────────────────────────
+# 何の為か: 此の job が止まった事を**観測側が読める形**で残す。
+#   初版の観測側は log の「最後の行が掃除の要約か」で読んでいた。それは他人の出力の
+#   文言に縛られる契約で、誰かが行を1本足した日から観測側が永久に「壊れている」と言い、
+#   Tom は其の警告を読まなくなる —— 狼を叫ぶ見張りの作り方そのもの。
+#
+# 中身 = `<この回を始めた epoch> <最後に成功した epoch> <この回の終了コード>`。
+# ★**成功した時刻を別に持つ**のが要。試みた時刻だけだと、毎回起動して毎回こける job が
+#   「新しい印」を書き続け、観測側からは元気に見える。
+# ★`*.log` しか掃かないので此の file 自身は切られない(glob を広げるなら此処も見る事)。
+HEARTBEAT="${RC_CAP_HEARTBEAT:-$HOME/.rc-backend/rc-log-cap.heartbeat}"
+CAP_STARTED="$(date +%s)"
+write_heartbeat() {   # EXIT で必ず走る。失敗した回も「試みた」事は残す。
+    local rc=$? prev_ok=0 tmp
+    prev_ok="$(awk '{print $2}' "$HEARTBEAT" 2>/dev/null)"
+    case "${prev_ok:-}" in ''|*[!0-9]*) prev_ok=0 ;; esac
+    [ "$rc" -eq 0 ] && prev_ok="$CAP_STARTED"
+    mkdir -p "$(dirname "$HEARTBEAT")" 2>/dev/null
+    # ★書き足しでなく差し替え。途中で死んだ半端な行を観測側に読ませない。
+    tmp="$(mktemp "$(dirname "$HEARTBEAT")/.hb.XXXXXX" 2>/dev/null)" || return 0
+    printf '%s %s %s\n' "$CAP_STARTED" "$prev_ok" "$rc" > "$tmp" 2>/dev/null \
+        && mv -f "$tmp" "$HEARTBEAT" 2>/dev/null || /bin/rm -f "$tmp" 2>/dev/null
+    return 0
+}
+trap write_heartbeat EXIT
+
 [ "$CAP" -gt 1024 ] 2>/dev/null || { echo "log-cap-all: 上限が不正($CAP)"; exit 2; }
 
 n=0; capped=0; failed=0; missing=0; seen_dirs=0
