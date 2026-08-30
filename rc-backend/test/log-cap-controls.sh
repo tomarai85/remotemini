@@ -1,6 +1,6 @@
 #!/bin/bash
-# controls-for: rc-backend/tools/log-size-cap.sh
-# controls-for: rc-backend/tools/log-cap-all.sh
+# controls-for: tools/log-size-cap.sh
+# controls-for: tools/log-cap-all.sh
 #
 # log-cap-controls.sh — 上限を掛ける台本が「行を失わずに」切れるかを測る。
 #
