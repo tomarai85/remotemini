@@ -13946,3 +13946,71 @@ Tom の tailnet には今も `edith`(2026-08-20 に家族さんへ譲渡した�
 ★`000` は応答ではないので**未測定**に落とす。1.8MB を置いた直後に線が瞬いた走行で、
 「導線の頁が 000」= 赤 と「出鱈目な秘密は通らない(000)」= **緑**を同時に作った ——
 後者は繋がらなかった事を「正しく拒んだ」と読んでいる。N2 は `404` を名指しで要求する。
+
+---
+
+## §12 ログに上限を置く(com.fleet.rc-log-cap) — 2026-08-30
+
+`~/Library/Logs/rc-backend/` には**回転が1本も無い**。全 plist と `/etc/newsyslog.conf` を
+grep して確認済み。OS 標準の `newsyslog` は設定が `/etc/newsyslog.d/`(root:wheel / 755)に
+在るので root が要り、この環境では sudo が構造的に不可。だから user LaunchAgent で自前に持つ。
+
+### これは「溢れる」対策ではない
+
+実測(2026-08-30 friday): `rc-backend.log` 1,147,825 B(再起動から約4日 = 約 260KB/日)・
+`rc-phone-window.log` 513,676 B・`rc-ota.log` 431 B・空き 31Gi。5MB に当たるのは3週間に1度。
+
+押さえたいのは**暴走**の方。`rc-ota.log` は §11 の配布口の記録で、**認証を掛けられない**設計
+(端末が Ad Hoc profile を入れる経路に認証を挟めない)。tailnet に居れば誰でも 404 を連打でき、
+URL も長く出来る。同じディスクに机の tmux 転写が載っている。
+
+★**この上限が押さえられない物**: 連打の即時。次の実行までの1時間に書けた量はそのまま乗るので、
+実効の上限は「上限 + 1時間ぶん」。本当の止め方は配布口側の認証か流量制限で、ここではない。
+
+### 切り方 — 2回変えた
+
+| 形 | 採否 | 理由(全て実測) |
+|---|---|---|
+| `mv` で回転 | ✗ | 追記者が file を開いたままなので fd が古い inode に残る。**新しい file に1行も来ない**(新 0 B / 旧 7,488,895 B) |
+| 末尾を同じ file へ書き戻す | ✗ | offset 0 から書くので、その間に追記された行を**上書きする**。変異対照で `SEQ-94001` が消えるのを観測 |
+| 退避 → 1回だけ空にする → 註記を `>>` | ✓ | `>>` は O_APPEND で常に EOF に書くので追記者を上書きしない。失うのは退避と切断の間の行だけ(実測 1行) |
+
+★2つ目を最初に採ってしまった経緯を残す: 「fd が生きている」を実測して満足したが、
+**それは追記が続く事しか示しておらず、行が失われない事を測っていなかった**。
+大きさが増えるのは上書きが起きていても成立する。Codex の指摘で気付いた。
+
+★検出器も1度作り直した。最初は「連番が**戻った**箇所」を数えていて変異対照が緑のまま通った。
+上書きは「順序が戻る」ではなく**「行が消える」**なので、逆行では捕まらない。今は**欠け**を数える。
+
+★`*.error.log` を除外しない。履歴が欲しいのは寧ろ error の方だが、除外した1本が暴走すると
+上限を置いた意味そのものが消える。欲しいのは履歴であって無制限ではない。
+
+★ディスク占有は「上限 × 本数」ではなく **(上限 + 上限/2) × 本数**(退避 `<file>.tail` の分)。
+`.tail` は `*.log` に当たらないので二重に切られない。
+
+### 既存の回転 job に相乗りしなかった理由(2026-08-30 実測)
+
+`com.edith.log-rotate-check` は edith 側の物で **`launchctl list` に居ない**(未ロード)。
+`com.tom.cswap-log-rotate` は `~/.claude-swap-backup/auto.log` 1本専用。どちらも rc-backend を
+見ていない。★後者は `cat "$TMP" > "$LOG"` = 上の表で不採用にした形と同じだが、cswap レーンの
+持ち物なので触っていない(単一の追記者で追記も稀なので実害は小さい)。
+
+### 据え方
+
+```
+scp rc-backend/tools/log-size-cap.sh rc-backend/tools/log-cap-all.sh athenas:/Users/athenas/rc-backend/tools/
+scp rc-backend/tools/com.fleet.rc-log-cap.plist athenas:/Users/athenas/Library/LaunchAgents/
+ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-log-cap.plist'
+```
+外す時: `ssh athenas 'launchctl bootout gui/501/com.fleet.rc-log-cap'`
+
+### 実証
+
+Jervis: 同時追記中に切って **本体 92,004 行 / 連番の欠け 0 / 壊れた行 0**。
+変異対照(書き戻し方式へ戻す)は **欠け 1 箇所 (94000, 94002)** で赤。
+巨大1行(改行の無い 400KB)の対照も緑 —— `sed 1d` だけの初版はここで tail が **81 B** に落ち、
+task の検査は「上限以下かつ 0 でない」しか見ないので **PASS のまま通っていた**。
+
+friday 実機: `648,894 B -> 190 B`(退避 106,117 B)/ 欠け 0 / 切った後も追記継続。
+据え付け後 `runs = 1 / last exit code = 0`、自分の log に
+「9 本を見て 0 本を切った(上限 5242880 B)」。全文 = `.harness/evidence-2026-08-30/log-cap-mutation-controls.txt`。
