@@ -30,7 +30,13 @@
     書き込む先は `~/.rc-backend/health-observer.log` = **上限の外**だった。
     上限は、大きい物の在る場所ではなく**暴走の起きる場所**に置く。
 
-  ★**数えてから切る**(2026-08-30)。`app-usage-census.sh` を先に、`log-cap-all.sh` を後に
+  ★台帳は**2本**(2026-08-30 に `ota-delivery-census.sh` を追加)。前者は電話が机を
+  叩いた回数、後者は**配布口が実際に何本渡したか**。後者が要る理由 = CF-11 で
+  「Tom の修正が彼の電話に一度も届いていない」と判ったのに、**栞が叩かれたか**を
+  直接答える物が木に1つも無かった。log は此の dir に在るので上限に食われる。
+  ★`&amp;&amp;` で繋ぐ = **どちらかの台帳が落ちたら切らない**。数え終わる前に
+  元を消すより、切らずに溜める方がまし(切らない代償は約 11 KB/時、余裕は約 20 日)。
+  ★**数えてから切る**(2026-08-30)。台帳を先に、`log-cap-all.sh` を後に
     同じ job で回す。順序に意味が在る —— 数える元(`rc-backend.log` の client=app 行)を
     消しに来るのが後半だから。別 job に分けると2つが競り、たまたま切る方が先に走った回に
     その日の観測が失われる。`com.fleet.rc-phone-window` が既に同じ形(`-c` で順に並べる)。
@@ -67,7 +73,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>/bin/bash /Users/athenas/rc-backend/tools/app-usage-census.sh &amp;&amp; exec /bin/bash /Users/athenas/rc-backend/tools/log-cap-all.sh /Users/athenas/Library/Logs/rc-backend /Users/athenas/.rc-backend</string>
+    <string>/bin/bash /Users/athenas/rc-backend/tools/app-usage-census.sh &amp;&amp; /bin/bash /Users/athenas/rc-backend/tools/ota-delivery-census.sh &amp;&amp; exec /bin/bash /Users/athenas/rc-backend/tools/log-cap-all.sh /Users/athenas/Library/Logs/rc-backend /Users/athenas/.rc-backend</string>
   </array>
 
   <key>WorkingDirectory</key>
