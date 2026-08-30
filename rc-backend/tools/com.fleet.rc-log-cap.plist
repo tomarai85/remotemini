@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.fleet.rc-log-cap  (Friday / athenas 用。2026-08-30 新設)
+  ============================================================================
+  何を持つか: `~/Library/Logs/rc-backend/*.log` に**上限を置く**段。回転が1本も無い。
+
+  ★これは「今すぐ溢れる」対策ではない。実測(2026-08-30、friday):
+      rc-backend.log 1,147,336 B ・ rc-phone-window.log 513,512 B ・ 空き 31Gi
+    常用では約 260KB/日で、5MB に当たるのは3週間に1度。押さえたいのは**暴走**の方 ——
+    `rc-ota.log` は**認証を掛けられない配布口**の記録で、tailnet に居れば誰でも 404 を
+    連打でき、URL も長く出来る。同じディスクに机の tmux 転写が載っている。
+
+  ★OS 標準の `newsyslog` を使わない理由: 設定が `/etc/newsyslog.d/` に在り root が要る。
+    この環境では sudo が構造的に不可なので、user LaunchAgent で自前に持つ。
+
+  ★**この上限が押さえられない物**(正直に): 悪意ある連打の即時。次の実行までの1時間に
+    書けた量はそのまま乗るので、実効の上限は「上限 + 1時間ぶん」。本当の止め方は
+    配布口側の認証か流量制限で、それは別の仕事。
+
+  ★既存の回転 job は守備範囲が違う(2026-08-30 実測):
+    `com.edith.log-rotate-check` は edith 側で **未ロード**(launchctl list に居ない)、
+    `com.tom.cswap-log-rotate` は `~/.claude-swap-backup/auto.log` 1本だけ。
+    どちらも rc-backend の log を見ていないので、既存に相乗りせず新設した。
+
+  ★この job は**自分の log も切る**(出力先が同じ dir で `*.log` に当たる)。
+    切り方が「追記者を殺さない」形なので、launchd が握ったままの fd でも壊れない。
+    退避先 `<file>.tail` は `*.log` に当たらないので二重に切られない。
+    ディスク占有は「上限 x 本数」ではなく **(上限 + 上限/2) x 本数**。
+
+  ★対象から `*.error.log` を外していない(Codex 2026-08-30)。履歴が欲しいのは寧ろ
+    error の方だが、除外した1本が暴走すると上限を置いた意味そのものが消える。
+    欲しいのは履歴であって無制限ではない。
+
+  INSTALL:
+    scp .../com.fleet.rc-log-cap.plist athenas:/Users/athenas/Library/LaunchAgents/
+    ssh athenas 'launchctl bootstrap gui/501 /Users/athenas/Library/LaunchAgents/com.fleet.rc-log-cap.plist'
+  TEARDOWN:
+    ssh athenas 'launchctl bootout gui/501/com.fleet.rc-log-cap'
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fleet.rc-log-cap</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/athenas/rc-backend/tools/log-cap-all.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/athenas/rc-backend</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/athenas</string>
+  </dict>
+
+  <key>LimitLoadToSessionType</key>
+  <array>
+    <string>Aqua</string>
+    <string>Background</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartInterval</key>
+  <integer>3600</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/athenas/Library/Logs/rc-backend/rc-log-cap.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/athenas/Library/Logs/rc-backend/rc-log-cap.error.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
