@@ -33,6 +33,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"     # = repo 根
 SSH_BIN="${RC_OTA_SSH:-ssh}"
 HOST="${RC_DESK_SSH:-athenas}"
 SIGNED_PLIST="${RC_SIGNED_PLIST:-$HERE/ios/build/signed/RemoteMini.app/Info.plist}"
+# ★**配布してよいと決めた版**の記録(2026-08-30、Codex の指摘4)。
+#   此れが無い間、検査は「配布 vs 最後に署名した物」しか見ておらず、
+#   **両方が 96 で HEAD が 99 でも緑**になる —— 「古くない」と言いながら、
+#   出来ている物が届いていない状態を通す。
+#   記録は `ios/tools/adhoc-ota.sh` が配り終わりに書く: **配った事が、承認した事**。
+#   人が別に承認の儀式をする形にすると、儀式を忘れた日から記録が嘘になる。
+APPROVED_FILE="${RC_OTA_APPROVED_FILE:-$HERE/.ota-approved-build}"
 
 num_or_empty() {  # 数字だけを通す。空や文字混じりは空にして「読めなかった」に落とす
     case "$1" in ''|*[!0-9]*) printf '' ;; *) printf '%s' "$1" ;; esac
@@ -76,10 +83,38 @@ if [ -z "$loc" ]; then
     exit 2
 fi
 
-if [ "$pub" -ge "$loc" ]; then
-    echo "ota-freshness: 配布 $pub >= 署名済み $loc(栞は巻き戻さない)"
-    exit 0
+# --- 配布してよいと決めた版 ---------------------------------------------------
+approved=""
+if [ -f "$APPROVED_FILE" ]; then
+    approved="$(num_or_empty "$(tr -d '[:space:]' < "$APPROVED_FILE")")"
 fi
-echo "ota-freshness: ★配布 $pub < 署名済み $loc = **栞を叩くと $((loc - pub)) ビルド巻き戻る**" >&2
-echo "  直す手: cd ios && ./tools/adhoc-ota.sh(秘密の path は変えない = 栞が生き続ける)" >&2
-exit 1
+
+# 比べる相手は**承認済みの版**。記録がまだ無い時だけ、署名済みで代用する
+# (初回の配布より前 = 承認という出来事がまだ起きていない)。
+target="${approved:-$loc}"
+src="$([ -n "$approved" ] && echo "承認済み" || echo "署名済み(承認の記録がまだ無い)")"
+
+if [ "$pub" -lt "$target" ]; then
+    echo "ota-freshness: ★配布 $pub < $src $target = **栞を叩くと $((target - pub)) ビルド巻き戻る**" >&2
+    echo "  直す手: cd ios && ./tools/adhoc-ota.sh(秘密の path は変えない = 栞が生き続ける)" >&2
+    exit 1
+fi
+
+# --- 承認済みの版が HEAD に追いついているか -----------------------------------
+# ★配布が承認に追いついていても、**承認そのものが古い**事が在る ——
+#   「配った物は最新の承認と一致している。ただし其の承認は3日前の木の話」。
+#   緑でも赤でもない第三の状態なので、**別の番号(3)**で出す。
+#   0 に混ぜると「届いている」と読まれ、1 に混ぜると巻き戻りと区別が付かない。
+head_num=""
+if [ -x "$HERE/ios/tools/build.sh" ]; then
+    head_num="$(num_or_empty "$(bash "$HERE/ios/tools/build.sh" --print-build-num 2>/dev/null | tr -d '[:space:]')")"
+fi
+if [ -n "$approved" ] && [ -n "$head_num" ] && [ "$approved" -lt "$head_num" ]; then
+    echo "ota-freshness: 配布 $pub は承認済み $approved に追いついている" 
+    echo "★ただし承認 $approved が HEAD $head_num より $((head_num - approved)) ビルド古い" >&2
+    echo "  = 出来ている物が、まだ配る対象になっていない。焼き直すなら: cd ios && ./tools/adhoc-ota.sh" >&2
+    exit 3
+fi
+
+echo "ota-freshness: 配布 $pub >= $src $target(栞は巻き戻さない)"
+exit 0

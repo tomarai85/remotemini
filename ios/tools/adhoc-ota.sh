@@ -373,8 +373,26 @@ esac
 #   実際その隙で 2 日間ずれた: 配布 89 / Tom の電話 96 / HEAD なら 99。
 #   §11 は此の頁を「Tom が栞から自分で入れ直す道」と定めているので、
 #   古い版が載ったままだと**唯一の復旧経路が彼を巻き戻す**。
+# ★**配った事を、承認として記録する**(2026-08-30)。鮮度検査はこれを読んで
+#   「配布 vs 承認済み」を比べる —— 以前は「配布 vs 最後に署名した物」だけを見ていて、
+#   両方が同じ番号なら HEAD がどれだけ先に行っていても緑だった。
+#   ★人が別に承認の儀式をする形にはしない。儀式は忘れられ、忘れられた記録は嘘になる。
+#     配ったという**出来事そのもの**を記録に使えば、ずれようが無い。
+printf '%s\n' "$BUILDNUM" > "$HERE/../.ota-approved-build"
+echo "    承認として記録: build $BUILDNUM (.ota-approved-build)"
+
 step "7. 配った版が古くない事(rc-backend/tools/ota-freshness-check.sh)"
-bash "$HERE/../rc-backend/tools/ota-freshness-check.sh"
+# ★rc=3(承認そのものが HEAD より古い)は、配った直後には起き得ない —— 今書いた記録が
+#   今焼いた番号だから。起きるとすれば「焼いてから配るまでに commit が増えた」場合で、
+#   それは知らせる価値が在る。だから 3 も止める側に置かない。
+set +e
+bash "$HERE/../rc-backend/tools/ota-freshness-check.sh"; frc=$?
+set -e
+case "$frc" in
+    0) ;;
+    3) echo "    ※承認が HEAD より古い(上記)。配った物は正しいので続ける" ;;
+    *) echo "★配った版が古い(rc=$frc)" >&2; exit "$frc" ;;
+esac
 
 echo
 echo "==> 電話で開く頁: $BASE/"
