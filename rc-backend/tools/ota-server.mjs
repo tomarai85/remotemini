@@ -160,27 +160,60 @@ const server = createServer((req, res) => {
   if (!st.isFile()) return done(404, "not found\n");
 
   const type = TYPES[extname(target).toLowerCase()] || "application/octet-stream";
-  res.writeHead(200, {
+  const head = {
     "content-type": type,
     "content-length": String(st.size),
     // 束は焼き直しで同じ名前のまま中身が変わる。電話に古い物を掴ませない。
     "cache-control": "no-store",
-  });
-  if (req.method === "HEAD") { logReq(req, 200, 0); return res.end(); }
-  // ★送った**実バイト**を自分で数える。初版は `res.bytesWritten` を書いたが、あれは
-  //   `ServerResponse` に存在しない属性で、ログに `bytes=undefined` が出ていた。
-  //   タスクの verifier は GET の行数しか数えないので**緑のまま通った** ——
-  //   「検査が測っていない範囲」の実例なので、直しと一緒に此処へ残す。
-  // ★`finish` ではなく `close` で記録する。`finish` は送り切った時しか出ないので、
-  //   中断(電話が圏外へ出た / installd が諦めた)が**1行も残らない** —— それは
-  //   「tap したのに入らなかった」を潰す当の欠陥と同じ形。`close` は必ず出る。
-  //   送り切ったかは `writableFinished` で分け、中断は `code=0`
-  //   (`src/reqlog.mjs` の実ログが `code=0 reason=aborted` を使うので綴りを合わせる)。
+  };
+  // HEAD は中身を開けない —— 開く必要が無い上に、開けば下の失敗経路を無駄に踏む。
+  if (req.method === "HEAD") { res.writeHead(200, head); logReq(req, 200, 0); return res.end(); }
+
+  // ★★読み取りの失敗で**プロセスごと死ぬ**穴を塞ぐ(2026-08-30、実測で落として確認)。
+  //   `stream.pipe(res)` は読み手のエラーを転送せず、`error` に聞き手が居なければ
+  //   Node は投げる = **配布口が丸ごと落ちる**。実演: 束を `chmod 000` にして1回叩くと
+  //   `EACCES` で死に、以後は正常な file も `000`(接続すら出来ない)になった。
+  //   `statSync` が通っても `open` は落ちうる —— stat は読み権限を要らないし、
+  //   stat と open の間に消える事も在る。同時要求が増えれば `EMFILE` も同じ形で来る
+  //   (**それは此の口が晒されている連打そのもの**)。
+  //
+  //   ★`open` を待ってから頭を書く。初版の順(先に 200 を書いてから開く)だと、
+  //     失敗した時には既に 200 が出ているので、**嘘の 200 を送った後で切る**しか無い。
+  //     開けた事を確かめてから 200 を書けば、失敗は素直に 404 として出せる。
   let sent = 0;
   const stream = createReadStream(target);
-  stream.on("data", (chunk) => { sent += chunk.length; });
-  res.on("close", () => logReq(req, res.writableFinished ? 200 : 0, sent));
-  stream.pipe(res);
+
+  stream.once("error", () => {
+    // 頭がまだなら 404。既に出ていれば切るしかない(`close` が code=0 を残す)。
+    if (!res.headersSent) return done(404, "not found\n");
+    res.destroy();
+  });
+
+  stream.once("open", () => {
+    // 開く前に客が切っていたら、頭も書かず fd も持ち続けない。
+    if (res.destroyed || res.writableEnded) return stream.destroy();
+    res.writeHead(200, head);
+    // ★送った**実バイト**を自分で数える。初版は `res.bytesWritten` を書いたが、あれは
+    //   `ServerResponse` に存在しない属性で、ログに `bytes=undefined` が出ていた。
+    //   タスクの verifier は GET の行数しか数えないので**緑のまま通った** ——
+    //   「検査が測っていない範囲」の実例なので、直しと一緒に此処へ残す。
+    // ★`finish` ではなく `close` で記録する。`finish` は送り切った時しか出ないので、
+    //   中断(電話が圏外へ出た / installd が諦めた)が**1行も残らない** —— それは
+    //   「tap したのに入らなかった」を潰す当の欠陥と同じ形。`close` は必ず出る。
+    //   送り切ったかは `writableFinished` で分け、中断は `code=0`
+    //   (`src/reqlog.mjs` の実ログが `code=0 reason=aborted` を使うので綴りを合わせる)。
+    stream.on("data", (chunk) => { sent += chunk.length; });
+    res.on("close", () => { logReq(req, res.writableFinished ? 200 : 0, sent); stream.destroy(); });
+    stream.pipe(res);
+  });
+});
+
+// ★最後の網。上で塞いだ経路の外にも、まだ知らない投げ方が在りうる —— 配布口が
+//   黙って消えるより、一行残して生き続ける方が良い(此の口は無人で回る)。
+//   ★これは上の `stream.once("error")` の**代わりではない**。此処だけに頼ると
+//     「落ちはしないが、その要求に何が起きたか分からない」状態になる。
+process.on("uncaughtException", (e) => {
+  try { process.stdout.write(`[ota] uncaught ${new Date().toISOString()} ${e?.code || ""} ${e?.message || e}\n`, () => {}); } catch { /* 記録できない事は配布を止める理由にならない */ }
 });
 
 // ★送信の上限(2026-08-30、Codex の指摘3の後半)。客が**切らずに読むのを止める**と、

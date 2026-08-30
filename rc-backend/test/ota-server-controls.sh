@@ -120,6 +120,28 @@ fi
 ct=$(curl -s -o /dev/null -w '%{content_type}' --max-time 5 "http://127.0.0.1:$PORT/s3cret/RemoteMini.ipa")
 [ "$ct" = "application/octet-stream" ] && ok "束の型が octet-stream" || ng "束の型が $ct"
 
+# --- N7 読めない file が**配布口を殺さない** -----------------------------------
+# ★2026-08-30、実測で落とした。`stream.pipe(res)` は読み手のエラーを転送せず、
+#   `error` に聞き手が居なければ Node は投げる = プロセスごと終了。
+#   `statSync` は読み権限を要らないので、stat が通っても `open` は落ちうる。
+#   落ちた後は**正常な file も配れない**(接続すら出来ず curl は 000)。
+#   同じ形は stat と open の間に file が消えた時、そして `EMFILE`(= 連打)でも来る。
+# ★測るのは3つ: 落ちない / その要求は 404 になる / **その後も配れる**。
+#   3つ目が要る —— 「404 が返った」だけでは、次の要求で死んでいても気付けない。
+printf 'LOCKED\n' > "$ROOT/s3cret/locked.ipa"
+chmod 000 "$ROOT/s3cret/locked.ipa"
+c_locked=$(code "http://127.0.0.1:$PORT/s3cret/locked.ipa")
+sleep 0.4
+srv_alive=no; kill -0 "$PID" 2>/dev/null && srv_alive=yes
+c_after=$(code "http://127.0.0.1:$PORT/s3cret/manifest.plist")
+chmod 644 "$ROOT/s3cret/locked.ipa"
+[ "$srv_alive" = "yes" ] && ok "N7 読めない file を叩いても配布口が生きている" \
+                         || ng "N7 読めない file で配布口が死んだ(この1本で全配布が止まる)"
+[ "$c_locked" = "404" ] && ok "N7b 読めない file は 404(嘘の 200 を出さない)" \
+                        || ng "N7b 読めない file の応答が $c_locked"
+[ "$c_after" = "200" ]  && ok "N7c その後も正常な file を配れる" \
+                        || ng "N7c 読めない file の後、正常な file が $c_after"
+
 echo
 echo "ota-server-controls: OK $PASS / NG $FAIL"
 [ "$FAIL" -gt 0 ] && exit 1
