@@ -34,8 +34,13 @@
     同じ job で回す。順序に意味が在る —— 数える元(`rc-backend.log` の client=app 行)を
     消しに来るのが後半だから。別 job に分けると2つが競り、たまたま切る方が先に走った回に
     その日の観測が失われる。`com.fleet.rc-phone-window` が既に同じ形(`-c` で順に並べる)。
-    ★census が失敗しても `;` で続けるので、上限は必ず掛かる(数えられない事は
-    ディスクを溢れさせる理由にならない)。census の置き場 `~/rc-census/` は
+    ★**census が失敗したら上限を掛けない**(2026-08-30、Codex の指摘3で `;` から `&&` へ変えた)。
+    初版の理由は「数えられない事はディスクを溢れさせる理由にならない」だったが、
+    釣り合いが逆だった —— **切ると復旧の材料が永久に消える**のに対し、掛からない事の代償は
+    1時間あたり約 11KB(実測 260KB/日)。5MB に達するまで 20 日近い猶予が在る。
+    永久の損失と、20 日の猶予を比べれば、止める側が正しい。
+    ★但し census が恒久的に失敗すると上限が永久に掛からない。其の失敗は
+    `rc-log-cap.log` に出るが**誰も見ていない**(CF-9 の未着手項)。census の置き場 `~/rc-census/` は
     **掃く対象に入れていない** —— 掃かれる場所に「掃かれると困る物」を置かない。
 
   ★この job は**自分の log も切る**(出力先が同じ dir で `*.log` に当たる)。
@@ -62,7 +67,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>/bin/bash /Users/athenas/rc-backend/tools/app-usage-census.sh; exec /bin/bash /Users/athenas/rc-backend/tools/log-cap-all.sh /Users/athenas/Library/Logs/rc-backend /Users/athenas/.rc-backend</string>
+    <string>/bin/bash /Users/athenas/rc-backend/tools/app-usage-census.sh &amp;&amp; exec /bin/bash /Users/athenas/rc-backend/tools/log-cap-all.sh /Users/athenas/Library/Logs/rc-backend /Users/athenas/.rc-backend</string>
   </array>
 
   <key>WorkingDirectory</key>
