@@ -1,0 +1,33 @@
+account-usage-swift-unit-test-coverage — 検査が本物である事の実演(2026-08-30 01:0x CDT)
+
+SHIP-GATE(unverifiable_visual)が要求した外部確認の代わりに、**変異による実演**を成果物とする。
+理由: この的は「見た目」ではなく**純関数の判定**(usageLine / usageExhausted / usageTooStale と
+decode)で、外部の目より「壊したら赤くなるか」の実測の方が強い証拠になる。
+
+## 基準
+$ xcodebuild test -only-testing:RemoteMiniTests/AccountUsageTests \
+                  -only-testing:RemoteMiniTests/AccountClientTests
+  ** TEST SUCCEEDED **   passed 30 / failed 0 / total 30
+
+## 変異 M1 — 古さの判定を殺す(Codex 2026-08-30 指摘2 の当の欠陥を植え直す)
+SettingsView.usageTooStale の本体を `return false` に差し替え
+  = 齢が幾つでも数字を出し続ける = 先週の値が「今の値」として切替の判断に使われる
+
+結果:
+  Tests/Core/AccountUsageTests.swift:142: error:
+    -[RemoteMiniTests.AccountUsageTests testStaleUsageHidesTheNumbers] :
+    XCTAssertTrue failed - 閾値を越えたら数字を出さない = 先週の値が「今の値」として読まれるのを防ぐ
+  Test Case 'testStaleUsageHidesTheNumbers' failed (0.292 seconds)
+  ** TEST FAILED **
+
+★**赤くなったのは担当の1本だけ**(他の検査は緑のまま)= 判定と検査が1対1で対応している。
+
+## 復元
+  md5 一致を確認(e9f5bc162bc9f06100867036a81c8166 = 変異前 / 変異後の復元先)
+
+## この検査が測っていない事(正直に)
+- 画面に**実際に文字が描かれる**事は測っていない(それは UI 検査の仕事)。
+- 机が本当にこの形の JSON を出す事は、此処ではなく
+  `rc-backend/test/wire-key-agreement.test.mjs` が両側を実行して測る。
+  ただし検体そのものは机の `accountBody` を実走させた出力を貼ってあるので、
+  「電話が読める形」だけを測る手書き検体の穴(監査 S8-24)には落ちていない。
