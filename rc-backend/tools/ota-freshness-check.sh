@@ -39,8 +39,21 @@ num_or_empty() {  # 数字だけを通す。空や文字混じりは空にして
 }
 
 # --- 配っている版 -------------------------------------------------------------
+# ★**秘密の path を名指しする**(2026-08-30、Codex の指摘4)。`$HOME/ota/*` の glob は、
+#   dir が2つ在る時に「どれを読んだか」が判らないまま数字を1つ返す ——
+#   古い秘密の残骸が並んだ日に、**配っていない方の版**を「配布中」として読みうる。
+#   秘密は `ios/build/adhoc/.ota-path-secret` が正本(`ios/tools/adhoc-ota.sh` が作って変えない)。
+SECRET_FILE="${RC_OTA_SECRET_FILE:-$HERE/ios/build/adhoc/.ota-path-secret}"
+OTA_SECRET="${RC_OTA_SECRET:-}"
+if [ -z "$OTA_SECRET" ] && [ -f "$SECRET_FILE" ]; then
+    OTA_SECRET="$(tr -d '[:space:]' < "$SECRET_FILE")"
+fi
+case "$OTA_SECRET" in
+    [0-9a-f][0-9a-f]*) ;;
+    *) echo "ota-freshness: 秘密の path を特定できない($SECRET_FILE)= 測定不成立" >&2; exit 2 ;;
+esac
 pub_raw="$("$SSH_BIN" -o ConnectTimeout=15 -o BatchMode=yes "$HOST" \
-    '/usr/libexec/PlistBuddy -c "Print :items:0:metadata:bundle-version" $HOME/ota/*/manifest.plist 2>/dev/null' \
+    "/usr/libexec/PlistBuddy -c 'Print :items:0:metadata:bundle-version' \"\$HOME/ota/$OTA_SECRET/manifest.plist\" 2>/dev/null" \
     2>/dev/null | tr -d '[:space:]')"
 rc=$?
 pub="$(num_or_empty "$pub_raw")"

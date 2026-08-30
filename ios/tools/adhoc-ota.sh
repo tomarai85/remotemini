@@ -62,7 +62,10 @@ step() { echo "==> $*"; }
 #   3つ重なって初めて嘘になる: 上書きされた trap / 未測定を失敗と読む / pipe の rc。
 CLEANUP=()
 cleanup_all() { local f; for f in ${CLEANUP+"${CLEANUP[@]}"}; do /bin/rm -f "$f"; done; }
-trap 'rc=$?; cleanup_all; [ "$rc" -ne 0 ] && echo "★ adhoc-ota.sh は rc=$rc で止まった(直前に出た行の次が犯人)" >&2; exit $rc' EXIT
+# ★rc を取った直後に `set +e` する(2026-08-30、Codex が実測)。掃除が失敗すると
+#   `set -e` が診断の**前に**止め、元の rc も失う —— Codex の実測では `exit 7` が
+#   無言の `exit 1` に化けた。掃除の失敗は警告に留め、元の rc を返す。
+trap 'rc=$?; set +e; cleanup_all || echo "★掃除に失敗した(rc=$rc は保つ)" >&2; [ "$rc" -ne 0 ] && echo "★ adhoc-ota.sh は rc=$rc で止まった(直前に出た行の次が犯人)" >&2; exit $rc' EXIT
 
 # --- 秘密の一段。**一度作ったら変えない** -----------------------------------
 # 変えると Tom の栞が死ぬ。焼き直しの度に URL が変わる導線は、結局
@@ -94,18 +97,33 @@ fi
 #
 # ★見るのは `ios/Sources` `ios/Tests` `ios/UITests` の3つ。道具(`ios/tools`)の
 #   未コミットは焼く物に入らないので止めない —— 止める理由の無い所で止める番人は外される。
+# ★見る範囲は「成果物を変える物」であって「iOS の file 全部」ではない
+#   (2026-08-30、Codex の指摘1で切り直した)。初版は Sources/Tests/UITests を見ていたが
+#   **切り方が逆**だった: `Tests` と `UITests` は Release の app に入らない一方、
+#   `project.yml`(xcodegen の入力)・`Assets.xcassets`・`Info.plist`・
+#   `tools/build.sh`(版と種を焼き込む)は**成果物を変える**。
+#   ★汚れたまま焼くと、**同じ CFBundleVersion で中身が違う束**が出来る ——
+#     版番号で古さを見る鎖が、そこから先ずっと嘘を言う。
+ART_PATHS="ios/Sources ios/Assets.xcassets ios/project.yml ios/Info.plist ios/tools/build.sh"
 step "0. 木が汚れていないか(変異の残骸を配らない)"
-DIRTY="$(cd "$HERE/.." && git status --porcelain -- ios/Sources ios/Tests ios/UITests 2>/dev/null)"
+DIRTY="$(cd "$HERE/.." && git status --porcelain -- $ART_PATHS 2>/dev/null)"
 if [ -n "$DIRTY" ]; then
     echo "$DIRTY" >&2
-    echo "★ ios/ の焼く対象に未コミットの差分が在る。**変異試験の残骸かもしれない**。" >&2
-    echo "  確かめる: git diff -- ios/Sources ios/Tests ios/UITests" >&2
-    echo "  戻す:     git checkout -- ios/Sources ios/Tests ios/UITests" >&2
-    echo "  意図した変更なら: RC_OTA_ALLOW_DIRTY=1 ./tools/adhoc-ota.sh" >&2
-    [ "${RC_OTA_ALLOW_DIRTY:-0}" = "1" ] || exit 1
-    echo "    RC_OTA_ALLOW_DIRTY=1 が立っているので続ける(意図した差分として扱う)"
+    echo "★ 成果物を変える path に未コミットの差分が在る。**変異試験の残骸かもしれない**。" >&2
+    echo "  見る範囲: $ART_PATHS" >&2
+    echo "  確かめる: git diff -- $ART_PATHS" >&2
+    echo "  戻す:     git checkout -- $ART_PATHS" >&2
+    # ★配る時は逃げ道を置かない(Codex の指摘1)。env で越えられる門は、いずれ
+    #   「毎回打つ物」になる。**人の電話に載る**物なので commit か stash を要求する。
+    #   手元で形を見たいだけなら `--no-upload` を使う(そちらは越えられる)。
+    if [ "$MODE" = "local" ] && [ "${RC_OTA_ALLOW_DIRTY:-0}" = "1" ]; then
+        echo "    --no-upload かつ RC_OTA_ALLOW_DIRTY=1 なので続ける(配らないので害が外へ出ない)"
+    else
+        echo "  配る前に commit か stash を。手元で見るだけなら: RC_OTA_ALLOW_DIRTY=1 ./tools/adhoc-ota.sh --no-upload" >&2
+        exit 1
+    fi
 else
-    echo "    綺麗(焼く対象に未コミットの差分なし)"
+    echo "    綺麗(成果物を変える path に未コミットの差分なし)"
 fi
 
 # --- 1. 焼く(build.sh をそのまま使う) --------------------------------------
@@ -273,11 +291,31 @@ ssh -o ConnectTimeout=15 -o BatchMode=yes "$DESK_SSH" "mkdir -p ~/$DESK_DIR/$SEC
 #   逆だと「manifest は新しい版を名乗っているのに束はまだ古い」窓が開く ——
 #   其の隙に電話が取りに来ると、電話は新しい版を入れたと信じて古い物を動かす。
 #   署名は**完全性**を証明するが**新しさ**は証明しないので、此の取り違えは検知されない。
-put_one() { scp -q "$1" "$DESK_SSH:~/$DESK_DIR/$SECRET/"; }
-put_one "$STAGE/$IPA"
-put_one "$STAGE/index.html"
+# ★★**上書きの最中に部分 file を掴まれる**(2026-08-30、Codex の指摘3)。
+#   `scp` は宛先を切り詰めてから書くので、其の間に電話が取りに来ると**書きかけの束**を掴む。
+#   署名は完全性を証明するが「今この瞬間の file が完全か」は証明しないので、
+#   電話には「入らなかった」としか見えず原因が判らない。
+#
+#   直し方は**名前を変えない**。`ota-verify.sh` が `RemoteMini.ipa` を3箇所で直に叩くので、
+#   版付きの名前にすると検証の方が壊れる —— 原子性を買って検証を失うのは割に合わない。
+#   一時名で送ってから remote で `mv` する。**rename は原子的**なので、電話が見るのは
+#   「前の完全な file」か「次の完全な file」のどちらかだけになる。
+#
+# ★掲載の順は変えない(Codex 2026-08-28)。**束を先に、manifest を最後に**。
+#   逆だと「manifest は新しい版を名乗っているのに束はまだ古い」窓が開き、
+#   電話は新しい版を入れたと信じて古い物を動かす。
+put_atomic() {  # put_atomic <手元の file> <向こうの名前>
+    scp -q "$1" "$DESK_SSH:~/$DESK_DIR/$SECRET/$2.new"
+    ssh -o ConnectTimeout=15 -o BatchMode=yes "$DESK_SSH" \
+        "cd ~/$DESK_DIR/$SECRET && mv -f '$2.new' '$2'"
+}
+# 束を差し替える前に1世代だけ退避(rollback の材料)。
+ssh -o ConnectTimeout=15 -o BatchMode=yes "$DESK_SSH" \
+    "cd ~/$DESK_DIR/$SECRET 2>/dev/null && [ -f $IPA ] && cp -f $IPA $IPA.prev" || true
+put_atomic "$STAGE/$IPA" "$IPA"
+put_atomic "$STAGE/index.html" "index.html"
 # manifest が最後。之が置かれた瞬間から新しい版が「配られている」事になる。
-put_one "$STAGE/manifest.plist"
+put_atomic "$STAGE/manifest.plist" "manifest.plist"
 # ★**所有者だけ**にする(2026-08-28、敵対レビューが掴んだ)。初版は `chmod -R a+rX` と
 #   書いていた —— 配信する物だから読ませる、という反射で。之が唯一の守りを潰していた:
 #   配る path の秘密の一段は「推測できない」事が全部なのに、`a+rX` は**同じ機体の
@@ -296,11 +334,28 @@ step "6. 確かめる(此処は机の LAN に居ない = 同一 WiFi 無しの�
 #   黙って止まる**。実際 2026-08-30 の走行がそうなり、step 7 が一度も走らなかった。
 #   赤(1)は止める。未測定(2)は名指しして続ける。
 set +e
-bash "$HERE/tools/ota-verify.sh"; vrc=$?
+vout="$(bash "$HERE/tools/ota-verify.sh" 2>&1)"; vrc=$?
 set -e
+printf '%s\n' "$vout"
+# ★rc=2 を一律で「続けてよい」に丸めない(2026-08-30、Codex の指摘2)。
+#   `ota-verify.sh` は **UDID が聞けない時**にも **HTTPS 面に届かない時**にも 2 を返す。
+#   後者は「配れていない」そのものなので、続けると *ssh で manifest が読めるだけ*で
+#   最終的に exit 0 に辿り着ける = **届いていないのに成功**。
+#   区別は rc ではなく**中身**でする: 配達の3本(manifest / 束 / 導線)が緑である事を要求する。
+delivered_ok() {
+    printf '%s' "$vout" | grep -q "緑.*manifest が返る" \
+      && printf '%s' "$vout" | grep -q "緑.*束(.ipa)が返る" \
+      && printf '%s' "$vout" | grep -q "緑.*導線の頁が返る"
+}
 case "$vrc" in
     0) ;;
-    2) echo "    ※検証に**未測定**が在る(rc=2)。赤ではないので続ける" ;;
+    2)
+        if delivered_ok; then
+            echo "    ※未測定が在る(rc=2)が、配達の3本は緑。続ける"
+        else
+            echo "★rc=2 だが**配達そのものが 測れていない**(面に届いていない可能性)。止める" >&2
+            exit 2
+        fi ;;
     *) echo "★配る面の検証が赤い(rc=$vrc)" >&2; exit "$vrc" ;;
 esac
 
