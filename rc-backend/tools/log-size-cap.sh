@@ -51,6 +51,15 @@ case "$now" in ''|*[!0-9]*) echo "log-size-cap: 大きさを測れない: $F"; e
 keep=$((CAP / KEEP_FRAC))
 snap="$F.tail"
 
+# ★退避先の権限を**元 log に合わせる**(2026-08-30、自分の差分を読み直して見つけた)。
+#   `>` は umask 任せなので、既定の 022 だと **600 の log の中身が 644 の file に写る**。
+#   実測: 元 `-rw-------` → 退避 `-rw-r--r--`。dir が 700 なので実害は小さいが、
+#   `rc-ota.log` の権限を 600 に揃えた判断(2026-08-30)と矛盾する。
+#   umask ではなく元 file の mode を写す —— log ごとに違っても追随する。
+mode="$(stat -f%Lp "$F" 2>/dev/null || stat -c%a "$F" 2>/dev/null)"
+case "$mode" in [0-7][0-7][0-7]) ;; *) mode=600 ;; esac
+umask 077
+
 # 1) 末尾を**別 file** へ退避(ここでは元 file を1バイトも触らない)
 if ! tail -c "$keep" "$F" > "$snap.new" 2>/dev/null; then
     /bin/rm -f "$snap.new"
@@ -70,6 +79,7 @@ whole="$(wc -c < "$snap.new" | tr -d ' ')"
   fi
 } > "$snap" 2>/dev/null || { /bin/rm -f "$snap.new"; echo "log-size-cap: 退避を書けない"; exit 1; }
 /bin/rm -f "$snap.new"
+chmod "$mode" "$snap" 2>/dev/null || echo "log-size-cap: 退避の権限を $mode に出来ない: $snap"
 
 # 2) 元 file を**1回だけ**空にする。offset 0 から書き戻さないので、追記との競合で
 #    行を上書きする道が無い(失うのは 1) と 2) の間に入った行だけ)。
