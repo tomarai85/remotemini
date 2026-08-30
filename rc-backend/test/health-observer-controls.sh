@@ -722,6 +722,56 @@ chk "  本物の出し先へは出さない" "$(notify_count)" "0"
 printf '%s' "$out" | grep -q '最後に働けたのは 2 時間前' \
   && ok "  ★下見でも『いつから』が読める" || ng "  出力: $out"
 
+# ── ★公開面を測る台本が無い時(2026-08-30 追加)────────────────────────────────
+#
+# なぜ此処に足すか: 2026-08-30 に repo 版の observer を friday へ配る直前、依存物
+# `funnel-exposure-check.sh` が向こうに**無い**事に気付いた。新版はその時
+# `notify_monitor_broken` を**閾値なしで**撃つので(`health-observer.sh` の
+# `[ ! -x "$EXP_CHECK" ]` の枝)、台本だけ配っていれば日1回の誤報が **10 分毎**に化けた。
+# 依存物も一緒に配って回避したが、**この枝を測る対照は1本も無かった** ——
+# 729 行のこの file は他の2つの壊れ方について同じ抑制を測っているのに、此処だけ空。
+#
+# 測るのは2つ:
+#   (a) 台本が無い時に**鳴る**(黙って安全だと言わない)
+#   (b) 鳴り続けない(`BROKEN_MARK` の抑制がこの枝にも効く)
+echo "── 8. 公開面を測る台本が無い時 ──"
+: > "$FAKE_NOTIFY_LOG"; /bin/rm -f "$SB/broken.mark" "$SB/exposure.mark"
+
+_exp() {  # 露出の枝だけを回す(up/down の系統は動かさない)
+    RC_HEALTH_CONF="$SB/none.conf" \
+    RC_HEALTH_URL="http://127.0.0.1:9/健康" \
+    RC_HEALTH_HOST="test.example" \
+    RC_HEALTH_STATE="$STATE" \
+    RC_HEALTH_NOTIFY="$SB/fake-notify.sh" \
+    RC_HEALTH_LOG="$SB/observer.log" \
+    RC_HEALTH_BROKEN_MARK="$SB/broken.mark" \
+    RC_HEALTH_OK_MARK="$OKM" \
+    RC_HEALTH_EXP_CHECK="${TEST_EXP_CHECK:-$SB/no-such-exposure-check.sh}" \
+    RC_HEALTH_EXP_MARK="$SB/exposure.mark" \
+    RC_HEALTH_EXP_TS="$SB/fake-tailscale.sh" \
+    bash "$OBS" --exposure-only >/dev/null 2>&1
+}
+
+# tailscale の実体は在る事にする(無いと**別の枝**= "tailscale が無い" に落ちて、
+# 測りたい枝を一度も通らない。今日この file の他の箇所が踏んだのと同じ型)。
+printf '#!/bin/bash\necho "{}"\n' > "$SB/fake-tailscale.sh"; chmod +x "$SB/fake-tailscale.sh"
+
+_exp
+chk "(a) 台本が無ければ鳴る(黙って安全と言わない)" "$(notify_count)" "1"
+grep -q "公開面を測れない" "$SB/observer.log" \
+  && ok "(a2) 理由が log に残る" \
+  || ng "(a2) 鳴ったのに理由が log に無い"
+
+_exp; _exp
+chk "★(b) 続けて回しても鳴り続けない(抑制がこの枝にも効く)" "$(notify_count)" "1"
+
+# ★陽性対照: 台本を**在る**事にすると、この枝は鳴らない = 上の1件は
+#   「台本が無い事」を測っていて、単に何でも鳴るのではない。
+: > "$FAKE_NOTIFY_LOG"; /bin/rm -f "$SB/broken.mark" "$SB/exposure.mark"
+printf '#!/bin/bash\nexit 0\n' > "$SB/present-exposure-check.sh"; chmod +x "$SB/present-exposure-check.sh"
+TEST_EXP_CHECK="$SB/present-exposure-check.sh" _exp
+chk "★(c) 台本が在れば鳴らない(何でも鳴る訳ではない)" "$(notify_count)" "0"
+
 echo ""
 echo "HEALTH-OBSERVER-CONTROLS: pass=$pass fail=$fail$([ "$KEY_UNMEASURED" -eq 1 ] && echo ' ★鍵の系統は測定不成立')"
 [ "$fail" -eq 0 ] || exit 1

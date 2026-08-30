@@ -1,0 +1,2860 @@
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a0515f-b7f1-7251-8a4f-b28076d249b6
+--------
+user
+Attack this pair of scripts. Be brief and specific — I want the two or three things that are actually wrong, not a survey.
+
+## Background (why they exist)
+An always-on Mac mini ("Friday") runs a watchdog as launchd `com.fleet.rc-health-observer`, every 600s, from `~/rc-observer/tools/health-observer.sh`. Its source of truth is a git repo on my laptop at `rc-backend/tools/health-observer.sh`.
+
+There was no sync path. The existing deploy script only covers a different directory (`~/rc-backend`). Result, measured today: the deployed watchdog was **139 lines and 22 days behind** the repo. The stale version defaulted `KEY_PEER="${RC_HEALTH_KEY_PEER:-$HOST}"`, and Friday's config sets `RC_HEALTH_HOST="friday(loopback)"` — a human-readable label, not a node name. So it looked up a tailnet node named `friday(loopback)`, failed, and emitted "monitoring is broken" to the owner's Discord **once a day** (confirmed firing 08-28 11:18 and 08-29 11:19). Nobody noticed for three weeks.
+
+I fixed the immediate problem by hand (scp + verified the branch with a forced dry-run and a positive control). These two scripts are meant to stop it recurring.
+
+## Script A — `observer-parity-check.sh` (measures, never deploys)
+```bash
+HOST="${RC_OBSERVER_HOST:-athenas}"
+REMOTE_DIR="${RC_OBSERVER_REMOTE_DIR:-\$HOME/rc-observer/tools}"
+FILES=(health-observer.sh funnel-exposure-check.sh tailnet-key-expiry.sh)
+
+remote_out="$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
+    "cd $REMOTE_DIR 2>/dev/null || exit 9; for f in ${FILES[*]}; do
+       if [ -f \"\$f\" ]; then printf '%s %s\n' \"\$(md5 -q \"\$f\")\" \"\$f\"; else printf 'MISSING %s\n' \"\$f\"; fi
+     done" 2>/dev/null)"
+rc=$?
+if [ $rc -ne 0 ] || [ -z "$remote_out" ]; then echo "測れない"; exit 2; fi
+# per file: compare local md5 to the remote md5; MISSING and mismatch both -> fail=1
+# then: if measured != ${#FILES[@]} -> exit 2 ("空の和を一致と読ませない")
+# exit 0 = all match, 1 = drift, 2 = could not measure
+```
+Deliberate choices: md5 not mtime (a 0-byte file's mtime is when it was last *opened*, not written — I misdiagnosed a live watchdog as dead that way earlier today); a separate script from the deployer so the deployer's own claim of success is never the evidence; `health-step.mjs` exists on Friday but not in the repo, so it is NOT in FILES (deleting an unowned file is forbidden here).
+
+## Script B — `deploy-observer-to-friday.sh`
+1. run A. exit 0 if already in sync (don't churn). exit 2 if A could not measure ("don't deploy to a host you cannot see").
+2. `ssh` mkdir a timestamped `.bak-$STAMP/` and `cp` each existing file into it.
+3. resolve the remote home first (`RHOME="$(ssh "$HOST" 'printf %s "$HOME"')"`) then `scp` into `"$HOST:$RHOME/rc-observer/tools/"`.
+   — I hit this live: `scp` does NOT expand `$HOME` in the destination (unlike `ssh`); it failed with `remote mkdir "$HOME/rc-observer/tools/": No such file or directory`.
+4. run A again — an independent re-measure, not the deployer's own word.
+5. run the deployed script once with `--dry-run` and require **evidence it actually ran**:
+   count log lines before, run, then diff the tail, and fail if the new lines contain "監視が壊れている" (monitoring broken) OR if no new line matches a known healthy marker.
+   — I added the second half after measuring that a healthy run prints **nothing** to stdout. Judging by "no error word present" would go green for a script that is broken enough to say nothing at all. I proved this by replacing the deployed script with `#!/bin/bash\nexit 0` and confirming the check turns red.
+
+## Verified by execution (not by reading)
+- planted real drift (restored the 22-day-old file on Friday) → A: `NG health-observer.sh — ずれている(repo=f08b… friday=79a0…)`, exit 1, other two files still ok
+- ran B against that drift → backup made, transferred, A re-run green 3/3, dry-run evidence found, exit 0
+- planted a silent-failure mutant (`exit 0` script) → step 5 turns red
+- ran B when already in sync → "already in sync, not deploying", exit 0
+
+## Attack these
+1. **Is step 5's "evidence it ran" actually sound?** It diffs log line counts across two separate ssh sessions while a launchd timer may fire the same script every 600s. What happens when the scheduled run lands between my two measurements? Is there a cheaper honest signal than a line-count diff?
+2. **The backup is per-run and never pruned.** `.bak-<stamp>/` accumulates forever in a directory the watchdog reads from. Does that matter? Could a stale `.bak-*` ever be picked up by anything?
+3. **`FILES` is hand-maintained.** If someone adds a fourth file the observer needs, both scripts silently keep passing while the new file never ships — the exact class of bug this is meant to prevent, one level up. Is there a way to derive the list that does not just move the staleness somewhere else?
+4. **Failure atomicity.** Between step 3 (transfer) and step 4 (re-check), the watchdog may fire with a half-updated set of files. Three separate `scp`s are not atomic. Given it runs every 600s and the transfer is sub-second, is this worth solving, or is worrying about it over-engineering?
+5. Anything about running this **unattended in a loop** that I am underweighting — specifically, this deploys to a production host without a human in the path.
+2026-08-30T06:33:43.376585Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T06:33:43.543188Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-08-30T06:33:43.831228Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+`claude-workspace-context` を使い、Friday 運用の前提を踏まえて実ファイルも確認します。論点は「誤検知/見逃しにつながるもの」だけに絞ります。
+exec
+/bin/zsh -lc "sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/SKILL.md && rg --files -g 'observer-parity-check.sh' -g 'deploy-observer-to-friday.sh' -g 'health-observer.sh' . .." in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+---
+name: claude-workspace-context
+description: "Tomtim の Claude 側グローバル設定を Codex でも参照するためのワークスペース文脈スキル。Mac mini 運用、保護ファイル、AI 連携、Claude Code との役割分担、ハーネス、ルーティング、デプロイ前提、作業スタイル、Claude 由来の制約を踏まえて進める必要がある時に必ず使用。"
+---
+
+# Claude Workspace Context
+
+`~/.claude/CLAUDE.md` と主要エージェント定義を Codex から参照できるようにしたブリッジスキル。
+
+## いつ使うか
+
+- `/Users/tomtim` 配下で、Claude 側の運用前提を踏まえて作業する時
+- Mac mini、launchd、SSH、handoff、複数 AI 連携が絡む時
+- `.env`、設定ファイル、依存関係、デプロイ周辺の変更可否を慎重に判断したい時
+
+## 最重要ルール
+
+- 日本語でやり取りする。
+- ユーザー向けテキストでは絵文字や装飾的な Unicode を避ける。
+- 触ってはいけないもの:
+  - `~/.claude/settings.json`
+  - `~/.zshrc`, `~/.bashrc`, `~/.zprofile`, `~/.bash_profile`
+  - あらゆる `.env`
+- 次は事前確認が必要:
+  - 依存関係の追加/削除/ダウングレード
+  - メジャーアップグレード
+  - ビルド設定変更
+  - DB 接続設定やマイグレーション
+  - launchd、Docker、CI/CD、ポート、認証、SSL 周辺
+- 症状回避ではなく根本原因修正を優先する。
+- 長い文脈共有はファイルベースで残す発想を優先する。
+- Claude 側の routing banner / Harness / Agent Teams は設計思想として参照する。ただし Codex では上位ルールを優先し、明示的な許可なしに sub-agent を起動しない。
+- Claude 側の設定や設計を同期目的で変更しない。反映が必要な場合は Codex 側の skill、memory、reference にだけ写す。
+- 複数 AI が絡む作業では、同じファイルを同時編集しないように担当範囲を明確にする。
+
+## Mac mini 文脈
+
+- SSH: `ssh athenas@10.0.0.0`
+- Node: `/opt/homebrew/bin/node`
+- sudo が必要な作業は、基本的にユーザー実行前提
+
+## 読むべき参照
+
+- コピー索引: `references/README.md`
+- 元のグローバル設定: `references/claude-global.md`
+- Claude 側ルールコピー:
+  - `references/rules/protected-files.md`
+  - `references/rules/workflow-principles.md`
+  - `references/rules/mac-mini-ops.md`
+  - `references/rules/harness-rules.md`
+  - `references/rules/parallel-ai-rules.md`
+  - `references/rules/session-resume.md`
+- ハーネス系エージェント:
+  - `references/agents/planner.md`
+  - `references/agents/generator.md`
+  - `references/agents/evaluator.md`
+  - `references/agents/meta-agent.md`
+- Claude 側の追加エージェント文脈:
+  - `references/agents/mac-mini-deployer.md`
+  - `references/agents/pica-connector.md`
+  - `references/agents/x-bookmark-manager.md`
+- Claude 側コマンド/テンプレート/メモリのコピー:
+  - `references/commands/`
+  - `references/templates/`
+  - `references/memory/`
+  - `references/claude-skills/`
+
+## 注意
+
+- Claude 側のルールが Codex の system/developer 指示と衝突する場合は、Codex 側の上位指示を優先する。
+- このスキルは Claude の運用文脈を持ち込むためのものだが、Codex の権限モデルや sub-agent ルールまでは上書きしない。
+./rc-backend/tools/health-observer.sh
+./rc-backend/tools/observer-parity-check.sh
+./rc-backend/tools/deploy-observer-to-friday.sh
+../mobile-work/rc-backend/tools/deploy-observer-to-friday.sh
+../mobile-work/rc-backend/tools/health-observer.sh
+../mobile-work/rc-backend/tools/observer-parity-check.sh
+
+exec
+/bin/zsh -lc "sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/references/README.md; sed -n '1,240p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/protected-files.md; sed -n '1,260p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/workflow-principles.md; sed -n '1,260p' /Users/tomtim/.codex/skills/claude-workspace-context/references/rules/mac-mini-ops.md; sed -n '1,260p' /Users/tomtim/.codex/skills/claude-workspace-context/references/agents/mac-mini-deployer.md; sed -n '1,280p' rc-backend/tools/observer-parity-check.sh; sed -n '1,360p' rc-backend/tools/deploy-observer-to-friday.sh" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+# Claude References Copied For Codex
+
+Copied on: 2026-04-22
+
+This directory is a Codex-side read-only reference mirror of selected Claude Code context.
+The source files under `~/.claude/` were not modified.
+
+## Copied Sources
+
+- `~/.claude/CLAUDE.md` -> `claude-global.md`
+- `~/.claude/agents/*.md` and selected nested `agent.md` files -> `agents/`
+- `~/.claude/rules/*.md` -> `rules/`
+- `~/.claude/commands/*.md` -> `commands/`
+- `~/.claude/memory/*.md` -> `memory/`
+- `~/.claude/templates/*.md` -> `templates/`
+- `~/.claude/references/*.md` -> this directory
+- selected `~/.claude/skills/*/SKILL.md` -> `claude-skills/`
+
+## Excluded On Purpose
+
+- `~/.claude/settings.json`
+- `~/.claude/settings.local.json`
+- `.env` files
+- sessions, tasks, plans, caches, auth caches, and plugin JSON state
+- SSH keys or other credentials
+
+## Usage Boundary
+
+These files are copied as source material only.
+Claude-native commands, agent orchestration, hooks, routing banners, and permission assumptions are not automatically available in Codex.
+Codex system/developer instructions remain authoritative.
+
+---
+name: protected-files
+description: List of files forbidden to edit/delete. Hook blocks these, but do not attempt in the first place.
+paths:
+  - "**/.env"
+  - "**/.env.*"
+  - "**/.zshrc"
+  - "**/.bashrc"
+  - "**/.zprofile"
+  - "**/.bash_profile"
+  - "**/settings.json"
+---
+
+# Config File Protection Rules
+
+## Files forbidden to modify (by any means)
+- `~/.claude/settings.json`
+- `~/.zshrc`, `~/.bashrc`, `~/.zprofile`, `~/.bash_profile`
+- `~/.env`, and any `.env` file in any directory
+
+## When a hook blocks
+- Do not try a workaround
+- Present the intended change to the user and request manual execution
+
+## When a change is truly needed
+Present the change and its rationale to the user, and request manual execution.
+---
+name: workflow-principles
+description: Task execution, completion, and self-improvement workflow principles
+---
+
+# Workflow Principles
+
+## Current-state confirmation
+When asked for a fix, do not execute immediately. First inspect the current state, propose, get approval, then execute.
+
+## Task planning
+- Tasks with 3+ steps or design decisions: plan via Plan mode before starting
+- Write the plan in `~/.claude/tasks/todo.md` as a checklist
+- On any problem, stop and re-plan immediately (do not push through)
+
+## Plan Mode Enumeration Checklist
+Before calling ExitPlanMode, walk through the 10 items below.
+Ask all ambiguous items via AskUserQuestion inside Plan mode.
+Do not surface additional confirmations after entering implementation phase
+(if one leaks out, recognize it as a failure of upfront enumeration).
+
+1. Tech / library choice
+2. Architecture approach
+3. UX / design preferences
+4. Scope boundary (how far to go)
+5. Intrusion scope into existing code / environment
+6. Edge case handling policy
+7. Error behavior
+8. Completion criteria
+9. Deploy / delivery target
+10. Conflicts with existing settings / rules
+
+Contract: Plan mode is the batch confirmation phase. Missed questions here destroy the value of autonomous execution. No shortcuts on this checklist.
+
+## Definition of done
+Writing code is not done. Must include log verification and proof of behavior.
+
+## Self-Improvement Loop
+- On user corrections or feedback, record the pattern in `~/.claude/projects/<PJ-slug>/memory/feedback_*.md`
+- Auto-referenced via MEMORY.md pointers; no manual review at session start
+
+## Demand Elegance
+- On noticing a hacky fix, self-question "is there a deeper solution?" before proceeding
+- Skip for trivially obvious simple fixes
+---
+name: mac-mini-ops
+description: SSH operations, service management, and deploy procedures for the Mac mini (athenas@10.0.0.0)
+---
+
+# Mac mini Operation Rules
+
+## Connection
+- SSH: `ssh athenas@10.0.0.0` (via Tailscale)
+- Tailscale: App Store version, so `tailscale set --ssh` is not available
+
+## Node.js
+- Path: `/opt/homebrew/bin/node`
+- Not in PATH under launchd; always use the absolute path
+
+## .env location
+- Shared: `~/macmini-openclaw-claudeode-/.env`
+- Copy to each subsystem as needed
+
+## Directory layout
+- `~/個人/` — personal projects (x-bookmark etc.)
+- `~/Disocrod/` — Discord X-posting bot
+- client-a lives in a separate directory (do not conflate)
+
+## launchd service management
+```bash
+# Load
+launchctl load ~/Library/LaunchAgents/<plist>
+# Unload
+launchctl unload ~/Library/LaunchAgents/<plist>
+# Status
+launchctl list | grep <label>
+```
+
+## Tasks requiring sudo
+Not executable by AI. User runs `! ssh athenas@... sudo <command>` directly in the terminal.
+---
+name: mac-mini-deployer
+description: "Mac mini（athenas@10.0.0.0）へのSSHデプロイ・サービス管理を担当するエージェント。launchd操作、ログ確認、npm install、サービス再起動が必要な時に使用。"
+---
+
+# Mac mini デプロイエージェント
+
+## 接続情報
+- SSH: `ssh athenas@10.0.0.0`（Tailscale経由）
+- Node: `/opt/homebrew/bin/node`（PATHに含まれない、必ず絶対パス）
+
+## 標準デプロイフロー
+1. SSHでファイルを転送または編集
+2. `npm install` が必要なら `/opt/homebrew/bin/npm install` を使用
+3. launchd サービスをリロード
+4. ログで動作確認
+
+## launchd コマンド
+```bash
+# リロード（変更反映）
+launchctl unload ~/Library/LaunchAgents/<label>.plist
+launchctl load ~/Library/LaunchAgents/<label>.plist
+
+# 状態確認
+launchctl list | grep <label>
+
+# ログ確認
+tail -f ~/個人/x-bookmark/data/app.log
+```
+
+## 注意事項
+- sudo が必要な操作はユーザーに依頼する
+- .env ファイルは編集しない（ユーザーが手動管理）
+- 既存サービス（Disocrod等）を誤って停止しない
+#!/bin/bash
+# observer-parity-check.sh — friday の `~/rc-observer/tools/` が repo と**一致しているか**を測る。
+#
+# ── なぜ配備台本と分けるか(2026-08-30)────────────────────────────────────────
+# 配る台本の自己申告(「配った」)は、配れた事の証拠にならない。実際 2026-08-30 に、
+# `deploy-to-friday.sh` が **`~/rc-observer/` を守備範囲に持っていない**事を見落として
+# いた為に、friday の `health-observer.sh` が repo より **139 行・22 日**古いまま動き、
+# 毎日 Tom の Discord へ「監視が壊れている」の誤報を投げていた(実発火 08-28 / 08-29)。
+# 古い事に気付いた経緯も配備の記録ではなく、**別レーンの Planner が md5 を突き合わせた**事だった。
+#
+# だから測る側を独立に置く。此の台本は何も配らない —— 配る台本が嘘をついても、
+# 此処が赤くなる。
+#
+# ★測るのは**中身の一致**(md5)であって mtime ではない。0 バイトの file の mtime は
+#   「最後に書いた時刻」ではなく「最後に開いた時刻」で、同じ日にそれで誤診している
+#   (`/tmp/rc-health-observer.out` を見て「38 時間死んでいる」と読んだ)。
+#
+# 使い方:
+#   bash tools/observer-parity-check.sh          # 一致 = rc 0 / ずれ = rc 1 / 測れない = rc 2
+#   RC_OBSERVER_HOST=athenas bash tools/...      # 宛先を差す(検査の継ぎ目)
+#
+# 終了コード: 0=一致 / 1=ずれている(赤) / 2=**測れなかった**(0 に丸めない)
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOST="${RC_OBSERVER_HOST:-athenas}"
+REMOTE_DIR="${RC_OBSERVER_REMOTE_DIR:-\$HOME/rc-observer/tools}"
+
+# 同期の対象。**repo に在って observer が使う物**だけを列挙する ——
+# `health-step.mjs` は friday に在るが repo に無い(由来不明)ので、勝手に消さない為に
+# 此処に入れない(消す判断は Tom の物。CLAUDE.md「由来不明を消す前に所有者を探す」)。
+FILES=(health-observer.sh funnel-exposure-check.sh tailnet-key-expiry.sh)
+
+fail=0; measured=0
+
+local_md5() { md5 -q "$1" 2>/dev/null || md5sum "$1" 2>/dev/null | cut -d' ' -f1; }
+
+# 向こう側の md5 を1回の ssh でまとめて取る(file 毎に繋ぐと遅く、途中で切れた時に
+# 「ずれ」と「届かない」の区別が付かなくなる)。
+remote_out="$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
+    "cd $REMOTE_DIR 2>/dev/null || exit 9; for f in ${FILES[*]}; do
+       if [ -f \"\$f\" ]; then printf '%s %s\\n' \"\$(md5 -q \"\$f\")\" \"\$f\"; else printf 'MISSING %s\\n' \"\$f\"; fi
+     done" 2>/dev/null)"
+rc=$?
+if [ $rc -ne 0 ] || [ -z "$remote_out" ]; then
+    echo "observer-parity: 測れない(ssh rc=$rc / 出力が空)。**一致とは言わない**"
+    exit 2
+fi
+
+for f in "${FILES[@]}"; do
+    lf="$HERE/$f"
+    if [ ! -f "$lf" ]; then
+        echo "  ?  $f — repo に無い(列挙が古い)"; fail=1; continue
+    fi
+    want="$(local_md5 "$lf")"
+    got="$(printf '%s\n' "$remote_out" | awk -v n="$f" '$2==n {print $1}')"
+    measured=$((measured + 1))
+    if [ -z "$got" ]; then
+        echo "  NG $f — 向こうの値が読めない"; fail=1
+    elif [ "$got" = "MISSING" ]; then
+        echo "  NG $f — friday に**無い**(依存物が欠けると閾値なしで鳴る枝が在る)"; fail=1
+    elif [ "$got" != "$want" ]; then
+        echo "  NG $f — ずれている(repo=$want friday=$got)"; fail=1
+    else
+        echo "  ok $f"
+    fi
+done
+
+# ★件数を主張する。列挙が壊れて 0 件になっても「全部一致」に見えないようにする
+# (此の repo が何度も踏んだ「空の和を一致と読ませない」型)。
+if [ "$measured" -ne "${#FILES[@]}" ]; then
+    echo "observer-parity: 測れた本数が $measured / ${#FILES[@]} = 測定不成立"
+    exit 2
+fi
+
+if [ "$fail" -eq 0 ]; then
+    echo "observer-parity: 一致 $measured/${#FILES[@]}"
+    exit 0
+fi
+echo "observer-parity: ずれている(配り直しは tools/deploy-observer-to-friday.sh)"
+exit 1
+#!/bin/bash
+# deploy-observer-to-friday.sh — friday の `~/rc-observer/tools/` を repo に追随させる。
+#
+# ── なぜ別の台本なのか(2026-08-30)───────────────────────────────────────────
+# `deploy-to-friday.sh` は **`~/rc-backend/` しか運ばない**。監視器は別ディレクトリ
+# (`~/rc-observer/`)に住み、別の launchd label(`com.fleet.rc-health-observer`)で走るので、
+# あの台本の守備範囲の外に落ちていた。その死角のせいで、friday の `health-observer.sh` は
+# repo より **139 行・22 日**古いまま動き、`KEY_PEER` が人間向けラベルを機体名として
+# 引きに行って失敗し、**毎日** Tom の Discord へ「監視が壊れている」を投げていた
+# (実発火 2026-08-28 11:18 / 2026-08-29 11:19。台帳 CF-7 / H-4)。
+#
+# ★依存物を**一緒に**運ぶのが此の台本の要点。`health-observer.sh` だけを配ると、
+#   新版は `funnel-exposure-check.sh` が無い時に **閾値なしで** 通知を撃つ枝を持つ
+#   (`health-observer.sh` の `[ ! -x "$EXP_CHECK" ]`)ので、日1回の誤報が **10 分毎**に化ける。
+#   その枝は `test/health-observer-controls.sh` の §8 が測っている。
+#
+# ★配った事の**証拠は此の台本が出さない**。`tools/observer-parity-check.sh` が独立に測る ——
+#   配る側の自己申告は、配れた事の証拠にならない(rc-backend 側の配備台本と同じ思想)。
+#
+# 使い方:
+#   bash tools/deploy-observer-to-friday.sh            # 退避 -> 配る -> 独立の一致検査
+#   bash tools/deploy-observer-to-friday.sh --dry-run  # 何が変わるかだけ見る(転送しない)
+#
+# 終了コード: 0=配って一致 / 1=失敗 / 2=測れなかった
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOST="${RC_OBSERVER_HOST:-athenas}"
+DRY=0
+[ "${1:-}" = "--dry-run" ] && DRY=1
+
+# 運ぶ物 = observer が実際に読む物だけ。`health-step.mjs` は friday に在るが repo に無いので
+# 触らない(由来不明の物を消す前に所有者を探す —— CLAUDE.md の hard boundary)。
+FILES=(health-observer.sh funnel-exposure-check.sh tailnet-key-expiry.sh)
+
+for f in "${FILES[@]}"; do
+    [ -f "$HERE/$f" ] || { echo "repo に $f が無い = 配れない"; exit 2; }
+done
+
+echo "=== 1. 今のずれ ==="
+bash "$HERE/observer-parity-check.sh"; before=$?
+if [ "$before" -eq 0 ]; then
+    echo "既に一致している。配らない(無駄な再起動を起こさない)"
+    exit 0
+fi
+[ "$before" -eq 2 ] && { echo "測れないまま配らない(届かない先へ配ると壊した事にすら気付けない)"; exit 2; }
+
+if [ "$DRY" -eq 1 ]; then
+    echo "=== --dry-run: 上のずれを直す為に ${#FILES[@]} 本を送る(実行しない)==="
+    exit 0
+fi
+
+echo "=== 2. 退避(上書きの前に、戻せる形を作る)==="
+STAMP="$(date +%Y%m%d-%H%M%S)"
+ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
+    "mkdir -p \$HOME/rc-observer/tools/.bak-$STAMP && cd \$HOME/rc-observer/tools && \
+     for f in ${FILES[*]}; do [ -f \"\$f\" ] && cp \"\$f\" \".bak-$STAMP/\"; done; \
+     ls \$HOME/rc-observer/tools/.bak-$STAMP" || { echo "退避に失敗 = 配らない"; exit 1; }
+
+echo "=== 3. 配る ==="
+# ★宛先で `$HOME` を使わない(2026-08-30、実測で踏んだ)。`ssh` は remote shell を通すので
+#   `$HOME` が展開されるが、転送の宛先は sftp のパスとして扱われ、
+#   `remote mkdir "$HOME/..."` と**そのままの文字列**で失敗する。実 path を先に引く。
+RHOME="$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" 'printf %s "$HOME"')" || {
+    echo "宛先の HOME を引けない = 配らない"; exit 2; }
+[ -n "$RHOME" ] || { echo "宛先の HOME が空 = 配らない"; exit 2; }
+( cd "$HERE" && scp -q "${FILES[@]}" "$HOST:$RHOME/rc-observer/tools/" ) || { echo "転送に失敗"; exit 1; }
+ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
+    "cd \$HOME/rc-observer/tools && chmod +x ${FILES[*]}" || { echo "実行権を付けられない"; exit 1; }
+
+echo "=== 4. 一致したか(独立の測り手)==="
+bash "$HERE/observer-parity-check.sh"; after=$?
+[ "$after" -ne 0 ] && { echo "配ったのに一致しない。戻す先 = ~/rc-observer/tools/.bak-$STAMP"; exit 1; }
+
+echo "=== 5. 配った物が実際に走るか(--dry-run で1回)==="
+# ★「file が置けた」は「動く」ではない。通知は出さずに1周させて、
+#   `監視が壊れている` を撃たない事まで見る(依存物が欠けていれば此処で判る)。
+# ★健全な走行は stdout に**何も出さない**(実測 2026-08-30)。なので「異常語が無い」で
+#   判定すると、台本が壊れて一言も出せない時も緑になる —— 空と正常を同じ顔にしない為、
+#   **走った証拠をログの側に取りに行く**。判定は「異常語が無い」ではなく「正常の合図が在る」。
+before_n="$(ssh -o ConnectTimeout=15 -o BatchMode=yes "$HOST" \
+    "wc -l < \$HOME/.rc-backend/health-observer.log 2>/dev/null || echo 0" | tr -d ' ')"
+out="$(ssh -o ConnectTimeout=20 -o BatchMode=yes "$HOST" \
+        "bash \$HOME/rc-observer/tools/health-observer.sh --dry-run 2>&1 | tail -5")"
+[ -n "$out" ] && echo "$out"
+after_tail="$(ssh -o ConnectTimeout=15 -o BatchMode=yes "$HOST" \
+    "tail -n \$(( \$(wc -l < \$HOME/.rc-backend/health-observer.log) - ${before_n:-0} )) \
+     \$HOME/.rc-backend/health-observer.log 2>/dev/null")"
+echo "$after_tail"
+if printf '%s%s' "$out" "$after_tail" | grep -q "監視が壊れている"; then
+    echo "★配った版が『監視が壊れている』を出した。戻す先 = ~/rc-observer/tools/.bak-$STAMP"
+    exit 1
+fi
+if ! printf '%s' "$after_tail" | grep -q "鳴らさない\|鍵の残日数\|公開面"; then
+    echo "★配った版が1行もログを書かなかった = **走った証拠が無い**(空を正常と読まない)"
+    exit 1
+fi
+
+echo "=== 完了(退避 = ~/rc-observer/tools/.bak-$STAMP)==="
+exit 0
+
+codex
+実装を見ると、論点 1 の競合より先に、`--dry-run` の終了コードを現在のパイプが捨てている点が重大です。健全性の合図をどこで出せるか、watchdog 側のログ経路だけ追加確認します。
+exec
+/bin/zsh -lc "rg -n \"LOG|log|dry-run|鳴らさない|鍵の残日数|公開面|health-step|funnel-exposure|tailnet-key|source|\\. |bash |sh \" rc-backend/tools/health-observer.sh rc-backend/tools/funnel-exposure-check.sh rc-backend/tools/tailnet-key-expiry.sh; sed -n '1,360p' rc-backend/tools/health-observer.sh; rg -n \"health-observer|funnel-exposure-check|tailnet-key-expiry|rc-observer/tools|tools/\" rc-backend --glob '"'!tools/health-observer.sh'"' --glob '"'!tools/observer-parity-check.sh'"' --glob '"'!tools/deploy-observer-to-friday.sh'"'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+rc-backend/tools/funnel-exposure-check.sh:2:# funnel-exposure-check.sh — **公開面が私たちの机へ繋がっていないか**を1つ問う。2026-08-26 新設。
+rc-backend/tools/funnel-exposure-check.sh:16:#   1行足すだけで、机は公開面に出る。足せてしまう以上、見る価値が在る。
+rc-backend/tools/funnel-exposure-check.sh:20:#   printf '%s' "$out" | funnel-exposure-check.sh <手元のポート>
+rc-backend/tools/funnel-exposure-check.sh:60:          | . as $k
+rc-backend/tools/funnel-exposure-check.sh:65:          | . as $k
+rc-backend/tools/health-observer.sh:8:#   tools/health-observer.sh                 通常(launchd から)
+rc-backend/tools/health-observer.sh:9:#   tools/health-observer.sh --inject-fail   偽の失敗を1回注入(経路を撃つ試験用)
+rc-backend/tools/health-observer.sh:10:#   tools/health-observer.sh --inject-ok     偽の成功を1回注入
+rc-backend/tools/health-observer.sh:11:#   tools/health-observer.sh --dry-run       通知を出さず、出す筈だった文面を表示
+rc-backend/tools/health-observer.sh:13:# 終了コード: 0 = 正常(鳴らした/鳴らさない の両方) / 2 = 引数が不正(人が手で叩いた時だけ)
+rc-backend/tools/health-observer.sh:24:[ -f "$CONF" ] && . "$CONF"
+rc-backend/tools/health-observer.sh:40:LOG="${RC_HEALTH_LOG:-$HOME/.rc-backend/health-observer.log}"
+rc-backend/tools/health-observer.sh:46:#   10 分前からなのか 3 日前からなのかが分からず、Tom は log を開くまで緊急度を測れない。
+rc-backend/tools/health-observer.sh:55:STEP="$ROOT/tools/health-step.mjs"
+rc-backend/tools/health-observer.sh:58:# ── tailnet 鍵の残日数(up/down とは**別系統**)────────────────────────
+rc-backend/tools/health-observer.sh:67:KEY_CHECK="${RC_HEALTH_KEY_CHECK:-$ROOT/tools/tailnet-key-expiry.sh}"
+rc-backend/tools/health-observer.sh:73:#   実測 2026-08-26 11:08、それが本物の障害でない事は同じ log の前後が全部 `ok` である事で判る。
+rc-backend/tools/health-observer.sh:76:#   **未設定 = 相手が居ない**(単一機体構成)として扱い、鳴らさない。
+rc-backend/tools/health-observer.sh:90:# ---- 公開面への相乗りを見張る(2026-08-26 新設)------------------------------------
+rc-backend/tools/health-observer.sh:98:EXP_CHECK="${RC_HEALTH_EXP_CHECK:-$ROOT/tools/funnel-exposure-check.sh}"
+rc-backend/tools/health-observer.sh:112:        --dry-run)     DRY=1 ;;
+rc-backend/tools/health-observer.sh:123:mkdir -p "$(dirname "$STATE")" "$(dirname "$LOG")" 2>/dev/null
+rc-backend/tools/health-observer.sh:124:log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
+rc-backend/tools/health-observer.sh:128:#   node の場所が違う / 設定の値が不正 / 判定の繋ぎが無い —— は、元は log 1 行だけ残して
+rc-backend/tools/health-observer.sh:161:        log "DRY-RUN: 監視が壊れている($why) — 通知は出さない"
+rc-backend/tools/health-observer.sh:166:        # ここだけは本当に知らせる術が無い。せめて「知らせられなかった」を log に残す。
+rc-backend/tools/health-observer.sh:167:        log "★監視が壊れている($why)が、出し先も実行できない: $NOTIFY"
+rc-backend/tools/health-observer.sh:175:        log "★監視が壊れている($why) — 前回の通知から $((now - last)) 秒 = 抑制"
+rc-backend/tools/health-observer.sh:178:    printf '%s' "rc-backend の監視側が壊れています($(hostname -s) / $why)。最後に監視が働けたのは $(last_worked_phrase)。log を見る事: $LOG" | "$NOTIFY"
+rc-backend/tools/health-observer.sh:180:    log "★監視が壊れている($why)を通知(出し先 rc=$nrc)"
+rc-backend/tools/health-observer.sh:184:        echo "$now" > "$BROKEN_MARK" 2>>"$LOG" \
+rc-backend/tools/health-observer.sh:185:            || log "  ★抑制時計を書けない($BROKEN_MARK) — 次回また鳴る(重複は沈黙よりまし)"
+rc-backend/tools/health-observer.sh:187:        log "  ★出し先が失敗(rc=$nrc) — 抑制時計は進めない(次回また鳴らし直す)"
+rc-backend/tools/health-observer.sh:194:[ -n "$URL" ] || { log "設定に URL が無い(CONF=$CONF)"; notify_monitor_broken "設定に URL が無い"; exit 3; }
+rc-backend/tools/health-observer.sh:195:[ -x "$NODE" ] || { log "node が見つからない: $NODE"; echo "node が見つからない: $NODE" >&2
+rc-backend/tools/health-observer.sh:197:[ -f "$STEP" ] || { log "判定の繋ぎが無い: $STEP"; echo "判定の繋ぎが無い: $STEP" >&2
+rc-backend/tools/health-observer.sh:200:# ── 鍵の残日数を見る(段を降りた時だけ1回鳴らす)─────────────────────
+rc-backend/tools/health-observer.sh:243:        log "鍵の残日数を測れない(台本が無い/実行できない: $KEY_CHECK)"
+rc-backend/tools/health-observer.sh:244:        notify_monitor_broken "鍵の残日数を測る台本が無い" >/dev/null
+rc-backend/tools/health-observer.sh:245:        printf '%s %s %s\n' "$now" "$s_last" "$p_last" > "$KEY_MARK" 2>>"$LOG"
+rc-backend/tools/health-observer.sh:266:            log "鍵の残日数: 自分の側を測れなかった(rc=2 / 相手は設定されていない)"
+rc-backend/tools/health-observer.sh:268:            log "鍵の残日数: 少なくとも片方を測れなかった(rc=2 / 相手=$KEY_PEER)"
+rc-backend/tools/health-observer.sh:270:        notify_monitor_broken "鍵の残日数を測れない" >/dev/null
+rc-backend/tools/health-observer.sh:271:        printf '%s %s %s\n' "$now" "$s_last" "$p_last" > "$KEY_MARK" 2>>"$LOG"
+rc-backend/tools/health-observer.sh:286:        log "鍵の残日数: 期限なし(無効化済み)"
+rc-backend/tools/health-observer.sh:287:        printf '%s %s %s\n' "$now" 9999 9999 > "$KEY_MARK" 2>>"$LOG"
+rc-backend/tools/health-observer.sh:313:            log "鍵の残日数: $side が $days 日(段の外 = 鳴らさない)"
+rc-backend/tools/health-observer.sh:317:            log "鍵の残日数: $side が $days 日(段 $step は通知済み)"
+rc-backend/tools/health-observer.sh:329:            msg="rc-backend: tailnet の鍵が**既に切れています**(${who} / $(hostname -s) から見て残り ${days} 日)。その機械は tailnet から落ちている筈で、電話の面と復旧用の ssh を同時に失っています。直す = Tailscale admin console → Machines → 該当機 → Disable key expiry、その機械で再ログイン"
+rc-backend/tools/health-observer.sh:331:            msg="rc-backend: tailnet の鍵があと ${days} 日で切れます(${who} / $(hostname -s) から見た値)。切れるとその機械は tailnet から落ち、電話の面と復旧用の ssh を同時に失います。直す = Tailscale admin console → Machines → 該当機 → Disable key expiry"
+rc-backend/tools/health-observer.sh:335:            log "DRY-RUN: 鍵の警報 [$msg]"
+rc-backend/tools/health-observer.sh:340:            log "★鍵の警報を出せない(出し先が実行できない: $NOTIFY)"
+rc-backend/tools/health-observer.sh:352:        log "鍵の警報を通知($side / 残り $days 日 / 段 $step / 出し先 rc=$nrc)"
+rc-backend/tools/health-observer.sh:357:            log "  ★出し先が失敗(rc=$nrc) — $side の記録を進めない(次回また鳴らし直す)"
+rc-backend/tools/health-observer.sh:367:        printf '%s %s %s\n' "$last_ts" "$new_s" "$new_p" > "$KEY_MARK" 2>>"$LOG"
+rc-backend/tools/health-observer.sh:369:        printf '%s %s %s\n' "$now" "$new_s" "$new_p" > "$KEY_MARK" 2>>"$LOG"
+rc-backend/tools/health-observer.sh:375:# ── 公開面への相乗り ───────────────────────────────────────────────
+rc-backend/tools/health-observer.sh:402:        log "公開面を測れない(台本が無い/実行できない: $EXP_CHECK)"
+rc-backend/tools/health-observer.sh:403:        notify_monitor_broken "公開面を測る台本が無い" >/dev/null
+rc-backend/tools/health-observer.sh:404:        printf '%s %s\n' "blind" "$((prev_blind + 1))" > "$EXP_MARK" 2>>"$LOG"
+rc-backend/tools/health-observer.sh:409:        log "公開面を測れない(tailscale が無い: $EXP_TS)"
+rc-backend/tools/health-observer.sh:410:        printf '%s %s\n' "blind" "$((prev_blind + 1))" > "$EXP_MARK" 2>>"$LOG"
+rc-backend/tools/health-observer.sh:412:            && notify_monitor_broken "公開面を測れない(tailscale が無い)" >/dev/null
+rc-backend/tools/health-observer.sh:420:            [ "$prev_v" != "safe" ] && log "公開面: 机へ向く経路は無い(前回は $prev_v)"
+rc-backend/tools/health-observer.sh:421:            printf '%s %s\n' "safe" "0" > "$EXP_MARK" 2>>"$LOG"
+rc-backend/tools/health-observer.sh:425:            log "★★公開面が机へ繋がっている: $out"
+rc-backend/tools/health-observer.sh:426:            printf '%s %s\n' "exposed" "0" > "$EXP_MARK" 2>>"$LOG"
+rc-backend/tools/health-observer.sh:428:                echo "公開面が机(127.0.0.1:$EXP_PORT)へ繋がっています: $out"
+rc-backend/tools/health-observer.sh:437:                printf '%s' "★公開面が机へ繋がっています($out)。生きた端末の操縦面が公開インターネットに出ます。" \
+rc-backend/tools/health-observer.sh:439:                    log "★露出を検出したが通知を出せなかった"
+rc-backend/tools/health-observer.sh:441:                log "★露出を検出したが出し先が実行できない: $NOTIFY"
+rc-backend/tools/health-observer.sh:446:            log "公開面を測れなかった(rc=$rc)= 保証を失った"
+rc-backend/tools/health-observer.sh:447:            printf '%s %s\n' "blind" "$((prev_blind + 1))" > "$EXP_MARK" 2>>"$LOG"
+rc-backend/tools/health-observer.sh:449:                && notify_monitor_broken "公開面を測れない(rc=$rc)" >/dev/null
+rc-backend/tools/health-observer.sh:463:    #   macOS の /bin/bash は 3.2 で、`set -u` の下では**空配列の `"${a[@]}"` 自体が落ちる**。
+rc-backend/tools/health-observer.sh:488:ERRF="$(mktemp "${TMPDIR:-/tmp}/health-step-err.XXXXXX")"
+rc-backend/tools/health-observer.sh:501:# なり、それは嘘に見える。log に理由を残して後から辿れる様にする。
+rc-backend/tools/health-observer.sh:504:        date +%s > "$OK_MARK" 2>>"$LOG" \
+rc-backend/tools/health-observer.sh:505:            || log "  ★最終稼働時刻を書けない($OK_MARK) — 壊れた時の通知が『一度も成功していない』になる"
+rc-backend/tools/health-observer.sh:514:    0)  log "$VERDICT ${REASON:+($REASON)} — 鳴らさない"; exit 0 ;;
+rc-backend/tools/health-observer.sh:519:        log "★監視の状態が壊れている: $ERR"
+rc-backend/tools/health-observer.sh:524:        # ★元はここで log を1行残して `exit $KIND` = **誰にも届かなかった**。
+rc-backend/tools/health-observer.sh:526:        log "判定が異常終了(code=$KIND): ${ERR:-$MSG}"
+rc-backend/tools/health-observer.sh:534:    log "DRY-RUN: [$MSG] (ping抑制=${PING_SUPPRESS:-無し})"
+rc-backend/tools/health-observer.sh:537:[ -x "$NOTIFY" ] || { log "通知の出し先が実行できない: $NOTIFY"; echo "通知の出し先が実行できない: $NOTIFY" >&2; exit 2; }
+rc-backend/tools/health-observer.sh:545:log "通知(code=$KIND, ping抑制=${PING_SUPPRESS:-無し}, 出し先 rc=$nrc): $MSG"
+rc-backend/tools/health-observer.sh:550:#   (実測: 壊した出し先で3回 → 0通、直して更に3回 → やはり 0通。ログには「鳴らさない」)。
+rc-backend/tools/health-observer.sh:563:    if ! "$NODE" "$STEP" --mark-delivered "$STATE" 2>>"$LOG"; then
+rc-backend/tools/health-observer.sh:564:        log "★配達済みの記録に失敗 — 次回もう一度鳴る(重複は沈黙よりまし)"
+rc-backend/tools/health-observer.sh:568:    log "★出し先が失敗(rc=$nrc) — 状態は『未配達』のまま。落ちている限り次回また鳴らす"
+rc-backend/tools/tailnet-key-expiry.sh:2:# tailnet-key-expiry.sh — tailnet 鍵があと何日で切れるかを言う。
+rc-backend/tools/tailnet-key-expiry.sh:3:#   宛先: rc-backend/tools/tailnet-key-expiry.sh(= edith 上では /Users/edith/rc-backend/tools/)
+rc-backend/tools/tailnet-key-expiry.sh:11:#   電話の面と**復旧用の ssh を同時に失う**。無人の機械に物理で触れない場所から戻す手が無くなる
+rc-backend/tools/tailnet-key-expiry.sh:24:#   tailnet-key-expiry.sh                この機械の鍵だけ(既定。呼び口の互換を壊さない)
+rc-backend/tools/tailnet-key-expiry.sh:25:#   tailnet-key-expiry.sh --peer <名>    指定した相手の鍵だけ
+rc-backend/tools/tailnet-key-expiry.sh:26:#   tailnet-key-expiry.sh --chain <名>   この機械と相手の**両方**。判定は近い方で決める
+rc-backend/tools/tailnet-key-expiry.sh:93:    """HostName でも DNS 名でも当たる様にする。DNS 名は末尾の . を落とし、先頭ラベルも見る。"""
+rc-backend/tools/tailnet-key-expiry.sh:150:    print("★切れると tailnet から落ちる。電話の面も、復旧用の ssh も、同時に失う")
+#!/bin/bash
+# rc-backend の外向き生存信号(DESIGN §7-P)。**edith 以外**のノードから 10 分毎に叩く。
+#
+# 守りたいのは「サーバが上がっている」ではなく **「今この瞬間、電話から見える面が生きているか」**。
+# だから見るのは §7 の鎖の①(= HTTP が返るか)であって、tmux も launchd も見ない。
+#
+# 使い方:
+#   tools/health-observer.sh                 通常(launchd から)
+#   tools/health-observer.sh --inject-fail   偽の失敗を1回注入(経路を撃つ試験用)
+#   tools/health-observer.sh --inject-ok     偽の成功を1回注入
+#   tools/health-observer.sh --dry-run       通知を出さず、出す筈だった文面を表示
+#
+# 終了コード: 0 = 正常(鳴らした/鳴らさない の両方) / 2 = 引数が不正(人が手で叩いた時だけ)
+#             3 = ★**監視自体が壊れている**(状態ファイル / 起動前提 / 設定の値)
+#   3 は「観測できなかった」であって「異常なし」ではない。ここを 0 に丸めると、
+#   10 分毎に静かに失敗し続けて誰も気付かない = yoda の 46 時間と同じ形になる。
+#
+# ★観測者を**どのノードに置くかは決めていない**(艦隊の移動計画が未確定 = DESIGN §7-P)。
+#   なので台本はどこでも動く形にし、機械依存は全部設定に出す。既定は Jervis で動く値。
+set -uo pipefail
+
+CONF="${RC_HEALTH_CONF:-$HOME/.rc-backend/observer.conf}"
+# shellcheck disable=SC1090
+[ -f "$CONF" ] && . "$CONF"
+
+HOST="${RC_HEALTH_HOST:desk.tailnet.example}"
+URL="${RC_HEALTH_URL:-https://$HOST/healthz}"
+# ★名前解決を迂回する口(既定は空 = 使わない = 従来どおり)。
+#   2026-08-08、athenas に据えようとして見つけた: そのノードは MagicDNS が切れており
+#   (`tailscale debug prefs` の `CorpDNS: false`)、`desk.tailnet.example` を引けない。
+#   その時 curl が返すのは exit 6(名前が引けない)で、**「対象が落ちている」と区別が付かない**。
+#   据えたその日から永久に嘘の赤を出し、閾値で1回鳴ってから黙る —— yoda の 46 時間と同じ形。
+#   ここに tailnet の住所を入れると curl は住所へ繋ぎ、証明書と SNI は $HOST で検証する
+#   (`--resolve`)。**機械の DNS 設定には触らない** = 他の常駐サービスを巻き込まない。
+#   前提: 443(既定の https)。`RC_HEALTH_URL` に別 port を書く時はこの口を使わない事。
+RESOLVE="${RC_HEALTH_RESOLVE:-}"
+THRESHOLD="${RC_HEALTH_THRESHOLD:-3}"
+STATE="${RC_HEALTH_STATE:-$HOME/.rc-backend/health-state.json}"
+NOTIFY="${RC_HEALTH_NOTIFY:-$HOME/bin/discord-notify.sh}"
+LOG="${RC_HEALTH_LOG:-$HOME/.rc-backend/health-observer.log}"
+# 監視自体が壊れた時の通知を何秒に1回までにするか(既定 6 時間)。
+# 壊れ方が続くと 10 分毎に鳴り続け、Tom が経路ごと黙らせる = yoda と同じ結末になる。
+BROKEN_EVERY="${RC_HEALTH_BROKEN_EVERY:-21600}"
+BROKEN_MARK="${RC_HEALTH_BROKEN_MARK:-$STATE.broken-notified}"
+# ★「監視が最後に働けた時刻」(Codex Q3)。「監視側が壊れています」だけでは、
+#   10 分前からなのか 3 日前からなのかが分からず、Tom は log を開くまで緊急度を測れない。
+#   ★記録するのは **対象が up だった時刻ではなく、判定が一周できた時刻**。
+#     up を記録すると「対象が長く落ちている」が「監視が長く壊れている」に見え、
+#     Q3 が消したがっている取り違えを別の場所で作り直す事になる。
+#   状態 file とは**別の file** に置く。監視が壊れる二形のうち一方が
+#   「状態 file が壊れている」なので、そこに相乗りすると肝心な時に読めない。
+OK_MARK="${RC_HEALTH_OK_MARK:-$STATE.last-ok}"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STEP="$ROOT/tools/health-step.mjs"
+NODE="${RC_HEALTH_NODE:-$(command -v node || echo /opt/homebrew/bin/node)}"
+
+# ── tailnet 鍵の残日数(up/down とは**別系統**)────────────────────────
+# 鍵が切れると機械は tailnet から落ちる。up/down の監視はそれを「落ちた」としてしか言えず、
+# しかも**切れてから**しか言えない。切れる前に言う為の系統が要る = 此処。
+#
+# ★測る相手が2つ在る理由(2026-08-03 実測): 監視は「edith を、別のノードから」叩く形なので、
+#   鎖には鍵が2本ある。実測値は 観測側(Jervis)46 日 / edith 143 日 —— **先に切れるのは
+#   監視する側**。遠い方だけ見ていると、先に壊れる方を一度も見ない。だから両方を見る。
+#   観測側が落ちると edith は無事なのに `/healthz` へ届かず、**本物の障害と区別が付かない
+#   偽の警報**が出るか、監視ごと黙る。
+KEY_CHECK="${RC_HEALTH_KEY_CHECK:-$ROOT/tools/tailnet-key-expiry.sh}"
+# ★**表示用の名前と、機体を引く名前は型が違う**(Codex 2026-08-26)。
+#   以前は `${RC_HEALTH_KEY_PEER:-$HOST}` と書いて `HOST` を継いでいた。だが `HOST` は
+#   URL を明示した構成では**人が読む札**になる —— 実際 athenas の `observer.conf` は
+#   `RC_HEALTH_HOST="friday(loopback)"` を置いている(URL は loopback で別に指定済み)。
+#   その札を機体名として引きに行くので必ず失敗し、`rc=2` = 「監視が壊れている」を鳴らした。
+#   実測 2026-08-26 11:08、それが本物の障害でない事は同じ log の前後が全部 `ok` である事で判る。
+#
+#   ★狼を2回叫んだ見張りは、3回目に読まれない。だから継承を切る。
+#   **未設定 = 相手が居ない**(単一機体構成)として扱い、鳴らさない。
+#   相手を明示した時だけ、測れない事を「監視が壊れている」と言う —— そちらは正しい。
+KEY_PEER="${RC_HEALTH_KEY_PEER:-}"           # 監視している相手。**空 = 相手が居ない**
+KEY_EVERY="${RC_HEALTH_KEY_EVERY:-86400}"    # 測る間隔(既定 1 日1回。10 分毎に測る物ではない)
+KEY_MARK="${RC_HEALTH_KEY_MARK:-$STATE.key-checked}"
+KEY_WARN_DAYS="${RC_HEALTH_KEY_WARN_DAYS:-45}"
+# 段(この日数を**下回った**時に1回だけ鳴らす)。45 日間まいにち鳴らすと Tom が経路ごと
+# 黙らせる —— yoda の 46 時間と同じ終わり方をする。だから段を降りた時だけ言う。
+# ★2026-08-03 に 45/30/14/7/3/1 から減らした(査読 Q4)。どの段でも Tom がやる事は
+#   「admin console で Disable key expiry を押す」の1つだけなので、段を増やしても情報は
+#   増えず、鳴る回数だけ増えて「経路ごと黙らされる」側にだけ効く。期限切れの段(0)を
+#   足しても**1台あたり最大5通**で、元の6通より少ない。
+KEY_STEPS="${RC_HEALTH_KEY_STEPS:-45 14 7 1}"
+
+# ---- 公開面への相乗りを見張る(2026-08-26 新設)------------------------------------
+# 何を問うか: 「**公開されている入口の下に、机(127.0.0.1:$EXP_PORT)へ向く経路が在るか**」。
+# なぜ此処か(Codex 2026-08-26 の裁定1): `tailscale serve status` は**この機体でしか**
+#   権威ある値を読めない。机の外(Jervis)から見に行く案は、回線が不定期に落ちる度に
+#   「到達できない」を「露出しているかもしれない」に翻訳してしまう = 安全の警報を
+#   回線障害から作る事になる。
+# ★間隔は KEY_* と違って**毎回**測る。serve の設定は1コマンドで変わるので、
+#   日に1回では「変わって・使われて・戻った」を丸ごと見逃す。読むのは local なので安い。
+EXP_CHECK="${RC_HEALTH_EXP_CHECK:-$ROOT/tools/funnel-exposure-check.sh}"
+EXP_PORT="${RC_HEALTH_EXP_PORT:-8787}"
+EXP_TS="${RC_HEALTH_EXP_TS:-/Applications/Tailscale.app/Contents/MacOS/Tailscale}"
+EXP_MARK="${RC_HEALTH_EXP_MARK:-$STATE.exposure}"
+# 「測れなかった」が続いた時に鳴らす回数。**露出そのものより緩く、生存より厳しい** ——
+# これは「保証を失った」であって「壊れた」でも「安全」でもない(Codex 裁定2)。
+EXP_BLIND_THRESHOLD="${RC_HEALTH_EXP_BLIND_THRESHOLD:-2}"
+
+
+MODE="probe"; DRY=0; EXPOSURE_ONLY=0
+for a in "$@"; do
+    case "$a" in
+        --inject-fail) MODE="fail" ;;
+        --inject-ok)   MODE="ok" ;;
+        --dry-run)     DRY=1 ;;
+        # ★露出の節だけを叩く口(2026-08-26)。対照の為に足した ——
+        #   関数を sed で切り出して eval する駆動は、本文の書式が少し変わるだけで
+        #   黙って何も走らなくなる(実際そうなり、対照が「鳴らない」と赤を出した。
+        #   あれは実装の欠陥ではなく**駆動の欠陥**で、区別が付かないのが一番悪い)。
+        #   本物の口を1つ開ける方が、測る物と測られる物が一致する。
+        --exposure-only) EXPOSURE_ONLY=1 ;;
+        *) echo "不明な引数: $a" >&2; exit 2 ;;
+    esac
+done
+
+mkdir -p "$(dirname "$STATE")" "$(dirname "$LOG")" 2>/dev/null
+log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
+
+# ── 「監視自体が壊れている」を知らせる(up/down とは別系統)────────────
+# ★なぜ在るか(2026-08-02、再現してから足した): 監視が**動き出す前**に落ちる形 ——
+#   node の場所が違う / 設定の値が不正 / 判定の繋ぎが無い —— は、元は log 1 行だけ残して
+#   黙っていた。実測: 閾値に `0` と書いた設定で5回叩いて通知 **0 通**、node の場所を
+#   違えて3回叩いて **0 通**。どちらも据え付けた当日に起きる類の書き損じで、
+#   起きた瞬間から監視は**永久に鳴らない**。判定の門(`health.mjs` の閾値検査)は
+#   在ったが、**門が閉じた事を誰にも知らせていなかった** = 守り手自身が静かに死ぬ形。
+#
+# 抑制時計 `$BROKEN_MARK` は「状態ファイルが壊れている」と共用する。Tom 側から見れば
+# どちらも「監視が壊れている」1つの事なので、2本の警報を並べても読む手間が増えるだけ。
+#
+# 引数: $1 = Tom に見せる短い語。**必ず我々の固定文字列**を渡す事 —— `$ERR` の中身は
+#       渡さない(通知は Tom が読む面なので、素性の分からない文字列を流し込まない)。
+# 返り値は常に 3(= 監視が壊れている)。鳴らせたかどうかで変えない。
+
+# 「最後に監視が働けたのは何時か」を人が読む一言にする。
+# ★分からない時に**数字を作らない**。記録が無い/読めない/未来を指している の3つは
+#   それぞれ別の文を返す。ここで 0 や「今」を返すと、Tom は「さっきまで動いていた」と
+#   読む —— 一度も動いた事が無い据え付け直後こそ、それが一番起きやすい。
+last_worked_phrase() {
+    local t now d
+    [ -f "$OK_MARK" ] || { echo "一度も成功していない(据え付け以来か、記録ごと消えた)"; return; }
+    t="$(cat "$OK_MARK" 2>/dev/null)"
+    case "$t" in ''|*[!0-9]*) echo "不明(記録が読めない)"; return ;; esac
+    now="$(date +%s)"; d=$((now - t))
+    if   [ "$d" -lt 0 ]     ; then echo "不明(時計が巻き戻っている)"
+    elif [ "$d" -lt 3600 ]  ; then echo "$((d / 60)) 分前"
+    elif [ "$d" -lt 86400 ] ; then echo "$((d / 3600)) 時間前"
+    else                           echo "$((d / 86400)) 日前"
+    fi
+}
+
+notify_monitor_broken() {
+    local why="$1" now last nrc
+    if [ "$DRY" -eq 1 ]; then
+        log "DRY-RUN: 監視が壊れている($why) — 通知は出さない"
+        echo "監視側が壊れています($why / 最後に働けたのは $(last_worked_phrase))"
+        return 3
+    fi
+    if [ ! -x "$NOTIFY" ]; then
+        # ここだけは本当に知らせる術が無い。せめて「知らせられなかった」を log に残す。
+        log "★監視が壊れている($why)が、出し先も実行できない: $NOTIFY"
+        return 3
+    fi
+    now="$(date +%s)"
+    last=0
+    [ -f "$BROKEN_MARK" ] && last="$(cat "$BROKEN_MARK" 2>/dev/null || echo 0)"
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    if [ $((now - last)) -lt "$BROKEN_EVERY" ]; then
+        log "★監視が壊れている($why) — 前回の通知から $((now - last)) 秒 = 抑制"
+        return 3
+    fi
+    printf '%s' "rc-backend の監視側が壊れています($(hostname -s) / $why)。最後に監視が働けたのは $(last_worked_phrase)。log を見る事: $LOG" | "$NOTIFY"
+    nrc=$?
+    log "★監視が壊れている($why)を通知(出し先 rc=$nrc)"
+    # ★抑制時計は**配達が済んでから**進める。「知らせると決めた」時点で進めると、
+    #   出し先が壊れている間ずっと 6 時間黙る(この案件で既に3度踏んだ形)。
+    if [ "$nrc" -eq 0 ]; then
+        echo "$now" > "$BROKEN_MARK" 2>>"$LOG" \
+            || log "  ★抑制時計を書けない($BROKEN_MARK) — 次回また鳴る(重複は沈黙よりまし)"
+    else
+        log "  ★出し先が失敗(rc=$nrc) — 抑制時計は進めない(次回また鳴らし直す)"
+    fi
+    return 3
+}
+
+# ★この行は現状**到達しない**(上の `${RC_HEALTH_URL:-…}` は空文字も既定へ倒すので)。
+#   倒す先が既定の URL = 騒がしい側なので、そのままにして番人だけ残す。
+[ -n "$URL" ] || { log "設定に URL が無い(CONF=$CONF)"; notify_monitor_broken "設定に URL が無い"; exit 3; }
+[ -x "$NODE" ] || { log "node が見つからない: $NODE"; echo "node が見つからない: $NODE" >&2
+                    notify_monitor_broken "node が無い"; exit 3; }
+[ -f "$STEP" ] || { log "判定の繋ぎが無い: $STEP"; echo "判定の繋ぎが無い: $STEP" >&2
+                    notify_monitor_broken "判定の繋ぎが無い"; exit 3; }
+
+# ── 鍵の残日数を見る(段を降りた時だけ1回鳴らす)─────────────────────
+# 記録 `$KEY_MARK` の中身 = "<最後に測った epoch> <self の段> <peer の段>"(段 9999 = 未通知)。
+#
+# ★up/down より**手前**で呼ぶ。KIND=0(異常なし)の回は下の case で `exit 0` するので、
+#   後ろに置くと**平常時に一度も走らない** —— 平常時こそが、これが働くべき時。
+# ★時計を配達が済んでから進めるのは、この file の他の2箇所と同じ理由。決めた時点で進めると
+#   出し先が壊れている間ずっと黙る(この案件で既に3度踏んだ形)。
+#
+# ── ★2026-08-03 の査読(Codex)で塞いだ穴2つ ────────────────────────
+#  (1) **段を「一番近い1本」だけで持つと、別の機械の初回警告が消える。**
+#      最初の実装は鎖全体の最小値に対して段を1つだけ覚えていた。observer が残り3日で
+#      段3を鳴らした後に edith が残り5日へ入ると、鎖の最小は3のままなので段は3、
+#      「段3は通知済み」で**edith の話が一度も出ない**。段は **side ごと**に持つ。
+#      → 対照 10-k。指摘は「状態は端末名でなく安定 ID + 期限に紐付けよ」。ここでは
+#        side(self/peer)が安定 ID の役を果たす(相手は設定で1つに固定されている為)。
+#  (2) **既に切れた鍵に固有の段が無い。**
+#      残り -5 日は `-5 <= 1` なので段1に落ちる。段1を鳴らした後だと「通知済み」で黙る。
+#      = 監視が数時間止まっている間に期限を越えると、**越えた事が一度も出ない**。
+#      → 段 0(= 期限切れ)を追加し、文面も「あと N 日」ではなく「既に切れています」にする。
+#      → 対照 10-l。
+#
+#  段の数は 45/30/14/7/3/1 から **45/14/7/1** へ減らした(同じ指摘の Q4)。どの段でも
+#  Tom がやる事は「admin console で Disable key expiry を押す」の1つだけなので、
+#  段を増やしても情報は増えず、鳴る回数だけ増えて経路ごと黙らされる側に効く。
+#  期限切れの段を足しても窓全体で**最大5通**(元の6通より少ない)。
+check_key_expiry() {
+    local now last_ts out rc _k side days _rest
+    local step bucket who msg nrc s_days p_days s_last p_last new_s new_p deliver_failed
+    now="$(date +%s)"; last_ts=0; s_last=9999; p_last=9999
+    # ★3 個読めない古い形(= "<epoch> <段>")は「未通知」に倒す。1通多く出るだけで、
+    #   逆に倒すと黙る。この file は一貫して「沈黙より重複」を選んでいる。
+    if [ -f "$KEY_MARK" ]; then
+        read -r last_ts s_last p_last _rest < "$KEY_MARK" 2>/dev/null || true
+    fi
+    case "${last_ts:-}" in ''|*[!0-9]*) last_ts=0 ;; esac
+    # 3欄目が無い = 段を鎖全体で1つしか持たなかった古い形。その1つが**どちらの側の段か**は
+    # 記録から決められないので、両方「未通知」に倒す。多くて1台1通ぶん重複するだけで済む。
+    [ -z "${p_last:-}" ] && { s_last=9999; p_last=9999; }
+    case "${s_last:-}"  in ''|*[!0-9]*) s_last=9999 ;; esac
+    case "${p_last:-}"  in ''|*[!0-9]*) p_last=9999 ;; esac
+    [ $((now - last_ts)) -lt "$KEY_EVERY" ] && return 0
+
+    if [ ! -x "$KEY_CHECK" ]; then
+        log "鍵の残日数を測れない(台本が無い/実行できない: $KEY_CHECK)"
+        notify_monitor_broken "鍵の残日数を測る台本が無い" >/dev/null
+        printf '%s %s %s\n' "$now" "$s_last" "$p_last" > "$KEY_MARK" 2>>"$LOG"
+        return 0
+    fi
+
+    # ★相手が居ない構成では、相手を引きに行かない。引けば必ず失敗し、その失敗を
+    #   「監視が壊れている」と読む —— 居ない物を測れないのは異常ではない。
+    # ★相手が居ない構成では `--chain` を渡さない。渡せば居ない相手を引きに行って必ず失敗し、
+    #   その失敗を「監視が壊れている」と読む —— 居ない物を測れないのは異常ではない。
+    #   ★判定は**後段の共通の rc=2 に1本化する**。此処にもう1つ置くと二重判定になり、
+    #     片方だけ直しても もう片方が古い文言で鳴る(2026-08-27 に実際にそうなった)。
+    if [ -z "$KEY_PEER" ]; then
+        out="$(RC_KEY_WARN_DAYS="$KEY_WARN_DAYS" "$KEY_CHECK" --porcelain 2>/dev/null)"
+    else
+        out="$(RC_KEY_WARN_DAYS="$KEY_WARN_DAYS" "$KEY_CHECK" --porcelain --chain "$KEY_PEER" 2>/dev/null)"
+    fi
+    rc=$?
+    if [ "$rc" -eq 2 ]; then
+        # ★「測れなかった」を「切れない」と読まない。監視の材料が取れていない = 監視が壊れている。
+        # ★どちらの構成で失敗したかを残す。相手なしで失敗 = 自分の側すら測れない
+        #   (これは本当に監視が壊れている)。相手ありで失敗 = どちらかが測れない。
+        if [ -z "$KEY_PEER" ]; then
+            log "鍵の残日数: 自分の側を測れなかった(rc=2 / 相手は設定されていない)"
+        else
+            log "鍵の残日数: 少なくとも片方を測れなかった(rc=2 / 相手=$KEY_PEER)"
+        fi
+        notify_monitor_broken "鍵の残日数を測れない" >/dev/null
+        printf '%s %s %s\n' "$now" "$s_last" "$p_last" > "$KEY_MARK" 2>>"$LOG"
+        return 0
+    fi
+
+    # 書式は `KEY <self|peer> <日数|-> <日付|-|none>` の固い1行/対象。side ごとに保つ。
+    s_days=""; p_days=""
+    while read -r _k side days _rest; do
+        [ "${_k:-}" = "KEY" ] || continue
+        case "$days" in ''|-) continue ;; esac
+        case "$days" in *[!0-9-]*) continue ;; esac
+        case "$side" in self) s_days="$days" ;; peer) p_days="$days" ;; esac
+    done <<< "$out"
+
+    if [ -z "$s_days" ] && [ -z "$p_days" ]; then
+        # 両方とも「期限なし」= Tom が無効化した。段を戻し、また期限が付いた時に言い直せる様にする。
+        log "鍵の残日数: 期限なし(無効化済み)"
+        printf '%s %s %s\n' "$now" 9999 9999 > "$KEY_MARK" 2>>"$LOG"
+        return 0
+    fi
+
+    # 降りた段 = `days <= step` を満たす中で**一番きつい** step。0 日以下は段 0(= 期限切れ)。
+    key_bucket() {
+        local d="$1" b=9999 st
+        if [ "$d" -le 0 ]; then echo 0; return; fi
+        for st in $KEY_STEPS; do
+            case "$st" in ''|*[!0-9]*) continue ;; esac
+            if [ "$d" -le "$st" ] && [ "$st" -lt "$b" ]; then b="$st"; fi
+        done
+        echo "$b"
+    }
+
+    new_s="$s_last"; new_p="$p_last"; deliver_failed=0
+    for side in self peer; do
+        case "$side" in
+            self) days="$s_days"; bucket="$s_last" ;;
+            *)    days="$p_days"; bucket="$p_last" ;;
+        esac
+        [ -n "$days" ] || { case "$side" in self) new_s=9999 ;; *) new_p=9999 ;; esac; continue; }
+        step="$(key_bucket "$days")"
+        if [ "$step" -ge 9999 ]; then
+            # 段の外 = まだ遠い。ここで段を戻すので、鍵を**更新**した後も次に近付いた時に鳴る。
+            case "$side" in self) new_s=9999 ;; *) new_p=9999 ;; esac
+            log "鍵の残日数: $side が $days 日(段の外 = 鳴らさない)"
+            continue
+        fi
+        if [ "$step" -ge "$bucket" ]; then
+            log "鍵の残日数: $side が $days 日(段 $step は通知済み)"
+            continue
+        fi
+
+        # ★文面は**我々が持っている値だけ**で組む(整数の日数と、設定に書いた相手の名前)。
+        #   `$KEY_CHECK` の散文をそのまま流さないのは、`$ERR` を通知に載せないのと同じ理由。
+        #   ★観測している主体を必ず名乗る(査読 Q3: 誰から見た話かが無いと取り違える)。
+        case "$side" in
+            self) who="この監視を動かしている機械($(hostname -s))" ;;
+            *)    who="$KEY_PEER" ;;
+        esac
+        if [ "$step" -eq 0 ]; then
+            msg="rc-backend: tailnet の鍵が**既に切れています**(${who} / $(hostname -s) から見て残り ${days} 日)。その機械は tailnet から落ちている筈で、電話の面と復旧用の ssh を同時に失っています。直す = Tailscale admin console → Machines → 該当機 → Disable key expiry、その機械で再ログイン"
+        else
+            msg="rc-backend: tailnet の鍵があと ${days} 日で切れます(${who} / $(hostname -s) から見た値)。切れるとその機械は tailnet から落ち、電話の面と復旧用の ssh を同時に失います。直す = Tailscale admin console → Machines → 該当機 → Disable key expiry"
+        fi
+
+        if [ "$DRY" -eq 1 ]; then
+            log "DRY-RUN: 鍵の警報 [$msg]"
+            echo "$msg"
+            continue          # ★時計を進めない。試し打ちが本物の警報を1日黙らせない為。
+        fi
+        if [ ! -x "$NOTIFY" ]; then
+            log "★鍵の警報を出せない(出し先が実行できない: $NOTIFY)"
+            continue
+        fi
+
+        # 残り 7 日以内(と期限切れ)になってから @Tom を付ける。段を降りた時しか鳴らないので
+        # 1台あたり最大5通、うち ping 付きは最後の3通。毎日鳴らす形にすると経路ごと黙らされる。
+        if [ "$step" -le 7 ]; then
+            printf '%s' "$msg" | "$NOTIFY"
+        else
+            printf '%s' "$msg" | FLEET_NOTIFY_MENTION=0 "$NOTIFY"
+        fi
+        nrc=$?
+        log "鍵の警報を通知($side / 残り $days 日 / 段 $step / 出し先 rc=$nrc)"
+        if [ "$nrc" -eq 0 ]; then
+            case "$side" in self) new_s="$step" ;; *) new_p="$step" ;; esac
+        else
+            # ★この side の段だけ据え置く。次回また鳴らし直す。
+            log "  ★出し先が失敗(rc=$nrc) — $side の記録を進めない(次回また鳴らし直す)"
+            deliver_failed=1
+        fi
+    done
+rc-backend/src/account.mjs:10://   `fleet-account` は edith 上の `~/fleet-tools/fleet-account`(75行の bash)で、
+rc-backend/src/checkouts.mjs:5://   - 「戻す」を実行できるのは MBP だけ(`~/.claude/tools/remote-mini.sh` の back は受け側で走る)。
+rc-backend/src/trust.mjs:24: * (`tools/ensure-phone-window.sh` の `TRUST_FILE` と同じ名前)。検査が本物の `~/.claude.json` を
+rc-backend/src/reqlog.mjs:146: *   tool  curl / node など —— この機体の常駐(digest-notify・health-observer)がこれ
+rc-backend/src/reqlog.mjs:154:  //   `ios/tools/live-*-check.sh` が建てる殻は**電話の製品 Swift をそのまま**使うので、
+rc-backend/src/tail.mjs:5:// (`tools/live-http-check.mjs` 初回: 送信〜返答の 3.2 秒間に 0 件)。
+rc-backend/src/worker.mjs:468:   *   (`tools/live-fork-check.mjs`)が生の出力と `result` の両方に当てていたから。
+rc-backend/test/subtree.test.mjs:38:    const g = requireOutside(["ios", "ios/tools/ui-fixture-absence-control.sh", "DESIGN.md"]);
+rc-backend/test/port-coverage-gate-controls.sh:2:# controls-for: tools/port-coverage-gate.sh
+rc-backend/test/port-coverage-gate-controls.sh:32:#   ★差し替え先は **tools/ の中**に置く事。門は BASH_SOURCE から rc-backend を
+rc-backend/test/port-coverage-gate-controls.sh:34:GATE="${PORT_COVERAGE_GATE:-$REPO_ROOT/rc-backend/tools/port-coverage-gate.sh}"
+rc-backend/test/live-tools-send-guard.test.mjs:1:// `tools/live-*.mjs` の**運用規約**を静的に測る(DESIGN §2.17「H1 の残り」/ §2.20-b)。
+rc-backend/test/live-tools-send-guard.test.mjs:4:// 「計器が Tom の実ペインへ送らない」という **`tools/` 側の約束**が破れた事を測る。
+rc-backend/test/live-tools-send-guard.test.mjs:93:test("実物の tools/live-*.mjs が規約を守っている", () => {
+rc-backend/test/warn-ledger-controls.sh:2:# controls-for: tools/warn-ledger.sh
+rc-backend/test/warn-ledger-controls.sh:3:# `tools/warn-ledger.sh` の対照。
+rc-backend/test/warn-ledger-controls.sh:16:LEDGER="${WARN_LEDGER:-$ROOT/tools/warn-ledger.sh}"
+rc-backend/src/server.mjs:107:// 配備時に `tools/deploy-to-edith.sh` が刻む版(`DEPLOYED-REV` の1行目)。
+rc-backend/src/server.mjs:746:// 実測(2026-08-02 `tools/live-http-check.mjs` 初回): tmux 経路の /stream は実イベント 0 件。
+rc-backend/test/resume-cwd-controls.sh:2:# controls-for: tools/live-resume-cwd-check.mjs
+rc-backend/test/resume-cwd-controls.sh:3:# `tools/live-resume-cwd-check.mjs` が**計器として壊れていないか**を測る対照。
+rc-backend/test/resume-cwd-controls.sh:32:CHECK="${RC_RESUME_CWD_CHECK_BIN:-$ROOT/tools/live-resume-cwd-check.mjs}"
+rc-backend/test/design-supersede-world-controls.sh:6:# なぜ書くか: 2026-08-04、`tools/deploy-to-edith.sh` が edith 側の `npm test` で止まった。
+rc-backend/test/phone-window-health-controls.sh:2:# controls-for: tools/phone-window-health.sh
+rc-backend/test/phone-window-health-controls.sh:10:H="$ROOT/tools/phone-window-health.sh"
+rc-backend/tools/deploy-observer-to-friday.sh:2:# deploy-observer-to-friday.sh — friday の `~/rc-observer/tools/` を repo に追随させる。
+rc-backend/tools/deploy-observer-to-friday.sh:6:# (`~/rc-observer/`)に住み、別の launchd label(`com.fleet.rc-health-observer`)で走るので、
+rc-backend/tools/deploy-observer-to-friday.sh:7:# あの台本の守備範囲の外に落ちていた。その死角のせいで、friday の `health-observer.sh` は
+rc-backend/tools/deploy-observer-to-friday.sh:12:# ★依存物を**一緒に**運ぶのが此の台本の要点。`health-observer.sh` だけを配ると、
+rc-backend/tools/deploy-observer-to-friday.sh:13:#   新版は `funnel-exposure-check.sh` が無い時に **閾値なしで** 通知を撃つ枝を持つ
+rc-backend/tools/deploy-observer-to-friday.sh:14:#   (`health-observer.sh` の `[ ! -x "$EXP_CHECK" ]`)ので、日1回の誤報が **10 分毎**に化ける。
+rc-backend/tools/deploy-observer-to-friday.sh:15:#   その枝は `test/health-observer-controls.sh` の §8 が測っている。
+rc-backend/tools/deploy-observer-to-friday.sh:17:# ★配った事の**証拠は此の台本が出さない**。`tools/observer-parity-check.sh` が独立に測る ——
+rc-backend/tools/deploy-observer-to-friday.sh:21:#   bash tools/deploy-observer-to-friday.sh            # 退避 -> 配る -> 独立の一致検査
+rc-backend/tools/deploy-observer-to-friday.sh:22:#   bash tools/deploy-observer-to-friday.sh --dry-run  # 何が変わるかだけ見る(転送しない)
+rc-backend/tools/deploy-observer-to-friday.sh:34:FILES=(health-observer.sh funnel-exposure-check.sh tailnet-key-expiry.sh)
+rc-backend/tools/deploy-observer-to-friday.sh:56:    "mkdir -p \$HOME/rc-observer/tools/.bak-$STAMP && cd \$HOME/rc-observer/tools && \
+rc-backend/tools/deploy-observer-to-friday.sh:58:     ls \$HOME/rc-observer/tools/.bak-$STAMP" || { echo "退避に失敗 = 配らない"; exit 1; }
+rc-backend/tools/deploy-observer-to-friday.sh:67:( cd "$HERE" && scp -q "${FILES[@]}" "$HOST:$RHOME/rc-observer/tools/" ) || { echo "転送に失敗"; exit 1; }
+rc-backend/tools/deploy-observer-to-friday.sh:69:    "cd \$HOME/rc-observer/tools && chmod +x ${FILES[*]}" || { echo "実行権を付けられない"; exit 1; }
+rc-backend/tools/deploy-observer-to-friday.sh:73:[ "$after" -ne 0 ] && { echo "配ったのに一致しない。戻す先 = ~/rc-observer/tools/.bak-$STAMP"; exit 1; }
+rc-backend/tools/deploy-observer-to-friday.sh:82:    "wc -l < \$HOME/.rc-backend/health-observer.log 2>/dev/null || echo 0" | tr -d ' ')"
+rc-backend/tools/deploy-observer-to-friday.sh:84:        "bash \$HOME/rc-observer/tools/health-observer.sh --dry-run 2>&1 | tail -5")"
+rc-backend/tools/deploy-observer-to-friday.sh:87:    "tail -n \$(( \$(wc -l < \$HOME/.rc-backend/health-observer.log) - ${before_n:-0} )) \
+rc-backend/tools/deploy-observer-to-friday.sh:88:     \$HOME/.rc-backend/health-observer.log 2>/dev/null")"
+rc-backend/tools/deploy-observer-to-friday.sh:91:    echo "★配った版が『監視が壊れている』を出した。戻す先 = ~/rc-observer/tools/.bak-$STAMP"
+rc-backend/tools/deploy-observer-to-friday.sh:99:echo "=== 完了(退避 = ~/rc-observer/tools/.bak-$STAMP)==="
+rc-backend/test/example-artifacts-controls.sh:2:# controls-for: tools/*.plist tools/*.plist.example tools/*.example tools/health-observer.sh
+rc-backend/test/example-artifacts-controls.sh:6:# Phase P① で `tools/com.fleet.rc-health-observer.plist.example` を書いた。
+rc-backend/test/example-artifacts-controls.sh:15:# ★族を**書き写さない**: plist は glob で拾い、設定の鍵は台本 `health-observer.sh` から
+rc-backend/test/example-artifacts-controls.sh:66:# 鍵の一覧を写さない: 台本 `health-observer.sh` の `${RC_HEALTH_…:-}` から取り出す。
+rc-backend/test/example-artifacts-controls.sh:69:OBS="$TOOLS_DIR/health-observer.sh"
+rc-backend/test/example-artifacts-controls.sh:101:#   同日に1件、`tools/` 始まりの裸の相対で書いてあったが基準がこの repo でなく
+rc-backend/test/example-artifacts-controls.sh:102:#   `~/.claude/tools/rc-pane-register.sh` だった物を見つけて絶対の形へ直した
+rc-backend/test/controls-registration-gate-controls.sh:2:# controls-for: tools/controls-registration-gate.sh
+rc-backend/test/controls-registration-gate-controls.sh:15:# 偽 repo の中でも `rc-backend/tools/` に置けばそのまま動く。
+rc-backend/test/controls-registration-gate-controls.sh:20:SUBJECT="$REPO_ROOT/rc-backend/tools/controls-registration-gate.sh"
+rc-backend/test/controls-registration-gate-controls.sh:42:cp "$SUBJECT" "$R/rc-backend/tools/controls-registration-gate.sh"
+rc-backend/test/controls-registration-gate-controls.sh:43:printf 'LOCAL_CTLS=(\n)\n' > "$R/rc-backend/tools/run-controls.sh"
+rc-backend/test/controls-registration-gate-controls.sh:44:printf '#!/bin/bash\n# controls-for: tools/x.sh\nexit 0\n' > "$R/rc-backend/test/existing-controls.sh"
+rc-backend/test/controls-registration-gate-controls.sh:50:    local g="${1:-$R/rc-backend/tools/controls-registration-gate.sh}"
+rc-backend/test/controls-registration-gate-controls.sh:54:new_ctl() { printf '#!/bin/bash\n# controls-for: tools/y.sh\nexit 0\n' > "$R/$1"; git -C "$R" add "$1" >/dev/null 2>&1; }
+rc-backend/test/controls-registration-gate-controls.sh:55:touch_reg() { printf '#追記\n' >> "$R/rc-backend/tools/run-controls.sh"; git -C "$R" add rc-backend/tools/run-controls.sh >/dev/null 2>&1; }
+rc-backend/test/controls-registration-gate-controls.sh:117:rc="$( cd "$R" && RC_CTLREG_OK="理由を書いた" bash "$R/rc-backend/tools/controls-registration-gate.sh" > "$T/out.log" 2>&1; echo $? )"
+rc-backend/test/controls-registration-gate-controls.sh:128:sed 's/^exit 1$/exit 0/' "$SUBJECT" > "$T/mut/rc-backend/tools/controls-registration-gate.sh"
+rc-backend/test/controls-registration-gate-controls.sh:129:MUT="$T/mut/rc-backend/tools/controls-registration-gate.sh"
+rc-backend/test/controls-registration-gate-controls.sh:136:    cp "$R/rc-backend/tools/controls-registration-gate.sh" "$T/gate-backup.sh"
+rc-backend/test/controls-registration-gate-controls.sh:137:    cp "$MUT" "$R/rc-backend/tools/controls-registration-gate.sh"
+rc-backend/test/controls-registration-gate-controls.sh:140:    cp "$T/gate-backup.sh" "$R/rc-backend/tools/controls-registration-gate.sh"
+rc-backend/test/controls-registration-gate-controls.sh:147:cp "$SUBJECT" "$T/nogit/rc-backend/tools/controls-registration-gate.sh"
+rc-backend/test/controls-registration-gate-controls.sh:148:rc="$( cd "$T/nogit" && bash "$T/nogit/rc-backend/tools/controls-registration-gate.sh" > "$T/out.log" 2>&1; echo $? )"
+rc-backend/test/phone-window-notify-controls.sh:2:# controls-for: tools/phone-window-notify.sh
+rc-backend/test/phone-window-notify-controls.sh:9:N="$ROOT/tools/phone-window-notify.sh"
+rc-backend/test/phone-window-judgment-controls.sh:2:# controls-for: tools/verify-phone-window.sh
+rc-backend/test/phone-window-judgment-controls.sh:25:TARGET="$ROOT/tools/verify-phone-window.sh"
+rc-backend/test/phone-window-judgment-controls.sh:28:    echo "UNMEASURED  読む file が無い: tools/verify-phone-window.sh"
+rc-backend/test/account.test.mjs:20:// edith 上で `~/fleet-tools/fleet-account` を引数なしで叩いた実出力(2026-08-14 実測)。
+rc-backend/tools/doc-linerefs-gate.sh:20:# 4 本赤くなって分かった: 他の門は全部 `bash "$ROOT/rc-backend/tools/<名>.sh"`
+rc-backend/tools/rollback-friday-control.sh:2:# controls-for: tools/rollback-friday.sh
+rc-backend/test/doc-linerefs-gate-controls.sh:2:# controls-for: tools/doc-linerefs-gate.sh
+rc-backend/test/doc-linerefs-gate-controls.sh:17:SUBJECT="$REPO_ROOT/rc-backend/tools/doc-linerefs-gate.sh"
+rc-backend/test/doc-linerefs-gate-controls.sh:42:cp "$SUBJECT" "$R/rc-backend/tools/doc-linerefs-gate.sh"
+rc-backend/test/doc-linerefs-gate-controls.sh:60:run_gate() { ( cd "$R" && bash "$R/rc-backend/tools/doc-linerefs-gate.sh" > "$T/out.log" 2>&1; echo $? ); }
+rc-backend/tools/controls-registration-gate.sh:2:# 対照を**新設・改名**した commit が、全掃きの一覧(rc-backend/tools/run-controls.sh)を
+rc-backend/tools/controls-registration-gate.sh:18:# `rc-backend/tools/run-controls.sh` も staged にする事。
+rc-backend/tools/controls-registration-gate.sh:39:REG="rc-backend/tools/run-controls.sh"
+rc-backend/tools/controls-registration-gate.sh:67:  直し方: rc-backend/tools/run-controls.sh を同じ commit で触る。
+rc-backend/test/vacuous-scan-controls.sh:2:# controls-for: tools/vacuous-scan.py
+rc-backend/test/vacuous-scan-controls.sh:38:TOOL="$REPO_ROOT/rc-backend/tools/vacuous-scan.py"
+rc-backend/test/vacuous-scan-controls.sh:65:    cp "$TOOL" "$r/rc-backend/tools/vacuous-scan.py"
+rc-backend/test/vacuous-scan-controls.sh:81:run_in() { python3 "$1/rc-backend/tools/vacuous-scan.py" 2>&1; }
+rc-backend/src/inject.mjs:93: * 診断ごと違っていた**(`tools/spinner-glyph-probe.mjs`)。スピナーは 5 コマの循環で、
+rc-backend/src/inject.mjs:193: * ★2026-08-02、edith 実機で踏んで足した。`tools/live-inject-check.mjs` を回したら
+rc-backend/src/inject.mjs:457:// ★2026-08-05 に `export` を付けた。実機の台本(`tools/live-http-check.mjs`)が
+rc-backend/src/inject.mjs:788:   *   `server.mjs` の1箇所。`tools/live-*.mjs` は別プロセスの点検道具)。
+rc-backend/test/ota-server-controls.sh:2:# controls-for: tools/ota-server.mjs
+rc-backend/test/ota-server-controls.sh:15:SUT="$HERE/tools/ota-server.mjs"
+rc-backend/tools/check-no-pii.sh:62:# 2026-08-03 追加。`tools/deploy-to-edith.sh` の錠の札が `deploy-$(hostname -s)-…` で、
+rc-backend/test/bar-is-composer-only.test.mjs:21:// 負の対照: `ios/tools/bar-material-control.sh`(4本)。
+rc-backend/test/disposable-reap-controls.sh:2:# controls-for: tools/disposable-session.mjs
+rc-backend/test/disposable-reap-controls.sh:19:SUT="$HERE/tools/disposable-session.mjs"
+rc-backend/test/mutation-freeze-controls.sh:57:PROBE="$ROOT/tools/_freeze-probe.sh"
+rc-backend/test/mutation-freeze-controls.sh:73:_mrl=0; bash "$ROOT/tools/mutation-run-live.sh" 2>/dev/null || _mrl=$?
+rc-backend/test/mutation-freeze-controls.sh:231:    *"tools/_freeze-probe.sh"*) ok "動いた file を**名指しで**出す(hash では何も分からない)" ;;
+rc-backend/test/mutation-freeze-controls.sh:232:    *) ng "動いた file を名指しで出す" "tools/_freeze-probe.sh を含む" "$(printf '%s' "$o" | /usr/bin/tail -4)" ;;
+rc-backend/tools/tunnel-observer.sh:6:# ★`no-operator:` の印は 2026-08-27 に外した。`tools/tunnel-observer-control.sh` を
+rc-backend/tools/tunnel-observer.sh:15:#   既存の health-observer は配備先の機体自身で loopback を叩く。理由は物理: その機体は
+rc-backend/test/wire-shape-controls.sh:2:# controls-for: tools/wire-shape.mjs
+rc-backend/test/wire-shape-controls.sh:3:# `tools/wire-shape.mjs` が**中身を伏せるか**を測る対照。
+rc-backend/test/wire-shape-controls.sh:67:# ★測る対象を差し替えられる口。`tools/prove-control.sh` が**壊した写し**を差して
+rc-backend/test/wire-shape-controls.sh:71:TOOL="${RC_WIRESHAPE_TOOL:-$ROOT/tools/wire-shape.mjs}"
+rc-backend/tools/fleet-account-cswap.sh:5:#   rc-backend の口座欄は `~/fleet-tools/fleet-account` を叩く。**Friday にはその台本が無い**
+rc-backend/test/mutation-recovery-copy.test.mjs:4://   `.harness/dod-sprint-6-controls.sh` や `ios/tools/conversation-ui-control.sh` は
+rc-backend/test/mutation-recovery-copy.test.mjs:21://   (`ios/tools/list-return-refresh-control.sh`)を、同日夜の S8-6 が4本目
+rc-backend/test/mutation-recovery-copy.test.mjs:22://   (`ios/tools/inflight-sentence-control.sh`)を足したが、一覧は2本のまま ——
+rc-backend/tools/port-coverage-gate.sh:2:# commit の直前に**JS から Swift への移植の照合**(tools/port-coverage.py)を回す。
+rc-backend/tools/port-coverage-gate.sh:4:# なぜ門が要るか(2026-08-07): `tools/vacuous-scan.py` と**同じ病気の2件目**。
+rc-backend/tools/port-coverage-gate.sh:6:# 掃き(`tools/run-controls.sh`)にも登録されていた。にも関わらず **道具そのものを
+rc-backend/tools/port-coverage-gate.sh:15:#   bash "$ROOT/rc-backend/tools/<名前>.sh"
+rc-backend/tools/port-coverage-gate.sh:38:SCAN_CMD="${SCAN_CMD:-python3 $ROOT/tools/port-coverage.py}"
+rc-backend/tools/port-coverage-gate.sh:66:    echo "    移植表に行を足す  = tools/port-coverage.py の PORTS に Swift 側の path を書く"
+rc-backend/test/coldboot-chain-controls.sh:2:# controls-for: tools/coldboot-chain.sh
+rc-backend/test/coldboot-chain-controls.sh:3:# `tools/coldboot-chain.sh` の対照。
+rc-backend/test/coldboot-chain-controls.sh:27:CB="${COLDBOOT_SCRIPT:-$ROOT/tools/coldboot-chain.sh}"
+rc-backend/tools/mutation-verdict.sh:5:# `/loop` の門(`~/.claude/tools/loop-replan-gate.sh`)は verify を **300 秒で打ち切る**。
+rc-backend/tools/mutation-verdict.sh:28:#   tools/       ★見落としやすい。`npm test` は `test/reply-route.test.mjs` が
+rc-backend/tools/mutation-verdict.sh:29:#                `../tools/live-http-check.mjs` を **import** し、
+rc-backend/tools/mutation-verdict.sh:30:#                `test/live-tools-send-guard.test.mjs` が実物の `tools/live-*.mjs` を
+rc-backend/tools/mutation-verdict.sh:31:#                読む。tools/ を外すと「検査が読んでいる物を指紋が見ていない」= 偽の緑
+rc-backend/tools/mutation-verdict.sh:34:# 副作用として、tools/ を1文字直すだけで判定が失効する。**それで正しい**。
+rc-backend/tools/mutation-verdict.sh:45:#   bash tools/mutation-verdict.sh record --only M104,M105,M106,M107,M108,M109,W14
+rc-backend/tools/mutation-verdict.sh:46:#   bash tools/mutation-verdict.sh assert --only M104,M105,M106,M107,M108,M109,W14
+rc-backend/tools/mutation-verdict.sh:47:#   bash tools/mutation-verdict.sh list
+rc-backend/tools/mutation-verdict.sh:66:#   同型の欠陥を `~/.claude/tools/remote-mini.sh` の fingerprint() で 2026-08-03 に
+rc-backend/tools/mutation-verdict.sh:173:        echo "  先に回す: bash tools/mutation-verdict.sh record --only $SEL" >&2
+rc-backend/tools/mutation-verdict.sh:174:        echo "  (src/ test/ tools/ package.json のどれかを直せば判定は失効する = これは正常)" >&2
+rc-backend/tools/com.fleet.rc-health-observer.plist.example:13:       cp tools/com.fleet.rc-health-observer.plist.example \
+rc-backend/tools/com.fleet.rc-health-observer.plist.example:14:          ~/Library/LaunchAgents/com.fleet.rc-health-observer.plist
+rc-backend/tools/com.fleet.rc-health-observer.plist.example:16:       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.fleet.rc-health-observer.plist
+rc-backend/tools/com.fleet.rc-health-observer.plist.example:17:       launchctl kickstart -p gui/$(id -u)/com.fleet.rc-health-observer   # 1回撃って目で見る
+rc-backend/tools/com.fleet.rc-health-observer.plist.example:20:       tools/health-observer.sh に inject-fail の旗(先頭にハイフン2つ)を付けて叩く。
+rc-backend/tools/com.fleet.rc-health-observer.plist.example:35:    <string>com.fleet.rc-health-observer</string>
+rc-backend/tools/com.fleet.rc-health-observer.plist.example:40:        <string>__台本の絶対パス__/tools/health-observer.sh</string>
+rc-backend/tools/com.fleet.rc-health-observer.plist.example:55:         tailnet-key-expiry.sh が /Applications/Tailscale.app の絶対パスで持っており
+rc-backend/tools/com.fleet.rc-health-observer.plist.example:56:         (`RC_TAILSCALE_BIN` で移せる)、health-observer.sh 自身は tailscale を一度も呼ばない。
+rc-backend/tools/com.fleet.rc-health-observer.plist.example:69:    <string>/tmp/rc-health-observer.out</string>
+rc-backend/tools/com.fleet.rc-health-observer.plist.example:71:    <string>/tmp/rc-health-observer.err</string>
+rc-backend/tools/com.edith.rc-backend.plist:33:    bash ~/Infra/mobile-work/rc-backend/tools/deploy-to-edith.sh
+rc-backend/tools/com.edith.rc-backend.plist:36:    ssh edith 'chmod 700 /Users/edith/rc-backend/tools/rc-backend-launch.sh'
+rc-backend/tools/com.edith.rc-backend.plist:61:    <string>/Users/edith/rc-backend/tools/rc-backend-launch.sh</string>
+rc-backend/tools/live-resume-cwd-check.mjs:68: * 使い方: node tools/live-resume-cwd-check.mjs [--bin claude] [--keep] [--verbose]
+rc-backend/tools/live-resume-cwd-check.mjs:69: * ★edith では `tools/edith-gui-run.sh` 越し(launchd gui/501)で走らせる事。
+rc-backend/tools/live-resume-cwd-check.mjs:241:      ? `★鍵束が開いていない(Not logged in)= 素の ssh で撃っている。tools/edith-gui-run.sh 越し(launchd gui/501)で走らせる事`
+rc-backend/tools/orphan-instrument-scan.sh:5:# `tools/port-coverage.py` は対照(`test/port-coverage-controls.sh`)を持ち、その対照は
+rc-backend/tools/orphan-instrument-scan.sh:6:# 掃き(`tools/run-controls.sh`)にも登録されていた。にも関わらず**道具そのものを呼ぶ物が
+rc-backend/tools/orphan-instrument-scan.sh:11:#   `tools/vacuous-scan.py` が同じ形を免れているのは門が在るからで、設計の差ではない。
+rc-backend/tools/orphan-instrument-scan.sh:26:#   `*` を含む綴り 3 = file ではなく**類**の指定(`tools/*.plist` 等)
+rc-backend/tools/orphan-instrument-scan.sh:29:#   ★対象を外した物の対照が回っているかは別の門(`tools/controls-registration-gate.sh`)
+rc-backend/tools/orphan-instrument-scan.sh:192:    echo "    走らせる物を足す = 門(tools/pre-commit-gates.sh)か台本から呼ぶ"
+rc-backend/tools/install-hooks.sh:10:# 書くのは**呼ぶだけの5行**。判定も範囲の絞り込みも `tools/pre-commit-gates.sh` に在る
+rc-backend/tools/install-hooks.sh:22:BODY="rc-backend/tools/pre-commit-gates.sh"
+rc-backend/tools/install-hooks.sh:39:# 入れ直し = bash rc-backend/tools/install-hooks.sh
+rc-backend/tools/install-hooks.sh:54:        echo '    RC_HOOKS_FORCE="旧版の厚い hook を薄い口へ置き換える" bash rc-backend/tools/install-hooks.sh'
+rc-backend/tools/edith-gui-run.sh:33:# だから `tools/live-inject-check.mjs`(pane に打ち込む方式)は ssh 越しでも正しく測れる。
+rc-backend/tools/edith-gui-run.sh:38:#   bash tools/edith-gui-run.sh -- /usr/bin/true
+rc-backend/tools/edith-gui-run.sh:39:#   bash tools/edith-gui-run.sh --timeout 300 -- node /path/live-inject-check.mjs --cases A
+rc-backend/test/no-linerefs.test.mjs:120: *   `tools/deploy-to-edith.sh` の送信)で、足しただけで赤くなる。
+rc-backend/test/no-linerefs.test.mjs:183: *   両方の木が持つ名前(例えば tools/ の下に同名の台本が在る時)は、ios の file から
+rc-backend/test/no-linerefs.test.mjs:221: * ★2026-08-05 実測。`tools/run-controls.sh` が repo 直下の照合表を backtick で
+rc-backend/test/no-linerefs.test.mjs:241: *   送り、向こうで `npm test` を回す(`tools/deploy-to-edith.sh` の仮置き / 本番、
+rc-backend/test/no-linerefs.test.mjs:242: *   `tools/verify-on-edith.sh`)。送り先の親に repo 直下の物が在ると、此処が本物の根だと
+rc-backend/test/no-linerefs.test.mjs:252: * ★★2026-08-06、**その 0 件が 2 件になった**。私が `tools/run-controls.sh` の注釈で
+rc-backend/test/no-linerefs.test.mjs:289: * `tools/deploy-to-edith.sh` の送信。ios を単独で写す経路は今の所どこにも無い。
+rc-backend/test/no-linerefs.test.mjs:359:  assert.deepEqual(findBrokenCites("# 出し先は `tools/health-observer.sh` を見る",
+rc-backend/test/no-linerefs.test.mjs:374:    "隣の木にしか無い名前を**裸**で引いている。木の名前から書く事(例: ios/tools/… )。\n" +
+rc-backend/test/no-linerefs.test.mjs:387:    bareOutOfTree("# 費用は `ios/tools/" + iosOnly + "` と同じ桁である", join(ROOT, "tools", "x.sh")),
+rc-backend/test/no-linerefs.test.mjs:509:  const ghost = "tools/" + "ghost" + "-" + "probe" + "." + "sh";
+rc-backend/tools/observer-parity-check.sh:2:# observer-parity-check.sh — friday の `~/rc-observer/tools/` が repo と**一致しているか**を測る。
+rc-backend/tools/observer-parity-check.sh:7:# いた為に、friday の `health-observer.sh` が repo より **139 行・22 日**古いまま動き、
+rc-backend/tools/observer-parity-check.sh:16:#   (`/tmp/rc-health-observer.out` を見て「38 時間死んでいる」と読んだ)。
+rc-backend/tools/observer-parity-check.sh:19:#   bash tools/observer-parity-check.sh          # 一致 = rc 0 / ずれ = rc 1 / 測れない = rc 2
+rc-backend/tools/observer-parity-check.sh:20:#   RC_OBSERVER_HOST=athenas bash tools/...      # 宛先を差す(検査の継ぎ目)
+rc-backend/tools/observer-parity-check.sh:27:REMOTE_DIR="${RC_OBSERVER_REMOTE_DIR:-\$HOME/rc-observer/tools}"
+rc-backend/tools/observer-parity-check.sh:32:FILES=(health-observer.sh funnel-exposure-check.sh tailnet-key-expiry.sh)
+rc-backend/tools/observer-parity-check.sh:80:echo "observer-parity: ずれている(配り直しは tools/deploy-observer-to-friday.sh)"
+rc-backend/tools/funnel-exposure-check.sh:2:# funnel-exposure-check.sh — **公開面が私たちの机へ繋がっていないか**を1つ問う。2026-08-26 新設。
+rc-backend/tools/funnel-exposure-check.sh:20:#   printf '%s' "$out" | funnel-exposure-check.sh <手元のポート>
+rc-backend/tools/check-mutation-targets.sh:51:bash "$ROOT/tools/mutation-run-live.sh" || _mrl=$?
+rc-backend/test/staged-controls-gate-controls.sh:2:# controls-for: tools/staged-controls-gate.sh
+rc-backend/test/staged-controls-gate-controls.sh:3:# `tools/staged-controls-gate.sh` の対照。
+rc-backend/test/staged-controls-gate-controls.sh:16:GATE="${STAGED_GATE:-$ROOT/tools/staged-controls-gate.sh}"
+rc-backend/test/staged-controls-gate-controls.sh:54:mkctl rc-backend/test/aa-controls.sh 0 "--- 合計: PASS 5 / FAIL 0 ---" "tools/zz-odd-name.sh"
+rc-backend/test/staged-controls-gate-controls.sh:55:mkctl rc-backend/test/bb-controls.sh 1 "NG  B2 何かが倒れた"          "tools/bb.sh"
+rc-backend/test/staged-controls-gate-controls.sh:56:mkctl rc-backend/test/cc-controls.sh 2 "CC: 未測定(走行中)= **緑ではない**" "tools/cc.sh"
+rc-backend/test/staged-controls-gate-controls.sh:57:mkctl rc-backend/test/dd-controls.sh 0 "--- 合計: PASS 2 / FAIL 0 ---" "tools/dd.sh"
+rc-backend/test/staged-controls-gate-controls.sh:59:mkctl rc-backend/test/dd2-controls.sh 0 "--- 合計: PASS 3 / FAIL 0 ---" "tools/dd.sh"
+rc-backend/test/staged-controls-gate-controls.sh:61:mkctl rc-backend/test/ee-controls.sh 0 "--- 合計: PASS 1 / FAIL 0 ---" "tools/*.plist"
+rc-backend/test/staged-controls-gate-controls.sh:62:mkctl rc-backend/test/ff-controls.sh 0 "--- 合計: PASS 1 / FAIL 0 ---" "tools/gone-away.sh"
+rc-backend/test/staged-controls-gate-controls.sh:65:: > "$R/rc-backend/tools/dd.sh"          # dd.sh を見張る対照は 2 本
+rc-backend/test/staged-controls-gate-controls.sh:66:: > "$R/rc-backend/tools/bb.sh"
+rc-backend/test/staged-controls-gate-controls.sh:67:: > "$R/rc-backend/tools/cc.sh"
+rc-backend/test/staged-controls-gate-controls.sh:68:: > "$R/rc-backend/tools/zz-odd-name.sh" # 名前が対照と一致しない道具
+rc-backend/test/staged-controls-gate-controls.sh:69:: > "$R/rc-backend/tools/lonely.sh"      # 誰も宣言していない道具
+rc-backend/test/staged-controls-gate-controls.sh:70:: > "$R/rc-backend/tools/a.plist"        # glob の宣言が当たる先
+rc-backend/test/staged-controls-gate-controls.sh:76:#     rc-backend の対照 → 宣言は rc-backend からの相対(tools/dd.sh)
+rc-backend/test/staged-controls-gate-controls.sh:80:mkctl ios/tools/ii-control.sh 0 "GREEN: ii" "ios/Sources/Thing.swift"
+rc-backend/test/staged-controls-gate-controls.sh:81:mkctl ios/tools/jj-control.sh 0 "GREEN: jj"          # 宣言なし = staged にした時だけ止める
+rc-backend/test/staged-controls-gate-controls.sh:82:mkctl ios/tools/kk-control.sh 0 "GREEN: kk" "ios/Sources/gone-away.swift"  # 宣言先が実在しない
+rc-backend/test/staged-controls-gate-controls.sh:84:: > "$R/ios/tools/lonely-ios.sh"         # 誰も見張っていない ios の道具
+rc-backend/test/staged-controls-gate-controls.sh:85:: > "$R/ios/tools/dd.sh"                 # ★rc-backend の tools/dd.sh と**同名・別の木**
+rc-backend/test/staged-controls-gate-controls.sh:112:#     ここが本題。2026-08-03 に踏んだのはこの形 —— `tools/mutation-verdict.sh` を
+rc-backend/test/staged-controls-gate-controls.sh:114:out=$(run_gate 'rc-backend/tools/dd.sh')
+rc-backend/test/staged-controls-gate-controls.sh:118:out=$(run_gate 'rc-backend/tools/lonely.sh')
+rc-backend/test/staged-controls-gate-controls.sh:127:out=$(run_gate 'rc-backend/tools/dd.sh
+rc-backend/test/staged-controls-gate-controls.sh:162:# 何を見張っているか: 旧実装は `tools/<名前>.sh` ↔ `test/<名前>-controls.sh` の
+rc-backend/test/staged-controls-gate-controls.sh:164:#   tools/deploy-to-edith.sh を staged にすると 4 本在る対照の **1 本**だけが回り、
+rc-backend/test/staged-controls-gate-controls.sh:169:out=$(run_gate 'rc-backend/tools/zz-odd-name.sh')
+rc-backend/test/staged-controls-gate-controls.sh:174:out=$(run_gate 'rc-backend/tools/dd.sh')
+rc-backend/test/staged-controls-gate-controls.sh:179:out=$(run_gate 'rc-backend/tools/a.plist')
+rc-backend/test/staged-controls-gate-controls.sh:180:chk "S18 glob の宣言(tools/*.plist)で届く" 0 $? "ee-controls.sh" "触れた対照は無い" "$out"
+rc-backend/test/staged-controls-gate-controls.sh:194:chk "S22 ★その組を名指しする"                  0 0 "ff-controls.sh→tools/gone-away.sh" "" "$out"
+rc-backend/test/staged-controls-gate-controls.sh:200:out=$(run_gate 'rc-backend/tools/zz-odd-name.sh')
+rc-backend/test/staged-controls-gate-controls.sh:207:/bin/cat > "$R/rc-backend/tools/run-controls.sh" <<'RCEOF'
+rc-backend/test/staged-controls-gate-controls.sh:216:/bin/rm -f "$R/rc-backend/tools/run-controls.sh"
+rc-backend/test/staged-controls-gate-controls.sh:242:out=$(run_gate 'ios/tools/ii-control.sh')
+rc-backend/test/staged-controls-gate-controls.sh:246:out=$(run_gate 'ios/tools/jj-control.sh')
+rc-backend/test/staged-controls-gate-controls.sh:250:#     ios/tools/dd.sh と rc-backend/tools/dd.sh は同名。rc-backend 側の対照2本は
+rc-backend/test/staged-controls-gate-controls.sh:251:#     tools/dd.sh を宣言しているので、基点を見ずに末尾だけで照合すると ios の方でも
+rc-backend/test/staged-controls-gate-controls.sh:253:out=$(run_gate 'ios/tools/dd.sh')
+rc-backend/test/staged-controls-gate-controls.sh:258:out=$(run_gate 'ios/tools/lonely-ios.sh')
+rc-backend/test/staged-controls-gate-controls.sh:264:#     (`tools/…`)。基点を間違えて ios の宣言も `rc-backend/` の下で探すと、
+rc-backend/test/staged-controls-gate-controls.sh:366:out=$(run_dry 'rc-backend/tools/dd.sh')
+rc-backend/test/staged-controls-gate-controls.sh:372:real=$(run_gate 'rc-backend/tools/dd.sh')
+rc-backend/test/staged-controls-gate-controls.sh:380:lst_names=$(run_list 'rc-backend/tools/dd.sh' | /usr/bin/grep '^  SEL ' \
+rc-backend/test/staged-controls-gate-controls.sh:401:out=$(run_dry 'rc-backend/tools/lonely.sh')
+rc-backend/test/staged-controls-gate-controls.sh:402:chk "S46-prep 本番はこの入力で注記を出す(= 次行の判別子が効く)" 0 0 "注記" "" "$(run_gate 'rc-backend/tools/lonely.sh')"
+rc-backend/test/staged-controls-gate-controls.sh:414:/bin/cat > "$R/rc-backend/tools/run-controls.sh" <<'EOF'
+rc-backend/test/staged-controls-gate-controls.sh:419:out=$(run_dry 'rc-backend/tools/dd.sh')
+rc-backend/test/staged-controls-gate-controls.sh:421:lst=$(run_list 'rc-backend/tools/dd.sh')
+rc-backend/test/staged-controls-gate-controls.sh:423:/bin/rm -f "$R/rc-backend/tools/run-controls.sh"
+rc-backend/test/staged-controls-gate-controls.sh:435:  mut_out=$(RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' 'rc-backend/tools/lonely.sh'" \
+rc-backend/test/staged-controls-gate-controls.sh:447:#   きっかけは実測: `rc-backend/tools/serve-decision-check.sh` と
+rc-backend/test/staged-controls-gate-controls.sh:448:#   `rc-backend/tools/rc-backend-launch-check.sh` は中身も註も紛れも無く陰性対照なのに、
+rc-backend/test/staged-controls-gate-controls.sh:449:#   名前の末尾が -check.sh で置き場が `tools/` なので門から見ると**ただの道具**だった。
+rc-backend/test/staged-controls-gate-controls.sh:454:#   `tools/` を **名前で** 走査する案は測って捨てた: `prove-control.sh`
+rc-backend/test/staged-controls-gate-controls.sh:461:mkctl rc-backend/tools/gg-check.sh 0 "全ケース OK" "tools/gg.sh"
+rc-backend/test/staged-controls-gate-controls.sh:462:: > "$R/rc-backend/tools/gg.sh"
+rc-backend/test/staged-controls-gate-controls.sh:464:mkctl rc-backend/tools/prove-control.sh 0 "prover: ok"
+rc-backend/test/staged-controls-gate-controls.sh:467:out=$(run_gate 'rc-backend/tools/gg.sh')
+rc-backend/test/staged-controls-gate-controls.sh:468:chk "S49 ★tools/ に居ても宣言が在れば対照として回る" 0 $? "gg-check.sh" "触れた対照は無い" "$out"
+rc-backend/test/staged-controls-gate-controls.sh:471:out=$(run_gate 'rc-backend/tools/prove-control.sh')
+rc-backend/test/staged-controls-gate-controls.sh:481:  RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' 'rc-backend/tools/prove-control.sh'" \
+rc-backend/test/staged-controls-gate-controls.sh:493:  mut_out=$(RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' 'rc-backend/tools/gg.sh'" \
+rc-backend/test/staged-controls-gate-controls.sh:498:/bin/rm -f "$R/rc-backend/tools/gg-check.sh" "$R/rc-backend/tools/gg.sh" \
+rc-backend/test/staged-controls-gate-controls.sh:499:           "$R/rc-backend/tools/prove-control.sh"
+rc-backend/test/staged-controls-gate-controls.sh:513:mkctl rc-backend/tools/inst.sh 0 "計器" ""
+rc-backend/test/staged-controls-gate-controls.sh:516:' "$R/rc-backend/tools/inst.sh"
+rc-backend/test/staged-controls-gate-controls.sh:519:out=$(run_gate 'rc-backend/tools/inst.sh')
+rc-backend/test/staged-controls-gate-controls.sh:523:/usr/bin/sed -i '' '2s/.*/# no-control: x/' "$R/rc-backend/tools/inst.sh"
+rc-backend/test/staged-controls-gate-controls.sh:524:out=$(run_gate 'rc-backend/tools/inst.sh')
+rc-backend/test/staged-controls-gate-controls.sh:534:  mut_out=$(RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' 'rc-backend/tools/inst.sh'" \
+rc-backend/test/staged-controls-gate-controls.sh:538:/bin/rm -f "$R/rc-backend/tools/inst.sh"
+rc-backend/test/staged-controls-gate-controls.sh:552:printf '#!/bin/bash\n# %s: tools/envtool.sh\necho "SAW:[${RC_STAGED_FILES:-未設定}]"\nexit 0\n' \
+rc-backend/test/staged-controls-gate-controls.sh:555:: > "$R/rc-backend/tools/envtool.sh"
+rc-backend/test/staged-controls-gate-controls.sh:556:out=$(run_gate 'rc-backend/tools/envtool.sh')
+rc-backend/test/staged-controls-gate-controls.sh:557:chk "S56 ★staged の一覧が対照へ渡る" 0 $? "SAW:[rc-backend/tools/envtool.sh]" "SAW:[未設定]" "$out"
+rc-backend/test/staged-controls-gate-controls.sh:566:  mut_out=$(RC_GATE_ROOT="$R" STAGED_LIST_CMD="printf '%s\n' 'rc-backend/tools/envtool.sh'" \
+rc-backend/test/departure-survivability-controls.sh:2:# controls-for: tools/departure-survivability-check.sh
+rc-backend/test/departure-survivability-controls.sh:3:# controls-for: tools/phone-expected-apps.txt
+rc-backend/test/departure-survivability-controls.sh:27:# これが無いと `tools/prove-control.sh`(直す前の版で本当に赤くなるかを見る道具)が
+rc-backend/test/departure-survivability-controls.sh:29:SUT="${RC_DEPARTURE_SUT:-$HERE/../tools/departure-survivability-check.sh}"
+rc-backend/test/departure-survivability-controls.sh:62:GOOD=${GOOD//__CB_SHA__/$(sha_of "$HERE/../tools/coldboot-chain.sh")}
+rc-backend/test/departure-survivability-controls.sh:63:GOOD=${GOOD//__PW_SHA__/$(sha_of "$HERE/../tools/ensure-phone-window.sh")}
+rc-backend/test/departure-survivability-controls.sh:169:# 鎖(8)の在庫の**想定表**の継ぎ目(2026-08-10)。本物(tools/phone-expected-apps.txt)を
+rc-backend/test/departure-survivability-controls.sh:181:# `ios/tools/build.sh --print-build-num` へ番号を訊きに行く —— 其処を偽物へ向ける。
+rc-backend/test/departure-survivability-controls.sh:511:#     `tools/phone-expected-apps.txt` は人が手で足す表で、綴りを間違えた行は
+rc-backend/test/departure-survivability-controls.sh:517:    ok "BX 出荷している想定表(tools/phone-expected-apps.txt)が解析できる"
+rc-backend/tools/com.fleet.rc-backend.plist:15:    `com.fleet.rc-health-observer`(この機体で既に動いている見張り)と対にした。
+rc-backend/tools/com.fleet.rc-backend.plist:45:    bash ~/Infra/mobile-work/rc-backend/tools/deploy-to-friday.sh
+rc-backend/tools/com.fleet.rc-backend.plist:47:    ssh athenas 'chmod 700 /Users/athenas/rc-backend/tools/rc-backend-launch.sh'
+rc-backend/tools/com.fleet.rc-backend.plist:69:    <string>/Users/athenas/rc-backend/tools/rc-backend-launch.sh</string>
+rc-backend/tools/com.fleet.rc-backend.plist:96:         出力形式が違うので tools/fleet-account-cswap.sh が翻訳して渡す。
+rc-backend/tools/com.fleet.rc-backend.plist:97:         無指定だと $HOME/fleet-tools/fleet-account を探して ENOENT で 500 を返し、
+rc-backend/tools/com.fleet.rc-backend.plist:100:    <string>/Users/athenas/rc-backend/tools/fleet-account-cswap.sh</string>
+rc-backend/test/tunnel-observer-controls.sh:2:# controls-for: tools/tunnel-observer.sh
+rc-backend/test/tunnel-observer-controls.sh:10:OBS="$ROOT/tools/tunnel-observer.sh"
+rc-backend/tools/verify-phone-window.sh:6:#   `~/.claude/tools/verify-production-stop.sh` は「止まった」を測る道具で、しかも
+rc-backend/tools/verify-phone-window.sh:23:#   bash tools/verify-phone-window.sh                 # 観測して JSON を吐く + artifact 保存
+rc-backend/tools/verify-phone-window.sh:24:#   bash tools/verify-phone-window.sh --expect-absent # 撤去の確認(job も script も居ない事)
+rc-backend/tools/rc-backend-launch.sh:18:#   駆動できない事そのものが危険側。検査は `tools/rc-backend-launch-check.sh`。
+rc-backend/tools/rc-backend-launch.sh:53:#   「サービスが二度と上がらない」になる。`tools/mutation-run-live.sh` の注記に在るのと
+rc-backend/tools/rc-backend-launch.sh:60:# ★この分岐は `tools/rc-backend-launch-check.sh` の L/M/N が駆動している
+rc-backend/tools/rc-backend-launch.sh:66:#   ★下の既定値が `tools/deploy-to-edith.sh` の既定値と一致している事は P が見ている。
+rc-backend/tools/rc-backend-launch.sh:129:#   計算の本体は `tools/tailnet-key-expiry.sh` に置いてある(deploy 台本からも同じ物を呼ぶ。
+rc-backend/tools/rc-backend-launch.sh:133:    RC_TAILSCALE_BIN="$TS" /bin/bash "${APP}/tools/tailnet-key-expiry.sh" 2>&1 \
+rc-backend/tools/rc-backend-launch.sh:150:# ★判定を `tools/serve-decision.sh` に**切り出した**。ラッパに埋めると駆動できず、
+rc-backend/tools/rc-backend-launch.sh:153:#   `tools/serve-decision-check.sh` が回す。
+rc-backend/tools/rc-backend-launch.sh:172:    dec=$(printf '%s' "$snap" | /bin/bash "${APP}/tools/serve-decision.sh" "${PORT}" "${SERVE_PORT}" 2>/dev/null); decrc=$?
+rc-backend/tools/rc-backend-launch.sh:203:            log "  次の手: printf '%s' '<status の JSON>' | ${APP}/tools/serve-decision.sh ${PORT} ${SERVE_PORT}"
+rc-backend/tools/serve-decision-check.sh:2:# controls-for: tools/serve-decision.sh
+rc-backend/tools/serve-decision-check.sh:6:#   対照を1本も回さずに通っていた。名前の末尾が -check.sh で置き場が `tools/` なので、
+rc-backend/test/rsync-exclude-edith-controls.sh:2:# controls-for: tools/deploy-to-edith.sh test/rsync-exclude-controls.sh
+rc-backend/tools/wire-shape.mjs:26: *   RC_KEY=$(cat ~/.rc-backend/api.key) node tools/wire-shape.mjs /api/sessions
+rc-backend/tools/wire-shape.mjs:28: *   RC_KEY=... node tools/wire-shape.mjs '/api/sessions/{id}/history?limit=50'
+rc-backend/tools/wire-shape.mjs:31: *   node tools/wire-shape.mjs - < payload.json
+rc-backend/tools/wire-shape.mjs:33: *   RC_EXPECT_STATUS=404 RC_KEY=... node tools/wire-shape.mjs /api/sessions/nope/history
+rc-backend/tools/pre-commit-gates.sh:9:#   入れ直し = `bash rc-backend/tools/install-hooks.sh`(対照 test/install-hooks-controls.sh)
+rc-backend/tools/pre-commit-gates.sh:12:# 本体 = rc-backend/tools/check-mutation-targets.sh
+rc-backend/tools/pre-commit-gates.sh:22:# ★`tools/` も入れる(2026-08-02 追加)。的が指すのは `src/` の13ファイルだけ(測って確認済)
+rc-backend/tools/pre-commit-gates.sh:23:#   なので的のズレだけなら `src|test` で足りる。だが**検査そのものの実装**は `tools/` に在る
+rc-backend/tools/pre-commit-gates.sh:29:#   経緯: `f7c341e` で `staged-controls-gate.sh` が `ios/tools/*-control*.sh` の
+rc-backend/tools/pre-commit-gates.sh:71:bash "$ROOT/rc-backend/tools/doc-linerefs-gate.sh" || exit $?
+rc-backend/tools/pre-commit-gates.sh:74:#   本体 = rc-backend/tools/controls-registration-gate.sh
+rc-backend/tools/pre-commit-gates.sh:83:bash "$ROOT/rc-backend/tools/controls-registration-gate.sh" || exit $?
+rc-backend/tools/pre-commit-gates.sh:86:#   本体 = rc-backend/tools/cited-testnames-gate.sh
+rc-backend/tools/pre-commit-gates.sh:97:bash "$ROOT/rc-backend/tools/cited-testnames-gate.sh" || exit $?
+rc-backend/tools/pre-commit-gates.sh:117:    if [ -z "$(bash "$ROOT/rc-backend/tools/staged-controls-gate.sh" --would-select)" ]; then
+rc-backend/tools/pre-commit-gates.sh:122:bash "$ROOT/rc-backend/tools/check-mutation-targets.sh" || exit $?
+rc-backend/tools/pre-commit-gates.sh:125:#   本体 = rc-backend/tools/commit-suite-gate.sh(追跡されるのはそちら)
+rc-backend/tools/pre-commit-gates.sh:130:bash "$ROOT/rc-backend/tools/commit-suite-gate.sh" || exit $?
+rc-backend/tools/pre-commit-gates.sh:133:#   本体 = rc-backend/tools/vacuous-gate.sh(追跡されるのはそちら)
+rc-backend/tools/pre-commit-gates.sh:135:#   経緯: `tools/vacuous-scan.py` を一日かけて作り直したのに、**それを呼ぶ物が
+rc-backend/tools/pre-commit-gates.sh:139:bash "$ROOT/rc-backend/tools/vacuous-gate.sh" || exit $?
+rc-backend/tools/pre-commit-gates.sh:142:#   本体 = rc-backend/tools/port-coverage-gate.sh(追跡されるのはそちら)
+rc-backend/tools/pre-commit-gates.sh:144:#   経緯: `tools/port-coverage.py` にも対照が在り、掃きにも登録されていたのに、
+rc-backend/tools/pre-commit-gates.sh:150:#     bash "$ROOT/rc-backend/tools/<名前>.sh" の形から門を**数え上げる**ので、
+rc-backend/tools/pre-commit-gates.sh:152:bash "$ROOT/rc-backend/tools/port-coverage-gate.sh" || exit $?
+rc-backend/tools/pre-commit-gates.sh:155:#   本体 = rc-backend/tools/orphan-instrument-scan.sh
+rc-backend/tools/pre-commit-gates.sh:165:bash "$ROOT/rc-backend/tools/orphan-instrument-scan.sh" || exit $?
+rc-backend/tools/pre-commit-gates.sh:168:#   本体 = rc-backend/tools/staged-controls-gate.sh
+rc-backend/tools/pre-commit-gates.sh:170:#   経緯: commit 45e0c8b は `tools/mutation-verdict.sh` と その対照を**同じ commit で**
+rc-backend/tools/pre-commit-gates.sh:174:#   (回す物は `tools/run-controls.sh`)ので、45e0c8b はここを素通りしていた。
+rc-backend/tools/pre-commit-gates.sh:178:exec bash "$ROOT/rc-backend/tools/staged-controls-gate.sh"
+rc-backend/test/design-supersede.test.mjs:47://   `tools/deploy-to-edith.sh` は edith の `/Users/edith/rc-staging` へ木を写して
+rc-backend/test/reqlog.test.mjs:256:  // ★2026-08-27 に**実際に壊した**。`ios/tools/live-*-check.sh` が建てる殻は電話の
+rc-backend/test/verdict-mutants.sh:11:# 測っている事: `tools/mutation-verdict.sh` を1箇所ずつ壊すと、
+rc-backend/test/verdict-mutants.sh:37:SUBJECT="$ROOT/tools/mutation-verdict.sh"
+rc-backend/test/verdict-mutants.sh:73:# 木を丸ごと写し、写しの `tools/mutation-verdict.sh` だけを壊し、**写しの側の対照**を回す。
+rc-backend/test/verdict-mutants.sh:81:    /usr/bin/sed "$expr" "$SUBJECT" > "$d/tools/mutation-verdict.sh" || {
+rc-backend/test/verdict-mutants.sh:85:    if /usr/bin/diff -q "$SUBJECT" "$d/tools/mutation-verdict.sh" >/dev/null 2>&1; then
+rc-backend/test/verdict-mutants.sh:107:echo "── §M 変異表を当てる(対象: tools/mutation-verdict.sh)──"
+rc-backend/test/verify-log-controls.sh:2:# controls-for: tools/verify-log.sh
+rc-backend/test/verify-log-controls.sh:3:# `tools/verify-log.sh` の対照。
+rc-backend/test/verify-log-controls.sh:16:W="${VERIFY_LOG_SCRIPT:-$ROOT/tools/verify-log.sh}"
+rc-backend/test/worker.test.mjs:919:// `tools/live-fork-check.mjs`)、正本の判定器はその文面を上限と読む。受け手だけが居なかった。
+rc-backend/test/fleet-account-cswap-controls.sh:2:# controls-for: tools/fleet-account-cswap.sh
+rc-backend/test/fleet-account-cswap-controls.sh:11:SHIM="$ROOT/tools/fleet-account-cswap.sh"
+rc-backend/tools/serve-decision.sh:4:# 検査: `tools/serve-decision-check.sh`(19ケース。旧判定を同じ表に当てて 14 行動く)
+rc-backend/tools/serve-decision.sh:5:#       `tools/rc-backend-launch-check.sh`(呼び出し側の分岐を偽の tailscale で実走)
+rc-backend/tools/ota-server.mjs:21:// 使い方: OTA_ROOT=~/ota OTA_PORT=8788 node tools/ota-server.mjs
+rc-backend/tools/ota-server.mjs:73://   (此処は tools/ で src/ を import しない層なので、写しである事を明示しておく)。
+rc-backend/test/gui-run-controls.sh:2:# controls-for: tools/edith-gui-run.sh
+rc-backend/test/gui-run-controls.sh:3:# `tools/edith-gui-run.sh` が**計器として壊れていないか**を測る対照。
+rc-backend/test/gui-run-controls.sh:21:RUN="${RC_GUI_RUN_BIN:-$ROOT/tools/edith-gui-run.sh}"
+rc-backend/tools/live-http-check.mjs:24: * 使い方: node tools/live-http-check.mjs [--cwd DIR] [--bin rc-claude] [--probe "本文"] [--no-send]
+rc-backend/tools/live-http-check.mjs:322:    console.error(`  次の手: rc-claude は ~/.claude/tools/rc-claude(edith へは .claude-sync 経由)。`);
+rc-backend/tools/live-http-check.mjs:902:// 終了コードの意味と順序(2 > 1 > 3 > 0)は `tools/exit-codes.mjs` に1本だけ置いてある。
+rc-backend/test/cited-testnames-gate-controls.sh:2:# controls-for: tools/cited-testnames-gate.sh
+rc-backend/test/cited-testnames-gate-controls.sh:23:SUBJECT="$REPO_ROOT/rc-backend/tools/cited-testnames-gate.sh"
+rc-backend/test/cited-testnames-gate-controls.sh:44:cp "$SUBJECT" "$R/rc-backend/tools/cited-testnames-gate.sh"
+rc-backend/test/cited-testnames-gate-controls.sh:76:run_gate() { ( cd "$R" && bash "$R/rc-backend/tools/cited-testnames-gate.sh" > "$T/out.log" 2>&1; echo $? ); }
+rc-backend/tools/warn-ledger.sh:21:#   wl_run "鍵の期限" ssh "$EDITH" "/bin/bash '$LIVE/tools/tailnet-key-expiry.sh'"
+rc-backend/tools/warn-ledger.sh:54:    # ★終了コードは**生んだ場所の直後**で取る。2026-08-03 に `tools/mutation-verdict.sh` で
+rc-backend/tools/inflight-under-statusline.mjs:6: * 直前に分かった事(tools/hint-statusline-control.mjs、同じ機械で両腕):
+rc-backend/tools/inflight-under-statusline.mjs:29: * 使い方: node tools/inflight-under-statusline.mjs [--gen-ms 9000] [--after-ms 6000]
+rc-backend/tools/exit-codes.mjs:1:// 実機を触る台本(`tools/live-*.mjs`)が返す終了コードの**意味**を1箇所に置く。
+rc-backend/tools/exit-codes.mjs:5:// 同じ機械を同じ時刻に測った2本が**逆の事を言った**。`tools/live-inject-check.mjs` は
+rc-backend/tools/exit-codes.mjs:6:// exit 3(相手が上限で答えていない)、`tools/live-http-check.mjs` は「16 OK / 0 NG / exit 0」。
+rc-backend/tools/exit-codes.mjs:10:// 2026-08-06 に4本を数えたら、`tools/live-choice-check.mjs` だけが上限を知らないままだった
+rc-backend/test/port-coverage-controls.sh:2:# controls-for: tools/port-coverage.py
+rc-backend/test/port-coverage-controls.sh:3:# `tools/port-coverage.py` の対照。
+rc-backend/test/port-coverage-controls.sh:36:TOOL="${PC_TOOL:-$ROOT/rc-backend/tools/port-coverage.py}"
+rc-backend/test/port-coverage-controls.sh:43:#   砂場直下に台本を置いていた所為で `../ios/tools/…` が /tmp 本体へ解決し、
+rc-backend/tools/vacuous-gate.sh:4:# なぜ要るか(2026-08-05): `tools/vacuous-scan.py` を一日かけて作り直したのに、
+rc-backend/tools/vacuous-gate.sh:34:SELFTEST_CMD="${SELFTEST_CMD:-python3 $ROOT/tools/vacuous-scan.py --self-test}"
+rc-backend/tools/vacuous-gate.sh:35:SCAN_CMD="${SCAN_CMD:-python3 $ROOT/tools/vacuous-scan.py}"
+rc-backend/tools/vacuous-gate.sh:94:    echo "  ★錨は遠い入力ではなく**直に食う派生**に置く事。詳細は tools/vacuous-scan.py の頭。"
+rc-backend/tools/disposable-session.mjs:5: * なぜ要るか: `tools/live-http-check.mjs` は建てて測って畳むまでを1本で走らせるので、
+rc-backend/tools/disposable-session.mjs:11: *   node tools/disposable-session.mjs up [--cwd DIR] [--bin rc-claude]
+rc-backend/tools/disposable-session.mjs:14: *   node tools/disposable-session.mjs lines <会話 id>
+rc-backend/tools/disposable-session.mjs:16: *   node tools/disposable-session.mjs busy <会話 id>
+rc-backend/tools/disposable-session.mjs:19: *   node tools/disposable-session.mjs down <tmux セッション名> <会話 id>
+rc-backend/tools/disposable-session.mjs:287: * 何に使うか: 割り込みの実機検査(`ios/tools/live-interrupt-check.sh`)は、
+rc-backend/tools/disposable-session.mjs:354: * 何に使うか(2026-08-06): shell の実機検査2本(`ios/tools/live-*.sh`)が、上限で答えが
+rc-backend/test/pre-commit-gates-controls.sh:2:# controls-for: tools/pre-commit-gates.sh
+rc-backend/test/pre-commit-gates-controls.sh:7:#   2026-08-02 `tools/` が絞り込みに無く、門の本体を書き換える commit で門が動かなかった
+rc-backend/test/pre-commit-gates-controls.sh:43:SUBJECT="$REPO_ROOT/rc-backend/tools/pre-commit-gates.sh"
+rc-backend/test/pre-commit-gates-controls.sh:44:DOWNSTREAM="$REPO_ROOT/rc-backend/tools/staged-controls-gate.sh"
+rc-backend/test/pre-commit-gates-controls.sh:73:         | grep -oE 'bash "\$ROOT/rc-backend/tools/[a-z-]+\.sh"' \
+rc-backend/test/pre-commit-gates-controls.sh:85:             | grep -oE 'bash "\$ROOT/rc-backend/tools/[a-z-]+\.sh"' \
+rc-backend/test/pre-commit-gates-controls.sh:108:    cp "$SUBJECT" "$r/rc-backend/tools/pre-commit-gates.sh"
+rc-backend/test/pre-commit-gates-controls.sh:117:        cat > "$r/rc-backend/tools/$g.sh" <<STUB
+rc-backend/test/pre-commit-gates-controls.sh:126:        chmod +x "$r/rc-backend/tools/$g.sh"
+rc-backend/test/pre-commit-gates-controls.sh:141:        bash "$r/rc-backend/tools/pre-commit-gates.sh" > "$T/out.log" 2>&1
+rc-backend/test/pre-commit-gates-controls.sh:238:sed 's#if \[ -z "$(bash "$ROOT/rc-backend/tools/staged-controls-gate.sh" --would-select)" \]; then#if true; then#' \
+rc-backend/test/pre-commit-gates-controls.sh:244:    cp "$T/mutant-probe.sh" "$T/pkgmut/rc-backend/tools/pre-commit-gates.sh"
+rc-backend/test/deploy-to-edith-behavior-controls.sh:2:# controls-for: tools/deploy-to-edith.sh
+rc-backend/test/deploy-to-edith-behavior-controls.sh:3:# `tools/deploy-to-edith.sh` の対照・第2弾 —— **実際に走らせて**制御の流れを測る。
+rc-backend/test/deploy-to-edith-behavior-controls.sh:31:DEPLOY="${DEPLOY_SCRIPT:-$ROOT/tools/deploy-to-edith.sh}"
+rc-backend/test/deploy-to-edith-behavior-controls.sh:49:/bin/cp "$DEPLOY" "$SB/tools/deploy-to-edith.sh"
+rc-backend/test/deploy-to-edith-behavior-controls.sh:50:/bin/cp "$ROOT/tools/warn-ledger.sh" "$SB/tools/" 2>/dev/null || { echo "★warn-ledger.sh が無い = 測定不成立"; exit 2; }
+rc-backend/test/deploy-to-edith-behavior-controls.sh:51:/bin/cp "$ROOT/tools/deploy-dirt.sh" "$SB/tools/" 2>/dev/null || { echo "★deploy-dirt.sh が無い = 測定不成立"; exit 2; }
+rc-backend/test/deploy-to-edith-behavior-controls.sh:55:/bin/cat > "$SB/tools/mutation-run-live.sh" <<'MUT'
+rc-backend/test/deploy-to-edith-behavior-controls.sh:130:/bin/chmod +x "$SB/bin/ssh" "$SB/bin/rsync" "$SB/tools/mutation-run-live.sh"
+rc-backend/test/deploy-to-edith-behavior-controls.sh:142:  /bin/bash "$SB/tools/deploy-to-edith.sh" "$@" > "$OUT" 2>&1
+rc-backend/test/reply-route.test.mjs:17:import { replyRoute } from "../tools/live-http-check.mjs";
+rc-backend/tools/mixed-index-control.sh:2:# controls-for: tools/staged-controls-gate.sh
+rc-backend/tools/mixed-index-control.sh:27:printf 'v1\n' > "$R/rc-backend/tools/thing.sh"
+rc-backend/tools/mixed-index-control.sh:36:printf 'v2\n' > "$R/rc-backend/tools/thing.sh"
+rc-backend/tools/mixed-index-control.sh:46:printf 'v3-worktree-only\n' > "$R/rc-backend/tools/thing.sh"   # add し直さない = MM
+rc-backend/tools/vacuous-scan.py:66:    python3 rc-backend/tools/vacuous-scan.py            # 全部
+rc-backend/tools/vacuous-scan.py:67:    python3 rc-backend/tools/vacuous-scan.py --tree js  # 片方だけ
+rc-backend/tools/vacuous-scan.py:68:    python3 rc-backend/tools/vacuous-scan.py --self-test
+rc-backend/test/mutation-target-controls.sh:2:# controls-for: tools/check-mutation-targets.sh test/mutation-controls.py
+rc-backend/test/mutation-target-controls.sh:3:# `tools/check-mutation-targets.sh` が**緑にも赤にもなる**事の確認。
+rc-backend/test/mutation-target-controls.sh:37:cp "$SRC_ROOT/tools/check-mutation-targets.sh" "$SB/tools/"
+rc-backend/test/mutation-target-controls.sh:38:cp "$SRC_ROOT/tools/mutation-run-live.sh" "$SB/tools/"   # ← 検査が呼ぶ判定。写し忘れると複製側が落ちる
+rc-backend/test/mutation-target-controls.sh:39:CHECK="$SB/tools/check-mutation-targets.sh"
+rc-backend/test/mutation-target-controls.sh:146:cp "$SRC_ROOT/tools/check-mutation-targets.sh" "$SRC_ROOT/tools/mutation-run-live.sh" "$GB/tools/"
+rc-backend/test/mutation-target-controls.sh:153:    if bash "$GB/tools/check-mutation-targets.sh" >/dev/null 2>&1; then
+rc-backend/test/mutation-target-controls.sh:174:    if bash "$GB/tools/check-mutation-targets.sh" >/dev/null 2>&1; then
+rc-backend/test/mutation-target-controls.sh:181:    if RC_TARGETS_SHRINK_OK=1 bash "$GB/tools/check-mutation-targets.sh" >/dev/null 2>&1; then
+rc-backend/test/mutation-target-controls.sh:189:       bash "$GB/tools/check-mutation-targets.sh" >/dev/null 2>&1; then
+rc-backend/tools/desktop-attach-control.sh:2:# controls-for: tools/desktop-attach.sh
+rc-backend/test/phone-window-controls.sh:2:# controls-for: tools/ensure-phone-window.sh
+rc-backend/test/phone-window-controls.sh:3:# phone-window-controls.sh — `tools/ensure-phone-window.sh`(鎖③)そのものへの対照。
+rc-backend/test/phone-window-controls.sh:22:TARGET="$SELF_DIR/../tools/ensure-phone-window.sh"
+rc-backend/test/deploy-dirt-controls.sh:2:# controls-for: tools/deploy-dirt.sh
+rc-backend/test/deploy-dirt-controls.sh:3:# `tools/deploy-dirt.sh` が「汚れは実行コードか付随物か」を**両向きに**正しく答える事の確認。
+rc-backend/test/deploy-dirt-controls.sh:18:DIRT="$ROOT/tools/deploy-dirt.sh"
+rc-backend/tools/verify-log.sh:14:# 使い方: bash tools/verify-log.sh <id> '<検査のコマンド>'
+rc-backend/test/prove-all-scope-controls.sh:2:# controls-for: tools/prove-all-controls.sh
+rc-backend/test/prove-all-scope-controls.sh:3:# `tools/prove-all-controls.sh` が **どの dir を見るか** の対照。
+rc-backend/test/prove-all-scope-controls.sh:7:# 直書きで、`.harness/` と `ios/tools/` に居る対照は一度もこの道具の視野に入らなかった
+rc-backend/test/prove-all-scope-controls.sh:9:# 範囲の正本は `tools/staged-controls-gate.sh` の `SCAN_SPECS` = commit の門が見る範囲。
+rc-backend/test/prove-all-scope-controls.sh:22:PROVE_ALL="${RC_PROVE_ALL:-$ROOT/tools/prove-all-controls.sh}"
+rc-backend/test/prove-all-scope-controls.sh:23:REAL_GATE="${RC_STAGED_GATE:-$ROOT/tools/staged-controls-gate.sh}"
+rc-backend/test/prove-all-scope-controls.sh:73:    ok "本物の門: ios/tools/ の対照が視野に入る"
+rc-backend/test/prove-all-scope-controls.sh:75:    ng "本物の門: ios/tools/ の対照が視野に入る" "出力に sim-log-summary-control.sh が出ない"
+rc-backend/test/fixture-reader-declared.test.mjs:4://   ios/tools/ui-fixture-absence-control.sh は「Release バイナリに RC_UI_FIXTURE の
+rc-backend/test/fixture-reader-declared.test.mjs:46:const GATE = requireOutside(["ios", "ios/tools/ui-fixture-absence-control.sh"]);
+rc-backend/test/fixture-reader-declared.test.mjs:113:      "  直し方: ios/tools/ui-fixture-absence-control.sh の controls-for 行に足す。\n" +
+rc-backend/test/vacuous-gate-controls.sh:2:# controls-for: tools/vacuous-gate.sh
+rc-backend/test/vacuous-gate-controls.sh:27:GATE="$REPO_ROOT/rc-backend/tools/vacuous-gate.sh"
+rc-backend/tools/live-choice-check.mjs:19: * 使い方: node tools/live-choice-check.mjs [--cwd <信頼済みの dir>] [--bin "claude --model haiku"]
+rc-backend/tools/live-choice-check.mjs:22: *   意味と順序の正本は `tools/exit-codes.mjs`。此の台本だけ 3 を持っていなかったのを
+rc-backend/tools/live-choice-check.mjs:200:// 順序は `tools/exit-codes.mjs` の1本に委ねる(此処に三項演算子を書き直さない事)。
+rc-backend/tools/deploy-to-edith.sh:7:#   bash tools/deploy-to-edith.sh            # 仮置き → edith で緑 → 入れ替え → 再起動を観測
+rc-backend/tools/deploy-to-edith.sh:8:#   bash tools/deploy-to-edith.sh --dry-run  # 仮置きの rsync 差分だけ見る(転送しない)
+rc-backend/tools/deploy-to-edith.sh:56:# 既定値は `tools/rc-backend-launch.sh` の `RC_DEPLOY_MARK` と一致していなければならない。
+rc-backend/tools/deploy-to-edith.sh:99:#   ★判定そのものは `tools/mutation-run-live.sh` に一本化(同日)。素の pgrep を直書きして
+rc-backend/tools/deploy-to-edith.sh:143:#   判定そのものは `tools/deploy-dirt.sh` に居る(対照が本物の repo で同じ経路を通せる様に)。
+rc-backend/tools/deploy-to-edith.sh:172:#   詳細と対照 = tools/warn-ledger.sh / test/warn-ledger-controls.sh(16 本)。
+rc-backend/tools/deploy-to-edith.sh:330:ssh "$EDITH" "cd '$STAGE' && /bin/bash tools/rc-backend-launch-check.sh"
+rc-backend/tools/deploy-to-edith.sh:378:#   印が在る間、`tools/rc-backend-launch.sh` は node を起こさず launchd の再試行に任せる。
+rc-backend/tools/deploy-to-edith.sh:633:wl_run "鍵の期限" ssh "$EDITH" "/bin/bash '$LIVE/tools/tailnet-key-expiry.sh'"
+rc-backend/tools/deploy-to-edith.sh:648:# ★2026-08-03 夜: ここに在った heredoc を `tools/coldboot-chain.sh` へ**切り出した**。
+rc-backend/tools/deploy-to-edith.sh:660:#     **飲み込んだ終了コードを最後の帳尻まで持ち帰る**為(tools/warn-ledger.sh)。
+rc-backend/tools/deploy-to-edith.sh:662:wl_run "停電から戻れるか" ssh "$EDITH" "CB_PLIST=\"$COLDBOOT_PLIST\" CB_USER='$COLDBOOT_USER' /bin/bash '$LIVE/tools/coldboot-chain.sh'"
+rc-backend/tools/digest-notify.sh:179:#     ・一覧が取れない    … 机が落ちている事なので、`health-observer` が既に見ている
+rc-backend/tools/digest-notify.sh:183:#   ★同じ日に、私は `health-observer` の**偽の**「監視が壊れている」を消したばかり。
+rc-backend/tools/digest-notify.sh:189:#     `health-observer` の「監視側が壊れています」と混ぜない。
+rc-backend/test/mutation-controls.py:1119: #   変異走行は `npm test` と `test/e2e-local.mjs` を回すが `health-observer-controls.sh` は
+rc-backend/test/mutation-controls.py:1831:#     配備の門が塞がる(`tools/check-mutation-targets.sh` は毎コミット `--dry` を叩く)。
+rc-backend/test/mutation-controls.py:1844:    ★読み手(`tools/mutation-run-live.sh`)と**同じ道具**(`ps -o lstart=`)で採る事。
+rc-backend/test/mutation-controls.py:1887:            f"  何が掴んでいるか: bash tools/mutation-run-live.sh --who\n"
+rc-backend/test/mutation-controls.py:2019:#   同じ問いに答える場所が2つ在ると、片方だけ直して片方が腐る —— `tools/mutation-run-live.sh`
+rc-backend/test/mutation-controls.py:2043:# 何が起きたか: 197 件の走行は 3 時間半かかる。その間に私は同じ repo の `tools/` を
+rc-backend/tools/hint-statusline-control.mjs:25: * 使い方: node tools/hint-statusline-control.mjs [--cwd DIR] [--secs 20]
+rc-backend/tools/run-controls.sh:6:#     env-death-controls.sh      → tools/verify-on-edith.sh が呼ぶ(edith 上)
+rc-backend/tools/run-controls.sh:27:#       ★これを**回す物**が `tools/prove-all-controls.sh`(1本だけなら `prove-control.sh`)。
+rc-backend/tools/run-controls.sh:45:# `ios/tools/signout-notice-control.sh` の実測 734 秒。1800 秒はその倍以上。
+rc-backend/tools/run-controls.sh:67:                                     # .harness/ と ios/tools/ の 5 本が視野の外に居た。
+rc-backend/tools/run-controls.sh:80:                                     # 道具(`tools/wire-shape.mjs`)が、中身を伏せるかの対照。
+rc-backend/tools/run-controls.sh:92:                                     # (`tools/disposable-session.mjs`)そのものの対照。守る本命は
+rc-backend/tools/run-controls.sh:103:    test/health-observer-controls.sh # 本物の HTTP サーバを立てて probe を測る。実測3秒
+rc-backend/tools/run-controls.sh:136:    tools/rc-backend-launch-check.sh # ★2026-08-03 に此処へ入れた。それまで**参照 0 件**
+rc-backend/tools/run-controls.sh:141:                                     # `tailscale serve` は撃たない。`test/` ではなく `tools/`
+rc-backend/tools/run-controls.sh:143:    tools/serve-decision-check.sh    # ★2026-08-07 に此処へ入れた。上と**同じ病気の2件目**で、
+rc-backend/tools/run-controls.sh:149:    tools/funnel-exposure-check-control.sh # ★2026-08-26 新設と同時に此処へ入れた(上2件が
+rc-backend/tools/run-controls.sh:152:                                     # `funnel-exposure-check.sh` =「**公開されている入口の下に
+rc-backend/tools/run-controls.sh:157:    tools/tunnel-observer-control.sh  # ★2026-08-27 新設と同時に登録。測る相手は
+rc-backend/tools/run-controls.sh:164:    tools/digest-notify-control.sh    # ★2026-08-26 新設と同時に登録。測る相手は
+rc-backend/tools/run-controls.sh:171:    tools/rollback-friday-control.sh  # ★2026-08-26 新設と同時に登録。測る相手は
+rc-backend/tools/run-controls.sh:179:    tools/exposure-standing-control.sh # ★2026-08-26 新設と同時に登録。測る相手は
+rc-backend/tools/run-controls.sh:180:                                     # `health-observer.sh` の露出の節 =「**露出 / 判らない /
+rc-backend/tools/run-controls.sh:184:    tools/desktop-attach-control.sh   # ★2026-08-26 新設と同時に登録。測る相手は
+rc-backend/tools/run-controls.sh:191:    tools/mixed-index-control.sh      # ★2026-08-26 新設と同時に登録。測る相手は
+rc-backend/tools/run-controls.sh:198:    ios/tools/live-poll-check.sh      # ★2026-08-27 新設と同時に登録。電話の**受け取り**
+rc-backend/tools/run-controls.sh:206:    ios/tools/initial-load-narration-control.sh # ★2026-08-27 新設と同時に登録。
+rc-backend/tools/run-controls.sh:216:    ios/tools/sim-device-control.sh   # ★2026-08-26 新設と同時に登録。測る相手は
+rc-backend/tools/run-controls.sh:217:                                     # `ios/tools/sim-device.sh` =「対照が **どの機へ
+rc-backend/tools/run-controls.sh:224:    test/remote-mini-root-controls.sh # ★測る相手が **この repo の外**(`~/.claude/tools/
+rc-backend/tools/run-controls.sh:235:    test/mutation-verdict-controls.sh # 門の外へ出した変異の判定(`tools/mutation-verdict.sh`)が
+rc-backend/tools/run-controls.sh:257:                                     # (`tools/coldboot-chain.sh`)。偽の fdesetup/
+rc-backend/tools/run-controls.sh:267:                                     # Jervis から1回で測る道具(`tools/departure-
+rc-backend/tools/run-controls.sh:277:                                     # (`tools/commit-suite-gate.sh`)。偽の一式を差すので
+rc-backend/tools/run-controls.sh:283:                                     # (`tools/staged-controls-gate.sh`)。偽の repo の木 +
+rc-backend/tools/run-controls.sh:294:                                     # (`tools/warn-ledger.sh`)。source して使う関数なので
+rc-backend/tools/run-controls.sh:372:    ../ios/tools/ui-fixture-absence-control.sh # ★2026-08-05 に此処へ入れた。Sprint 2 の
+rc-backend/tools/run-controls.sh:387:    ../ios/tools/ui-fixture-behavior-control.sh # 同・第2弾 = **挙動検査**。第1弾(文字列走査)は
+rc-backend/tools/run-controls.sh:401:    test/verify-log-controls.sh      # `tools/verify-log.sh`(検査の出力と終了コードを残す包み)。
+rc-backend/tools/run-controls.sh:412:    ../ios/tools/sim-log-summary-control.sh # ★2026-08-05。ios/tools/build.sh --sim が印字する
+rc-backend/tools/run-controls.sh:413:                                     # **要約1行**の判定(ios/tools/sim-log-summary.sh)。
+rc-backend/tools/run-controls.sh:437:    ../ios/tools/conversation-ui-control.sh # ★2026-08-06。会話画面の UI 検査
+rc-backend/tools/run-controls.sh:452:    ../ios/tools/list-return-refresh-control.sh # ★2026-08-08。一覧の**取り直しの引き金**の
+rc-backend/tools/run-controls.sh:476:    ../ios/tools/inflight-sentence-control.sh # ★2026-08-08(S8-6)。割り込みと打鍵が
+rc-backend/tools/run-controls.sh:504:    ../ios/tools/signout-notice-control.sh # ★2026-08-08(#37 / 監査 X2-6、#40 / 監査 X2-8)、
+rc-backend/tools/run-controls.sh:583:    ../ios/tools/bar-material-control.sh # ★2026-08-08(#35 / 監査 X-3)。会話画面の
+rc-backend/tools/run-controls.sh:599:    ../ios/tools/live-send-check-control.sh # ★2026-08-06。`ios/tools/live-send-check.sh` の
+rc-backend/tools/run-controls.sh:603:                                     # ★据えた理由: 終了コードの正本(rc-backend/tools/exit-codes.mjs)を
+rc-backend/tools/run-controls.sh:609:    ../ios/tools/live-interrupt-check-control.sh # ★2026-08-06。姉家族(上)と同じ手で
+rc-backend/tools/run-controls.sh:610:                                     # `ios/tools/live-interrupt-check.sh` の判定2つを撃つ(29 本)。
+rc-backend/tools/run-controls.sh:617:    ../ios/tools/live-poll-check-control.sh # ★2026-08-28。姉家族2本(上)と同じ手で
+rc-backend/tools/run-controls.sh:618:                                     # `ios/tools/live-poll-check.sh` の**壊れた cursor の判定**を
+rc-backend/tools/run-controls.sh:640:                                     # (`tools/ota-server.mjs`、friday の com.fleet.rc-ota)の対照。
+rc-backend/tools/run-controls.sh:649:    ../ios/tools/account-ui-control.sh # ★2026-08-12。口座の表示と切替
+rc-backend/tools/run-controls.sh:664:    ../ios/tools/mutation-deferral-control.sh # ★2026-08-12(#66)。
+rc-backend/tools/run-controls.sh:665:                                     # `ios/tools/signout-notice-control.sh` の**選び方**の対照(17 本、
+rc-backend/tools/run-controls.sh:677:    ../ios/tools/build-device-pick-control.sh # ★2026-08-09。`ios/tools/build.sh` が
+rc-backend/tools/run-controls.sh:688:                                     # 差し替えた物(tools/fixtures/devicectl-list-devices.json)。
+rc-backend/tools/run-controls.sh:768:    # (同日の progress.md に「56 本」と書いたが、それは `ios/tools/conversation-ui-control.sh`
+rc-backend/tools/run-controls.sh:777:    #   再発の防止ではない。防止は門の側 = `tools/controls-registration-gate.sh`
+rc-backend/tools/run-controls.sh:789:                                     # `tools/verify-phone-window.sh` の**判定**の対照。
+rc-backend/tools/run-controls.sh:802:                                     # `tools/verify-rc-backend-state.sh` の**判定**の対照。
+rc-backend/tools/run-controls.sh:812:                                     # 実機の殻(`ios/tools/*-main.swift` と呼び側の `.sh`)が
+rc-backend/tools/run-controls.sh:827:                                     # `ios/tools/conversation-ui-control.sh` の 156 秒と同じ桁。
+rc-backend/tools/run-controls.sh:829:                                     # 温めてから回す**(`ios/tools/build.sh --sim` を先に1回)。
+rc-backend/tools/run-controls.sh:844:                                     # (`ios/tools/build.sh --sim`)の対照。commit の門が
+rc-backend/tools/run-controls.sh:986:#   此処は `test/*-controls.sh` しか見ていなかったので、`ios/tools/` と `.harness/` の
+rc-backend/tools/run-controls.sh:1011:#     偽陽性 4件  tools/{run-controls,staged-controls-gate,prove-control,prove-all-controls}.sh
+rc-backend/tools/run-controls.sh:1013:#     偽陰性 2件  tools/rc-backend-launch-check.sh / tools/serve-decision-check.sh
+rc-backend/tools/run-controls.sh:1019:GATE_FOR_SPECS="${GATE_FOR_SPECS:-$ROOT/tools/staged-controls-gate.sh}"
+rc-backend/tools/delivery-check.sh:42:for j in com.fleet.rc-backend com.fleet.rc-phone-window com.fleet.rc-health-observer; do
+rc-backend/tools/delivery-check.sh:56:    if [ ! -f "$REPO/tools/$ex" ]; then continue; fi
+rc-backend/tools/delivery-check.sh:84:fxout=$(printf '%s' "$fx" | bash "$REPO/tools/funnel-exposure-check.sh" 8787 2>/dev/null); fxrc=$?
+rc-backend/test/verify-state-judgment-controls.sh:2:# controls-for: tools/verify-rc-backend-state.sh
+rc-backend/test/verify-state-judgment-controls.sh:28:TARGET="$ROOT/tools/verify-rc-backend-state.sh"
+rc-backend/test/verify-state-judgment-controls.sh:31:    echo "UNMEASURED  読む file が無い: tools/verify-rc-backend-state.sh"
+rc-backend/tools/com.fleet.rc-digest-notify.plist:45:    <string>/Users/athenas/rc-backend/tools/digest-notify.sh</string>
+rc-backend/tools/live-fork-check.mjs:34: * 使い方: node tools/live-fork-check.mjs [--bin claude] [--keep] [--verbose]
+rc-backend/tools/live-fork-check.mjs:66: * **`tools/edith-gui-run.sh` 越しに走らせないと必ずここに落ちる**。
+rc-backend/tools/live-fork-check.mjs:203:      ? "★鍵束が開いていない(Not logged in)= 素の ssh で撃っている。`tools/edith-gui-run.sh` 越し(launchd gui/501)で走らせる事"
+rc-backend/test/limit-lifted-controls.sh:2:# controls-for: tools/limit-lifted-check.mjs
+rc-backend/test/limit-lifted-controls.sh:3:# `tools/limit-lifted-check.mjs` が**計器として壊れていないか**を測る対照。
+rc-backend/test/limit-lifted-controls.sh:17:CHECK="${RC_LIMIT_CHECK_BIN:-$ROOT/tools/limit-lifted-check.mjs}"
+rc-backend/test/fork-check-controls.sh:2:# controls-for: tools/live-fork-check.mjs
+rc-backend/test/fork-check-controls.sh:3:# `tools/live-fork-check.mjs` が**計器として壊れていないか**を測る対照。
+rc-backend/test/fork-check-controls.sh:21:CHECK="${RC_FORK_CHECK_BIN:-$ROOT/tools/live-fork-check.mjs}"
+rc-backend/tools/digest-notify-control.sh:2:# controls-for: tools/digest-notify.sh
+rc-backend/tools/digest-notify-control.sh:183:#     一覧が取れない … 机が落ちている事なので `health-observer` が既に見ている
+rc-backend/tools/digest-notify-control.sh:186:#   ★同じ日に `health-observer` の**偽の**「監視が壊れている」を消したばかりなので、
+rc-backend/tools/digest-notify-control.sh:202:# 8-b. 一覧が取れない → 鳴らない(health-observer が見ている)
+rc-backend/tools/rc-backend-launch-check.sh:2:# controls-for: tools/rc-backend-launch.sh tools/serve-decision.sh
+rc-backend/tools/rc-backend-launch-check.sh:19:#   それは edith 上の `tools/verify-rc-backend-state.sh` の仕事。役割を混ぜない。
+rc-backend/tools/rc-backend-launch-check.sh:21:# 使い方: bash tools/rc-backend-launch-check.sh   (exit 0 = 全部 OK)
+rc-backend/tools/rc-backend-launch-check.sh:31:#   配備は `ssh edith "... tools/rc-backend-launch-check.sh"` で回すので、環境変数は
+rc-backend/tools/rc-backend-launch-check.sh:47:cp "$HERE/serve-decision.sh" "$HERE/tailnet-key-expiry.sh" "$T/app/tools/"
+rc-backend/tools/rc-backend-launch-check.sh:87:    cp "$HERE/serve-decision.sh" "$T/app/tools/serve-decision.sh"
+rc-backend/tools/rc-backend-launch-check.sh:195:printf '#!/bin/bash\necho banana\n' > "$T/app/tools/serve-decision.sh"
+rc-backend/tools/rc-backend-launch-check.sh:233:# この分岐は `tools/deploy-to-edith.sh` が本番の木を書き換えている窓で launchd が
+rc-backend/tools/rc-backend-launch-check.sh:355:# 書く側 (tools/deploy-to-edith.sh) と読む側 (tools/rc-backend-launch.sh) は**別々に**
+rc-backend/tools/rc-backend-launch-check.sh:361:#   どうしの一致だけ)。実物を見るのは tools/verify-rc-backend-state.sh の仕事。
+rc-backend/test/remote-mini-root-controls.sh:2:# controls-for: external:~/.claude/tools/remote-mini.sh
+rc-backend/test/remote-mini-root-controls.sh:18:# 冒頭で読む2行は tools/run-controls.sh のヘッダに在る。ここでの適用:
+rc-backend/test/remote-mini-root-controls.sh:36:NEW="${REMOTE_MINI_SCRIPT:-$HOME/.claude/tools/remote-mini.sh}"
+rc-backend/test/remote-mini-root-controls.sh:37:OLD="${REMOTE_MINI_OLD:-$HOME/.claude/tools/remote-mini.sh.bak.20260803-161222-pre-mirror-root}"
+rc-backend/tools/tailnet-key-expiry.sh:2:# tailnet-key-expiry.sh — tailnet 鍵があと何日で切れるかを言う。
+rc-backend/tools/tailnet-key-expiry.sh:3:#   宛先: rc-backend/tools/tailnet-key-expiry.sh(= edith 上では /Users/edith/rc-backend/tools/)
+rc-backend/tools/tailnet-key-expiry.sh:24:#   tailnet-key-expiry.sh                この機械の鍵だけ(既定。呼び口の互換を壊さない)
+rc-backend/tools/tailnet-key-expiry.sh:25:#   tailnet-key-expiry.sh --peer <名>    指定した相手の鍵だけ
+rc-backend/tools/tailnet-key-expiry.sh:26:#   tailnet-key-expiry.sh --chain <名>   この機械と相手の**両方**。判定は近い方で決める
+rc-backend/tools/tailnet-key-expiry.sh:30:#     ★何故これが要るか: 呼ぶ側(health-observer)は Discord へ文を出す。そこへ**此処の散文を
+rc-backend/tools/verify-rc-backend-state.sh:6:# `~/.claude/tools/verify-production-stop.sh` は
+rc-backend/tools/verify-rc-backend-state.sh:17:#   bash tools/verify-rc-backend-state.sh                 # 観測だけ(何も変えない)
+rc-backend/tools/verify-rc-backend-state.sh:18:#   bash tools/verify-rc-backend-state.sh --prove-stop    # ★止めて→全層の不在を観測→戻す
+rc-backend/tools/verify-rc-backend-state.sh:19:#   VERIFY_ARTIFACT_DIR=... bash tools/verify-rc-backend-state.sh   # 保存先を変える
+rc-backend/tools/verify-rc-backend-state.sh:72:#       bash tools/verify-rc-backend-state.sh --prove-stop 当たらない語 → 止めずに中止する筈
+rc-backend/tools/verify-on-edith.sh:26:# 使い方: bash tools/verify-on-edith.sh
+rc-backend/tools/verify-on-edith.sh:108:echo '--- serve 判定 ---'; bash tools/serve-decision-check.sh 2>&1 | tail -14; rc=$((rc + $?))
+rc-backend/test/verify-script-controls.sh:2:# controls-for: tools/verify-on-edith.sh
+rc-backend/test/verify-script-controls.sh:3:# tools/verify-on-edith.sh **そのもの**に対する対照。
+rc-backend/test/verify-script-controls.sh:9:#     tools/verify-on-edith.sh: line 57: -u: command not found
+rc-backend/test/verify-script-controls.sh:25:TARGET="$SELF_DIR/../tools/verify-on-edith.sh"
+rc-backend/tools/com.fleet.rc-phone-window.plist:8:    ② tmux `work` が在る               … tools/ensure-work-session.sh  ★この job
+rc-backend/tools/com.fleet.rc-phone-window.plist:9:    ③ その中で Claude Code が走る       … tools/ensure-phone-window.sh  ★この job
+rc-backend/tools/com.fleet.rc-phone-window.plist:49:    <string>/bin/bash /Users/athenas/rc-backend/tools/ensure-work-session.sh; /bin/bash /Users/athenas/rc-backend/tools/ensure-phone-window.sh; exec /bin/bash /Users/athenas/rc-backend/tools/phone-window-notify.sh</string>
+rc-backend/test/deploy-to-friday-controls.sh:2:# controls-for: tools/deploy-to-friday.sh
+rc-backend/test/deploy-to-friday-controls.sh:18:SH="$ROOT/tools/deploy-to-friday.sh"
+rc-backend/test/commit-suite-gate-controls.sh:2:# controls-for: tools/commit-suite-gate.sh
+rc-backend/test/commit-suite-gate-controls.sh:3:# `tools/commit-suite-gate.sh` の対照。
+rc-backend/test/commit-suite-gate-controls.sh:16:GATE="${GATE_SCRIPT:-$ROOT/tools/commit-suite-gate.sh}"
+rc-backend/test/commit-suite-gate-controls.sh:94:#     一式を回し、走行が tools/ へ 80〜160 秒だけ置く probe を引用検査が拾って赤になった。
+rc-backend/test/commit-suite-gate-controls.sh:101:# ★2 は「止めなくてよい」ではない。tools/mutation-run-live.sh の頭が名指しで書いている
+rc-backend/test/health-observer-controls.sh:2:# controls-for: tools/health-observer.sh tools/health-step.mjs tools/tailnet-key-expiry.sh
+rc-backend/test/health-observer-controls.sh:3:# `tools/health-observer.sh` + `tools/health-step.mjs` の**対照**(DESIGN §7-P の検査欄)。
+rc-backend/test/health-observer-controls.sh:19:OBS="$ROOT/tools/health-observer.sh"
+rc-backend/test/health-observer-controls.sh:21:[ -f "$ROOT/tools/health-step.mjs" ] || { echo "判定台本が無い: $ROOT/tools/health-step.mjs"; exit 2; }
+rc-backend/test/health-observer-controls.sh:32:    for f in "$SB"/tools/*; do [ -e "$f" ] && /bin/rm -f "$f"; done
+rc-backend/test/health-observer-controls.sh:39:# ★差替型の継ぎ目(`tools/prove-control.sh` が「直す前の版」を差し込む口)。
+rc-backend/test/health-observer-controls.sh:40:#   素直に旧版の経路をそのまま使うと**測定にならない**: health-observer.sh は兄弟を
+rc-backend/test/health-observer-controls.sh:41:#   自分の位置から引く(`$ROOT/tools/health-step.mjs`)ので、/tmp に置かれた旧版は
+rc-backend/test/health-observer-controls.sh:44:#   なので差された時だけ、砂場に tools/ を組んで**兄弟ごと**据える。
+rc-backend/test/health-observer-controls.sh:56:    /bin/cp "$ROOT/tools/health-step.mjs" "$SB/tools/health-step.mjs" || exit 2
+rc-backend/test/health-observer-controls.sh:58:    /bin/cp "$RC_HEALTH_OBS"              "$SB/tools/health-observer.sh" || exit 2
+rc-backend/test/health-observer-controls.sh:59:    /bin/chmod +x "$SB/tools/health-observer.sh"
+rc-backend/test/health-observer-controls.sh:60:    OBS="$SB/tools/health-observer.sh"
+rc-backend/test/health-observer-controls.sh:102:run()     { _obs "$@" >/dev/null 2>&1; echo $?; }   # $@ = health-observer.sh への引数
+rc-backend/test/health-observer-controls.sh:197:run_with_notify() {   # $1 = 出し先。残りは health-observer.sh への引数
+rc-backend/test/health-observer-controls.sh:336:#     写す木に `src/` を入れ忘れ(`tools/health-step.mjs` が `../src/health.mjs` を読む)、
+rc-backend/test/health-observer-controls.sh:421:    export TEST_KEY_CHECK="$ROOT/tools/tailnet-key-expiry.sh"   # ★本物を通す(偽の porcelain を書かない)
+rc-backend/test/health-observer-controls.sh:500:               bash "$ROOT/tools/tailnet-key-expiry.sh" "${@:2}" 2>/dev/null; }
+rc-backend/test/health-observer-controls.sh:514:    ( bash "$ROOT/tools/tailnet-key-expiry.sh" --peer >/dev/null 2>&1 ) & lp=$!
+rc-backend/test/health-observer-controls.sh:728:# `funnel-exposure-check.sh` が向こうに**無い**事に気付いた。新版はその時
+rc-backend/test/health-observer-controls.sh:729:# `notify_monitor_broken` を**閾値なしで**撃つので(`health-observer.sh` の
+rc-backend/test/doc-linerefs.test.mjs:11://      (宿主の `~/bin` の台本、`~/.claude/tools/` の物、edith 上の実体、未追跡の書きかけ)
+rc-backend/tools/health-observer.sh:8:#   tools/health-observer.sh                 通常(launchd から)
+rc-backend/tools/health-observer.sh:9:#   tools/health-observer.sh --inject-fail   偽の失敗を1回注入(経路を撃つ試験用)
+rc-backend/tools/health-observer.sh:10:#   tools/health-observer.sh --inject-ok     偽の成功を1回注入
+rc-backend/tools/health-observer.sh:11:#   tools/health-observer.sh --dry-run       通知を出さず、出す筈だった文面を表示
+rc-backend/tools/health-observer.sh:40:LOG="${RC_HEALTH_LOG:-$HOME/.rc-backend/health-observer.log}"
+rc-backend/tools/health-observer.sh:55:STEP="$ROOT/tools/health-step.mjs"
+rc-backend/tools/health-observer.sh:67:KEY_CHECK="${RC_HEALTH_KEY_CHECK:-$ROOT/tools/tailnet-key-expiry.sh}"
+rc-backend/tools/health-observer.sh:98:EXP_CHECK="${RC_HEALTH_EXP_CHECK:-$ROOT/tools/funnel-exposure-check.sh}"
+rc-backend/tools/health-observer.sh:432:                #   実際 `test/health-observer-controls.sh` の作り物は `$(cat)` しか読まない ——
+rc-backend/tools/prove-control.sh:6:# `tools/run-controls.sh` の頭に規則が書いてある:
+rc-backend/tools/prove-control.sh:38:#     prove-control.sh test/pii-controls.sh PII_SCRIPT tools/check-no-pii.sh
+rc-backend/tools/prove-control.sh:40:#     prove-control.sh test/pii-controls.sh PII_SCRIPT tools/check-no-pii.sh HEAD~5
+rc-backend/tools/prove-control.sh:70:if [ -x tools/mutation-run-live.sh ]; then
+rc-backend/tools/prove-control.sh:71:    _mrl=0; bash tools/mutation-run-live.sh 2>/dev/null || _mrl=$?
+rc-backend/tools/prove-control.sh:92:#   `rc-backend/` の中から回すと `rc-backend/rc-backend/tools/…` を探しに行って**必ず空**を返す。
+rc-backend/tools/prove-control.sh:175:#       (`  ok  ` / `  NG  ` = health-observer-controls.sh 等)から**1行も読めず**、
+rc-backend/tools/tunnel-observer-control.sh:2:# controls-for: tools/tunnel-observer.sh
+rc-backend/test/rsync-exclude-controls.sh:2:# controls-for: tools/deploy-to-edith.sh
+rc-backend/test/rsync-exclude-controls.sh:3:# `tools/deploy-to-edith.sh` の対照・第3弾 = **旗が本当に効くか**を本物の rsync で測る。
+rc-backend/test/rsync-exclude-controls.sh:30:DEPLOY="${DEPLOY_SCRIPT:-$ROOT/tools/deploy-to-edith.sh}"
+rc-backend/test/pii-controls.sh:2:# controls-for: tools/check-no-pii.sh
+rc-backend/test/pii-controls.sh:32:  cp "$SCRIPT" "$d/rc-backend/tools/check-no-pii.sh"
+rc-backend/test/pii-controls.sh:35:run() { ( cd "$1" && bash rc-backend/tools/check-no-pii.sh 2>&1 ); }
+rc-backend/test/pii-controls.sh:86:d="$ROOT/c6"; mkdir -p "$d/rc-backend/tools"; cp "$SCRIPT" "$d/rc-backend/tools/check-no-pii.sh"
+rc-backend/test/pii-controls.sh:107:run_stub() { ( cd "$1" && PATH="$1/bin:$PATH" bash rc-backend/tools/check-no-pii.sh 2>&1 ); }
+rc-backend/test/pii-controls.sh:199:# 2026-08-03 追加。`tools/deploy-to-edith.sh` の錠の札が `deploy-$(hostname -s)-…` で、
+rc-backend/tools/mutation-run-live.sh:12:#   同じ判定が `tools/deploy-to-edith.sh` `tools/check-mutation-targets.sh`
+rc-backend/tools/post-gate-batch.sh:46:    echo "  [dry] scp tools/limit-lifted-check.mjs $EDITH:/tmp/lc.mjs"
+rc-backend/tools/post-gate-batch.sh:50:scp -q tools/limit-lifted-check.mjs "$EDITH:/tmp/lc.mjs" || { echo "門: scp に失敗 = 未測定"; exit 3; }
+rc-backend/tools/post-gate-batch.sh:71:run ssh "$EDITH" "cd $RCDIR && $NODE_R tools/live-inject-check.mjs --cwd $CWD_ARG --cases A"
+rc-backend/tools/post-gate-batch.sh:76:run ssh "$EDITH" "cd $RCDIR && $NODE_R tools/live-inject-check.mjs --cwd $CWD_ARG"
+rc-backend/tools/post-gate-batch.sh:81:run ssh "$EDITH" "cd $RCDIR && $NODE_R tools/live-http-check.mjs --cwd $CWD_ARG"
+rc-backend/tools/post-gate-batch.sh:88:    echo "  [dry] scp tools/live-fork-check.mjs $EDITH:\$D/"
+rc-backend/tools/post-gate-batch.sh:89:    echo "  [dry] bash tools/edith-gui-run.sh --timeout 90 -- $NODE_R \$D/live-fork-check.mjs --bin /Users/edith/.local/bin/claude"
+rc-backend/tools/post-gate-batch.sh:94:scp -q tools/live-fork-check.mjs "$EDITH:$D/" || { ssh "$EDITH" "rmdir '$D'"; fail 4 2; }
+rc-backend/tools/post-gate-batch.sh:95:bash tools/edith-gui-run.sh --timeout 90 -- \
+rc-backend/tools/live-inject-check.mjs:21: *   node tools/live-inject-check.mjs [--cwd <trusted dir>] [--bin claude] [--keep]
+rc-backend/tools/live-inject-check.mjs:177:    console.error("  例: node tools/live-inject-check.mjs --cwd /Users/edith/Projects");
+rc-backend/tools/exposure-standing-control.sh:2:# controls-for: tools/health-observer.sh
+rc-backend/tools/exposure-standing-control.sh:16:HO="$HERE/health-observer.sh"
+rc-backend/tools/exposure-standing-control.sh:29:# ★出し先は **引数と標準入力の両方**を拾う。`health-observer.sh` の中で規約が2つ在る:
+rc-backend/tools/exposure-standing-control.sh:55:        RC_HEALTH_EXP_CHECK="$HERE/funnel-exposure-check.sh" \
+rc-backend/test/procs.test.mjs:17:  " 1086 ??        1086    0 Fri Jul 31 18:23:27 2026     /bin/bash /Users/tomtim/.claude/tools/claude-api-health-monitor.sh",
+rc-backend/test/procs.test.mjs:56:  assert.equal(looksLikeClaudeProc("bash /Users/x/.claude/tools/claude-retry-wrapper.sh"), true);
+rc-backend/tools/staged-controls-gate.sh:6:#      → `tools/commit-suite-gate.sh`(単体の一式)で塞いだ
+rc-backend/tools/staged-controls-gate.sh:7:#   ② commit `45e0c8b` は `tools/mutation-verdict.sh` と
+rc-backend/tools/staged-controls-gate.sh:12:#      `npm test` の一部ではない(走らせる物は `tools/run-controls.sh` の方)。
+rc-backend/tools/staged-controls-gate.sh:25:#   (c) 宣言している対照が1本も無い `tools/*` は**黙って見逃さず、名前を出す**。止めはしない
+rc-backend/tools/staged-controls-gate.sh:29:#   旧: `tools/<名前>.sh` → `test/<名前>-controls.sh` が在れば回す。
+rc-backend/tools/staged-controls-gate.sh:31:#     staged: tools/deploy-to-edith.sh    → 1 本回って「触れた対照は全部緑(1/1)」
+rc-backend/tools/staged-controls-gate.sh:34:#     staged: tools/check-no-pii.sh       → 0 本(対照は `pii-controls.sh`。名前が違う)
+rc-backend/tools/staged-controls-gate.sh:35:#     staged: tools/live-fork-check.mjs   → 0 本、注記も出ない(`case` が `*.sh` だけ)
+rc-backend/tools/staged-controls-gate.sh:114:#   選ばれた1本は `tools/run-controls.sh` を触った事で当たった別物で、
+rc-backend/tools/staged-controls-gate.sh:120:#   rc-backend/test/*-control*.sh → 宣言は **rc-backend からの相対**(tools/foo.sh)
+rc-backend/tools/staged-controls-gate.sh:121:#   ios/tools/*-control*.sh       → 宣言は **repo の根からの相対**(ios/tools/foo.sh)
+rc-backend/tools/staged-controls-gate.sh:128:#   一覧が2本在る形。実際にズレていた: `tools/serve-decision-check.sh` と
+rc-backend/tools/staged-controls-gate.sh:129:#   `tools/rc-backend-launch-check.sh` は**本物の負の対照**(前者は全ケースを旧判定にも
+rc-backend/tools/staged-controls-gate.sh:131:#   なのに、名前の末尾が -check.sh で置き場が `tools/` なので、この門から見ると**ただの道具**
+rc-backend/tools/staged-controls-gate.sh:136:#   直し方として「名前の glob を広げる」「`tools/` を走査 dir に足す」を先に測って両方捨てた:
+rc-backend/tools/staged-controls-gate.sh:137:#     - `*-check.sh` を足す -> `ios/tools/live-*-check.sh` を巻き込む(edith が要る = commit で回せない)
+rc-backend/tools/staged-controls-gate.sh:138:#     - `tools/` を名前で走査 -> `run-controls.sh` `staged-controls-gate.sh`
+rc-backend/tools/staged-controls-gate.sh:171:#   これが 2026-08-02(`tools/` 欠落)/ 08-05 朝(`.git/hooks/pre-commit` の絞り込み)
+rc-backend/tools/staged-controls-gate.sh:176:    "rc-backend/test|rc-backend"        # 宣言は rc-backend からの相対(tools/foo.sh)
+rc-backend/tools/staged-controls-gate.sh:177:    "ios/tools|"                        # 宣言は repo の根から(ios/tools/foo.sh)
+rc-backend/tools/staged-controls-gate.sh:192:# なぜ足したか: 掃きの走行(`tools/run-controls.sh`)が「一覧に無い対照」を数える時、
+rc-backend/tools/staged-controls-gate.sh:196:#     偽陽性 4件 = tools/{run-controls,staged-controls-gate,prove-control,prove-all-controls}.sh
+rc-backend/tools/staged-controls-gate.sh:198:#     偽陰性 2件 = tools/rc-backend-launch-check.sh / tools/serve-decision-check.sh
+rc-backend/tools/staged-controls-gate.sh:241:#   起きる。`tools/*.plist` と書いた宣言が、比較の前に**その時の cwd の実在 file 名**へ
+rc-backend/tools/staged-controls-gate.sh:251:        # `external:…` = repo の外に在る道具(`~/.claude/tools/remote-mini.sh` 等)。
+rc-backend/tools/staged-controls-gate.sh:301:            rc-backend/tools/*|rc-backend/test/*.py|ios/tools/*|.harness/*.sh)
+rc-backend/tools/staged-controls-gate.sh:385:    echo '    # controls-for: tools/deploy-to-edith.sh'
+rc-backend/tools/staged-controls-gate.sh:405:if [ -r "$ROOT/rc-backend/tools/run-controls.sh" ]; then
+rc-backend/tools/staged-controls-gate.sh:406:    EDITH_LIST="$(/usr/bin/sed -n '/^EDITH_CTLS=(/,/^)/p' "$ROOT/rc-backend/tools/run-controls.sh" \
+rc-backend/tools/staged-controls-gate.sh:423:    echo '    bash rc-backend/tools/run-controls.sh --all'
+rc-backend/tools/phone-expected-apps.txt:23:com.tomarai.remotemini   req  # Remote Mini。旅程の本体。無ければ `bash ios/tools/build.sh`
+rc-backend/test/prove-control-controls.sh:2:# controls-for: tools/prove-control.sh
+rc-backend/test/prove-control-controls.sh:3:# `tools/prove-control.sh` 自身の対照。
+rc-backend/test/prove-control-controls.sh:13:# 砂場の作り: 守り `$d/tools/guard.sh` を v1(欠陥あり)→ v2(直した)の順で commit し、
+rc-backend/test/prove-control-controls.sh:22:PROVE="${PROVE_SCRIPT:-$ROOT/tools/prove-control.sh}"
+rc-backend/test/prove-control-controls.sh:47:  printf '#!/bin/bash\nexit 0\n' > "$d/tools/guard.sh"
+rc-backend/test/prove-control-controls.sh:48:  /bin/chmod +x "$d/tools/guard.sh"
+rc-backend/test/prove-control-controls.sh:53:  printf '#!/bin/bash\n[ "${1:-}" = BAD ] && exit 1\nexit 0\n' > "$d/tools/guard.sh"
+rc-backend/test/prove-control-controls.sh:60:G="${GUARD_SCRIPT:-$ROOT/tools/guard.sh}"
+rc-backend/test/prove-control-controls.sh:69:G="${GUARD_SCRIPT:-$ROOT/tools/guard.sh}"
+rc-backend/test/prove-control-controls.sh:77:G="${GUARD_SCRIPT:-$ROOT/tools/guard.sh}"
+rc-backend/test/prove-control-controls.sh:82:run_prove() { RC_ROOT="$1" bash "$PROVE" test/g-controls.sh GUARD_SCRIPT tools/guard.sh 2>&1; }
+rc-backend/test/prove-control-controls.sh:103:out3=$(RC_ROOT="$d" bash "$PROVE" test/g-controls.sh NO_SUCH_SEAM tools/guard.sh 2>&1); rc3=$?
+rc-backend/test/prove-control-controls.sh:128:#    走るので、素で渡すと `rc-backend/rc-backend/tools/…` を探して必ず空 = 「履歴が引けない」。
+rc-backend/test/prove-control-controls.sh:133:mk_nested() { # mk_nested <repo> — repo の root の**一つ下**に tools/ と test/ を置く
+rc-backend/test/prove-control-controls.sh:139:  printf '#!/bin/bash\nexit 0\n' > "$r/sub/tools/guard.sh"
+rc-backend/test/prove-control-controls.sh:140:  /bin/chmod +x "$r/sub/tools/guard.sh"
+rc-backend/test/prove-control-controls.sh:144:  printf '#!/bin/bash\n[ "${1:-}" = BAD ] && exit 1\nexit 0\n' > "$r/sub/tools/guard.sh"
+rc-backend/test/prove-control-controls.sh:148:out5=$(RC_ROOT="$d4/sub" bash "$PROVE" test/g-controls.sh GUARD_SCRIPT tools/guard.sh 2>&1)
+rc-backend/test/prove-control-controls.sh:155:  out6=$(RC_ROOT="$d4/sub" bash "$BROKEN" test/g-controls.sh GUARD_SCRIPT tools/guard.sh 2>&1)
+rc-backend/test/prove-control-controls.sh:167:PALL="${PROVE_ALL_SCRIPT:-$ROOT/tools/prove-all-controls.sh}"
+rc-backend/test/prove-control-controls.sh:172:  printf '#!/bin/bash\nexit 0\n' > "$r/tools/guard.sh"
+rc-backend/test/prove-control-controls.sh:173:  /bin/chmod +x "$r/tools/guard.sh"
+rc-backend/test/prove-control-controls.sh:178:G="${GUARD_SCRIPT:-$ROOT/tools/guard.sh}"
+rc-backend/test/prove-control-controls.sh:186:G="${GUARD_SCRIPT:-$ROOT/tools/guard.sh}"
+rc-backend/test/prove-control-controls.sh:192:  printf '#!/bin/bash\n[ "${1:-}" = BAD ] && exit 1\nexit 0\n' > "$r/tools/guard.sh"
+rc-backend/test/prove-control-controls.sh:197:/bin/cp "$PALL" "$d5/tools/prove-all-controls.sh"
+rc-backend/test/prove-control-controls.sh:198:/bin/cp "$PROVE" "$d5/tools/prove-control.sh"
+rc-backend/test/prove-control-controls.sh:203:/bin/cp "$ROOT/tools/staged-controls-gate.sh" "$d5/tools/staged-controls-gate.sh"
+rc-backend/test/prove-control-controls.sh:204:/bin/chmod +x "$d5/tools/prove-all-controls.sh" "$d5/tools/prove-control.sh" \
+rc-backend/test/prove-control-controls.sh:205:              "$d5/tools/staged-controls-gate.sh"
+rc-backend/test/prove-control-controls.sh:206:out7=$(bash "$d5/tools/prove-all-controls.sh" 2>&1); rc7=$?
+rc-backend/test/prove-control-controls.sh:211:EATER_BROKEN="$d5/tools/prove-all-broken.sh"
+rc-backend/test/prove-control-controls.sh:212:/usr/bin/sed 's| </dev/null$||' "$d5/tools/prove-all-controls.sh" > "$EATER_BROKEN"
+rc-backend/tools/observer.conf.example:4:# 読み手:   tools/health-observer.sh  —— `.` で読むので **shell の構文**で書く。
+rc-backend/tools/observer.conf.example:41:RC_HEALTH_LOG="${RC_HEALTH_LOG:-$HOME/.rc-backend/health-observer.log}"
+rc-backend/test/no-linerefs-controls.sh:31:#   戻す造りを採らない理由は `tools/prove-control.sh` の頭に在るとおり —— 復元の
+rc-backend/test/no-linerefs-controls.sh:75:#   実際には何も走っていない。`tools/prove-control.sh` の頭に在るとおり、
+rc-backend/test/orphan-instrument-scan-controls.sh:2:# controls-for: tools/orphan-instrument-scan.sh
+rc-backend/test/orphan-instrument-scan-controls.sh:3:# `tools/orphan-instrument-scan.sh` が**緑にも赤にも未測定にもなる**事の確認。
+rc-backend/test/orphan-instrument-scan-controls.sh:25:TOOL="$HERE/../tools/orphan-instrument-scan.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:45:#   tools/widget.sh        操作者が在る(tools/gate.sh が名指しする)
+rc-backend/test/orphan-instrument-scan-controls.sh:46:#   tools/manual.sh        操作者は無いが印が在る
+rc-backend/test/orphan-instrument-scan-controls.sh:52:    /bin/cp "$TOOL" "$R/rc-backend/tools/orphan-instrument-scan.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:56:    printf '#!/bin/bash\necho widget\n'                        > "$R/rc-backend/tools/widget.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:58:                                                               > "$R/rc-backend/tools/manual.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:59:    printf '#!/bin/bash\nbash tools/widget.sh\n'               > "$R/rc-backend/tools/gate.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:62:    printf '# controls-for: tools/widget.sh\n'                 > "$R/rc-backend/test/widget-controls.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:63:    printf '# controls-for: tools/manual.sh\n'                 > "$R/rc-backend/test/manual-controls.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:69:    OUT="$(OIS_FLOOR=2 bash "$R/rc-backend/tools/orphan-instrument-scan.sh" 2>&1)"; RC=$?
+rc-backend/test/orphan-instrument-scan-controls.sh:95:printf '#!/bin/bash\necho nothing\n' > "$R/rc-backend/tools/gate.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:97:expect 1 "操作者を消せば孤児として赤" "孤児: rc-backend/tools/widget.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:101:printf '#!/bin/bash\necho manual\n' > "$R/rc-backend/tools/manual.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:103:expect 1 "印を消せば孤児として赤" "孤児: rc-backend/tools/manual.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:107:printf '#!/bin/bash\n# no-operator: 短い\necho manual\n' > "$R/rc-backend/tools/manual.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:114:  > "$R/rc-backend/tools/widget.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:123:  > "$R/rc-backend/tools/manual.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:125:expect 1 "印の言及は印と数えない(孤児のまま赤)" "孤児: rc-backend/tools/manual.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:155:printf '# controls-for: tools/does-not-exist.sh\n' > "$R/rc-backend/test/dead-controls.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:168:printf '#!/bin/bash\n# bash tools/widget.sh を昔は呼んでいた\necho nothing\n' \
+rc-backend/test/orphan-instrument-scan-controls.sh:169:  > "$R/rc-backend/tools/gate.sh"
+rc-backend/test/orphan-instrument-scan-controls.sh:171:expect 1 "註の中の名指しは操作者と数えない" "孤児: rc-backend/tools/widget.sh"
+rc-backend/tools/com.edith.rc-phone-window.plist:8:  中身 = tools/ensure-phone-window.sh(**判断は全部あちらに在る**。ここは呼ぶだけ)。
+rc-backend/tools/com.edith.rc-phone-window.plist:37:    bash ~/Infra/mobile-work/rc-backend/tools/deploy-to-edith.sh
+rc-backend/tools/com.edith.rc-phone-window.plist:61:    <string>/Users/edith/rc-backend/tools/ensure-phone-window.sh</string>
+rc-backend/test/post-gate-batch-controls.sh:2:# controls-for: tools/post-gate-batch.sh
+rc-backend/test/post-gate-batch-controls.sh:14:BATCH="tools/post-gate-batch.sh"
+rc-backend/tools/deploy-to-friday.sh:26:#   bash tools/deploy-to-friday.sh            # 仮置き → Friday で緑 → 入れ替え → 再起動を観測
+rc-backend/tools/deploy-to-friday.sh:27:#   bash tools/deploy-to-friday.sh --dry-run  # 仮置きの rsync 差分だけ見る(転送しない)
+rc-backend/tools/departure-survivability-check.sh:11:#   KeepAlive / autorestart / sleep)は `tools/coldboot-chain.sh` が既に測っている。
+rc-backend/tools/departure-survivability-check.sh:43:#         athenas の rc-health-observer だけ。それが死ぬと**沈黙が健康と見分けが付かない**
+rc-backend/tools/departure-survivability-check.sh:49:#   bash rc-backend/tools/departure-survivability-check.sh [--days N] [--host user@host]
+rc-backend/tools/departure-survivability-check.sh:119:    CB="$HOME/rc-backend/tools/coldboot-chain.sh"
+rc-backend/tools/departure-survivability-check.sh:130:    p pw_sha "$(shasum -a 256 "$HOME/rc-backend/tools/ensure-phone-window.sh" 2>/dev/null | awk "{print \$1}")"
+rc-backend/tools/departure-survivability-check.sh:307:job_line "$JOB_PHONE"  "$(g phone_job)" "tools/ensure-phone-window.sh の冒頭の終了コード表"
+rc-backend/tools/departure-survivability-check.sh:392:#     繋がっていて 0 件     = **赤**。直し方は1行(`bash ios/tools/build.sh`)。
+rc-backend/tools/departure-survivability-check.sh:397:#     やり方: `ios/tools/build.sh` が CFBundleVersion に commit の通算数を刻み、此処が
+rc-backend/tools/departure-survivability-check.sh:461:                0)  say_bad "電話に RemoteMini が入っていない —— \`bash ios/tools/build.sh\`(引数無し = build + 署名 + install)"
+rc-backend/tools/departure-survivability-check.sh:467:                    _bsh="${RC_BUILD_SH:-$HERE/../../ios/tools/build.sh}"
+rc-backend/tools/departure-survivability-check.sh:482:                                    *)  say_bad "版: 電話は ${_ver}、この木は ${_want} —— 古い物が載っている。\`bash ios/tools/build.sh\` で焼き直す"
+rc-backend/tools/departure-survivability-check.sh:631:MON_LABEL="com.fleet.rc-health-observer"
+rc-backend/tools/departure-survivability-check.sh:635:    L="$HOME/.rc-backend/health-observer.log"
+rc-backend/tools/departure-survivability-check.sh:636:    PL="$HOME/Library/LaunchAgents/com.fleet.rc-health-observer.plist"
+rc-backend/tools/departure-survivability-check.sh:638:    if launchctl list com.fleet.rc-health-observer >/dev/null 2>&1; then
+rc-backend/tools/desktop-attach.sh:157:    echo "  机側から起こすなら: ssh ${HOST} 'bash ~/rc-backend/tools/ensure-phone-window.sh'" >&2
+rc-backend/tools/health-step.mjs:5://   node tools/health-step.mjs <状態ファイル> <ok|ng> <理由> <epoch秒> [閾値] [ホスト名]
+rc-backend/tools/health-step.mjs:6://   node tools/health-step.mjs --mark-delivered <状態ファイル>   ← 配達が済んだ後だけ
+rc-backend/tools/com.fleet.rc-ota.plist:33:    tools/serve-decision.sh の述語は各 Web entry の `Handlers["/"]` しか見ない。
+rc-backend/tools/com.fleet.rc-ota.plist:38:    scp rc-backend/tools/ota-server.mjs        athenas:/Users/athenas/rc-backend/tools/
+rc-backend/tools/com.fleet.rc-ota.plist:39:    scp rc-backend/tools/com.fleet.rc-ota.plist athenas:/Users/athenas/Library/LaunchAgents/
+rc-backend/tools/com.fleet.rc-ota.plist:57:    <string>/Users/athenas/rc-backend/tools/ota-server.mjs</string>
+rc-backend/tools/funnel-exposure-check-control.sh:2:# controls-for: tools/funnel-exposure-check.sh
+rc-backend/tools/funnel-exposure-check-control.sh:3:# funnel-exposure-check-control.sh — 2026-08-26 新設。
+rc-backend/tools/funnel-exposure-check-control.sh:12:CHK="${HERE}/funnel-exposure-check.sh"
+rc-backend/tools/prove-all-controls.sh:2:# `tools/prove-control.sh` を**回す物**。これが無いと prover 自身が
+rc-backend/tools/prove-all-controls.sh:13:#   `ios/tools/` に居る対照 5 本は一度もこの道具の視野に入っていなかった
+rc-backend/tools/prove-all-controls.sh:15:#   `tools/staged-controls-gate.sh` の `SCAN_SPECS` = commit の門が見る範囲そのもの。
+rc-backend/tools/prove-all-controls.sh:34:if [ "$DRY" -eq 0 ] && [ -x tools/mutation-run-live.sh ]; then
+rc-backend/tools/prove-all-controls.sh:35:    _mrl=0; bash tools/mutation-run-live.sh 2>/dev/null || _mrl=$?
+rc-backend/tools/prove-all-controls.sh:54:GATE_FOR_SPECS="${GATE_FOR_SPECS:-$ROOT/tools/staged-controls-gate.sh}"
+rc-backend/tools/prove-all-controls.sh:162:    bash tools/prove-control.sh "$ctl" "$seam" "$rel" </dev/null
+rc-backend/tools/coldboot-chain.sh:7:#   元は `tools/deploy-to-edith.sh` の 9b に heredoc で直に書いてあった。そこには
+rc-backend/test/live-exit-codes.test.mjs:2:// 対象は2つの言語に散っている: `rc-backend/tools/live-*.mjs` 4本 + `ios/tools/live-*.sh` 2本。
+rc-backend/test/live-exit-codes.test.mjs:10://   tools/live-inject-check.mjs   上限を知る / exit 3 あり
+rc-backend/test/live-exit-codes.test.mjs:11://   tools/live-fork-check.mjs     上限を知る(自前の写し)/ exit 3 あり
+rc-backend/test/live-exit-codes.test.mjs:12://   tools/live-http-check.mjs     上限を知る / exit 3 あり
+rc-backend/test/live-exit-codes.test.mjs:13://   tools/live-choice-check.mjs   ★知らない。failed ? 1 : 0 で、上限の画面はただの赤
+rc-backend/test/live-exit-codes.test.mjs:22:// ★同日の続き: 上の census を書いた時、私は `rc-backend/tools/live-*.mjs` しか数えず
+rc-backend/test/live-exit-codes.test.mjs:31:import { exitCodeFor, EXIT_MEANING } from "../tools/exit-codes.mjs";
+rc-backend/test/live-exit-codes.test.mjs:45:  "ios/tools/live-send-check.sh",
+rc-backend/test/live-exit-codes.test.mjs:46:  "ios/tools/live-interrupt-check.sh",
+rc-backend/test/live-exit-codes.test.mjs:50://   `rc-backend/tools/live-*.mjs` しか数えていなかった —— shell の2本
+rc-backend/test/live-exit-codes.test.mjs:51://   (`ios/tools/live-*.sh`)は census の外に居て、どちらも上限を知らないままだった。
+rc-backend/test/live-exit-codes.test.mjs:55:  { dir: join(ROOT, "tools"), rel: (n) => `tools/${n}`, ext: ".mjs" },
+rc-backend/test/live-exit-codes.test.mjs:56:  { dir: join(ROOT, "..", "ios", "tools"), rel: (n) => `../ios/tools/${n}`, ext: ".sh" },
+rc-backend/test/live-exit-codes.test.mjs:62:  "tools/live-inject-check.mjs",
+rc-backend/test/live-exit-codes.test.mjs:63:  "tools/live-fork-check.mjs",
+rc-backend/test/live-exit-codes.test.mjs:64:  "tools/live-http-check.mjs",
+rc-backend/test/live-exit-codes.test.mjs:65:  "tools/live-choice-check.mjs",
+rc-backend/test/live-exit-codes.test.mjs:66:  "tools/live-resume-cwd-check.mjs",
+rc-backend/test/live-exit-codes.test.mjs:69:  "../ios/tools/live-send-check.sh",
+rc-backend/test/live-exit-codes.test.mjs:70:  "../ios/tools/live-interrupt-check.sh",
+rc-backend/test/live-exit-codes.test.mjs:71:  "../ios/tools/live-poll-check.sh",
+rc-backend/test/live-exit-codes.test.mjs:80:  /exitCodeFor\(/, // 正本(tools/exit-codes.mjs)に委ねている
+rc-backend/test/live-exit-codes.test.mjs:87:// ★`return 3` を足したのは 2026-08-06、`ios/tools/live-send-check.sh` の判定を `send_verdict()` へ
+rc-backend/test/live-exit-codes.test.mjs:90://   `ios/tools/live-send-check-control.sh` の真理値表 —— 終了コードが実際に 3 で出る事を
+rc-backend/test/live-exit-codes.test.mjs:148:  //   `ios/tools/live-send-check-control.sh` を書いた日に此処が赤くなった(2026-08-06)——
+rc-backend/test/live-exit-codes.test.mjs:150:  //   対照の登録漏れを見るのは `rc-backend/tools/run-controls.sh` の方の照合。
+rc-backend/test/live-exit-codes.test.mjs:207:// (`ios/tools/live-send-check.sh` は3本の足が hard check に戻り、上限の機械をまた赤で報告する)。
+rc-backend/test/live-exit-codes.test.mjs:210:  const src = read("tools/disposable-session.mjs");
+rc-backend/test/live-exit-codes.test.mjs:233:    "tools/live-http-check.mjs": "exitCodeFor({ prepAbort, failed, limitedReply })",
+rc-backend/test/live-exit-codes.test.mjs:234:    "tools/live-choice-check.mjs": "exitCodeFor({ failed, limitedReply: limited })",
+rc-backend/test/live-exit-codes.test.mjs:245:// tools/live-fork-check.mjs だけは自前の写しを持っている(looksLimited)。理由は文脈差:
+rc-backend/test/live-exit-codes.test.mjs:256:  const src = read("tools/live-fork-check.mjs");
+rc-backend/test/live-exit-codes.test.mjs:283:  const src = read("tools/live-fork-check.mjs");
+rc-backend/test/live-http-swallow.test.mjs:1:// `tools/live-http-check.mjs` の**例外の飲み方**を静的に測る(DESIGN §2.20-a L3 / §2.20-a-ii)。
+rc-backend/test/mutation-verdict-controls.sh:2:# controls-for: tools/mutation-verdict.sh
+rc-backend/test/mutation-verdict-controls.sh:3:# `tools/mutation-verdict.sh` の対照。
+rc-backend/test/mutation-verdict-controls.sh:8:#   (a) 指紋が覆う範囲が狭い(tools/ を見ていない、等)→ 直した後も古い緑が残る
+rc-backend/test/mutation-verdict-controls.sh:19:# ── 呼び口の規則(tools/run-controls.sh の頭に在る2行)をここでも守る ────────
+rc-backend/test/mutation-verdict-controls.sh:30:#   fp-no-tools    指紋から tools/ を落とす            → 5-b が赤
+rc-backend/test/mutation-verdict-controls.sh:69:# ── 木は**丸ごと**写す(2.2MB)。`src/ test/ tools/ package.json` だけに絞らない。
+rc-backend/test/mutation-verdict-controls.sh:76:#         `tools/mutation-verdict.sh` の注釈が repo 外の file を行番号つきで引いていた事、
+rc-backend/test/mutation-verdict-controls.sh:82:TOOL="$T/tools/mutation-verdict.sh"
+rc-backend/test/mutation-verdict-controls.sh:173:echo "  5-b. **tools/ を1行変えたら失効する**(= 指紋が tools/ を覆っている)"
+rc-backend/test/mutation-verdict-controls.sh:174:# 覆っていないと、`npm test` が読む `tools/live-http-check.mjs` を壊しても
+rc-backend/test/mutation-verdict-controls.sh:176:chk "    終了コード 2(未測定)" "$(touch_and_check tools/live-http-check.mjs '// ctl touch')" "2"
+rc-backend/test/install-hooks-controls.sh:2:# controls-for: tools/install-hooks.sh
+rc-backend/test/install-hooks-controls.sh:24:SUBJECT="$REPO_ROOT/rc-backend/tools/install-hooks.sh"
+rc-backend/test/install-hooks-controls.sh:25:BODY_REL="rc-backend/tools/pre-commit-gates.sh"
+rc-backend/test/install-hooks-controls.sh:51:    cp "$SUBJECT" "$r/rc-backend/tools/install-hooks.sh"
+rc-backend/test/install-hooks-controls.sh:58:bash "$T/fresh/rc-backend/tools/install-hooks.sh" > "$T/fresh.log" 2>&1
+rc-backend/test/install-hooks-controls.sh:78:bash "$T/fresh/rc-backend/tools/install-hooks.sh" > "$T/again.log" 2>&1
+rc-backend/test/install-hooks-controls.sh:91:bash "$T/foreign/rc-backend/tools/install-hooks.sh" > "$T/foreign.log" 2>&1
+rc-backend/test/install-hooks-controls.sh:106:  bash "$T/foreign/rc-backend/tools/install-hooks.sh" > "$T/force.log" 2>&1
+rc-backend/test/install-hooks-controls.sh:128:RC_HOOKS_FORCE="ok" bash "$T/short/rc-backend/tools/install-hooks.sh" > "$T/short.log" 2>&1
+rc-backend/test/install-hooks-controls.sh:138:cp "$SUBJECT" "$T/nogit/rc-backend/tools/install-hooks.sh"
+rc-backend/test/install-hooks-controls.sh:140:( cd "$T/nogit" && bash rc-backend/tools/install-hooks.sh ) > "$T/nogit.log" 2>&1
+rc-backend/test/run-controls-controls.sh:2:# controls-for: tools/run-controls.sh
+rc-backend/test/run-controls-controls.sh:3:# `tools/run-controls.sh` の対照 —— **対照を回す物そのもの**を測る。
+rc-backend/test/run-controls-controls.sh:26:RUNNER="${RUN_CONTROLS:-$ROOT/tools/run-controls.sh}"
+rc-backend/test/run-controls-controls.sh:37:# 砂場の `tools/` に置けば砂場の `test/` を見る。
+rc-backend/test/run-controls-controls.sh:41:#   以前は台本を 砂場直下の tools/ に置いていたので、`LOCAL_CTLS` の
+rc-backend/test/run-controls-controls.sh:43:#   **/tmp** に解決し、偽の子を `/tmp/ios/tools/` と `/tmp/.harness/` へ書いていた。
+rc-backend/test/run-controls-controls.sh:45:#   実測(2026-08-05 11:03): `/tmp/ios/tools/` に3本、`/tmp/.harness/` に1本が残存、
+rc-backend/test/run-controls-controls.sh:52:/bin/cp "$RUNNER" "$BE/tools/run-controls.sh" || { echo "★継ぎ目の台本が読めない: $RUNNER"; exit 2; }
+rc-backend/test/run-controls-controls.sh:58:GATE_SRC="$ROOT/tools/staged-controls-gate.sh"
+rc-backend/test/run-controls-controls.sh:59:SBGATE="$BE/tools/staged-controls-gate.sh"
+rc-backend/test/run-controls-controls.sh:63:# ★2026-08-05 に相対パスの許容範囲を広げた: 電話側(`ios/tools/`)の対照は
+rc-backend/test/run-controls-controls.sh:71:#   行頭が文字通り `test/` か `tools/` で始まる項目しか拾えず、`../` で始まる
+rc-backend/test/run-controls-controls.sh:79:  /usr/bin/sed -n "/^$1=(/,/^)/p" "$BE/tools/run-controls.sh" \
+rc-backend/test/run-controls-controls.sh:102:    ! -path "$BE/tools/run-controls.sh" -print0 2>/dev/null \
+rc-backend/test/run-controls-controls.sh:104:  /bin/rm -f "$SANDBOX/ran.txt" "$BE/tools/rc-backend-launch-check.sh"
+rc-backend/test/run-controls-controls.sh:118:      /bin/rm -f "$BE/test/$n" "$BE/tools/$n"
+rc-backend/test/run-controls-controls.sh:120:      local p="$BE/test/$n"; [ -f "$p" ] || p="$BE/tools/$n"
+rc-backend/test/run-controls-controls.sh:133:  /bin/bash "$BE/tools/run-controls.sh" "$@" > "$OUTF" 2>&1
+rc-backend/test/run-controls-controls.sh:232:#   間もずっと緑だった。その間、電話側(ios/tools/)と harness 側(.harness/)の対照は
+rc-backend/test/run-controls-controls.sh:308:#     偽陽性 4件 = tools/ の道具(run-controls / staged-controls-gate / prove-control /
+rc-backend/test/run-controls-controls.sh:310:#     偽陰性 2件 = tools/rc-backend-launch-check.sh / tools/serve-decision-check.sh
+rc-backend/test/run-controls-controls.sh:317:ORPHAN5="$BE/tools/zz-orphan-decl-check.sh"   # ← 名前は `*-control*.sh` に**当たらない**
+rc-backend/test/run-controls-controls.sh:318:printf '#!/bin/bash\n# controls-for: tools/zz-nothing.sh\necho "偽の子 zz6"\nexit 0\n' > "$ORPHAN5"
+rc-backend/test/run-controls-controls.sh:358:' "$BE/tools/run-controls.sh" > "$SANDBOX/rc-plus1.sh"
+rc-backend/test/run-controls-controls.sh:359:/bin/cp "$SANDBOX/rc-plus1.sh" "$BE/tools/run-controls.sh"
+rc-backend/test/run-controls-controls.sh:364:/bin/cp "$RUNNER" "$BE/tools/run-controls.sh"   # 砂場の写しを元へ戻す
+rc-backend/tools/commit-suite-gate.sh:4:# なぜ要るか(2026-08-03 に自分で踏んだ): `test/` と `tools/` を触る commit 25f8e09 を
+rc-backend/tools/commit-suite-gate.sh:7:# (砂場が走行時に作る `$d/tools/guard.sh` を、実在する file の様に backtick で引いた)。
+rc-backend/tools/commit-suite-gate.sh:26:LIVE_CMD="${LIVE_CMD:-bash $ROOT/tools/mutation-run-live.sh}"
+rc-backend/tools/commit-suite-gate.sh:31:#    背後で対照一式を回したまま手元で一式を回し、`tools/` に 80〜160 秒だけ現れる probe を
+rc-backend/tools/commit-suite-gate.sh:35:#    判定は `tools/mutation-run-live.sh` に一本化されている。その file の頭が書いている
+rc-backend/tools/commit-suite-gate.sh:48:    echo "  走行が終わってから commit する事。状態は tools/mutation-run-live.sh が答える。"
+rc-backend/test/disposable-session-controls.sh:2:# controls-for: tools/disposable-session.mjs
+rc-backend/test/disposable-session-controls.sh:19:TOOL="$HERE/../tools/disposable-session.mjs"
+rc-backend/test/seed-digest-recipe.test.mjs:5:// `ios/tools/build.sh` は焼く時に `Info.plist` へ URL と鍵を刻み、その指紋を1行出す:
+rc-backend/test/seed-digest-recipe.test.mjs:17:// (2026-08-11 に `ios/tools/signout-notice-control.sh` の class 一覧で現に踏んだ形)。
+rc-backend/test/seed-digest-recipe.test.mjs:35:const BUILD = "ios/tools/build.sh";
+rc-backend/test/mutation-run-live-controls.sh:2:# controls-for: tools/mutation-run-live.sh
+rc-backend/test/mutation-run-live-controls.sh:3:# `tools/mutation-run-live.sh` が「走行中か」を**正しく**見分ける事の確認。
+rc-backend/test/mutation-run-live-controls.sh:10:#     (b) `tools/deploy-to-edith.sh` はこの判定で配備を拒否するので、無関係なシェルが1本
+rc-backend/test/mutation-run-live-controls.sh:37:# ★継ぎ目。`tools/prove-control.sh` が**直す前の版**を此処へ差し込んで、
+rc-backend/test/mutation-run-live-controls.sh:39:LIVE="${MUTLIVE_SCRIPT:-$ROOT/tools/mutation-run-live.sh}"
+rc-backend/test/mutation-run-live-controls.sh:398:# 終了コードは `tools/run-controls.sh` の規約に合わせる: 0=緑 / 1=赤 / **2=測っていない**。
+rc-backend/test/deploy-to-edith-controls.sh:2:# controls-for: tools/deploy-to-edith.sh
+rc-backend/test/deploy-to-edith-controls.sh:3:# `tools/deploy-to-edith.sh` の対照(第1弾 = **他人の成果物を消さない**回りだけ)。
+rc-backend/test/deploy-to-edith-controls.sh:29:DEPLOY="${DEPLOY_SCRIPT:-$ROOT/tools/deploy-to-edith.sh}"
+
+exec
+/bin/zsh -lc "git status --short -- rc-backend/tools/health-step.mjs rc-backend/tools/health-observer.sh rc-backend/tools/observer-parity-check.sh rc-backend/tools/deploy-observer-to-friday.sh; git ls-files --stage -- rc-backend/tools/health-step.mjs rc-backend/tools/health-observer.sh rc-backend/tools/observer-parity-check.sh rc-backend/tools/deploy-observer-to-friday.sh; sed -n '100,220p' rc-backend/tools/health-observer.sh; sed -n '220,390p' rc-backend/tools/health-observer.sh; sed -n '390,590p' rc-backend/tools/health-observer.sh; rg -n --glob '*.sh' --glob '*.mjs' --glob '*.plist' 'health-step\\.mjs|funnel-exposure-check\\.sh|tailnet-key-expiry\\.sh' rc-backend/tools rc-backend/test | head -160" in /Users/tomtim/Infra/mobile-work
+ succeeded in 2952ms:
+2026-08-30 01:34:41.653 xcodebuild[71683:35622458]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-08-30 01:34:41.883 xcodebuild[71683:35622457] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-DGtSuLFv' (errno=Operation not permitted)
+2026-08-30 01:34:42.287 xcodebuild[72021:35623026]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-08-30 01:34:42.399 xcodebuild[72021:35623024] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+?? rc-backend/tools/deploy-observer-to-friday.sh
+?? rc-backend/tools/observer-parity-check.sh
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-LQBGX8y1' (errno=Operation not permitted)
+2026-08-30 01:34:43.209 xcodebuild[72363:35623628]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-08-30 01:34:43.325 xcodebuild[72363:35623624] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-thmeRC1Z' (errno=Operation not permitted)
+2026-08-30 01:34:43.661 xcodebuild[72389:35623682]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-08-30 01:34:43.779 xcodebuild[72389:35623681] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+100755 f413d5a0493a41d130ba9e5dbfbac2dad5477736 0	rc-backend/tools/health-observer.sh
+100644 e4cf140c017a4e4cff2c311f3ff8b723dcffea45 0	rc-backend/tools/health-step.mjs
+EXP_TS="${RC_HEALTH_EXP_TS:-/Applications/Tailscale.app/Contents/MacOS/Tailscale}"
+EXP_MARK="${RC_HEALTH_EXP_MARK:-$STATE.exposure}"
+# 「測れなかった」が続いた時に鳴らす回数。**露出そのものより緩く、生存より厳しい** ——
+# これは「保証を失った」であって「壊れた」でも「安全」でもない(Codex 裁定2)。
+EXP_BLIND_THRESHOLD="${RC_HEALTH_EXP_BLIND_THRESHOLD:-2}"
+
+
+MODE="probe"; DRY=0; EXPOSURE_ONLY=0
+for a in "$@"; do
+    case "$a" in
+        --inject-fail) MODE="fail" ;;
+        --inject-ok)   MODE="ok" ;;
+        --dry-run)     DRY=1 ;;
+        # ★露出の節だけを叩く口(2026-08-26)。対照の為に足した ——
+        #   関数を sed で切り出して eval する駆動は、本文の書式が少し変わるだけで
+        #   黙って何も走らなくなる(実際そうなり、対照が「鳴らない」と赤を出した。
+        #   あれは実装の欠陥ではなく**駆動の欠陥**で、区別が付かないのが一番悪い)。
+        #   本物の口を1つ開ける方が、測る物と測られる物が一致する。
+        --exposure-only) EXPOSURE_ONLY=1 ;;
+        *) echo "不明な引数: $a" >&2; exit 2 ;;
+    esac
+done
+
+mkdir -p "$(dirname "$STATE")" "$(dirname "$LOG")" 2>/dev/null
+log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
+
+# ── 「監視自体が壊れている」を知らせる(up/down とは別系統)────────────
+# ★なぜ在るか(2026-08-02、再現してから足した): 監視が**動き出す前**に落ちる形 ——
+#   node の場所が違う / 設定の値が不正 / 判定の繋ぎが無い —— は、元は log 1 行だけ残して
+#   黙っていた。実測: 閾値に `0` と書いた設定で5回叩いて通知 **0 通**、node の場所を
+#   違えて3回叩いて **0 通**。どちらも据え付けた当日に起きる類の書き損じで、
+#   起きた瞬間から監視は**永久に鳴らない**。判定の門(`health.mjs` の閾値検査)は
+#   在ったが、**門が閉じた事を誰にも知らせていなかった** = 守り手自身が静かに死ぬ形。
+#
+# 抑制時計 `$BROKEN_MARK` は「状態ファイルが壊れている」と共用する。Tom 側から見れば
+# どちらも「監視が壊れている」1つの事なので、2本の警報を並べても読む手間が増えるだけ。
+#
+# 引数: $1 = Tom に見せる短い語。**必ず我々の固定文字列**を渡す事 —— `$ERR` の中身は
+#       渡さない(通知は Tom が読む面なので、素性の分からない文字列を流し込まない)。
+# 返り値は常に 3(= 監視が壊れている)。鳴らせたかどうかで変えない。
+
+# 「最後に監視が働けたのは何時か」を人が読む一言にする。
+# ★分からない時に**数字を作らない**。記録が無い/読めない/未来を指している の3つは
+#   それぞれ別の文を返す。ここで 0 や「今」を返すと、Tom は「さっきまで動いていた」と
+#   読む —— 一度も動いた事が無い据え付け直後こそ、それが一番起きやすい。
+last_worked_phrase() {
+    local t now d
+    [ -f "$OK_MARK" ] || { echo "一度も成功していない(据え付け以来か、記録ごと消えた)"; return; }
+    t="$(cat "$OK_MARK" 2>/dev/null)"
+    case "$t" in ''|*[!0-9]*) echo "不明(記録が読めない)"; return ;; esac
+    now="$(date +%s)"; d=$((now - t))
+    if   [ "$d" -lt 0 ]     ; then echo "不明(時計が巻き戻っている)"
+    elif [ "$d" -lt 3600 ]  ; then echo "$((d / 60)) 分前"
+    elif [ "$d" -lt 86400 ] ; then echo "$((d / 3600)) 時間前"
+    else                           echo "$((d / 86400)) 日前"
+    fi
+}
+
+notify_monitor_broken() {
+    local why="$1" now last nrc
+    if [ "$DRY" -eq 1 ]; then
+        log "DRY-RUN: 監視が壊れている($why) — 通知は出さない"
+        echo "監視側が壊れています($why / 最後に働けたのは $(last_worked_phrase))"
+        return 3
+    fi
+    if [ ! -x "$NOTIFY" ]; then
+        # ここだけは本当に知らせる術が無い。せめて「知らせられなかった」を log に残す。
+        log "★監視が壊れている($why)が、出し先も実行できない: $NOTIFY"
+        return 3
+    fi
+    now="$(date +%s)"
+    last=0
+    [ -f "$BROKEN_MARK" ] && last="$(cat "$BROKEN_MARK" 2>/dev/null || echo 0)"
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    if [ $((now - last)) -lt "$BROKEN_EVERY" ]; then
+        log "★監視が壊れている($why) — 前回の通知から $((now - last)) 秒 = 抑制"
+        return 3
+    fi
+    printf '%s' "rc-backend の監視側が壊れています($(hostname -s) / $why)。最後に監視が働けたのは $(last_worked_phrase)。log を見る事: $LOG" | "$NOTIFY"
+    nrc=$?
+    log "★監視が壊れている($why)を通知(出し先 rc=$nrc)"
+    # ★抑制時計は**配達が済んでから**進める。「知らせると決めた」時点で進めると、
+    #   出し先が壊れている間ずっと 6 時間黙る(この案件で既に3度踏んだ形)。
+    if [ "$nrc" -eq 0 ]; then
+        echo "$now" > "$BROKEN_MARK" 2>>"$LOG" \
+            || log "  ★抑制時計を書けない($BROKEN_MARK) — 次回また鳴る(重複は沈黙よりまし)"
+    else
+        log "  ★出し先が失敗(rc=$nrc) — 抑制時計は進めない(次回また鳴らし直す)"
+    fi
+    return 3
+}
+
+# ★この行は現状**到達しない**(上の `${RC_HEALTH_URL:-…}` は空文字も既定へ倒すので)。
+#   倒す先が既定の URL = 騒がしい側なので、そのままにして番人だけ残す。
+[ -n "$URL" ] || { log "設定に URL が無い(CONF=$CONF)"; notify_monitor_broken "設定に URL が無い"; exit 3; }
+[ -x "$NODE" ] || { log "node が見つからない: $NODE"; echo "node が見つからない: $NODE" >&2
+                    notify_monitor_broken "node が無い"; exit 3; }
+[ -f "$STEP" ] || { log "判定の繋ぎが無い: $STEP"; echo "判定の繋ぎが無い: $STEP" >&2
+                    notify_monitor_broken "判定の繋ぎが無い"; exit 3; }
+
+# ── 鍵の残日数を見る(段を降りた時だけ1回鳴らす)─────────────────────
+# 記録 `$KEY_MARK` の中身 = "<最後に測った epoch> <self の段> <peer の段>"(段 9999 = 未通知)。
+#
+# ★up/down より**手前**で呼ぶ。KIND=0(異常なし)の回は下の case で `exit 0` するので、
+#   後ろに置くと**平常時に一度も走らない** —— 平常時こそが、これが働くべき時。
+# ★時計を配達が済んでから進めるのは、この file の他の2箇所と同じ理由。決めた時点で進めると
+#   出し先が壊れている間ずっと黙る(この案件で既に3度踏んだ形)。
+#
+# ── ★2026-08-03 の査読(Codex)で塞いだ穴2つ ────────────────────────
+#  (1) **段を「一番近い1本」だけで持つと、別の機械の初回警告が消える。**
+#      最初の実装は鎖全体の最小値に対して段を1つだけ覚えていた。observer が残り3日で
+#      段3を鳴らした後に edith が残り5日へ入ると、鎖の最小は3のままなので段は3、
+#      「段3は通知済み」で**edith の話が一度も出ない**。段は **side ごと**に持つ。
+#      → 対照 10-k。指摘は「状態は端末名でなく安定 ID + 期限に紐付けよ」。ここでは
+#        side(self/peer)が安定 ID の役を果たす(相手は設定で1つに固定されている為)。
+#  (2) **既に切れた鍵に固有の段が無い。**
+#      残り -5 日は `-5 <= 1` なので段1に落ちる。段1を鳴らした後だと「通知済み」で黙る。
+#      = 監視が数時間止まっている間に期限を越えると、**越えた事が一度も出ない**。
+#      → 段 0(= 期限切れ)を追加し、文面も「あと N 日」ではなく「既に切れています」にする。
+#      → 対照 10-l。
+#
+#
+#  段の数は 45/30/14/7/3/1 から **45/14/7/1** へ減らした(同じ指摘の Q4)。どの段でも
+#  Tom がやる事は「admin console で Disable key expiry を押す」の1つだけなので、
+#  段を増やしても情報は増えず、鳴る回数だけ増えて経路ごと黙らされる側に効く。
+#  期限切れの段を足しても窓全体で**最大5通**(元の6通より少ない)。
+check_key_expiry() {
+    local now last_ts out rc _k side days _rest
+    local step bucket who msg nrc s_days p_days s_last p_last new_s new_p deliver_failed
+    now="$(date +%s)"; last_ts=0; s_last=9999; p_last=9999
+    # ★3 個読めない古い形(= "<epoch> <段>")は「未通知」に倒す。1通多く出るだけで、
+    #   逆に倒すと黙る。この file は一貫して「沈黙より重複」を選んでいる。
+    if [ -f "$KEY_MARK" ]; then
+        read -r last_ts s_last p_last _rest < "$KEY_MARK" 2>/dev/null || true
+    fi
+    case "${last_ts:-}" in ''|*[!0-9]*) last_ts=0 ;; esac
+    # 3欄目が無い = 段を鎖全体で1つしか持たなかった古い形。その1つが**どちらの側の段か**は
+    # 記録から決められないので、両方「未通知」に倒す。多くて1台1通ぶん重複するだけで済む。
+    [ -z "${p_last:-}" ] && { s_last=9999; p_last=9999; }
+    case "${s_last:-}"  in ''|*[!0-9]*) s_last=9999 ;; esac
+    case "${p_last:-}"  in ''|*[!0-9]*) p_last=9999 ;; esac
+    [ $((now - last_ts)) -lt "$KEY_EVERY" ] && return 0
+
+    if [ ! -x "$KEY_CHECK" ]; then
+        log "鍵の残日数を測れない(台本が無い/実行できない: $KEY_CHECK)"
+        notify_monitor_broken "鍵の残日数を測る台本が無い" >/dev/null
+        printf '%s %s %s\n' "$now" "$s_last" "$p_last" > "$KEY_MARK" 2>>"$LOG"
+        return 0
+    fi
+
+    # ★相手が居ない構成では、相手を引きに行かない。引けば必ず失敗し、その失敗を
+    #   「監視が壊れている」と読む —— 居ない物を測れないのは異常ではない。
+    # ★相手が居ない構成では `--chain` を渡さない。渡せば居ない相手を引きに行って必ず失敗し、
+    #   その失敗を「監視が壊れている」と読む —— 居ない物を測れないのは異常ではない。
+    #   ★判定は**後段の共通の rc=2 に1本化する**。此処にもう1つ置くと二重判定になり、
+    #     片方だけ直しても もう片方が古い文言で鳴る(2026-08-27 に実際にそうなった)。
+    if [ -z "$KEY_PEER" ]; then
+        out="$(RC_KEY_WARN_DAYS="$KEY_WARN_DAYS" "$KEY_CHECK" --porcelain 2>/dev/null)"
+    else
+        out="$(RC_KEY_WARN_DAYS="$KEY_WARN_DAYS" "$KEY_CHECK" --porcelain --chain "$KEY_PEER" 2>/dev/null)"
+    fi
+    rc=$?
+    if [ "$rc" -eq 2 ]; then
+        # ★「測れなかった」を「切れない」と読まない。監視の材料が取れていない = 監視が壊れている。
+        # ★どちらの構成で失敗したかを残す。相手なしで失敗 = 自分の側すら測れない
+        #   (これは本当に監視が壊れている)。相手ありで失敗 = どちらかが測れない。
+        if [ -z "$KEY_PEER" ]; then
+            log "鍵の残日数: 自分の側を測れなかった(rc=2 / 相手は設定されていない)"
+        else
+            log "鍵の残日数: 少なくとも片方を測れなかった(rc=2 / 相手=$KEY_PEER)"
+        fi
+        notify_monitor_broken "鍵の残日数を測れない" >/dev/null
+        printf '%s %s %s\n' "$now" "$s_last" "$p_last" > "$KEY_MARK" 2>>"$LOG"
+        return 0
+    fi
+
+    # 書式は `KEY <self|peer> <日数|-> <日付|-|none>` の固い1行/対象。side ごとに保つ。
+    s_days=""; p_days=""
+    while read -r _k side days _rest; do
+        [ "${_k:-}" = "KEY" ] || continue
+        case "$days" in ''|-) continue ;; esac
+        case "$days" in *[!0-9-]*) continue ;; esac
+        case "$side" in self) s_days="$days" ;; peer) p_days="$days" ;; esac
+    done <<< "$out"
+
+    if [ -z "$s_days" ] && [ -z "$p_days" ]; then
+        # 両方とも「期限なし」= Tom が無効化した。段を戻し、また期限が付いた時に言い直せる様にする。
+        log "鍵の残日数: 期限なし(無効化済み)"
+        printf '%s %s %s\n' "$now" 9999 9999 > "$KEY_MARK" 2>>"$LOG"
+        return 0
+    fi
+
+    # 降りた段 = `days <= step` を満たす中で**一番きつい** step。0 日以下は段 0(= 期限切れ)。
+    key_bucket() {
+        local d="$1" b=9999 st
+        if [ "$d" -le 0 ]; then echo 0; return; fi
+        for st in $KEY_STEPS; do
+            case "$st" in ''|*[!0-9]*) continue ;; esac
+            if [ "$d" -le "$st" ] && [ "$st" -lt "$b" ]; then b="$st"; fi
+        done
+        echo "$b"
+    }
+
+    new_s="$s_last"; new_p="$p_last"; deliver_failed=0
+    for side in self peer; do
+        case "$side" in
+            self) days="$s_days"; bucket="$s_last" ;;
+            *)    days="$p_days"; bucket="$p_last" ;;
+        esac
+        [ -n "$days" ] || { case "$side" in self) new_s=9999 ;; *) new_p=9999 ;; esac; continue; }
+        step="$(key_bucket "$days")"
+        if [ "$step" -ge 9999 ]; then
+            # 段の外 = まだ遠い。ここで段を戻すので、鍵を**更新**した後も次に近付いた時に鳴る。
+            case "$side" in self) new_s=9999 ;; *) new_p=9999 ;; esac
+            log "鍵の残日数: $side が $days 日(段の外 = 鳴らさない)"
+            continue
+        fi
+        if [ "$step" -ge "$bucket" ]; then
+            log "鍵の残日数: $side が $days 日(段 $step は通知済み)"
+            continue
+        fi
+
+        # ★文面は**我々が持っている値だけ**で組む(整数の日数と、設定に書いた相手の名前)。
+        #   `$KEY_CHECK` の散文をそのまま流さないのは、`$ERR` を通知に載せないのと同じ理由。
+        #   ★観測している主体を必ず名乗る(査読 Q3: 誰から見た話かが無いと取り違える)。
+        case "$side" in
+            self) who="この監視を動かしている機械($(hostname -s))" ;;
+            *)    who="$KEY_PEER" ;;
+        esac
+        if [ "$step" -eq 0 ]; then
+            msg="rc-backend: tailnet の鍵が**既に切れています**(${who} / $(hostname -s) から見て残り ${days} 日)。その機械は tailnet から落ちている筈で、電話の面と復旧用の ssh を同時に失っています。直す = Tailscale admin console → Machines → 該当機 → Disable key expiry、その機械で再ログイン"
+        else
+            msg="rc-backend: tailnet の鍵があと ${days} 日で切れます(${who} / $(hostname -s) から見た値)。切れるとその機械は tailnet から落ち、電話の面と復旧用の ssh を同時に失います。直す = Tailscale admin console → Machines → 該当機 → Disable key expiry"
+        fi
+
+        if [ "$DRY" -eq 1 ]; then
+            log "DRY-RUN: 鍵の警報 [$msg]"
+            echo "$msg"
+            continue          # ★時計を進めない。試し打ちが本物の警報を1日黙らせない為。
+        fi
+        if [ ! -x "$NOTIFY" ]; then
+            log "★鍵の警報を出せない(出し先が実行できない: $NOTIFY)"
+            continue
+        fi
+
+        # 残り 7 日以内(と期限切れ)になってから @Tom を付ける。段を降りた時しか鳴らないので
+        # 1台あたり最大5通、うち ping 付きは最後の3通。毎日鳴らす形にすると経路ごと黙らされる。
+        if [ "$step" -le 7 ]; then
+            printf '%s' "$msg" | "$NOTIFY"
+        else
+            printf '%s' "$msg" | FLEET_NOTIFY_MENTION=0 "$NOTIFY"
+        fi
+        nrc=$?
+        log "鍵の警報を通知($side / 残り $days 日 / 段 $step / 出し先 rc=$nrc)"
+        if [ "$nrc" -eq 0 ]; then
+            case "$side" in self) new_s="$step" ;; *) new_p="$step" ;; esac
+        else
+            # ★この side の段だけ据え置く。次回また鳴らし直す。
+            log "  ★出し先が失敗(rc=$nrc) — $side の記録を進めない(次回また鳴らし直す)"
+            deliver_failed=1
+        fi
+    done
+
+    if [ "$DRY" -eq 1 ]; then return 0; fi
+    # ★配達に失敗した回は**時計を進めない**。進めると次の回が $KEY_EVERY(既定1日)の間ずっと
+    #   早期 return し、出し先が直っても最大1日黙る。段は成功した side の分だけ進める
+    #   (失敗した側は据え置き)ので、直った次の回に鳴るのは失敗した側だけになる。
+    if [ "$deliver_failed" -eq 1 ]; then
+        printf '%s %s %s\n' "$last_ts" "$new_s" "$new_p" > "$KEY_MARK" 2>>"$LOG"
+    else
+        printf '%s %s %s\n' "$now" "$new_s" "$new_p" > "$KEY_MARK" 2>>"$LOG"
+    fi
+    return 0
+}
+check_key_expiry
+
+# ── 公開面への相乗り ───────────────────────────────────────────────
+# 記録 `$EXP_MARK` の中身 = "<最後の判定> <連続で測れなかった回数>"。
+#   判定 = safe / exposed / blind。
+#
+# ★通知の設計(Codex 2026-08-26 の裁定2、そのまま採った):
+#   - **露出(exit 1)は閾値を置かずに即時**。生存の様に「3回続いたら」ではない ——
+#     生存は揺れるが、公開設定は揺れない。1回でも見えたらそれは事実。
+#   - **測れない(exit 3)は別の事象**として、緩めの閾値で鳴らす。これは「露出している」
+#     でも「安全」でもなく **「保証を失った」**。同じ通知に混ぜると、どちらの意味でも
+#     読めない警報になる。
+#   - 安全(exit 0)へ戻ったら記録だけ更新して黙る(復旧の連呼をしない)。
+#
+# ★此の監視が答えない事を、先に書いておく(Codex 裁定4):
+#   **見張りは事後にしか気付かない。** 経路を足して・使って・消す、が観測の隙間に収まれば
+#   何も残らない。ここは防止ではなく検出で、防止は別の層(机が鍵を要求する事、
+#   `rc-backend-launch.sh` が `funneled` の入口へ自分から乗らない事)が受け持つ。
+#   `rc-backend-launch.sh` が `funneled` の入口へ自分から乗らない事)が受け持つ。
+check_exposure() {
+    local now verdict prev_v prev_blind out rc
+    now="$(date +%s)"
+    prev_v="safe"; prev_blind=0
+    if [ -f "$EXP_MARK" ]; then
+        read -r prev_v prev_blind _rest < "$EXP_MARK" 2>/dev/null || true
+        case "${prev_blind:-}" in ''|*[!0-9]*) prev_blind=0 ;; esac
+        case "${prev_v:-}" in safe|exposed|blind) ;; *) prev_v="safe" ;; esac
+    fi
+
+    if [ ! -x "$EXP_CHECK" ]; then
+        log "公開面を測れない(台本が無い/実行できない: $EXP_CHECK)"
+        notify_monitor_broken "公開面を測る台本が無い" >/dev/null
+        printf '%s %s\n' "blind" "$((prev_blind + 1))" > "$EXP_MARK" 2>>"$LOG"
+        return 0
+    fi
+    if [ ! -x "$EXP_TS" ]; then
+        # ★tailscale の実体が無い = この機体では測れない。**安全と言わない。**
+        log "公開面を測れない(tailscale が無い: $EXP_TS)"
+        printf '%s %s\n' "blind" "$((prev_blind + 1))" > "$EXP_MARK" 2>>"$LOG"
+        [ "$((prev_blind + 1))" -ge "$EXP_BLIND_THRESHOLD" ] \
+            && notify_monitor_broken "公開面を測れない(tailscale が無い)" >/dev/null
+        return 0
+    fi
+
+    out="$("$EXP_TS" serve status --json 2>/dev/null | "$EXP_CHECK" "$EXP_PORT" 2>/dev/null)"
+    rc=$?
+    case "$rc" in
+        0)
+            [ "$prev_v" != "safe" ] && log "公開面: 机へ向く経路は無い(前回は $prev_v)"
+            printf '%s %s\n' "safe" "0" > "$EXP_MARK" 2>>"$LOG"
+            ;;
+        1)
+            # ★閾値を置かない。1回でも見えたら事実。
+            log "★★公開面が机へ繋がっている: $out"
+            printf '%s %s\n' "exposed" "0" > "$EXP_MARK" 2>>"$LOG"
+            if [ "$DRY" -eq 1 ]; then
+                echo "公開面が机(127.0.0.1:$EXP_PORT)へ繋がっています: $out"
+            elif [ -x "$NOTIFY" ]; then
+                # ★本文は **stdin** で渡す。この file の他の 3 箇所(168 / 321 / 323)が
+                #   全部 stdin なので、此処だけ argv だと**偽の出し先が片方しか実装しない**。
+                #   実際 `test/health-observer-controls.sh` の作り物は `$(cat)` しか読まない ——
+                #   此処に検査を足した人は「鳴っているのに空文字が記録される」を見る事になり、
+                #   実装の欠陥と駆動の欠陥が出力から区別できなくなる。
+                #   (2026-08-26、別セッションの掃き取りが flagged。本物の `~/bin/discord-notify.sh`(repo の外)は
+                #    両方読むので production は壊れていないが、**規約を1箇所だけ破る**のが害)
+                printf '%s' "★公開面が机へ繋がっています($out)。生きた端末の操縦面が公開インターネットに出ます。" \
+                    | "$NOTIFY" >/dev/null 2>&1 || \
+                    log "★露出を検出したが通知を出せなかった"
+            else
+                log "★露出を検出したが出し先が実行できない: $NOTIFY"
+            fi
+            ;;
+        *)
+            # 3 = 読めない / それ以外も「判らない」に倒す。**安全と混ぜない。**
+            log "公開面を測れなかった(rc=$rc)= 保証を失った"
+            printf '%s %s\n' "blind" "$((prev_blind + 1))" > "$EXP_MARK" 2>>"$LOG"
+            [ "$((prev_blind + 1))" -ge "$EXP_BLIND_THRESHOLD" ] \
+                && notify_monitor_broken "公開面を測れない(rc=$rc)" >/dev/null
+            ;;
+    esac
+    return 0
+}
+check_exposure
+[ "$EXPOSURE_ONLY" -eq 1 ] && exit 0
+
+# ── 1回叩く ───────────────────────────────────────────────────────
+# 本体は捨てずに見る: 200 を返すだけの別物(tailscale の受け口や proxy)を「生きている」と
+# 読まない為。★ただし本体を**ログにも通知にも載せない**(会話の情報が混ざる余地を作らない)。
+probe() {
+    local body code rc
+    # ★`RESOLVE` が空かどうかで**枝を分ける**(配列に入れて展開しない)。
+    #   macOS の /bin/bash は 3.2 で、`set -u` の下では**空配列の `"${a[@]}"` 自体が落ちる**。
+    #   ここは観測の心臓なので、書き方の巧拙より落ちない事を採る。
+    if [ -n "$RESOLVE" ]; then
+        body="$(curl -sS -m 8 --resolve "$HOST:443:$RESOLVE" -w $'\n%{http_code}' "$URL" 2>/dev/null)"; rc=$?
+    else
+        body="$(curl -sS -m 8 -w $'\n%{http_code}' "$URL" 2>/dev/null)"; rc=$?
+    fi
+    if [ $rc -ne 0 ]; then echo "ng|curl exit $rc"; return; fi
+    code="$(printf '%s' "$body" | tail -1)"
+    body="$(printf '%s' "$body" | sed '$d')"
+    if [ "$code" != "200" ]; then echo "ng|http $code"; return; fi
+    case "$body" in *'"ok"'*) : ;; *) echo "ng|本体に ok が無い"; return ;; esac
+    case "$body" in *'"ok":true'*|*'"ok": true'*) echo "ok|" ;; *) echo "ng|ok が true でない" ;; esac
+}
+
+case "$MODE" in
+    probe) R="$(probe)" ;;
+    fail)  R="ng|注入した偽の失敗(経路の試験)" ;;
+    ok)    R="ok|" ;;
+esac
+VERDICT="${R%%|*}"; REASON="${R#*|}"
+
+# ── 判定に渡す ────────────────────────────────────────────────────
+# ★stdout と stderr を混ぜない。混ぜると node の警告1行が**通知の文面に化ける**
+#   (通知は Tom が読む面なので、そこに素性の分からない文字列を流し込まない)。
+ERRF="$(mktemp "${TMPDIR:-/tmp}/health-step-err.XXXXXX")"
+MSG="$("$NODE" "$STEP" "$STATE" "$VERDICT" "$REASON" "$(date +%s)" "$THRESHOLD" "$HOST" 2>"$ERRF")"
+KIND=$?
+ERR="$(cat "$ERRF" 2>/dev/null)"; /bin/rm -f "$ERRF"
+
+# 値は `FLEET_NOTIFY_MENTION` にそのまま渡す物。"0" = ping を抑える / 空 = 既定(= @Tom 付き)
+PING_SUPPRESS=""
+
+# ── ★監視が一周できた事を記録する(Codex Q3 の材料)──────────────────
+# KIND 0/10/11 = 判定が使える答えを返した = **監視は働けている**(対象の up/down は別の話)。
+# KIND 3 と その他 = 監視が壊れている回なので、ここは通らない。
+# 書けなくても止めない: これは通知を読みやすくする為の材料であって、監視の可否ではない。
+# ただし**黙って落とさない** —— 書けない状態が続けば通知が毎回「一度も成功していない」に
+# なり、それは嘘に見える。log に理由を残して後から辿れる様にする。
+case "$KIND" in
+    0|10|11)
+        date +%s > "$OK_MARK" 2>>"$LOG" \
+            || log "  ★最終稼働時刻を書けない($OK_MARK) — 壊れた時の通知が『一度も成功していない』になる"
+        ;;
+esac
+
+# ★台本自身の終了コードは「監視が健全か」を表す。**通知を出したかどうかで変えない**。
+#   (対照が拾った実際の不整合: 抑制された時だけ 3、鳴らした時は 0 を返していた ——
+#    同じ「監視が壊れている」状態が、鳴らした回だけ launchd から見て正常に見えていた)
+FINAL_RC=0
+case "$KIND" in
+    0)  log "$VERDICT ${REASON:+($REASON)} — 鳴らさない"; exit 0 ;;
+    10) PING_SUPPRESS=""  ;;   # 落ちた = @Tom を付ける
+    11) PING_SUPPRESS="0" ;;   # 戻った = ping 無し(既に一度鳴らしている)
+    3)
+        # ★監視自体が壊れている。これを黙って 0 に丸めると「静かに鳴らない監視」になる。
+        log "★監視の状態が壊れている: $ERR"
+        notify_monitor_broken "状態ファイル"
+        exit 3
+        ;;
+    *)  # 判定が起動すらできなかった(設定の値が不正 / node の中で落ちた 等)。
+        # ★元はここで log を1行残して `exit $KIND` = **誰にも届かなかった**。
+        #   閾値に `0` と書いた設定で 5 回叩いて通知 0 通、というのがその実測。
+        log "判定が異常終了(code=$KIND): ${ERR:-$MSG}"
+        notify_monitor_broken "設定か引数が不正"
+        exit 3
+        ;;
+esac
+
+# ── 鳴らす ────────────────────────────────────────────────────────
+if [ "$DRY" -eq 1 ]; then
+    log "DRY-RUN: [$MSG] (ping抑制=${PING_SUPPRESS:-無し})"
+    echo "$MSG"; exit "$FINAL_RC"
+fi
+[ -x "$NOTIFY" ] || { log "通知の出し先が実行できない: $NOTIFY"; echo "通知の出し先が実行できない: $NOTIFY" >&2; exit 2; }
+
+if [ -n "$PING_SUPPRESS" ]; then
+    printf '%s' "$MSG" | FLEET_NOTIFY_MENTION=0 "$NOTIFY"
+else
+    printf '%s' "$MSG" | "$NOTIFY"
+fi
+nrc=$?
+log "通知(code=$KIND, ping抑制=${PING_SUPPRESS:-無し}, 出し先 rc=$nrc): $MSG"
+
+# ── 配達が済んだ事を、済んでから記録する ──────────────────────────
+# ★これを判定と同じ回に書かない事がこの層の要点。「知らせると決めた」時点で
+#   `down` を確定させていた時は、出し先が壊れていると**出し先が直っても二度と鳴らなかった**
+#   (実測: 壊した出し先で3回 → 0通、直して更に3回 → やはり 0通。ログには「鳴らさない」)。
+#
+# ★分かる事の限界を正確に: 掴めるのは「出し先が動かなかった / 非 0 で終わった」まで。
+#   `~/bin/discord-notify.sh` は 2026-08-02 に直して**両脚(Discord と iMessage 退避)が
+#   落ちた時だけ**非 0 を返す様になった(それ以前はどの経路でも 0 = ここが常に素通りだった)。
+#   退避が通った時は 0 = 配達済み扱い。それで正しい —— Tom には届いているから。
+#   「Discord に載った」だけを見たいなら出し先の側に**退避を成功と数えない**切り替えが要るが、
+#   `~/bin/discord-notify.sh` にその切り替えは無い(2026-08-03 実測: 環境変数は
+#   `FLEET_NOTIFY_MENTION` / `ALERT_FLAG` / `REMOTE_CMD` の3つだけ)。仮に足しても
+#   退避成功まで失敗と数える事になるので採らない。出し先を差し替えた時は、その出し先が
+#   **失敗を非 0 で言うか**を先に確かめる事(言わない出し先ではこの層は効かない)。
+# ここへ来るのは KIND=10/11 だけ(監視が壊れている回は上の case で完結する)。
+if [ "$nrc" -eq 0 ]; then
+    if ! "$NODE" "$STEP" --mark-delivered "$STATE" 2>>"$LOG"; then
+        log "★配達済みの記録に失敗 — 次回もう一度鳴る(重複は沈黙よりまし)"
+        FINAL_RC=3
+    fi
+else
+    log "★出し先が失敗(rc=$nrc) — 状態は『未配達』のまま。落ちている限り次回また鳴らす"
+    FINAL_RC=3
+fi
+exit "$FINAL_RC"
+rc-backend/tools/delivery-check.sh:84:fxout=$(printf '%s' "$fx" | bash "$REPO/tools/funnel-exposure-check.sh" 8787 2>/dev/null); fxrc=$?
+rc-backend/test/health-observer-controls.sh:2:# controls-for: tools/health-observer.sh tools/health-step.mjs tools/tailnet-key-expiry.sh
+rc-backend/test/health-observer-controls.sh:3:# `tools/health-observer.sh` + `tools/health-step.mjs` の**対照**(DESIGN §7-P の検査欄)。
+rc-backend/test/health-observer-controls.sh:21:[ -f "$ROOT/tools/health-step.mjs" ] || { echo "判定台本が無い: $ROOT/tools/health-step.mjs"; exit 2; }
+rc-backend/test/health-observer-controls.sh:41:#   自分の位置から引く(`$ROOT/tools/health-step.mjs`)ので、/tmp に置かれた旧版は
+rc-backend/test/health-observer-controls.sh:47:#   ★兄弟は health-step.mjs だけではない —— それ自身が `../src/health.mjs` を読む。
+rc-backend/test/health-observer-controls.sh:56:    /bin/cp "$ROOT/tools/health-step.mjs" "$SB/tools/health-step.mjs" || exit 2
+rc-backend/test/health-observer-controls.sh:336:#     写す木に `src/` を入れ忘れ(`tools/health-step.mjs` が `../src/health.mjs` を読む)、
+rc-backend/test/health-observer-controls.sh:421:    export TEST_KEY_CHECK="$ROOT/tools/tailnet-key-expiry.sh"   # ★本物を通す(偽の porcelain を書かない)
+rc-backend/test/health-observer-controls.sh:500:               bash "$ROOT/tools/tailnet-key-expiry.sh" "${@:2}" 2>/dev/null; }
+rc-backend/test/health-observer-controls.sh:514:    ( bash "$ROOT/tools/tailnet-key-expiry.sh" --peer >/dev/null 2>&1 ) & lp=$!
+rc-backend/test/health-observer-controls.sh:728:# `funnel-exposure-check.sh` が向こうに**無い**事に気付いた。新版はその時
+rc-backend/tools/observer-parity-check.sh:30:# `health-step.mjs` は friday に在るが repo に無い(由来不明)ので、勝手に消さない為に
+rc-backend/tools/observer-parity-check.sh:32:FILES=(health-observer.sh funnel-exposure-check.sh tailnet-key-expiry.sh)
+rc-backend/tools/exposure-standing-control.sh:55:        RC_HEALTH_EXP_CHECK="$HERE/funnel-exposure-check.sh" \
+rc-backend/tools/funnel-exposure-check.sh:2:# funnel-exposure-check.sh — **公開面が私たちの机へ繋がっていないか**を1つ問う。2026-08-26 新設。
+rc-backend/tools/funnel-exposure-check.sh:20:#   printf '%s' "$out" | funnel-exposure-check.sh <手元のポート>
+rc-backend/tools/health-step.mjs:5://   node tools/health-step.mjs <状態ファイル> <ok|ng> <理由> <epoch秒> [閾値] [ホスト名]
+rc-backend/tools/health-step.mjs:6://   node tools/health-step.mjs --mark-delivered <状態ファイル>   ← 配達が済んだ後だけ
+rc-backend/tools/health-step.mjs:48:    if (!f) die(2, "使い方: health-step.mjs --mark-delivered <状態ファイル>");
+rc-backend/tools/health-step.mjs:63:    die(2, "使い方: health-step.mjs <状態ファイル> <ok|ng> <理由> <epoch秒> [閾値] [ホスト名]");
+rc-backend/tools/funnel-exposure-check-control.sh:2:# controls-for: tools/funnel-exposure-check.sh
+rc-backend/tools/funnel-exposure-check-control.sh:12:CHK="${HERE}/funnel-exposure-check.sh"
+rc-backend/tools/warn-ledger.sh:21:#   wl_run "鍵の期限" ssh "$EDITH" "/bin/bash '$LIVE/tools/tailnet-key-expiry.sh'"
+rc-backend/tools/rc-backend-launch.sh:129:#   計算の本体は `tools/tailnet-key-expiry.sh` に置いてある(deploy 台本からも同じ物を呼ぶ。
+rc-backend/tools/rc-backend-launch.sh:133:    RC_TAILSCALE_BIN="$TS" /bin/bash "${APP}/tools/tailnet-key-expiry.sh" 2>&1 \
+rc-backend/tools/deploy-to-edith.sh:633:wl_run "鍵の期限" ssh "$EDITH" "/bin/bash '$LIVE/tools/tailnet-key-expiry.sh'"
+rc-backend/tools/health-observer.sh:55:STEP="$ROOT/tools/health-step.mjs"
+rc-backend/tools/health-observer.sh:67:KEY_CHECK="${RC_HEALTH_KEY_CHECK:-$ROOT/tools/tailnet-key-expiry.sh}"
+rc-backend/tools/health-observer.sh:98:EXP_CHECK="${RC_HEALTH_EXP_CHECK:-$ROOT/tools/funnel-exposure-check.sh}"
+rc-backend/tools/rc-backend-launch-check.sh:47:cp "$HERE/serve-decision.sh" "$HERE/tailnet-key-expiry.sh" "$T/app/tools/"
+rc-backend/tools/deploy-observer-to-friday.sh:13:#   新版は `funnel-exposure-check.sh` が無い時に **閾値なしで** 通知を撃つ枝を持つ
+rc-backend/tools/deploy-observer-to-friday.sh:32:# 運ぶ物 = observer が実際に読む物だけ。`health-step.mjs` は friday に在るが repo に無いので
+rc-backend/tools/deploy-observer-to-friday.sh:34:FILES=(health-observer.sh funnel-exposure-check.sh tailnet-key-expiry.sh)
+rc-backend/tools/tailnet-key-expiry.sh:2:# tailnet-key-expiry.sh — tailnet 鍵があと何日で切れるかを言う。
+rc-backend/tools/tailnet-key-expiry.sh:3:#   宛先: rc-backend/tools/tailnet-key-expiry.sh(= edith 上では /Users/edith/rc-backend/tools/)
+rc-backend/tools/tailnet-key-expiry.sh:24:#   tailnet-key-expiry.sh                この機械の鍵だけ(既定。呼び口の互換を壊さない)
+rc-backend/tools/tailnet-key-expiry.sh:25:#   tailnet-key-expiry.sh --peer <名>    指定した相手の鍵だけ
+rc-backend/tools/tailnet-key-expiry.sh:26:#   tailnet-key-expiry.sh --chain <名>   この機械と相手の**両方**。判定は近い方で決める
+rc-backend/tools/run-controls.sh:152:                                     # `funnel-exposure-check.sh` =「**公開されている入口の下に
+
+exec
+/bin/zsh -lc "sed -n '1,180p' rc-backend/tools/health-step.mjs; rg -n '"'^import|from '"' rc-backend/tools/health-step.mjs rc-backend/src/health.mjs; ls -l rc-backend/src/health.mjs rc-backend/tools/health-step.mjs" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+#!/usr/bin/env node
+// 観測1回分を状態に畳んで、鳴らすべきなら文面を1行出す**だけ**の繋ぎ。
+// 判定は `src/health.mjs`(純関数・単体 25 本 + 変異の的 13 枚)に在り、ここには置かない。
+//
+//   node tools/health-step.mjs <状態ファイル> <ok|ng> <理由> <epoch秒> [閾値] [ホスト名]
+//   node tools/health-step.mjs --mark-delivered <状態ファイル>   ← 配達が済んだ後だけ
+//
+// 終了コードで種類を返す(shell が mention の有無を決められる様に):
+//   0  = 鳴らさない          10 = 落ちた(mention 付き)      11 = 戻った(ping 無し)
+//   3  = ★状態ファイルが壊れている / 書けない(= 監視自体が死んでいる)
+//
+// なぜ 3 を分けるか: 状態が読めないと `fails` が毎回 0 に戻り、**何回失敗しても閾値に
+// 届かない** = 永久に鳴らない監視になる。yoda の 46 時間と同じ「壊れ方が静か」な形なので、
+// 「読めなかった」を「異常なし」に丸めず、呼び手が別建てで騒げる様に外へ出す。
+import { readFileSync, writeFileSync, renameSync, existsSync, unlinkSync } from "node:fs";
+import {
+    initialHealthState,
+    healthTransition,
+    healthMessage,
+    markDelivered,
+} from "../src/health.mjs";
+
+const argv = process.argv.slice(2);
+
+function die(code, msg) {
+    process.stderr.write(`health-step: ${msg}\n`);
+    process.exit(code);
+}
+
+// ── 状態を読む / 書く(両方の入口が使う)────────────────────────────
+function writeState(stateFile, state) {
+    // 途中で落ちても半端な JSON を残さない様に、別名で書いてから rename(同一 FS 内なら原子的)。
+    const tmp = `${stateFile}.tmp.${process.pid}`;
+    try {
+        writeFileSync(tmp, `${JSON.stringify(state)}\n`, "utf8");
+        renameSync(tmp, stateFile);
+    } catch (e) {
+        try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* 後片付けの失敗で本体の理由を隠さない */ }
+        die(3, `状態ファイルが書けない(${stateFile}): ${e.message}`);
+    }
+}
+
+// ── 別入口: 配達が済んだ事だけを記録する ────────────────────────────
+//   台本が**出し先から 0 が返った後**にだけ呼ぶ。これを本体と同じ回に書かないのが要点 ——
+//   「知らせると決めた」時点で記録すると、届かなかった時に永久に鳴らない監視になる。
+if (argv[0] === "--mark-delivered") {
+    const f = argv[1];
+    if (!f) die(2, "使い方: health-step.mjs --mark-delivered <状態ファイル>");
+    if (!existsSync(f)) die(3, `状態ファイルが無い(${f}): 配達済みを記録できない`);
+    let cur;
+    try {
+        cur = JSON.parse(readFileSync(f, "utf8"));
+    } catch (e) {
+        die(3, `状態ファイルが読めない/壊れている(${f}): ${e.message}`);
+    }
+    writeState(f, markDelivered(cur));
+    process.exit(0);
+}
+
+const [stateFile, verdict, reason, nowRaw, thresholdRaw, host] = argv;
+
+if (!stateFile || !verdict || nowRaw === undefined) {
+    die(2, "使い方: health-step.mjs <状態ファイル> <ok|ng> <理由> <epoch秒> [閾値] [ホスト名]");
+}
+const now = Number(nowRaw);
+if (!Number.isFinite(now)) die(2, `epoch 秒が数値でない: ${nowRaw}`);
+const threshold = thresholdRaw === undefined || thresholdRaw === "" ? 3 : Number(thresholdRaw);
+
+// ── 前の状態を読む ────────────────────────────────────────────────
+let prev = initialHealthState();
+if (existsSync(stateFile)) {
+    let raw;
+    try {
+        raw = readFileSync(stateFile, "utf8");
+    } catch (e) {
+        die(3, `状態ファイルが読めない(${stateFile}): ${e.message}`);
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    } catch {
+        die(3, `状態ファイルが壊れている(${stateFile})。中身を捨てて 0 から数え直すと**永久に鳴らない**ので止まる`);
+    }
+    // 形も見る。JSON として読めても中身が違えば同じ「静かな壊れ方」になる。
+    const okShape =
+        parsed !== null &&
+        typeof parsed === "object" &&
+        ["unknown", "up", "down"].includes(parsed.status) &&
+        Number.isInteger(parsed.fails) &&
+        parsed.fails >= 0 &&
+        (parsed.firstFailAt === null || Number.isFinite(parsed.firstFailAt)) &&
+        // `owed`(= まだ Tom に伝えていない変化)は後から足した項。**無い事は壊れている事
+        // ではない**(古い状態ファイルを「形が違う」と切ると、上げ直した瞬間に監視が壊れたと
+        // 騒ぐ)。無い時は `undefined` のまま下へ渡す = 「伝えたか分からない」= 鳴らし直す側。
+        // ★旧版の `announced` は**見ない**。あっても形の違反にしない ——
+        //   読み違えるより「もう一度鳴る」方へ倒す(重複は騒々しいだけ、沈黙は致命)。
+        (parsed.owed === undefined ||
+            parsed.owed === null ||
+            (typeof parsed.owed === "object" &&
+                ["down", "recovered"].includes(parsed.owed.kind)));
+    if (!okShape) die(3, `状態ファイルの形が違う(${stateFile}): ${raw.slice(0, 200)}`);
+    prev = {
+        status: parsed.status,
+        fails: parsed.fails,
+        firstFailAt: parsed.firstFailAt,
+        // 項が無ければ **undefined のまま渡す**。`null`(返済済み)に丸めると、
+        // 古い状態ファイルを「もう伝えた」と読んで落下が鳴らなくなる。
+        owed: parsed.owed,
+    };
+}
+
+// ── 畳む ──────────────────────────────────────────────────────────
+let result;
+try {
+    result = healthTransition(prev, { ok: verdict === "ok", reason: reason || "" }, now, { threshold });
+} catch (e) {
+    die(2, e.message);
+}
+
+// ── 書く(書けない事を成功にしない)────────────────────────────────
+// ★ここで書くのは**観測した事実**だけ。「知らせ終えた」は書かない —— それは配達の後に
+//   台本が `--mark-delivered` で別に書く(この分離が無いと、届かなかった時に沈黙する)。
+writeState(stateFile, result.state);
+
+// ── 鳴らす物が在れば1行 ────────────────────────────────────────────
+if (result.notify === null) process.exit(0);
+
+const fmtTime = (epoch) =>
+    new Date(epoch * 1000).toLocaleString("ja-JP", { hour12: false });
+process.stdout.write(`${healthMessage(result.notify, host || "(ホスト未設定)", fmtTime)}\n`);
+process.exit(result.notify.kind === "down" ? 10 : 11);
+rc-backend/tools/health-step.mjs:15:import { readFileSync, writeFileSync, renameSync, existsSync, unlinkSync } from "node:fs";
+rc-backend/tools/health-step.mjs:16:import {
+rc-backend/tools/health-step.mjs:21:} from "../src/health.mjs";
+-rw-r--r--@ 1 tomtim  staff  8694 Aug  2 07:30 rc-backend/src/health.mjs
+-rw-r--r--@ 1 tomtim  staff  7094 Aug  2 07:30 rc-backend/tools/health-step.mjs
+
+exec
+/bin/zsh -lc "nl -ba rc-backend/tools/observer-parity-check.sh | sed -n '24,90p'; nl -ba rc-backend/tools/deploy-observer-to-friday.sh | sed -n '26,130p'; nl -ba rc-backend/tools/health-observer.sh | sed -n '45,110p'; nl -ba rc-backend/tools/health-observer.sh | sed -n '488,542p'; nl -ba rc-backend/tools/health-step.mjs | sed -n '1,30p'" in /Users/tomtim/Infra/mobile-work
+ succeeded in 0ms:
+    24	
+    25	HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    26	HOST="${RC_OBSERVER_HOST:-athenas}"
+    27	REMOTE_DIR="${RC_OBSERVER_REMOTE_DIR:-\$HOME/rc-observer/tools}"
+    28	
+    29	# 同期の対象。**repo に在って observer が使う物**だけを列挙する ——
+    30	# `health-step.mjs` は friday に在るが repo に無い(由来不明)ので、勝手に消さない為に
+    31	# 此処に入れない(消す判断は Tom の物。CLAUDE.md「由来不明を消す前に所有者を探す」)。
+    32	FILES=(health-observer.sh funnel-exposure-check.sh tailnet-key-expiry.sh)
+    33	
+    34	fail=0; measured=0
+    35	
+    36	local_md5() { md5 -q "$1" 2>/dev/null || md5sum "$1" 2>/dev/null | cut -d' ' -f1; }
+    37	
+    38	# 向こう側の md5 を1回の ssh でまとめて取る(file 毎に繋ぐと遅く、途中で切れた時に
+    39	# 「ずれ」と「届かない」の区別が付かなくなる)。
+    40	remote_out="$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
+    41	    "cd $REMOTE_DIR 2>/dev/null || exit 9; for f in ${FILES[*]}; do
+    42	       if [ -f \"\$f\" ]; then printf '%s %s\\n' \"\$(md5 -q \"\$f\")\" \"\$f\"; else printf 'MISSING %s\\n' \"\$f\"; fi
+    43	     done" 2>/dev/null)"
+    44	rc=$?
+    45	if [ $rc -ne 0 ] || [ -z "$remote_out" ]; then
+    46	    echo "observer-parity: 測れない(ssh rc=$rc / 出力が空)。**一致とは言わない**"
+    47	    exit 2
+    48	fi
+    49	
+    50	for f in "${FILES[@]}"; do
+    51	    lf="$HERE/$f"
+    52	    if [ ! -f "$lf" ]; then
+    53	        echo "  ?  $f — repo に無い(列挙が古い)"; fail=1; continue
+    54	    fi
+    55	    want="$(local_md5 "$lf")"
+    56	    got="$(printf '%s\n' "$remote_out" | awk -v n="$f" '$2==n {print $1}')"
+    57	    measured=$((measured + 1))
+    58	    if [ -z "$got" ]; then
+    59	        echo "  NG $f — 向こうの値が読めない"; fail=1
+    60	    elif [ "$got" = "MISSING" ]; then
+    61	        echo "  NG $f — friday に**無い**(依存物が欠けると閾値なしで鳴る枝が在る)"; fail=1
+    62	    elif [ "$got" != "$want" ]; then
+    63	        echo "  NG $f — ずれている(repo=$want friday=$got)"; fail=1
+    64	    else
+    65	        echo "  ok $f"
+    66	    fi
+    67	done
+    68	
+    69	# ★件数を主張する。列挙が壊れて 0 件になっても「全部一致」に見えないようにする
+    70	# (此の repo が何度も踏んだ「空の和を一致と読ませない」型)。
+    71	if [ "$measured" -ne "${#FILES[@]}" ]; then
+    72	    echo "observer-parity: 測れた本数が $measured / ${#FILES[@]} = 測定不成立"
+    73	    exit 2
+    74	fi
+    75	
+    76	if [ "$fail" -eq 0 ]; then
+    77	    echo "observer-parity: 一致 $measured/${#FILES[@]}"
+    78	    exit 0
+    79	fi
+    80	echo "observer-parity: ずれている(配り直しは tools/deploy-observer-to-friday.sh)"
+    81	exit 1
+    26	
+    27	HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    28	HOST="${RC_OBSERVER_HOST:-athenas}"
+    29	DRY=0
+    30	[ "${1:-}" = "--dry-run" ] && DRY=1
+    31	
+    32	# 運ぶ物 = observer が実際に読む物だけ。`health-step.mjs` は friday に在るが repo に無いので
+    33	# 触らない(由来不明の物を消す前に所有者を探す —— CLAUDE.md の hard boundary)。
+    34	FILES=(health-observer.sh funnel-exposure-check.sh tailnet-key-expiry.sh)
+    35	
+    36	for f in "${FILES[@]}"; do
+    37	    [ -f "$HERE/$f" ] || { echo "repo に $f が無い = 配れない"; exit 2; }
+    38	done
+    39	
+    40	echo "=== 1. 今のずれ ==="
+    41	bash "$HERE/observer-parity-check.sh"; before=$?
+    42	if [ "$before" -eq 0 ]; then
+    43	    echo "既に一致している。配らない(無駄な再起動を起こさない)"
+    44	    exit 0
+    45	fi
+    46	[ "$before" -eq 2 ] && { echo "測れないまま配らない(届かない先へ配ると壊した事にすら気付けない)"; exit 2; }
+    47	
+    48	if [ "$DRY" -eq 1 ]; then
+    49	    echo "=== --dry-run: 上のずれを直す為に ${#FILES[@]} 本を送る(実行しない)==="
+    50	    exit 0
+    51	fi
+    52	
+    53	echo "=== 2. 退避(上書きの前に、戻せる形を作る)==="
+    54	STAMP="$(date +%Y%m%d-%H%M%S)"
+    55	ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
+    56	    "mkdir -p \$HOME/rc-observer/tools/.bak-$STAMP && cd \$HOME/rc-observer/tools && \
+    57	     for f in ${FILES[*]}; do [ -f \"\$f\" ] && cp \"\$f\" \".bak-$STAMP/\"; done; \
+    58	     ls \$HOME/rc-observer/tools/.bak-$STAMP" || { echo "退避に失敗 = 配らない"; exit 1; }
+    59	
+    60	echo "=== 3. 配る ==="
+    61	# ★宛先で `$HOME` を使わない(2026-08-30、実測で踏んだ)。`ssh` は remote shell を通すので
+    62	#   `$HOME` が展開されるが、転送の宛先は sftp のパスとして扱われ、
+    63	#   `remote mkdir "$HOME/..."` と**そのままの文字列**で失敗する。実 path を先に引く。
+    64	RHOME="$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" 'printf %s "$HOME"')" || {
+    65	    echo "宛先の HOME を引けない = 配らない"; exit 2; }
+    66	[ -n "$RHOME" ] || { echo "宛先の HOME が空 = 配らない"; exit 2; }
+    67	( cd "$HERE" && scp -q "${FILES[@]}" "$HOST:$RHOME/rc-observer/tools/" ) || { echo "転送に失敗"; exit 1; }
+    68	ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" \
+    69	    "cd \$HOME/rc-observer/tools && chmod +x ${FILES[*]}" || { echo "実行権を付けられない"; exit 1; }
+    70	
+    71	echo "=== 4. 一致したか(独立の測り手)==="
+    72	bash "$HERE/observer-parity-check.sh"; after=$?
+    73	[ "$after" -ne 0 ] && { echo "配ったのに一致しない。戻す先 = ~/rc-observer/tools/.bak-$STAMP"; exit 1; }
+    74	
+    75	echo "=== 5. 配った物が実際に走るか(--dry-run で1回)==="
+    76	# ★「file が置けた」は「動く」ではない。通知は出さずに1周させて、
+    77	#   `監視が壊れている` を撃たない事まで見る(依存物が欠けていれば此処で判る)。
+    78	# ★健全な走行は stdout に**何も出さない**(実測 2026-08-30)。なので「異常語が無い」で
+    79	#   判定すると、台本が壊れて一言も出せない時も緑になる —— 空と正常を同じ顔にしない為、
+    80	#   **走った証拠をログの側に取りに行く**。判定は「異常語が無い」ではなく「正常の合図が在る」。
+    81	before_n="$(ssh -o ConnectTimeout=15 -o BatchMode=yes "$HOST" \
+    82	    "wc -l < \$HOME/.rc-backend/health-observer.log 2>/dev/null || echo 0" | tr -d ' ')"
+    83	out="$(ssh -o ConnectTimeout=20 -o BatchMode=yes "$HOST" \
+    84	        "bash \$HOME/rc-observer/tools/health-observer.sh --dry-run 2>&1 | tail -5")"
+    85	[ -n "$out" ] && echo "$out"
+    86	after_tail="$(ssh -o ConnectTimeout=15 -o BatchMode=yes "$HOST" \
+    87	    "tail -n \$(( \$(wc -l < \$HOME/.rc-backend/health-observer.log) - ${before_n:-0} )) \
+    88	     \$HOME/.rc-backend/health-observer.log 2>/dev/null")"
+    89	echo "$after_tail"
+    90	if printf '%s%s' "$out" "$after_tail" | grep -q "監視が壊れている"; then
+    91	    echo "★配った版が『監視が壊れている』を出した。戻す先 = ~/rc-observer/tools/.bak-$STAMP"
+    92	    exit 1
+    93	fi
+    94	if ! printf '%s' "$after_tail" | grep -q "鳴らさない\|鍵の残日数\|公開面"; then
+    95	    echo "★配った版が1行もログを書かなかった = **走った証拠が無い**(空を正常と読まない)"
+    96	    exit 1
+    97	fi
+    98	
+    99	echo "=== 完了(退避 = ~/rc-observer/tools/.bak-$STAMP)==="
+   100	exit 0
+    45	# ★「監視が最後に働けた時刻」(Codex Q3)。「監視側が壊れています」だけでは、
+    46	#   10 分前からなのか 3 日前からなのかが分からず、Tom は log を開くまで緊急度を測れない。
+    47	#   ★記録するのは **対象が up だった時刻ではなく、判定が一周できた時刻**。
+    48	#     up を記録すると「対象が長く落ちている」が「監視が長く壊れている」に見え、
+    49	#     Q3 が消したがっている取り違えを別の場所で作り直す事になる。
+    50	#   状態 file とは**別の file** に置く。監視が壊れる二形のうち一方が
+    51	#   「状態 file が壊れている」なので、そこに相乗りすると肝心な時に読めない。
+    52	OK_MARK="${RC_HEALTH_OK_MARK:-$STATE.last-ok}"
+    53	
+    54	ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    55	STEP="$ROOT/tools/health-step.mjs"
+    56	NODE="${RC_HEALTH_NODE:-$(command -v node || echo /opt/homebrew/bin/node)}"
+    57	
+    58	# ── tailnet 鍵の残日数(up/down とは**別系統**)────────────────────────
+    59	# 鍵が切れると機械は tailnet から落ちる。up/down の監視はそれを「落ちた」としてしか言えず、
+    60	# しかも**切れてから**しか言えない。切れる前に言う為の系統が要る = 此処。
+    61	#
+    62	# ★測る相手が2つ在る理由(2026-08-03 実測): 監視は「edith を、別のノードから」叩く形なので、
+    63	#   鎖には鍵が2本ある。実測値は 観測側(Jervis)46 日 / edith 143 日 —— **先に切れるのは
+    64	#   監視する側**。遠い方だけ見ていると、先に壊れる方を一度も見ない。だから両方を見る。
+    65	#   観測側が落ちると edith は無事なのに `/healthz` へ届かず、**本物の障害と区別が付かない
+    66	#   偽の警報**が出るか、監視ごと黙る。
+    67	KEY_CHECK="${RC_HEALTH_KEY_CHECK:-$ROOT/tools/tailnet-key-expiry.sh}"
+    68	# ★**表示用の名前と、機体を引く名前は型が違う**(Codex 2026-08-26)。
+    69	#   以前は `${RC_HEALTH_KEY_PEER:-$HOST}` と書いて `HOST` を継いでいた。だが `HOST` は
+    70	#   URL を明示した構成では**人が読む札**になる —— 実際 athenas の `observer.conf` は
+    71	#   `RC_HEALTH_HOST="friday(loopback)"` を置いている(URL は loopback で別に指定済み)。
+    72	#   その札を機体名として引きに行くので必ず失敗し、`rc=2` = 「監視が壊れている」を鳴らした。
+    73	#   実測 2026-08-26 11:08、それが本物の障害でない事は同じ log の前後が全部 `ok` である事で判る。
+    74	#
+    75	#   ★狼を2回叫んだ見張りは、3回目に読まれない。だから継承を切る。
+    76	#   **未設定 = 相手が居ない**(単一機体構成)として扱い、鳴らさない。
+    77	#   相手を明示した時だけ、測れない事を「監視が壊れている」と言う —— そちらは正しい。
+    78	KEY_PEER="${RC_HEALTH_KEY_PEER:-}"           # 監視している相手。**空 = 相手が居ない**
+    79	KEY_EVERY="${RC_HEALTH_KEY_EVERY:-86400}"    # 測る間隔(既定 1 日1回。10 分毎に測る物ではない)
+    80	KEY_MARK="${RC_HEALTH_KEY_MARK:-$STATE.key-checked}"
+    81	KEY_WARN_DAYS="${RC_HEALTH_KEY_WARN_DAYS:-45}"
+    82	# 段(この日数を**下回った**時に1回だけ鳴らす)。45 日間まいにち鳴らすと Tom が経路ごと
+    83	# 黙らせる —— yoda の 46 時間と同じ終わり方をする。だから段を降りた時だけ言う。
+    84	# ★2026-08-03 に 45/30/14/7/3/1 から減らした(査読 Q4)。どの段でも Tom がやる事は
+    85	#   「admin console で Disable key expiry を押す」の1つだけなので、段を増やしても情報は
+    86	#   増えず、鳴る回数だけ増えて「経路ごと黙らされる」側にだけ効く。期限切れの段(0)を
+    87	#   足しても**1台あたり最大5通**で、元の6通より少ない。
+    88	KEY_STEPS="${RC_HEALTH_KEY_STEPS:-45 14 7 1}"
+    89	
+    90	# ---- 公開面への相乗りを見張る(2026-08-26 新設)------------------------------------
+    91	# 何を問うか: 「**公開されている入口の下に、机(127.0.0.1:$EXP_PORT)へ向く経路が在るか**」。
+    92	# なぜ此処か(Codex 2026-08-26 の裁定1): `tailscale serve status` は**この機体でしか**
+    93	#   権威ある値を読めない。机の外(Jervis)から見に行く案は、回線が不定期に落ちる度に
+    94	#   「到達できない」を「露出しているかもしれない」に翻訳してしまう = 安全の警報を
+    95	#   回線障害から作る事になる。
+    96	# ★間隔は KEY_* と違って**毎回**測る。serve の設定は1コマンドで変わるので、
+    97	#   日に1回では「変わって・使われて・戻った」を丸ごと見逃す。読むのは local なので安い。
+    98	EXP_CHECK="${RC_HEALTH_EXP_CHECK:-$ROOT/tools/funnel-exposure-check.sh}"
+    99	EXP_PORT="${RC_HEALTH_EXP_PORT:-8787}"
+   100	EXP_TS="${RC_HEALTH_EXP_TS:-/Applications/Tailscale.app/Contents/MacOS/Tailscale}"
+   101	EXP_MARK="${RC_HEALTH_EXP_MARK:-$STATE.exposure}"
+   102	# 「測れなかった」が続いた時に鳴らす回数。**露出そのものより緩く、生存より厳しい** ——
+   103	# これは「保証を失った」であって「壊れた」でも「安全」でもない(Codex 裁定2)。
+   104	EXP_BLIND_THRESHOLD="${RC_HEALTH_EXP_BLIND_THRESHOLD:-2}"
+   105	
+   106	
+   107	MODE="probe"; DRY=0; EXPOSURE_ONLY=0
+   108	for a in "$@"; do
+   109	    case "$a" in
+   110	        --inject-fail) MODE="fail" ;;
+   488	ERRF="$(mktemp "${TMPDIR:-/tmp}/health-step-err.XXXXXX")"
+   489	MSG="$("$NODE" "$STEP" "$STATE" "$VERDICT" "$REASON" "$(date +%s)" "$THRESHOLD" "$HOST" 2>"$ERRF")"
+   490	KIND=$?
+   491	ERR="$(cat "$ERRF" 2>/dev/null)"; /bin/rm -f "$ERRF"
+   492	
+   493	# 値は `FLEET_NOTIFY_MENTION` にそのまま渡す物。"0" = ping を抑える / 空 = 既定(= @Tom 付き)
+   494	PING_SUPPRESS=""
+   495	
+   496	# ── ★監視が一周できた事を記録する(Codex Q3 の材料)──────────────────
+   497	# KIND 0/10/11 = 判定が使える答えを返した = **監視は働けている**(対象の up/down は別の話)。
+   498	# KIND 3 と その他 = 監視が壊れている回なので、ここは通らない。
+   499	# 書けなくても止めない: これは通知を読みやすくする為の材料であって、監視の可否ではない。
+   500	# ただし**黙って落とさない** —— 書けない状態が続けば通知が毎回「一度も成功していない」に
+   501	# なり、それは嘘に見える。log に理由を残して後から辿れる様にする。
+   502	case "$KIND" in
+   503	    0|10|11)
+   504	        date +%s > "$OK_MARK" 2>>"$LOG" \
+   505	            || log "  ★最終稼働時刻を書けない($OK_MARK) — 壊れた時の通知が『一度も成功していない』になる"
+   506	        ;;
+   507	esac
+   508	
+   509	# ★台本自身の終了コードは「監視が健全か」を表す。**通知を出したかどうかで変えない**。
+   510	#   (対照が拾った実際の不整合: 抑制された時だけ 3、鳴らした時は 0 を返していた ——
+   511	#    同じ「監視が壊れている」状態が、鳴らした回だけ launchd から見て正常に見えていた)
+   512	FINAL_RC=0
+   513	case "$KIND" in
+   514	    0)  log "$VERDICT ${REASON:+($REASON)} — 鳴らさない"; exit 0 ;;
+   515	    10) PING_SUPPRESS=""  ;;   # 落ちた = @Tom を付ける
+   516	    11) PING_SUPPRESS="0" ;;   # 戻った = ping 無し(既に一度鳴らしている)
+   517	    3)
+   518	        # ★監視自体が壊れている。これを黙って 0 に丸めると「静かに鳴らない監視」になる。
+   519	        log "★監視の状態が壊れている: $ERR"
+   520	        notify_monitor_broken "状態ファイル"
+   521	        exit 3
+   522	        ;;
+   523	    *)  # 判定が起動すらできなかった(設定の値が不正 / node の中で落ちた 等)。
+   524	        # ★元はここで log を1行残して `exit $KIND` = **誰にも届かなかった**。
+   525	        #   閾値に `0` と書いた設定で 5 回叩いて通知 0 通、というのがその実測。
+   526	        log "判定が異常終了(code=$KIND): ${ERR:-$MSG}"
+   527	        notify_monitor_broken "設定か引数が不正"
+   528	        exit 3
+   529	        ;;
+   530	esac
+   531	
+   532	# ── 鳴らす ────────────────────────────────────────────────────────
+   533	if [ "$DRY" -eq 1 ]; then
+   534	    log "DRY-RUN: [$MSG] (ping抑制=${PING_SUPPRESS:-無し})"
+   535	    echo "$MSG"; exit "$FINAL_RC"
+   536	fi
+   537	[ -x "$NOTIFY" ] || { log "通知の出し先が実行できない: $NOTIFY"; echo "通知の出し先が実行できない: $NOTIFY" >&2; exit 2; }
+   538	
+   539	if [ -n "$PING_SUPPRESS" ]; then
+   540	    printf '%s' "$MSG" | FLEET_NOTIFY_MENTION=0 "$NOTIFY"
+   541	else
+   542	    printf '%s' "$MSG" | "$NOTIFY"
+     1	#!/usr/bin/env node
+     2	// 観測1回分を状態に畳んで、鳴らすべきなら文面を1行出す**だけ**の繋ぎ。
+     3	// 判定は `src/health.mjs`(純関数・単体 25 本 + 変異の的 13 枚)に在り、ここには置かない。
+     4	//
+     5	//   node tools/health-step.mjs <状態ファイル> <ok|ng> <理由> <epoch秒> [閾値] [ホスト名]
+     6	//   node tools/health-step.mjs --mark-delivered <状態ファイル>   ← 配達が済んだ後だけ
+     7	//
+     8	// 終了コードで種類を返す(shell が mention の有無を決められる様に):
+     9	//   0  = 鳴らさない          10 = 落ちた(mention 付き)      11 = 戻った(ping 無し)
+    10	//   3  = ★状態ファイルが壊れている / 書けない(= 監視自体が死んでいる)
+    11	//
+    12	// なぜ 3 を分けるか: 状態が読めないと `fails` が毎回 0 に戻り、**何回失敗しても閾値に
+    13	// 届かない** = 永久に鳴らない監視になる。yoda の 46 時間と同じ「壊れ方が静か」な形なので、
+    14	// 「読めなかった」を「異常なし」に丸めず、呼び手が別建てで騒げる様に外へ出す。
+    15	import { readFileSync, writeFileSync, renameSync, existsSync, unlinkSync } from "node:fs";
+    16	import {
+    17	    initialHealthState,
+    18	    healthTransition,
+    19	    healthMessage,
+    20	    markDelivered,
+    21	} from "../src/health.mjs";
+    22	
+    23	const argv = process.argv.slice(2);
+    24	
+    25	function die(code, msg) {
+    26	    process.stderr.write(`health-step: ${msg}\n`);
+    27	    process.exit(code);
+    28	}
+    29	
+    30	// ── 状態を読む / 書く(両方の入口が使う)────────────────────────────
+
+codex
+結論、直すべきは3点です。
+
+1. **Aはすでに依存物を見落としています。**  
+   「repoに無い」という注釈は事実と逆です。[health-observer.sh](/Users/tomtim/Infra/mobile-work/rc-backend/tools/health-observer.sh:54) は `health-step.mjs` を必須とし、それはさらに [src/health.mjs](/Users/tomtim/Infra/mobile-work/rc-backend/src/health.mjs) を読みます。両方git管理下です。今の「3/3一致」は判定本体が古くても緑になります。  
+   対策はobserver一式を専用ディレクトリへまとめ、`git ls-files -- observer-runtime/`で丸ごと配ること。さらにAの`measured++`は解析成功前に実行されるため、件数検査が常に通ります。[57行目](/Users/tomtim/Infra/mobile-work/rc-backend/tools/observer-parity-check.sh:57)は有効なMD5を読めた後だけ増やし、不正出力はexit 2にすべきです。
+
+2. **Step 5は実行証明になっていません。**  
+   [84行目](/Users/tomtim/Infra/mobile-work/rc-backend/tools/deploy-observer-to-friday.sh:84)のリモートパイプは`tail`の終了コードを返すため、watchdogがexit 3でも成功扱いになります。さらにlaunchd実行のログを拾えば偽陽性になります。  
+   安い正解は、単一SSH内で一意なnonceと専用の一時state/logを渡し、正常終了地点だけが`SELFTEST_OK:<nonce>`を出すことです。`rc=0`と完全一致するnonceの両方を要求してください。共有ログの行数差分は不要です。現状の`--dry-run`は本番stateも更新するので、必ず隔離が必要です。
+
+3. **無人デプロイなのにトランザクションになっていません。**  
+   `scp`後の検査失敗は「戻す先」を表示するだけで、壊れた本番を残します。ループ運用なら、編集中の未コミットファイルまで自動配備され得ます。  
+   cleanなcommitから一式をステージングし、そこでhash/self-testを通し、deploy lock取得後にrelease symlinkを原子的に切り替える構成にしてください。切替後失敗時は自動rollbackと再検査まで必須です。
+
+`.bak-*`は現在の明示パス参照では拾われないので、今すぐの正しさには影響しません。ただし`tools/`外の`backups/`へ移し、直近3～5世代で削るのが妥当です。
+tokens used
+71,463
+結論、直すべきは3点です。
+
+1. **Aはすでに依存物を見落としています。**  
+   「repoに無い」という注釈は事実と逆です。[health-observer.sh](/Users/tomtim/Infra/mobile-work/rc-backend/tools/health-observer.sh:54) は `health-step.mjs` を必須とし、それはさらに [src/health.mjs](/Users/tomtim/Infra/mobile-work/rc-backend/src/health.mjs) を読みます。両方git管理下です。今の「3/3一致」は判定本体が古くても緑になります。  
+   対策はobserver一式を専用ディレクトリへまとめ、`git ls-files -- observer-runtime/`で丸ごと配ること。さらにAの`measured++`は解析成功前に実行されるため、件数検査が常に通ります。[57行目](/Users/tomtim/Infra/mobile-work/rc-backend/tools/observer-parity-check.sh:57)は有効なMD5を読めた後だけ増やし、不正出力はexit 2にすべきです。
+
+2. **Step 5は実行証明になっていません。**  
+   [84行目](/Users/tomtim/Infra/mobile-work/rc-backend/tools/deploy-observer-to-friday.sh:84)のリモートパイプは`tail`の終了コードを返すため、watchdogがexit 3でも成功扱いになります。さらにlaunchd実行のログを拾えば偽陽性になります。  
+   安い正解は、単一SSH内で一意なnonceと専用の一時state/logを渡し、正常終了地点だけが`SELFTEST_OK:<nonce>`を出すことです。`rc=0`と完全一致するnonceの両方を要求してください。共有ログの行数差分は不要です。現状の`--dry-run`は本番stateも更新するので、必ず隔離が必要です。
+
+3. **無人デプロイなのにトランザクションになっていません。**  
+   `scp`後の検査失敗は「戻す先」を表示するだけで、壊れた本番を残します。ループ運用なら、編集中の未コミットファイルまで自動配備され得ます。  
+   cleanなcommitから一式をステージングし、そこでhash/self-testを通し、deploy lock取得後にrelease symlinkを原子的に切り替える構成にしてください。切替後失敗時は自動rollbackと再検査まで必須です。
+
+`.bak-*`は現在の明示パス参照では拾われないので、今すぐの正しさには影響しません。ただし`tools/`外の`backups/`へ移し、直近3～5世代で削るのが妥当です。

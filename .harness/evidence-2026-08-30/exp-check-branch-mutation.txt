@@ -1,0 +1,37 @@
+exp-check-missing-path-has-control-test — 対照が本物である事の実演(2026-08-30 01:3x CDT)
+
+## なぜこの枝に対照が要ったか
+2026-08-30、repo 版の health-observer を friday へ配る直前に、依存物
+`funnel-exposure-check.sh` が向こうに**無い**事に気付いた。新版はその時
+`notify_monitor_broken` を**閾値なしで**撃つ(`tools/health-observer.sh` の
+`[ ! -x "$EXP_CHECK" ]` の枝)ので、台本だけ配っていれば
+**日1回の誤報が10分毎に化けた**。依存物も一緒に配って回避したが、
+729 行の `test/health-observer-controls.sh` は他の2つの壊れ方について同じ抑制を
+測っているのに、**この枝だけ空**だった。
+
+## 基準
+$ bash test/health-observer-controls.sh
+  HEALTH-OBSERVER-CONTROLS: pass=122 fail=0
+  ── 8. 公開面を測る台本が無い時 ──
+    ok   (a)  台本が無ければ鳴る(黙って安全と言わない)
+    ok   (a2) 理由が log に残る
+    ok   ★(b) 続けて回しても鳴り続けない(抑制がこの枝にも効く)
+    ok   ★(c) 台本が在れば鳴らない(何でも鳴る訳ではない)
+
+## 変異 M1 — 台本が無い時に黙る(最も危ない壊れ方 = 測れないのに安全に見える)
+`notify_monitor_broken "公開面を測る台本が無い"` を `:` に差し替え
+
+結果:
+  NG   (a) 台本が無ければ鳴る(黙って安全と言わない) — 期待[1] 実際[0]
+  ok   ★(c) 台本が在れば鳴らない(何でも鳴る訳ではない)   ← 緑のまま
+  HEALTH-OBSERVER-CONTROLS: pass=120 fail=2
+
+★**赤くなったのは担当の2本だけ**で、陽性対照(c)は緑のまま = この4本は
+「何でも鳴る」ではなく「**台本が無い事**」を測っている。
+
+## 復元
+  md5 一致(f08b07cb612252e861d8ca863a6ce76f)
+
+## この対照が測っていない事(正直に)
+- 本物の `funnel-exposure-check.sh` の**判定の正しさ**は測らない(あちらの担当)。
+- 通知が Discord に**届く**事は測らない(偽の出し先へ出す設計。届く事は別の系統)。
