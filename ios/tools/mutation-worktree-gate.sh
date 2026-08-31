@@ -36,8 +36,12 @@
 #   bash ios/tools/mutation-worktree-gate.sh          # 判定
 #   bash ios/tools/mutation-worktree-gate.sh --list   # 今の借金を並べる
 #
-# no-operator: 門(tools/pre-commit-gates.sh)から回す物ではなく、
-#   `staged-controls-gate` が `controls-for:` で拾う。撃つ時 = 対照を足した時。
+# 走らせる物: `staged-controls-gate` が `controls-for:` で拾う対照
+#   (`mutation-worktree-gate-controls.sh`)と、`mutation-residue-check.sh` が
+#   「誰が変異対照か」を問う為に呼ぶ `--is-mutator`。
+#   ★`no-operator:` の印は 2026-08-30 に外した —— 呼ぶ物が出来た後も印が残ると、
+#     **走っている物を走っていないと記録する**事になり、次に読む人が判断を誤る
+#     (`tunnel-observer.sh` が同じ理由で同じ印を外している)。
 #
 # 終了コード: 0=増えていない / 1=**増えた**(名前を出す) / 2=測れない
 set -uo pipefail
@@ -53,14 +57,19 @@ SCAN_DIRS="${RC_MWG_SCAN:-$HERE $ROOT/.harness}"
 # ★**名前を書く**。数だけだと、1本直して1本足した日に気付けない。
 #   ここから消す時は、其の対照が本当に木を触らなくなった事を確かめてから。
 #   ★足すな。足したくなったら、其れは此の門が止めるべき変更。
+#   ★2026-08-30 に 10 → 7 へ減った。減った3本はどれも**元から写しの上で撃っていた** ——
+#     借金が減ったのではなく、私の検出器が過大に数えていた。
+#     `dod-sprint-6.5`(第二の木)/ `dod-sprint-4`(`$SCRATCH`)/
+#     `initial-load-narration`(`$MUT`)。借金の数が実態より多いと、
+#     本当に減った日に気付けない。
+#   ★2026-08-30 の経緯: `dod-sprint-6.5-controls.sh` は
+#     `mktemp -d` で第二の木を作って其処を撃っており、作業中の木は触っていない ——
+#     **借金 9 本を移す時の、此の repo に既に在る手本**。
 DEBT="
 account-ui-control.sh
 bar-material-control.sh
 conversation-ui-control.sh
-dod-sprint-4-controls.sh
-dod-sprint-6.5-controls.sh
 inflight-sentence-control.sh
-initial-load-narration-control.sh
 list-return-refresh-control.sh
 signout-notice-control.sh
 update-notice-ui-control.sh
@@ -86,12 +95,30 @@ update-notice-ui-control.sh
 #     `mutation-residue-controls.sh` の N10b が同じ結論を先に書いている)。
 writes_live_tree() {  # writes_live_tree <file> → 0=書き換えている
     local body vars v tgt hits
+    # ★**別の木を作る台本は最初に外す**(2026-08-30、実測で判った)。
+    #   `.harness/dod-sprint-6.5-controls.sh` は `git worktree add` で第二の木を作り、
+    #   `$WT/ios/Sources/…` を書き換える —— 作業中の木は1バイトも触らない。
+    #   ★之は**此の repo に既に在る、正しい形の実例**。借金 10 本を移す時の手本になる。
+    #   (`WORK=` / `mkcopy` / `cp -R` / `rsync` = 写しを作る形も同じ理由で外す)
+    grep -qE 'git worktree add|^[[:space:]]*WT=' "$1" 2>/dev/null && return 1
     body="$(grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -v -E '(echo|printf)[[:space:]]')"
     # `<NAME>="…Sources/….swift…"` の左辺を集める。
     vars="$(printf '%s\n' "$body" | grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z_0-9]*="[^"]*Sources/[^"]*"' \
             | sed 's/^[[:space:]]*//; s/=.*//' | sort -u)"
     [ -n "$vars" ] || return 1
     for v in $vars; do
+        # ★**写しを指す宣言は最初に外す**(2026-08-30、計画者の実測で判った)。
+        #   `MET="$SCRATCH/ios/Sources/…"` / `MUT_RULE="$MUT/Sources/…"` の様に、
+        #   根が `mktemp -d` の変数なら其れは作業中の木ではない。
+        #   ★初版は此の判定を**間接参照の枝にだけ**置いていたので、直接の枝が先に
+        #     `return 0` して `dod-sprint-4-controls.sh` と
+        #     `initial-load-narration-control.sh` を借金に数えていた ——
+        #     借金の数が実態より 2 本多いと、減った時に気付けない。
+        root="$(printf '%s\n' "$body" | grep -E "^[[:space:]]*$v=" | head -1 \
+                | sed 's/^[^=]*="//; s/".*//' | grep -oE '^\$[A-Za-z_][A-Za-z_0-9]*' | tr -d '$')"
+        if [ -n "$root" ] && [ "$root" != "IOS" ] && [ "$root" != "ROOT" ]; then
+            printf '%s\n' "$body" | grep -E "^[[:space:]]*$root=" | grep -qE 'mktemp|TMPDIR' && continue
+        fi
         # ★literal を先に組み、**固定文字列**で行を絞る。正規表現に変数名を織り込むと
         #   `\$$v` が後方参照に化けて grep が全滅する(2026-08-30 実測)。
         tgt="\"\$$v\""
@@ -140,6 +167,14 @@ done
 if [ "$n_scanned" -eq 0 ]; then
     echo "mutation-worktree-gate: 走査対象が 0 本 = 測定不成立(綴りか置き場を疑う事)" >&2
     exit 2
+fi
+
+# ★1本だけ問う口(2026-08-30、CF-21)。`mutation-residue-check.sh` が此処へ委ねる為に在る。
+#   規則を2箇所に書くと、片方だけ直る日が来る —— 実際、検知器は 4 本、門は 10 本と
+#   食い違ったまま動いていた。判定は此の file にだけ在る。
+if [ "${1:-}" = "--is-mutator" ]; then
+    [ -n "${2:-}" ] && [ -f "$2" ] || exit 2
+    writes_live_tree "$2" && exit 0 || exit 1
 fi
 
 if [ "${1:-}" = "--list" ]; then
