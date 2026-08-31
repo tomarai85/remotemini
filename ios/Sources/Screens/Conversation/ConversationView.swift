@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import os
 
 /// The Conversation screen (Sprint 3 brief §3). Renders `ConversationViewModel`'s
 /// `phase`/`loadEarlierState` -- display only, same split `ListView`/`ListViewModel`
@@ -59,6 +60,172 @@ struct ConversationView: View {
     /// スクロール位置を直接読む口が無い(`onScrollGeometryChange` は iOS 18)ので、
     /// 「見えているかどうか」を `onAppear`/`onDisappear` で測っている。
     @State private var isPinnedToBottom = true
+
+    /// 開いた直後の着地がまだ終わっていない。
+    ///
+    /// ★之に `isPinnedToBottom` を使わない。`LazyVStack` は窓の外へ先回りして作るので、
+    ///   錨の `onAppear` は**下端に着く前に**発火し得る —— 之を終端条件にすると、
+    ///   着く前に補正を止めてしまう。(2026-08-31 Codex が「錨の onAppear は下端が
+    ///   見えている証拠ではない」を此の設計の最大の穴として指摘し、私が自分で挙げていた
+    ///   弱点と一致した。だから終端は下の `distanceToBottom` = 倒れた瞬間に測ったのと
+    ///   同じ量 で決める。)
+    @State private var initialLandingPending = true
+
+    /// 補正の回数の栓。**原因への手当てではなく、輪が回り続けない為の belt**。
+    /// 高さが微小に振動する版図では終端条件が満たされ続けない事が有り得る、という
+    /// 指摘への備え。此処へ到達する事自体が欠陥の合図なので、到達したら記録に残す。
+    private static let maxLandingCorrections = 12
+    @State private var landingCorrections = 0
+
+    /// 之まで最も下端に近付いた距離。**直近の値ではなく最良値**を憶える。
+    ///
+    /// ★2026-08-31、批評で捕まった欠陥: 初版は「今回が直近より縮んでいなければ降りる」
+    ///   だった。しかし此の欠陥の中身は「寄せた後に行が実体化して**内容が伸びる**」事
+    ///   なので、1 回の pass で「寄せは 170pt 詰めたが高さが 190pt 伸びた」= 距離が
+    ///   **増える**事が普通に起きる。其の一過性の 1 回で `pending = false` にすると
+    ///   **回復経路が無いまま恒久的に諦める** —— しかも負荷下(= 倒れる条件)で最も
+    ///   踏みやすい。最良値と「足踏みの回数」で見る。
+    @State private var bestLandingDistance: CGFloat = .infinity
+    /// **最初に測った**下端までの距離。★終わりの値だけでは「補正が要らなかった」と
+    /// 「大きく手前から引き戻した」が同じ見た目になる —— 実際に破壊口の実験で
+    /// 両者がバイト単位で同一の読み出しになり、何も判らなかった(2026-08-31)。
+    /// 出発点と回数を出して初めて、輪が働いた事を主張できる。
+    @State private var firstLandingDistance: CGFloat = .nan
+    /// 最良値を更新できなかった連続回数。
+    private static let maxStalledLandingPasses = 3
+    @State private var stalledLandingPasses = 0
+
+    /// 内容と窓の実測。着地の判断だけに使う。
+    ///
+    /// ★輪(preference → state → body → layout → preference)は**既に在る**。
+    ///   初版の註は「layout に影響する物を書かないので輪はできない」と書いていたが偽で、
+    ///   `contentMetrics` → `distanceToBottom` → `reassertLanding` → `scrollTo` → layout
+    ///   → preference と閉じている。輪を切っているのは「影響しない事」ではなく
+    ///   **`initialLandingPending` の門**。門は `onPreferenceChange` の**代入より前**に
+    ///   置く事(後ろに置くと、着地が終わった後も毎フレーム @State を書き続ける)。
+    @State private var contentMetrics = ConversationContentMetrics()
+    @State private var viewportHeight: CGFloat = 0
+
+    /// 内容の上端の y を読む座標系の名前。
+    private static let scrollSpace = "conversation.scroll"
+
+    private static let landingLog = Logger(subsystem: "com.tomtim.mobilework", category: "conversation")
+
+    /// 下端まであと何 pt 残っているか。0 以下 = 着いている。
+    ///
+    /// ★2026-08-31 の失敗記録が測ったのと同じ式: 内容 3308.0 + 寄せ (-2430.7) - 窓 501.7
+    ///   = 375.6pt。**欠陥を検出した式を、そのまま修正の終端条件に使う**。
+    ///
+    /// ★★375.6pt は **約 7 行分**(1行 38.6pt + 間隔 16 = 54.6pt、375.6/54.6 = 6.9)。
+    ///   最初 此処に「約 3 行」と書いたのは誤り —— 3 は「088/089/090 が実体化して
+    ///   いなかった」の方の数で、**実体化していない行数と、足りない距離を混ぜていた**。
+    ///   実際に見えていた帯は 075-084 で、085-087 は作られていたが画面の外。
+    ///   (幾何の検算: 3308 = 16 + Σ行 + 60*16 + 1 + 16 → Σ行 2315 → 1行 38.6pt)
+    private var distanceToBottom: CGFloat {
+        contentMetrics.contentHeight + contentMetrics.contentTop - viewportHeight
+    }
+
+    /// 着地の読み出し。`<状態> <下端までの pt>` の 1 行。
+    ///
+    /// 状態 = `pending`(まだ着地の最中)/ `settled`(終わった)。
+    /// **通っても倒れても**検査が此れを刷る事で、二値でなく連続量が毎回 残る。
+    /// 窓の高さが 0(まだ layout 前)の間は `unmeasured` —— 0 と混ぜない。
+    private var landingReadout: String {
+        let state = initialLandingPending ? "pending" : "settled"
+        // ★生の 3 値も出す。`unmeasured` とだけ返していた初版では、
+        //   「窓が測れていない」のか「内容が測れていない」のか判らず、
+        //   1 回 6 分の走行を無駄にした(2026-08-31 実測)。
+        //   計器の出力は**次の一手が決まる粒度**で出す。
+        //
+        // ★★`MainThreadHog` は `#if DEBUG` の中にしか存在しない。之を `#if` の外で
+        //   参照して **Release(= 電話用の構成)だけ**コンパイルが落ちた
+        //   (`cannot find 'MainThreadHog' in scope`、2026-08-31 実測)。
+        //   simulator の検査 759 件は **Debug しか組まない**ので一度も当たらず、
+        //   電話へ焼くまで判らなかった。DEBUG 限定の物を参照する行は、
+        //   参照する側も同じ `#if` の中へ入れる事。
+        #if DEBUG
+        let hog = MainThreadHog.isArmed ? "hog" : "nohog"
+        let sab = ProcessInfo.processInfo.environment["RC_UI_LANDING_SABOTAGE"] != nil ? "sab" : "nosab"
+        #else
+        let hog = "nohog"
+        let sab = "nosab"
+        #endif
+        // ★`first` と `corr` が此の読み出しの芯。終わりの値だけでは
+        //   「補正が要らなかった」と「大きく手前から引き戻した」が区別できない。
+        let raw = String(format: "first=%.1f corr=%d %@ h=%.1f top=%.1f v=%.1f",
+                         firstLandingDistance, landingCorrections, sab,
+                         contentMetrics.contentHeight, contentMetrics.contentTop, viewportHeight)
+        guard viewportHeight > 0, contentMetrics.contentHeight > 0 else {
+            return "unmeasured \(hog) \(raw)"
+        }
+        return "\(state) \(String(format: "%.1f", distanceToBottom)) \(hog) \(raw)"
+    }
+
+    /// 開いた直後の着地を、観測に基づいて必要なだけ撃ち直す。
+    ///
+    /// 時計で待たない。`LazyVStack` が行を作る度に高さが変わり、其の度に此処が呼ばれる。
+    /// 高さが落ち着けば呼び出し自体が来なくなるので、待ち時間の当て推量が要らない。
+    private func reassertLanding(_ proxy: ScrollViewProxy) {
+        #if DEBUG
+        // ★検査専用の停止口。「輪が働いた」と「輪が必要だった」は別の主張で、
+        //   後者は**輪を止めた時に倒れる**事でしか示せない。
+        //   実測(2026-08-31): 破壊口 ON(錨への scrollTo を飛ばす)でも着地した ——
+        //   之だけでは SwiftUI 自身が下端へ行っている可能性を潰せない。
+        if ProcessInfo.processInfo.environment["RC_UI_LANDING_NOLOOP"] != nil { return }
+        #endif
+        guard initialLandingPending else { return }
+        guard viewportHeight > 0, contentMetrics.contentHeight > 0 else { return }
+
+        let remaining = distanceToBottom
+        if firstLandingDistance.isNaN { firstLandingDistance = remaining }
+
+        if remaining <= 0.5 {                      // 着いた。之が唯一の「着地した」の証拠。
+            initialLandingPending = false
+            return
+        }
+
+        // 最良値を更新できたか。★1 回 増えただけで諦めない —— 行の実体化で内容が伸びる
+        //   のは此の欠陥の中身そのもので、其の pass は「近付いていない」ではなく
+        //   「足場が動いた」だけ。連続で足踏みした時に初めて降りる。
+        if remaining < bestLandingDistance - 0.5 {
+            bestLandingDistance = remaining
+            stalledLandingPasses = 0
+        } else {
+            stalledLandingPasses += 1
+            if stalledLandingPasses >= Self.maxStalledLandingPasses {
+                giveUpLanding("\(Self.maxStalledLandingPasses) 回続けて近付かなかった", remaining)
+                return
+            }
+        }
+
+        if landingCorrections >= Self.maxLandingCorrections {
+            giveUpLanding("補正 \(Self.maxLandingCorrections) 回の上限", remaining)
+            return
+        }
+
+        landingCorrections += 1
+        proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+    }
+
+    /// 着地を諦める。★**必ず記録を残す**。
+    ///
+    /// 初版は諦める経路が無言だったので、後から「着いた」のか「諦めた」のかを
+    /// 区別できなかった —— 画面は同じに見えるのに原因が別。区別が付かない記録は
+    /// 記録ではない。
+    private func giveUpLanding(_ why: String, _ remaining: CGFloat) {
+        let msg = "会話の着地を諦めた(\(why))。下端まで \(remaining)pt 残った"
+        Self.landingLog.warning("\(msg, privacy: .public)")
+        initialLandingPending = false
+    }
+
+    /// 開いた時 / 画面へ戻った時に着地をやり直す為の初期化。
+    private func armInitialLanding() {
+        initialLandingPending = true
+        landingCorrections = 0
+        stalledLandingPasses = 0
+        bestLandingDistance = .infinity
+        firstLandingDistance = .nan
+    }
 
     init(viewModel: @autoclosure @escaping () -> ConversationViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel())
@@ -204,21 +371,125 @@ struct ConversationView: View {
                                     .onDisappear { isPinnedToBottom = false }
                             }
                             .padding()
+                            // 内容の高さと寄せを測る。`background` なので layout は変わらない。
+                            .background(
+                                GeometryReader { g in
+                                    Color.clear.preference(
+                                        key: ConversationContentMetricsKey.self,
+                                        value: ConversationContentMetrics(
+                                            contentHeight: g.size.height,
+                                            contentTop: g.frame(in: .named(Self.scrollSpace)).minY
+                                        )
+                                    )
+                                }
+                            )
                         }
+                        .coordinateSpace(name: Self.scrollSpace)
+                        // ★★着地の結果を**連続量として読み出せる様にする**(2026-08-31)。
+                        //
+                        //   之まで此の欠陥は「倒れたか / 通ったか」の二値として扱っていて、
+                        //   緑の走行は何も残さなかった。実際には毎回「下端まであと何 pt で
+                        //   終わったか」が測れる —— 直前の 10 走行(5/5 + 5/5)は、
+                        //   記録していれば **10 個の標本**だった。今は 10 bit しか残っていない。
+                        //
+                        //   門を代入の前へ置いた結果、`contentMetrics` は**着地が終わった
+                        //   pass で凍結する**ので、其の凍結値が「結局どれだけ手前で終わったか」
+                        //   そのもの。読み出しは既に無料で手に入っている。
+                        //
+                        //   ★`overlay` の**別要素**に付ける。`ScrollView` 自身へ識別子を
+                        //     付けると SwiftUI が中身を 1 つの要素へ畳み、**中の行が
+                        //     XCUITest からも VoiceOver からも触れなくなる**
+                        //     (此の file が同じ穴を 3 回 踏んでいる)。
+                        .overlay(alignment: .topLeading) {
+                            Color.clear
+                                .frame(width: 1, height: 1)
+                                .accessibilityElement()
+                                .accessibilityIdentifier("conversation.landingDistance")
+                                .accessibilityValue(landingReadout)
+                                .allowsHitTesting(false)
+                        }
+                        // 窓の高さ。同じく `background` なので layout は変わらない。
+                        .background(
+                            GeometryReader { g in
+                                Color.clear.preference(
+                                    key: ConversationViewportHeightKey.self,
+                                    value: g.size.height
+                                )
+                            }
+                        )
                         .onAppear {
                             // 開いた瞬間は無条件で一番下。
+                            //
+                            // ★之は**一発では決まらない**(2026-08-31、実物を捕獲)。
+                            //   錨は 44 行ぶん下に在り、`scrollTo` は
+                            //   「実体化 → layout → 位置を測り直す」を反復して寄って行く。
+                            //   混んだ機械では此の反復が run-loop の予算で打ち切られ、
+                            //   **途中で止まる**。実測で下端まで 375.6pt(約 7 行)残った。
+                            //
+                            //   ★機構を 2026-08-31 に**訂正した**。初めは「行の高さが可変
+                            //     なので錨の位置の推定が外れる」と書いたが、此の画面の
+                            //     fixture は全行 1 行の等質(`HistoryFixture` の `longTail`)
+                            //     で高さは 2 値しかなく、内容の 11.4% にあたる 375.6pt の
+                            //     推定誤差が出る余地が無い。窓の収縮でも説明できない
+                            //     (窓 812 - 上端 110 = 702 が上限なので、説明できるのは
+                            //      高々 200.3pt)。**残るのは「寄せの反復が完走しない」**。
+                            //     予算枯渇なら (i) 負荷依存 (ii) 誤差でなく大きく外す
+                            //     (iii) 単独走行では起きない —— 観測 3 点と全部 合う。
+                            //
+                            //   だから下の `onPreferenceChange` で、観測しながら撃ち直す。
+                            //   終端は高さではなく**下端までの距離**で決める(距離で見れば、
+                            //   高さが動かないまま寄せだけ足りない形も正しく捉えられる)。
                             //
                             // `.defaultScrollAnchor(.bottom)`(iOS 17)を**使わない**の
                             // は、あれが「内容の大きさが変わる度に下端を保つ」修飾子
                             // だから -- 「以前を読む」で前に足した時も下端に留まり、
                             // 上へ遡って読んでいる最中の追記でも引き摺り下ろす。
                             // 寄せる条件を自分で持てなくなる。
+                            armInitialLanding()
+                            #if DEBUG
+                            // ★**わざと手前に着地させる口**(検査専用、環境変数が明示的に
+                            //   渡された時だけ)。
+                            //
+                            //   之が要る理由: 実物の欠陥は 1 回しか捕まっておらず、
+                            //   2 通りの機械負荷でも主スレッド占有 14ms でも再現しない。
+                            //   再現を待っていると、補正の輪が**本当に引き戻せるのか**を
+                            //   永久に確かめられない —— 実測では距離が最初から 0 以下
+                            //   (`settled -1.7`)なので、輪は armed のまま一度も発火しない。
+                            //   確率に頼らず、**故障の形そのものを注入して**測る。
+                            if ProcessInfo.processInfo.environment["RC_UI_LANDING_SABOTAGE"] != nil {
+                                proxy.scrollTo(0, anchor: .top)   // 一番上 = 最大に手前
+                                return
+                            }
+                            #endif
                             proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                        }
+                        // ★★門を**代入の前**に置く(2026-08-31、批評で捕まった)。
+                        //   `contentMetrics.contentTop` は生のスクロール位置なので、
+                        //   指で送る度に毎フレーム変わる。門を `reassertLanding` の中だけに
+                        //   置くと、着地が終わった後も**画面の寿命いっぱい毎フレーム
+                        //   @State を書き、body を作り直す**。body は `viewModel.entries` を
+                        //   2回 読み、其れは毎アクセス `MergeHistory.merge` を回す computed
+                        //   (`ConversationViewModel` の該当 doc)。長い会話ほど重い =
+                        //   **此の修正が対象にしている当の画面で一番重くなる**。
+                        //   修正前には存在しなかった費用なので、門で塞ぐ。
+                        .onPreferenceChange(ConversationContentMetricsKey.self) { m in
+                            guard initialLandingPending else { return }
+                            contentMetrics = m
+                            reassertLanding(proxy)
+                        }
+                        .onPreferenceChange(ConversationViewportHeightKey.self) { h in
+                            guard initialLandingPending else { return }
+                            viewportHeight = h
+                            reassertLanding(proxy)
                         }
                         .onChange(of: viewModel.tailToken) { _, _ in
                             // ★下端に居る時だけ追う。上へ遡って読んでいる最中に机が
                             // 喋ったからといって引き摺り下ろすと、この画面で一番長い
                             // 操作(読む事)ができなくなる。
+                            //
+                            // ★初回の着地の期間は此処で終わる。以後 内容が伸びても補正は
+                            //   走らない = 遡って読んでいる人を引き摺らない。
+                            initialLandingPending = false
                             guard isPinnedToBottom else { return }
                             withAnimation { proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom) }
                         }
@@ -227,6 +498,11 @@ struct ConversationView: View {
                             // 置く = 新しく出た古い行で画面が埋まる。ここで下端へ
                             // 寄せてしまう(= `tailToken` と同じ扱いにする)と、押した
                             // 行為そのものが画面から消える。
+                            //
+                            // ★初回の着地の期間は此処でも終わる。押した瞬間に止めないと、
+                            //   前に足した分だけ内容が伸びて補正が発火し、下端へ引き摺って
+                            //   此の分岐の意図を打ち消す。
+                            initialLandingPending = false
                             guard let index = viewModel.earlierRevealIndex else { return }
                             proxy.scrollTo(index, anchor: .bottom)
                         }
@@ -1124,5 +1400,46 @@ private struct EntryBubble: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+/// 会話の内容が、窓に対して今どこに居るか。
+///
+/// ★之は **倒れた瞬間に測った量そのもの**。2026-08-31 の失敗記録:
+///   内容 3308.0 / 窓 501.7 / 寄せ -2430.7 → 下端まで 375.6pt(約 3 行)残っていた。
+///   欠陥を検出した式を、そのまま修正の終端条件に使う。
+private struct ConversationContentMetrics: Equatable {
+    /// `LazyVStack` 全体の高さ。行が実体化するに連れて変わる。
+    var contentHeight: CGFloat = 0
+    /// 内容の上端の y(`ScrollView` の座標系)。下へ寄る程 負。
+    var contentTop: CGFloat = 0
+}
+
+private struct ConversationContentMetricsKey: PreferenceKey {
+    static var defaultValue = ConversationContentMetrics()
+    /// ★**既定値を出す兄弟に上書きさせない**(2026-08-31、実測で捕まえた)。
+    ///
+    /// `reduce` は兄弟を順に畳む。無条件の `value = nextValue()` だと、
+    /// 実測を出す子(内容の `background`)の**後**に既定値を出す子
+    /// (`overlay` / 窓側の `background`)が来た時点で 0 に戻る。
+    /// 実測: `LANDING-DISTANCE=unmeasured nohog h=0.0 top=0.0 v=501.7` ——
+    /// 窓側の key には最初から `if next > 0` の門が在ったので生き残り、
+    /// 内容側だけが 0 になっていた。**同じ file の中で片方だけ守っていた。**
+    ///
+    /// ★之が効いていた間、閉ループは `guard contentHeight > 0` で毎回 即 return
+    ///   していた = **補正は一度も走っていない**。759 件の緑は「補正が効いた」
+    ///   ではなく「補正が死んでいた」の観測だった。
+    static func reduce(value: inout ConversationContentMetrics,
+                       nextValue: () -> ConversationContentMetrics) {
+        let next = nextValue()
+        if next.contentHeight > 0 { value = next }
+    }
+}
+
+private struct ConversationViewportHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        let next = nextValue()
+        if next > 0 { value = next }
     }
 }

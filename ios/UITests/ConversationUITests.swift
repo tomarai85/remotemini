@@ -12,6 +12,20 @@ final class ConversationUITests: XCTestCase {
     private func launch(fixture: String) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["RC_UI_FIXTURE"] = fixture
+        // ★走らせる側が主スレッドを刻みたい時だけ、其の指示を app へ渡す。
+        //   渡さなければ app 側は何も作らない(`MainThreadHog` の doc 参照)。
+        //   之が要るのは、機械を混ませる形の負荷が **app の主スレッドに届かない**
+        //   為 —— 2026-08-31 に 2 通り試して 2 通りとも再現しなかった。
+        for key in ["RC_UI_MAIN_HOG_MS", "RC_UI_MAIN_HOG_PERIOD_MS"] {
+            if let v = ProcessInfo.processInfo.environment[key] { app.launchEnvironment[key] = v }
+        }
+        // ★鎖のどの段で切れたかを**走らせる側から**言える様にする。
+        //   app の `print` は xcodebuild の log に出ない(既存の `root flow:` の印字が
+        //   `simctl launch --console` で拾う前提なのが其の証拠)ので、app 側の印だけでは
+        //   「届いていない」と「届いたが見えない」を区別できない。
+        //   検査の `print` は log に出る(`DIAG-LONG-CONVERSATION` が其の実績)。
+        print("HOG-ENV runner=[\(ProcessInfo.processInfo.environment["RC_UI_MAIN_HOG_MS"] ?? "unset")] "
+              + "app=[\(app.launchEnvironment["RC_UI_MAIN_HOG_MS"] ?? "unset")]")
         app.launch()
         return app
     }
@@ -211,17 +225,44 @@ final class ConversationUITests: XCTestCase {
         //   「そもそも会話画面に居るのか」を書き出す。**直すのではなく記録する** ——
         //   待ちを延ばすのは既に一度試して外した band-aid。
         let anchorArrived = app.staticTexts["line 090"].waitForExistence(timeout: 10)
-        if !anchorArrived {
+
+        // ★★診断は**2 つの主張の両方**に付ける(2026-08-31 に穴を塞いだ)。
+        //   之まで `anchorArrived` が偽の時だけ刷っていたので、`isOnScreen` で
+        //   落ちる失敗は**無印字**になり、対照が「着地とは別の失敗」= `unm` に
+        //   分類して**赤として数えなかった**。しかも修正後の残存故障はまさに
+        //   其の形 —— 補正が近付ける分だけ「作られていない」から
+        //   「作られているが窓の下」へ移る。診断の網が、直した後の故障形の
+        //   ちょうど外側に開いていた。
+        func dumpDiag(_ why: String) {
             print("DIAG-LONG-CONVERSATION-BEGIN")
+            print("why = \(why)")
             print("conversation.loadEarlier exists = \(element(app, "conversation.loadEarlier").exists)")
             print("conversation.composerField exists = \(element(app, "conversation.composerField").exists)")
             print("line 031 exists = \(app.staticTexts["line 031"].exists)")
             print("line 090 exists = \(app.staticTexts["line 090"].exists)")
+            print("line 090 onScreen = \(isOnScreen(app, "line 090"))")
             print(app.debugDescription)
             print("DIAG-LONG-CONVERSATION-END")
         }
+        if !anchorArrived { dumpDiag("錨が着かない(行 090 が存在しない)") }
+        // ★★**通っても倒れても**着地の距離を刷る(2026-08-31)。
+        //
+        //   之まで此の検査は二値しか残さなかったので、緑の走行が全部 捨てられていた。
+        //   直前の 10 走行(負荷 2 種 x 5 回)は、記録していれば **10 個の標本**だった。
+        //   「下端まであと何 pt で終わったか」は毎回 測れる連続量で、
+        //   `conversation.landingDistance` の値として画面が既に持っている。
+        //   `settled 0.0` が理想、`settled 375.6` が 2026-08-31 に捕まえた形。
+        // ★存在を先に確かめる。存在しない要素の `.value` を読むと XCUITest は
+        //   「一致する snapshot が無い」で**検査ごと倒す** —— 之を守らないと、
+        //   読み出しの無い版(= 比較の基準にする pre-fix)を計器が必ず倒し、
+        //   「倒れた」の意味が着地から検査の事故へすり替わる(2026-08-31 実測)。
+        let readout = element(app, "conversation.landingDistance")
+        print("LANDING-DISTANCE=\(readout.exists ? (readout.value as? String ?? "no-value") : "absent")")
+
         XCTAssertTrue(anchorArrived, "錨: 90行の履歴が着いていない = 以下は何も測っていない")
-        XCTAssertTrue(isOnScreen(app, "line 090"), "開いた時は一番新しい行が見えていなければならない")
+        let newestVisible = isOnScreen(app, "line 090")
+        if !newestVisible { dumpDiag("行 090 は存在するが窓に入っていない = 着地が手前で止まった") }
+        XCTAssertTrue(newestVisible, "開いた時は一番新しい行が見えていなければならない")
 
         // 対照。これが偽なら「1画面に全部入っている」= 上の主張は位置を測っていない。
         XCTAssertFalse(
