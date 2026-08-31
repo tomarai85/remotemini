@@ -73,7 +73,14 @@ echo "=== 1b. 電話が実際に動かしている版(机の要求ログから)=
 #   材料は rc-backend の要求ログの `client=app` の行(`X-App-Build` → 無ければ UA)。
 #   ★比べる相手は HEAD ではなく**配っている版**。電話には配った物しか入りようがない。
 APPLOG="${RC_BACKEND_LOG:-$REMOTE_HOME/Library/Logs/rc-backend/rc-backend.log}"
-PHONE_LINE=$(rexec "grep 'client=app' '$APPLOG' 2>/dev/null | tail -1")
+# ★**版を名乗った行**の最後を採る(2026-08-31、実測で踏んだ)。
+#   単に最後の `client=app` を取ると、名乗らない口の行に上書きされる ——
+#   電話が `X-App-Build` を付けるのは `/api/sessions` だけで、`/api/account` 等は付けない。
+#   実測: 同じミリ秒に sessions(build=115)と account(build=-)が並び、
+#   `tail -1` が account を掴んで「電話は版を名乗っていない」と報告した。
+#   **電話は 115 を名乗っていたのに**。友の観測器は同じ log から 115 を読んでおり、
+#   2つの計器が食い違った事で気付いた。
+PHONE_LINE=$(rexec "grep 'client=app' '$APPLOG' 2>/dev/null | grep -v 'build=-' | tail -1")
 if [ -z "$PHONE_LINE" ]; then
     # ★「一度も無い」とは言えない —— この log は上限で切られる。測れた範囲だけを言う。
     bad "電話の版" "この log に残っている範囲に app からの要求が1本も無い(切られた後かもしれない)"
