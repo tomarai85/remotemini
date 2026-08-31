@@ -48,8 +48,12 @@ ng() { echo "FAIL  $1  ($2)"; fail=$((fail + 1)); }
 
 SB="$(mktemp -d)"
 REQLOG="$HERE/src/reqlog.mjs"
+SERVER="$HERE/src/server.mjs"
+# ★M8 が server.mjs を変異させるので、**控えと復元の対象に入れる**(2026-08-31)。
+#   入れ忘れると変異が木に残る = CF-12 で配る寸前まで行った形そのもの。下の Z が之も見る。
 cp "$WIRE" "$SB/wire.orig"; cp "$OTA" "$SB/ota.orig"; cp "$REQLOG" "$SB/reqlog.orig"
-restore() { cp -f "$SB/wire.orig" "$WIRE"; cp -f "$SB/ota.orig" "$OTA"; cp -f "$SB/reqlog.orig" "$REQLOG"; }
+cp "$SERVER" "$SB/server.orig"
+restore() { cp -f "$SB/wire.orig" "$WIRE"; cp -f "$SB/ota.orig" "$OTA"; cp -f "$SB/reqlog.orig" "$REQLOG"; cp -f "$SB/server.orig" "$SERVER"; }
 trap 'restore; rm -rf "$SB"' EXIT
 
 # ── 判定の本体。**基準でも変異でも同じ物**を走らせる(別々に書くと、変異が
@@ -57,7 +61,8 @@ trap 'restore; rm -rf "$SB"' EXIT
 assert_js() {   # assert_js <名前> → 0=期待どおり
     node --input-type=module -e '
 import { updateNotice, updateBuild, sessionsBody } from "'"$WIRE"'";
-import { appBuild, headerBuild } from "'"$REQLOG"'";
+import { headerBuild } from "'"$REQLOG"'";
+import * as REQLOG_EXPORTS from "'"$REQLOG"'";
 import { publishedBuild, resetPublishedBuildCache } from "'"$OTA"'";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -111,9 +116,12 @@ eq("A8-素の数字を通す", headerBuild("96"), "96");
 eq("A8-空白を落とす", headerBuild(" 96 "), "96");
 eq("A8-詐称を拒む", headerBuild("96abc"), "-");
 eq("A8-無い時", headerBuild(undefined), "-");
-// ★UA 用の判定はヘッダの形を受けない(同じ関数に両方を通すと、片方が緩んだ時に両方緩む)
-eq("A8-役が違う", appBuild("96"), "-");
-truthy("A8-UA は UA の形で読む", appBuild("RemoteMini/96 CFNetwork/1234") === "96");
+// ★UA 経路は 2026-08-31 に**消した**。`appBuild` は存在しない —— iOS 既定の名乗りが
+//   運ぶのは `CFBundleShortVersionString`(売り物の版)であって build 番号ではなく、
+//   落ちた先で**売り物の版と build 番号を引き算する**事になっていた。
+//   実測: 手元が 短版 0.1 / build 106、机の log の app 要求 861 本が全部 `build=1`。
+truthy("A8-UA から版を採る出口が残っていない",
+  !Object.keys(REQLOG_EXPORTS).some((k) => /^appBuild$/.test(k)));
 
 if (bad.length) { console.error(bad.join(" | ")); process.exit(1); }
 ' 2>&1
@@ -147,6 +155,28 @@ check_red() {  # check_red <名前> <期待して赤くなる検査名の一部>
     restore
 }
 
+# ★出所の検査。`assert_js` は wire と reqlog しか読まないので、server.mjs が
+#   どちらの入口から版を採るかは**原文を読む**しかない(行番号ではなく書き方で当てる)。
+assert_src() {   # 0 = server は版をヘッダからしか採っていない
+    local line
+    line="$(grep -n 'appBuild: headerBuild' "$SERVER" | head -1)"
+    [ -n "$line" ] || { echo "A10: 錨が動いた(appBuild: headerBuild の行が無い)"; return 1; }
+    # 其の行に UA を読む形が混ざっていたら赤
+    printf '%s' "$line" | grep -q 'user-agent' && { echo "A10: server が UA へ落ちている: $line"; return 1; }
+    return 0
+}
+out="$(assert_src)"; rc=$?
+if [ "$rc" -eq 0 ]; then ok "A10 server は版を名乗ったヘッダからしか採らない"
+else ng "A10 出所" "$out"; fi
+
+check_red_src() {  # check_red_src <名前>
+    local name="$1" out rc
+    out="$(assert_src)"; rc=$?
+    if [ "$rc" -ne 0 ]; then ok "$name → A10 が赤くなる"
+    else ng "$name" "赤くならない(A10 が通った)"; fi
+    restore
+}
+
 mutate "$WIRE" 'if (pub <= mine) return null;' 'if (pub < mine) return null;' \
     && check_red "M1 等しい時も出す" "A2-等しい" || { ng "M1" "錨が動いた"; restore; }
 
@@ -171,18 +201,31 @@ mutate "$WIRE" 'return updateNotice(publishedBuild, appBuild) === null
     && check_red "M7 文面を出さない時にも番号を出す" "A9-出さない時は番号も無い" \
     || { ng "M7" "錨が動いた"; restore; }
 
+# ★M6 の変異を張り替えた(2026-08-31)。旧版は `appBuild(value)` を呼ばせていたが、
+#   其の関数はもう無いので **ReferenceError で赤くなる** —— 検出したのではなく落ちただけ。
+#   代わりに「全桁の検めを外す」現実的な緩め方を植える(`"96abc"` を通す形)。
 mutate "$HERE/src/reqlog.mjs" 'export function headerBuild(value) {
   const v = String(value ?? "").trim();
   return /^\d{1,9}$/.test(v) ? v : "-";
 }' 'export function headerBuild(value) {
-  return appBuild(value);
+  const v = String(value ?? "").trim();
+  return v === "" ? "-" : v;
 }' \
-    && check_red "M6 ヘッダの判定を UA 用と同じにする" "A8-素の数字を通す" \
+    && check_red "M6 ヘッダの判定から全桁の検めを外す" "A8-詐称を拒む" \
     || { ng "M6" "錨が動いた"; restore; }
+
+# ── M8 ★UA 経路を**戻す**変異(2026-08-31 の削除が守られているかの対照)────────
+#   server.mjs が再び UA へ落ちる形に戻ったら赤くなる事を測る。之が無いと、
+#   削除は「今日そうなっている」だけで、明日戻っても誰も気付かない。
+mutate "$HERE/src/server.mjs" '        appBuild: headerBuild(req.headers["x-app-build"]),' \
+    '        appBuild: headerBuild(req.headers["x-app-build"]) !== "-" ? headerBuild(req.headers["x-app-build"]) : String(req.headers["user-agent"] || "").split("/")[1],' \
+    && check_red_src "M8 server が UA へ落ちる形に戻る" \
+    || { ng "M8" "錨が動いた"; restore; }
 
 # ★戻せた事を測る。変異対照が木を汚したまま終わると、次に焼いた版へ変異が乗る
 #   (CF-12 で実際に配る寸前まで行った形)。
-if cmp -s "$WIRE" "$SB/wire.orig" && cmp -s "$OTA" "$SB/ota.orig" && cmp -s "$REQLOG" "$SB/reqlog.orig"; then
+if cmp -s "$WIRE" "$SB/wire.orig" && cmp -s "$OTA" "$SB/ota.orig" && cmp -s "$REQLOG" "$SB/reqlog.orig" \
+   && cmp -s "$SERVER" "$SB/server.orig"; then
     ok "Z 木を汚したまま終わらない"
 else
     ng "Z 木が汚れている" "手で git checkout -- src/wire.mjs src/ota-published.mjs する事"

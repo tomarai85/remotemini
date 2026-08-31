@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
 import {
-  attachRequestLog, appBuild, markResult, noteBody, pathShape, sessionOf, token, errSlug, SESSION_ROUTE_RE,
+  attachRequestLog, headerBuild, markResult, noteBody, pathShape, sessionOf, token, errSlug, SESSION_ROUTE_RE,
 } from "../src/reqlog.mjs";
 import { stripComments } from "./jssrc.mjs";
 
@@ -371,19 +371,28 @@ test("陰性対照: 下線を許しても網は緩んでいない(自由文は�
 // ── build 番号(2026-08-30)───────────────────────────────────────────────────
 // ★測る中心は「番号が出るか」ではなく **生の User-Agent が行に出ないか**。
 //   前者だけなら `build=${ua}` と書いても通る。
-test("★製品の名乗りから build 番号だけを取り、生の User-Agent は行に出さない", () => {
-  const lines = [];
-  const res = fakeRes();
-  attachRequestLog(
-    { url: "/api/sessions", method: "GET", headers: { "user-agent": "RemoteMini/96 CFNetwork/3860.600.21 Darwin/25.5.0" } },
-    res,
-    { out: (l) => lines.push(l), now: () => new Date("2026-08-03T12:00:00.000Z") },
-  );
-  res.writeHead(200);
-  assert.match(lines[0], / build=96 /, "製品の build 番号が記録されていない");
-  // ★端末の指紋が1つでも行に出たら赤。`CFNetwork` も `Darwin` も型番も版も、全部。
-  for (const leak of ["CFNetwork", "Darwin", "3860", "25.5.0", "RemoteMini/"]) {
-    assert.ok(!lines[0].includes(leak), `生の名乗りの断片が行に出た: ${leak}`);
+test("★どんな User-Agent も build 欄を埋められない(2026-08-31 に UA 経路を消した)", () => {
+  // ★守る一線が変わった。旧: 「UA から番号だけを取る」。新: **UA からは取らない**。
+  //   UA が運ぶのは `CFBundleShortVersionString`(売り物の版)であって build 番号ではない
+  //   —— 実測で短版 0.1 / build 106、机の log の app 要求 861 本が全部 `build=1` だった。
+  //   此の検査は**再導入の防止**でもある: 誰かが UA 経路を戻したら赤くなる。
+  for (const ua of [
+    "RemoteMini/96 CFNetwork/3860.600.21 Darwin/25.5.0",
+    "RemoteMini/1 CFNetwork/3860",
+    "RemoteMini/0.1 CFNetwork/3860",
+  ]) {
+    const lines = [];
+    const res = fakeRes();
+    attachRequestLog({ url: "/api/sessions", method: "GET", headers: { "user-agent": ua } }, res, {
+      out: (l) => lines.push(l),
+      now: () => new Date("2026-08-03T12:00:00.000Z"),
+    });
+    res.writeHead(200);
+    assert.match(lines[0], / build=- /, `UA が build 欄を埋めた: ${ua}`);
+    // ★端末の指紋が1つでも行に出たら赤。`CFNetwork` も `Darwin` も型番も版も、全部。
+    for (const leak of ["CFNetwork", "Darwin", "3860", "25.5.0", "RemoteMini/"]) {
+      assert.ok(!lines[0].includes(leak), `生の名乗りの断片が行に出た: ${leak}`);
+    }
   }
 });
 
@@ -402,9 +411,56 @@ test("★製品でない名乗りは build=- に落ちる(検査道具・道具�
 });
 
 test("★細工した名乗りで行を膨らませられない(数字の桁数を縛っている)", () => {
-  // 9 桁を超える / 数字でない / 頭が違う —— どれも `-` へ落ちる事。
-  for (const ua of ["RemoteMini/12345678901 x", "RemoteMini/abc x", "xRemoteMini/96 y", "RemoteMini/" + "9".repeat(500)]) {
-    assert.equal(appBuild(ua), "-", `閉じていない値が通った: ${ua.slice(0, 40)}`);
+  // 9 桁を超える / 数字でない / 空白混じり —— どれも `-` へ落ちる事。
+  for (const v of ["12345678901", "abc", "96 96", "9".repeat(500), "0x60", "+106"]) {
+    assert.equal(headerBuild(v), "-", `閉じていない値が通った: ${String(v).slice(0, 40)}`);
   }
-  assert.equal(appBuild("RemoteMini/999999999 x"), "999999999", "9 桁までは通る");
+  assert.equal(headerBuild("999999999"), "999999999", "9 桁までは通る");
+});
+
+// ── build 欄が本当に build 番号か(2026-08-31、実測で踏んだ)────────────────────
+// ★測る中心は「番号が出るか」ではなく **どちらの番号が出るか**。
+//   08-30 まで此の欄は UA だけを読んでおり、iOS の既定 UA が運ぶのは
+//   `CFBundleShortVersionString`(売り物の版)であって build 番号ではない。
+//   実測: 手元の実物が 短版 `0.1` / build `106`、friday の実ログの app 要求 861 本は
+//   全部 `build=1`(電話の古い版の短版)。**欄の名前が数えている集団を指していなかった**。
+const lineOf = (headers) => {
+  const lines = [];
+  const res = fakeRes();
+  attachRequestLog({ url: "/api/sessions", method: "GET", headers }, res, {
+    out: (l) => lines.push(l),
+    now: () => new Date("2026-08-03T12:00:00.000Z"),
+  });
+  res.writeHead(200);
+  return lines[0];
+};
+
+test("★名乗ったヘッダだけが build 欄を埋める(UA と食い違ってもヘッダ)", () => {
+  // 現実の形: UA は短版 0.1 を運び、ヘッダは build 106 を運ぶ。
+  const l = lineOf({
+    "user-agent": "RemoteMini/0.1 CFNetwork/3860.600.21 Darwin/25.5.0",
+    "x-app-build": "106",
+  });
+  assert.match(l, / build=106 /, "名乗ったヘッダが記録されていない");
+  // ★負の対照: UA が**数字を持つ**時にもヘッダの値が出る事を測る。
+  //   之が無いと「たまたま両方 106」の実装でも通る。
+  const l2 = lineOf({ "user-agent": "RemoteMini/96 CFNetwork/3860", "x-app-build": "106" });
+  assert.match(l2, / build=106 /, "UA 由来の番号が勝っている");
+  assert.ok(!l2.includes("build=96"), "UA 由来の番号が残っている");
+});
+
+test("★ヘッダが無い版は `-`(判らない物を近い数字で埋めない)", () => {
+  const l = lineOf({ "user-agent": "RemoteMini/96 CFNetwork/3860 Darwin/25.5.0" });
+  assert.match(l, / build=- /, "名乗らない版に番号が付いている");
+});
+
+test("★細工したヘッダは `-` に落ちる(ヘッダは誰でも書ける)", () => {
+  // ★UA が数字を持っていても救いに行かない —— 救う先が build 番号ではないので、
+  //   「読めなかった」を別の population の数字で埋める事になる。
+  for (const bad of ["106abc", "", " ", "1e3", "-1", "9".repeat(20), "96 96"]) {
+    const l = lineOf({ "user-agent": "RemoteMini/96 CFNetwork/3860", "x-app-build": bad });
+    assert.match(l, / build=- /, `閉じていないヘッダ値が通った: [${bad}]`);
+    assert.ok(!l.includes("build=96"), `UA へ落ちて番号を作った: [${bad}]`);
+  }
+  assert.match(lineOf({ "x-app-build": "nope" }), / build=- /, "読めない物が番号を名乗った");
 });
