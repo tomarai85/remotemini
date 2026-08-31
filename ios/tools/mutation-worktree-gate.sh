@@ -70,7 +70,22 @@ SCAN_DIRS="${RC_MWG_SCAN:-$HERE $ROOT/.harness}"
 #   0 に到達した瞬間に其の枝が永久に測れなくなる。
 #   `-`(コロン無し)なので、明示的な空も尊重する。
 DEBT="${RC_MWG_DEBT-
+dod-sprint-6-controls.sh
 }"
+# ── 借金の理由(消す時は此処も消す)────────────────────────────────────────
+#   dod-sprint-6-controls.sh
+#     2026-08-31 に**新しく見える様になった**物で、増えた訳ではない。3 つの取り零しが
+#     重なって、門は「0 本」と言いながら **本物の木が POST → PUT に書き換えられている
+#     最中**だった:
+#       1. 変異を `MUTATIONS+=("名前|$ICLIENT|s/…/…/")` と**文字列に畳んで**渡すので、
+#          検出器が探す `"$ICLIENT"`(引用符つき)に当たらない
+#       2. 其の埋め込みを「引用符つきが無い時だけ」探していたが、4 変数はどれも
+#          退避の行で引用符つきを**1つだけ**持つので、埋め込みの枝に一度も入らない
+#       3. 適用は `perl -0777 -pi` で、道具の型が `-i` 単独しか見ていなかった
+#     ★移行は別途(20 本超の変異を持つ DoD 台本で、走行が長い)。**数えられる形**にして
+#       置くのが此の一覧の役目 —— 見えない穴より、見える借金の方が良い。
+#     ★復元は正しく働いている(実測: 走行中に変異を観測し、終了後に木は綺麗)。
+#       危険なのは「殺された時に残る」形で、其れは `mutation-residue-check.sh` が見る。
 # ── 直接書き込みの検出 ──────────────────────────────────────────────────────
 # ★**その場で書き換える**書き方だけを見る。`git checkout --`(戻す側)や
 #   `grep`(読む側)は当てない —— 復元を持つ事は美徳であって欠陥ではない。
@@ -94,6 +109,12 @@ DEBT="${RC_MWG_DEBT-
 #          復元の仕方(git か写しか)に依存しない = 主犯を取り零さない。
 #   ★註記と `echo` の行は落としてから当てる(false positive も欠陥。
 #     `mutation-residue-controls.sh` の N10b が同じ結論を先に書いている)。
+# ★「その場で書き換える道具」の型。**旗を1つの綴りに決め打たない**(2026-08-31 実測)。
+#   `.harness/dod-sprint-6-controls.sh` は `perl -0777 -pi -e "$expr" "$file"` で撃つ ——
+#   `-i` 単独しか見ない型では当たらず、**本物の木を POST→PUT に書き換えている最中に
+#   門は「0 本」と言っていた**。旗の綴りは書く人の自由なので、i で終わる旗を許す。
+INPLACE_RE='(sed|perl|ed)[[:space:]]+([^|;&]*[[:space:]])?-[a-zA-Z0-9]*i([[:space:]]|\.|$)'
+
 writes_live_tree() {  # writes_live_tree <file> → 0=書き換えている
     local body vars v tgt hits
     # ★**別の木を作る台本は最初に外す**(2026-08-30、実測で判った)。
@@ -104,7 +125,12 @@ writes_live_tree() {  # writes_live_tree <file> → 0=書き換えている
     grep -qE 'git worktree add|^[[:space:]]*WT=' "$1" 2>/dev/null && return 1
     body="$(grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -v -E '(echo|printf)[[:space:]]')"
     # `<NAME>="…Sources/….swift…"` の左辺を集める。
-    vars="$(printf '%s\n' "$body" | grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z_0-9]*="[^"]*(Sources|Tests|UITests)/[^"]*"' \
+    # ★**file の名前で終わる物だけ**を経路と読む(2026-08-31、実測で踏んだ)。
+    #   `TEST_ID="RemoteMiniUITests/ConversationUITests/testOpening…"` の様な
+    #   **検査の識別子**は `UITests/` を含むが file ではない —— 拡張子を要求しないと、
+    #   識別子を持っているだけの台本を「木を書き換えている」と数える(実際に数えた)。
+    #   守る側を緩めてはいない: 木の中の変異対象は必ず拡張子を持つ。
+    vars="$(printf '%s\n' "$body" | grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z_0-9]*="[^"]*(Sources|Tests|UITests)/[^"]*\.(swift|plist|yml|yaml|json|xcassets)"' \
             | sed 's/^[[:space:]]*//; s/=.*//' | sort -u)"
     [ -n "$vars" ] || return 1
     for v in $vars; do
@@ -133,8 +159,28 @@ writes_live_tree() {  # writes_live_tree <file> → 0=書き換えている
         #   `\$$v` が後方参照に化けて grep が全滅する(2026-08-30 実測)。
         tgt="\"\$$v\""
         hits="$(printf '%s\n' "$body" | grep -F -- "$tgt")"
-        [ -n "$hits" ] || continue
-        printf '%s\n' "$hits" | grep -qE '(sed|perl|ed)[[:space:]]+-i' && return 0
+        # ★**文字列に埋めて渡す形**も当てる(2026-08-31、実測で取り零した)。
+        #   `.harness/dod-sprint-6-controls.sh` は変異を
+        #   `MUTATIONS+=("名前|$ICLIENT|s/…/…/|…")` と1本の文字列に畳んで渡すので、
+        #   引用符つきの `"$ICLIENT"` は一度も現れない —— 本物の木を
+        #   `POST → PUT` に書き換えている最中に、門は「0 本」と言っていた。
+        # ★埋め込みは**引用符つきの有無と独立に**見る(2026-08-31、二度目の取り零し)。
+        #   最初は「引用符つきが無い時だけ」埋め込みを探したが、dod の 4 変数は
+        #   どれも引用符つきの用例を**1つだけ**持っている(退避や複製の行)。
+        #   其の1行で `hits` が埋まり、埋め込みの枝に一度も入らなかった。
+        #   片方が在るからもう片方を見ない、は「多い方を見落とす」形。
+        hits_e="$(printf '%s\n' "$body" | grep -F -- "|\$$v|")"
+        [ -n "$hits$hits_e" ] || continue
+        embedded=0; [ -n "$hits_e" ] && embedded=1
+        # ★埋め込み形は**行の中に道具が無い**。`MUTATIONS+=("名前|$ICLIENT|s/…/…/")` は
+        #   置換の式を運ぶだけで、`sed -i` を撃つのは其れを読む別の loop。だから
+        #   此の形だけは**台本のどこかに其の場で書き換える道具が在るか**で判ずる ——
+        #   宣言が在り、埋め込みで渡され、道具が在るなら、書き換え先は其の宣言しか無い。
+        #   (下の間接参照の枝と同じ理屈。あちらは `WORK=` の一括除外に阻まれて届かない)
+        if [ "$embedded" = 1 ]; then
+            printf '%s\n' "$body" | grep -qE "$INPLACE_RE" && return 0
+        fi
+        printf '%s\n' "$hits" | grep -qE "$INPLACE_RE" && return 0
         # ★`cp`/`mv` は**宛先が其の変数の時だけ**書き込み。`cp "$VM" "$WORK/a"` は
         #   変数から**読んで**別所へ写す行で、木は触らない —— 之を書き込みと数えると
         #   写しの上で撃つ正しい台本まで借金になる(2026-08-30、G2 が掴んだ)。
@@ -163,7 +209,7 @@ writes_live_tree() {  # writes_live_tree <file> → 0=書き換えている
     printf '%s\n' "$body" | grep -qE '(\.|source)[[:space:]]+.*mutation-sandbox\.sh' \
         && ! printf '%s\n' "$body" | grep -qE '^[[:space:]]*MS_(TREE|ROOT)=' && return 1
     printf '%s\n' "$body" | grep -qE '(WORK=|mkcopy|cp -R|rsync)' && return 1
-    printf '%s\n' "$body" | grep -qE '(sed|perl|ed)[[:space:]]+-i' && return 0
+    printf '%s\n' "$body" | grep -qE "$INPLACE_RE" && return 0
     printf '%s\n' "$body" | grep -qE 'python3?[[:space:]]+-([[:space:]]|$)|python3?[[:space:]]+-c' && return 0
     return 1
 }

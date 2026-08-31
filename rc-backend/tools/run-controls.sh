@@ -434,6 +434,16 @@ LOCAL_CTLS=(
                                      # 別ファイルへ出して log を引数で受ける形にしたので、作り物の log で
                                      # 全分岐を測れる。測るのに数分掛かる造りだと対照は書かれない
                                      # (上の ui-fixture 2本が実際に数十秒〜数分掛かっている)。実測1秒未満。
+    ../ios/tools/long-conversation-diag-control.sh
+                                     # ★2026-08-31。長い会話の検査が**倒れた時に画面を
+                                     #   書き出す**記録が、本当に発火するかを測る。
+                                     #   其の検査は全掃きの中でだけ断続的に倒れ(FAIL/FAIL/PASS/PASS/PASS)、
+                                     #   原因未特定。追える材料は倒れた瞬間の画面だけなので記録を仕込んだが、
+                                     #   **緑の間は一度も発火しない** = 書いた物が動くか判らない。
+                                     #   砂場で fixture を壊して わざと倒し、記録が出る事を見る。
+                                     #   ★重い(砂場で xcodebuild 2 回)。
+                                     #     ios/tools/conversation-ui-control.sh の 156 秒と同じ桁の費用を承知で置く —— 発火しない記録は
+                                     #     記録では無い、が今日 何度も出た教訓なので。
     ../ios/tools/conversation-ui-control.sh # ★2026-08-06。会話画面の UI 検査
                                      # (ios/UITests/ConversationUITests.swift の4本)の負の対照。
                                      # 据えた理由が「書いた検査が空振りだった」なので、他の対照より
