@@ -38,10 +38,16 @@ IOS="$HERE"
 LOGDIR="${TMPDIR:-/tmp}"
 PASS=0; FAIL=0; UNMEASURED=0
 
-VM="$IOS/Sources/Screens/Shared/AccountViewModel.swift"
-BAR="$IOS/Sources/Screens/Shared/AccountBar.swift"
-CL="$IOS/Sources/Core/AccountClient.swift"
-SV="$IOS/Sources/Screens/Settings/SettingsView.swift"
+# ★書き換え先は**砂場**(2026-08-30、CF-21 の移行)。作業中の木は1バイトも触らない。
+#   此の台本は CF-12 の当事者 —— 殺された走行が `AccountViewModel` に変異を残し、
+#   `git checkout` で戻せたのは偶々索引に清浄な版が在ったからだった(下の旧註記)。
+#   砂場なら、戻せるかどうかが偶然に依存しなくなる。
+. "$IOS/tools/mutation-sandbox.sh"
+ms_prepare || exit 2
+VM="$MS_TREE/Sources/Screens/Shared/AccountViewModel.swift"
+BAR="$MS_TREE/Sources/Screens/Shared/AccountBar.swift"
+CL="$MS_TREE/Sources/Core/AccountClient.swift"
+SV="$MS_TREE/Sources/Screens/Settings/SettingsView.swift"
 TARGETS=("$VM" "$BAR" "$CL" "$SV")
 
 # ★**git を復元の正本にする**(2026-08-12、事故の直後に書き直した)。
@@ -61,30 +67,19 @@ TARGETS=("$VM" "$BAR" "$CL" "$SV")
 #   戻す先は**索引**なので、staged なだけの変更は復元元であって汚れではない。
 #   `git status --porcelain` で見ると staged を汚れと読み、出荷前の commit 直前に
 #   対照が一切回せなくなる(2026-08-12、書いた直後に気付いた)。
-REL_TARGETS="ios/Sources/Screens/Shared/AccountViewModel.swift ios/Sources/Screens/Shared/AccountBar.swift ios/Sources/Core/AccountClient.swift ios/Sources/Screens/Settings/SettingsView.swift"
-unstaged() { ( cd "$ROOT" && git diff --name-only -- $REL_TARGETS 2>/dev/null ); }
 
-require_clean_tree() {
-    local dirty
-    dirty="$(unstaged)"
-    if [ -n "$dirty" ]; then
-        echo "UNMEASURED  測る対象が既に汚れている(前の走行が変異を残した可能性):"
-        printf '%s\n' "$dirty" | /usr/bin/sed 's/^/    /'
-        echo "  戻し方: git checkout -- <上の file>  (未コミットの意図的な変更なら先に commit/stash)"
-        exit 2
-    fi
-}
-require_clean_tree
-
-restore_all() {
-    ( cd "$ROOT" && git checkout -- $REL_TARGETS ) 2>/dev/null
-}
+# ★汚れの検査と `git checkout` での復元は**要らなくなった**。砂場は毎回
+#   `--delete` 付きで本物から作り直されるので、「前の走行の変異が残っている」
+#   状態が起き得ないし、作業中の木へ書き込む道も残らない。
+#   (以下は移行前の理由の記録: `git status --porcelain` は staged を汚れと読むので
+#    出荷前の commit 直前に対照が回せなくなる —— 2026-08-12 に書いた直後に気付いた)
+restore_all() { ms_prepare >/dev/null 2>&1 || true; }
 # ★生成物(ios/Info.plist / RemoteMini.xcodeproj)を触る走行を **1 本に絞る**。
 # 2026-08-15、此れが無くて `build.sh --sim` と此の台本が `RC_BUILD_REV` の刻印を
 # 潰し合い、**偽の赤が 9 本**出た(製品の欠陥と見分けが付かない赤)。
 # 取れなければ此処で非零終了する = 生成物に触らないまま止まる。
-. "$IOS/tools/xcode-tree-guard.sh"
-trap 'restore_all; xtl_release' EXIT INT TERM HUP
+# ★生成木の錠は要らない(砂場で焼くので生成木を触らない)。直列化は砂場側の錠が持つ。
+trap 'ms_release' EXIT INT TERM HUP
 
 ok() { echo "  OK   $1"; PASS=$((PASS+1)); }
 ng() { echo "  NG   $1"; FAIL=$((FAIL+1)); }
@@ -119,11 +114,11 @@ xcb() { # $1 = log, 残り = -only-testing 群
     # `perl -e alarm` で上限を掛ける(macOS に GNU timeout は無い)。上限で殺された時の
     # 終了コードは 142(= 128+SIGALRM)で、下の `numeric()` を通って 0 以外なので
     # 「全部緑」の枝には決して落ちない。
-    ( cd "$IOS" && xcodegen generate >/dev/null 2>&1 && \
+    ( cd "$MS_TREE" && xcodegen generate >/dev/null 2>&1 && \
       /usr/bin/perl -e 'alarm shift; exec @ARGV or exit 127' "$CONTROL_RUN_LIMIT_S" \
         xcodebuild -project RemoteMini.xcodeproj -scheme RemoteMini -configuration Debug \
         -sdk iphonesimulator -destination "platform=iOS Simulator,name=$SIM_NAME" \
-        -derivedDataPath "$IOS/build" "$@" test ) >"$log" 2>&1 || rc=$?
+        -derivedDataPath "$MS_ROOT/build" "$@" test ) >"$log" 2>&1 || rc=$?
     if [ "$rc" = 142 ]; then
         printf '\n[control] 上限 %s 秒で打ち切った(= 走行が返らなかった。期限の無い待ちを疑う)\n' \
             "$CONTROL_RUN_LIMIT_S" >>"$log"
@@ -347,15 +342,17 @@ probe A7-blocked-row-hidden        mutate_a7 "$SV"  "$WANT_BLOCKED_ROW" ui
 probe A9-cancelled-shown-as-failure mutate_a9 "$VM"  "$WANT_CANCELLED_QUIET"
 
 # ---- 復元の確認(想定ではなく観測する)----------------------------------------
+# ★測る物が移行で変わった。以前は「作業木に変異が残っていないか」を `git diff` で見ていたが、
+#   変異は砂場へ行くので**其の検査は常に空 = 常に緑**になる(別の理由で出る緑)。
+#   今 測るべきは「**本物の木を1バイトも触っていない**」事で、其れは指紋で判る。
+#   砂場に残った変異は次の `ms_prepare` が `--delete` 付きで消すので害が無い。
 restore_all
-not_restored="$(unstaged | tr '\n' ' ')"
-if [ -n "$not_restored" ]; then
-    echo "UNMEASURED  変異が作業木に残っている:$not_restored"
-    UNMEASURED=$((UNMEASURED+1))
-else
-    echo "復元を確認(対象 ${#TARGETS[@]} file すべて走る前のバイトと一致)"
-fi
 
+if ! ms_assert_live_unchanged; then
+    echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $((UNMEASURED + 1)) ---"
+    echo "★本物の木が走行中に変わった = 此の走行の結果は使えない"
+    exit 2
+fi
 echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
 [ "$FAIL" -gt 0 ] && exit 1
 [ "$UNMEASURED" -gt 0 ] && exit 2
