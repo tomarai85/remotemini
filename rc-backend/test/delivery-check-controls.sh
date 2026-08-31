@@ -50,7 +50,7 @@ printf '#!/bin/bash\nexit 1\n' > "$BIN/false-tool"; chmod +x "$BIN/false-tool"
 cat > "$BIN/curl" <<'EOF'
 #!/bin/bash
 for a in "$@"; do case "$a" in '%{http_code}') echo -n "000"; exit 0 ;; esac; done
-printf '%s' "${FAKE_HEALTH:-{\"ok\":true,\"pid\":1,\"uptime\":${FAKE_UPTIME:-100},\"version\":\"deadbee\"}}"
+printf '%s' "${FAKE_HEALTH:-{\"ok\":true,\"pid\":1,\"uptime\":${FAKE_UPTIME:-100},\"version\":\"${FAKE_VERSION:-deadbee}\"}}"
 EOF
 chmod +x "$BIN/curl"
 
@@ -129,6 +129,51 @@ else ng "D5 追いつき" "$(printf '%s' "$out" | sed -n '5,7p')"; fi
 if grep -q '直近に焼いた物=' "$SUT" && ! grep -qE "printf '  手元=%s 本番=%s 電話=%s" "$SUT"; then
     ok "D6 ★手元の成果物を『電話』と印字しない"
 else ng "D6 呼び名" "手元で焼いた物をまた『電話』と呼んでいる"; fi
+
+# ── D8/D9/D10 ★commit の差と**コードの差**を分ける(2026-08-31)──────────────
+# 旧版は commit の刻だけを比べたので、docs・検査・iOS だけの commit を1つ入れた瞬間に
+# 「本番が手元と違う」で赤くなった —— 配備は要らないのに。**常に赤い検査は読まれない**。
+# ★文面の有無ではなく**実際に其の枝へ落ちる**事を測る(偽 healthz の版を差し替える)。
+
+# D8: `rc-backend/src` を触っていない祖先の刻を机が名乗る → 緑(遅れではない)。
+#     木の中から**実際に其の性質を持つ commit** を探す。無ければ測定不成立と言う。
+anc=""
+for c in $(git -C "$HERE/.." log --format=%h -30 2>/dev/null); do
+    [ "$c" = "$(git -C "$HERE/.." rev-parse --short HEAD)" ] && continue
+    if [ "$(git -C "$HERE/.." diff --name-only "$c"..HEAD -- rc-backend/src rc-backend/package.json 2>/dev/null | wc -l | tr -d ' ')" = "0" ]; then
+        anc="$c"; break
+    fi
+done
+if [ -n "$anc" ]; then
+    out="$(FAKE_VERSION="$anc" run_sut)"
+    if printf '%s' "$out" | grep -q "机が走らせる file は手元と同一"; then
+        ok "D8 ★src を触っていない commit の差は緑(常に赤い検査にしない)"
+    else ng "D8 src 同一" "$(printf '%s' "$out" | sed -n '2,4p')"; fi
+else
+    echo "SKIP  D8(src を触っていない祖先が直近 30 commit に無い = 測定不成立)"
+fi
+
+# D9: `rc-backend/src` を触った祖先 → 赤(配備が要る)。
+anc2=""
+for c in $(git -C "$HERE/.." log --format=%h -60 2>/dev/null); do
+    if [ "$(git -C "$HERE/.." diff --name-only "$c"..HEAD -- rc-backend/src 2>/dev/null | wc -l | tr -d ' ')" != "0" ]; then
+        anc2="$c"; break
+    fi
+done
+if [ -n "$anc2" ]; then
+    out="$(FAKE_VERSION="$anc2" run_sut)"
+    if printf '%s' "$out" | grep -q "本番が古いコードを走らせている"; then
+        ok "D9 ★src に差が在る commit なら赤(緩めたのではなく的を絞った)"
+    else ng "D9 src 差あり" "$(printf '%s' "$out" | sed -n '2,4p')"; fi
+else
+    echo "SKIP  D9(src を触った祖先が直近 60 commit に無い = 測定不成立)"
+fi
+
+# D10: この木に無い刻 → 「判らない」。緑にも「古い」にも丸めない。
+out="$(FAKE_VERSION=deadbee run_sut)"
+if printf '%s' "$out" | grep -q "突き合わせられない"; then
+    ok "D10 ★机の刻がこの木に無ければ『判らない』と言う(緑に丸めない)"
+else ng "D10 fail-closed" "$(printf '%s' "$out" | sed -n '2,4p')"; fi
 
 echo ""
 echo "DELIVERY-CHECK-CONTROLS: pass=$pass fail=$fail"
