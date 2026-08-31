@@ -41,6 +41,18 @@ ok() { echo "PASS  $1"; pass=$((pass + 1)); }
 ng() { echo "FAIL  $1  ($2)"; fail=$((fail + 1)); }
 SB="$(mktemp -d)"; trap 'rm -rf "$SB"' EXIT
 cp "$SUT" "$SB/orig.sh"
+
+# ★台帳の宛先は **suite 全体で export** する(2026-08-31、実際に汚した後)。
+#   最初は `run()` にだけ差したが、直に `. "$SUT"; parity_observe` を撃つ枝が4本在り、
+#   其処から**実物の `~/.rc-backend/parity-ledger` に偽の照合の結果が載った**
+#   (`obs_rc=2` / `unmeasured=22` —— どれも対照が作った数)。
+#   差し忘れられる形にしない: 既定ごと砂場へ寄せる。
+export RC_PARITY_LEDGER="$SB/ledger"
+# ★実物の台帳が **suite の間じゅう**動かない事を最後に確かめる(P16)。
+#   1回の呼び出しの前後だけ見る形だと、汚した枝が其の窓の外に在れば通ってしまう
+#   —— 最初に書いた P16 が正にそれで、汚れているのに緑だった。
+REAL_LEDGER="${HOME}/.rc-backend/parity-ledger"
+real_at_start="$( [ -f "$REAL_LEDGER" ] && md5 -q "$REAL_LEDGER" 2>/dev/null || echo absent )"
 restore() { cp -f "$SB/orig.sh" "$SUT"; }
 
 # 偽の照合台本。<rc> を返すだけ。
@@ -54,7 +66,7 @@ notices() { [ -f "$SB/notified" ] && wc -l < "$SB/notified" | tr -d ' ' || echo 
 run() {
     local st="$1" orc="$2" frc="$3" link="${4:-0}"
     mkchk "$orc" "$SB/obs.sh"; mkchk "$frc" "$SB/fleet.sh"
-    RC_PARITY_STATE="$st" RC_PARITY_EVERY=0 \
+    RC_PARITY_STATE="$st" RC_PARITY_EVERY="${RUN_EVERY:-0}" RC_PARITY_LEDGER="$SB/ledger" \
     RC_PARITY_OBS_CHECK="$SB/obs.sh" RC_PARITY_FLEET_CHECK="$SB/fleet.sh" \
     RC_TUNNEL_NOTIFY="$NOTIFY" RC_TUNNEL_LOG="$SB/o.log" \
     bash -c '
@@ -147,7 +159,10 @@ io.open(p, "w", encoding="utf-8").write(s.replace(a, b, 1))
 PY
 }
 
-if mutate '        self_link_state || return 0' '        self_link_state || true'; then
+# ★錨は 2026-08-31 に更新した。台帳(飛ばした理由の数え上げ)を足した時に
+#   此の行が `|| { po__bump …; return 0; }` へ変わり、対照が「錨が動いた」で赤くなった
+#   —— 錨の守りが**設計どおり働いた**形なので、緩めずに錨を実態へ合わせる。
+if mutate '        self_link_state || { po__bump PO_L_SKIP_LINK; return 0; }' '        self_link_state || true'; then
     : > "$SB/notified"; run "$SB/m1.json" 1 0 1
     [ -f "$SB/m1.json" ] && ok "M1 回線の判定を外す → P1 が守っている物が消える" \
                          || ng "M1" "変異が効いていない"
@@ -164,7 +179,7 @@ else ng "M2" "錨が動いた"; restore; fi
 # ★M3 は最初「変異を植えた」と言うだけで**赤を測っていなかった** —— 空虚な対照は
 #   守っている振りそのもの(2026-08-31、書いた直後に自分で気付いた)。
 #   間隔の判定を外す変異に替えた。此方は P6 が確実に赤くなる。
-if mutate '    [ $((now - PO_TS)) -lt "$PO_EVERY" ] && return 0' '    [ $((now - PO_TS)) -lt 0 ] && return 0'; then
+if mutate '    [ $((now - PO_TS)) -lt "$PO_EVERY" ] && { po__bump PO_L_SKIP_NOTDUE; return 0; }' '    [ $((now - PO_TS)) -lt 0 ] && { po__bump PO_L_SKIP_NOTDUE; return 0; }'; then
     mkchk 0 "$SB/obs.sh"; mkchk 0 "$SB/fleet.sh"
     run "$SB/m3.json" 0 0
     t1="$(cut -d' ' -f1 < "$SB/m3.json")"
@@ -217,6 +232,74 @@ RC_TUNNEL_NOTIFY="$NOTIFY" RC_TUNNEL_LOG="$SB/o.log" \
 bash -c 'self_link_state() { return 0; }; . "'"$SUT"'"; parity_observe' >/dev/null 2>&1
 [ "$(notices)" = "0" ] && ok "P11 測れないが閾値の内なら鳴らない" \
                        || ng "P11 早鳴り" "通知=$(notices) 通"
+
+# ── P12-P15 ★台帳(2026-08-31、Codex の指摘3b の残り)────────────────────────
+# 測る中心は「数が出るか」ではなく **理由ごとに別の欄が動くか**。
+# 1つの合計しか持たない実装でも「数は出る」ので、其れでは周期を後から検証できない。
+led() { /usr/bin/sed -n "s/^$1=//p" "$SB/ledger" 2>/dev/null | tail -1; }
+
+/bin/rm -f "$SB/ledger"
+run "$SB/p12.json" 0 0 1                       # 回線が落ちている回
+[ "$(led skip_link_down)" = "1" ] && ok "P12 ★回線が落ちて飛ばした回を link-down として数える" \
+                                 || ng "P12 link-down" "実測=[$(led skip_link_down)]"
+
+/bin/rm -f "$SB/ledger"
+printf '%s ok 0 %s %s\n' "$(date +%s)" "$(date +%s)" "$(date +%s)" > "$SB/p13.json"
+RUN_EVERY=86400 run "$SB/p13.json" 0 0         # まだ周期が来ていない回
+if [ "$(led skip_not_due)" = "1" ] && [ "$(led skip_link_down)" = "0" ]; then
+    ok "P13 ★周期前で飛ばした回は not-due だけが増える(理由が混ざらない)"
+else ng "P13 not-due" "not_due=[$(led skip_not_due)] link_down=[$(led skip_link_down)]"; fi
+
+/bin/rm -f "$SB/ledger"
+run "$SB/p14.json" 2 0                         # 行ったが測れない
+if [ "$(led skip_unmeasured)" = "1" ] && [ "$(led obs_rc)" = "2" ]; then
+    ok "P14 ★測れなかった回を数え、**照合ごとの rc** も残す(片方の緑で隠れない)"
+else ng "P14 unmeasured" "unmeasured=[$(led skip_unmeasured)] obs_rc=[$(led obs_rc)]"; fi
+
+out="$(RC_PARITY_LEDGER="$SB/ledger" RC_PARITY_STATE="$SB/p14.json" bash "$SUT" --report 2>&1)"
+if printf '%s' "$out" | grep -qE 'observer-parity-check\.sh[^0-9]*rc=[0-9-]' \
+   && printf '%s' "$out" | grep -qE 'fleet-plist-parity-check\.sh[^0-9]*rc=[0-9-]' \
+   && printf '%s' "$out" | grep -q 'link-down' \
+   && printf '%s' "$out" | grep -q 'not-due' \
+   && printf '%s' "$out" | grep -q 'unmeasured'; then
+    ok "P15 --report が照合ごとの rc と理由別の回数を出す"
+else ng "P15 --report" "$(printf '%s' "$out" | head -3)"; fi
+
+# M4 ★台帳の書き込みを外すと P12 が赤くなる(= P12 が空虚でない)
+if mutate 'po__bump() {   # po__bump <変数名>' 'po__bump() { return 0; }
+po__bump_unused() {   # po__bump <変数名>'; then
+    /bin/rm -f "$SB/ledger"
+    run "$SB/m4.json" 0 0 1
+    [ "$(led skip_link_down)" != "1" ] && ok "M4 ★数え上げを外すと P12 が赤くなる" \
+                                       || ng "M4" "変異しても数が増えた = P12 は数え上げを測っていない"
+    restore
+else ng "M4" "錨が動いた"; restore; fi
+
+# ── P17 ★`--once` が本当に測る(2026-08-31、実測で踏んだ)────────────────────
+# 元の `--once` は `RC_PARITY_EVERY=0 parity_observe` と書いていた。`PO_EVERY` は
+# **読み込み時**に確定済みなので、呼び出し時に env を差しても効かず、
+# `--once` は「今すぐ測る」と名乗りながら **not-due で帰るだけ**だった。
+# 対照が捕まえられなかったのは、`run()` が **source する前**に env を差していたから
+# —— 検査の撃ち方が、人の撃ち方と違っていた。だから此処は**人と同じ形**で撃つ。
+: > "$SB/notified"
+printf '%s ok 0 %s %s\n' "$(date +%s)" "$(date +%s)" "$(date +%s)" > "$SB/p17.json"
+/bin/rm -f "$SB/ledger"
+mkchk 0 "$SB/obs.sh"; mkchk 0 "$SB/fleet.sh"
+RC_PARITY_STATE="$SB/p17.json" RC_PARITY_OBS_CHECK="$SB/obs.sh" \
+RC_PARITY_FLEET_CHECK="$SB/fleet.sh" RC_TUNNEL_NOTIFY="$NOTIFY" RC_TUNNEL_LOG="$SB/o.log" \
+    bash "$SUT" --once >/dev/null 2>&1
+if [ "$(led obs_rc)" = "0" ] && [ "$(led skip_not_due)" != "1" ]; then
+    ok "P17 ★--once は周期を待たずに本当に測る(名乗りどおり動く)"
+else ng "P17 --once" "obs_rc=[$(led obs_rc)] not_due=[$(led skip_not_due)] = 測らずに帰った"; fi
+
+# ── P16 ★対照が**実物の台帳**を触らない(2026-08-31、実際に汚した)──────────
+# 窓は **suite の最初から最後まで**。1回の呼び出しの前後だけ見る形だと、
+# 汚した枝が窓の外に在れば通る —— 最初に書いた P16 が正にそれで、
+# `~/.rc-backend/parity-ledger` に偽の数が載っているのに緑だった。
+real_at_end="$( [ -f "$REAL_LEDGER" ] && md5 -q "$REAL_LEDGER" 2>/dev/null || echo absent )"
+if [ "$real_at_start" = "$real_at_end" ]; then
+    ok "P16 ★対照は実物の台帳を触らない(suite の最初から最後まで不変)"
+else ng "P16 実物を汚した" "前=$real_at_start 後=$real_at_end — 砂場を差し忘れた枝が在る"; fi
 
 echo ""
 echo "PARITY-OBSERVER-CONTROLS: pass=$pass fail=$fail"

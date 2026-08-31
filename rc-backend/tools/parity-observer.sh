@@ -53,6 +53,60 @@ PO_TIMEOUT="${RC_PARITY_TIMEOUT:-45}"
 # 「測れない」が続いた時に「見えていない」として鳴らすまでの時間。
 PO_STALE_S="${RC_PARITY_STALE_S:-259200}"     # 3 日
 PO_PERL="${RC_PARITY_PERL:-$(command -v perl 2>/dev/null || echo '')}"
+# ★**台帳**(2026-08-31、Codex の指摘3b の残り)。状態の5欄とは**別の file**に持つ。
+#   5欄を widen しない理由: 読む側が `NF == 5` で「欄がずれた行」を弾いており、
+#   其の守りは friday の観測器で実際に効いた物なので、壊してまで詰め込まない。
+#   持つのは「後から周期を検証する」為に要る物だけ:
+#     照合ごとの最後の rc / 其の時刻 / 飛ばした回数を**理由別**に。
+#   ★回数は「観測器が此処まで来た事」の証拠でもある —— `not-due` が増えていなければ
+#     枝が呼ばれていない(2026-08-31 に呼び出しが到達していなかった実物を踏んだ)。
+PO_LEDGER="${RC_PARITY_LEDGER:-$HOME/.rc-backend/parity-ledger}"
+
+PO_L_OBS_RC="-"; PO_L_OBS_AT=0; PO_L_FLEET_RC="-"; PO_L_FLEET_AT=0
+PO_L_SKIP_LINK=0; PO_L_SKIP_NOTDUE=0; PO_L_SKIP_UNMEASURED=0
+
+po__ledger_read() {
+    [ -f "$PO_LEDGER" ] || return 0
+    local k v
+    while IFS='=' read -r k v; do
+        case "$k" in
+            obs_rc)            PO_L_OBS_RC="$v" ;;
+            obs_at)            PO_L_OBS_AT="$v" ;;
+            fleet_rc)          PO_L_FLEET_RC="$v" ;;
+            fleet_at)          PO_L_FLEET_AT="$v" ;;
+            skip_link_down)    PO_L_SKIP_LINK="$v" ;;
+            skip_not_due)      PO_L_SKIP_NOTDUE="$v" ;;
+            skip_unmeasured)   PO_L_SKIP_UNMEASURED="$v" ;;
+        esac
+    done < "$PO_LEDGER" 2>/dev/null
+    # 数でない物は 0 に倒す(読めない台帳で算術が落ちない様に)
+    for _n in PO_L_OBS_AT PO_L_FLEET_AT PO_L_SKIP_LINK PO_L_SKIP_NOTDUE PO_L_SKIP_UNMEASURED; do
+        eval "case \"\${$_n:-}\" in ''|*[!0-9]*) $_n=0 ;; esac"
+    done
+    return 0
+}
+
+po__ledger_write() {
+    local tmp dir; dir="$(dirname "$PO_LEDGER")"
+    [ -d "$dir" ] || return 0
+    tmp="$(mktemp "$dir/.parity-ledger.XXXXXX" 2>/dev/null)" || return 0
+    {
+        printf 'obs_rc=%s\n'          "$PO_L_OBS_RC"
+        printf 'obs_at=%s\n'          "$PO_L_OBS_AT"
+        printf 'fleet_rc=%s\n'        "$PO_L_FLEET_RC"
+        printf 'fleet_at=%s\n'        "$PO_L_FLEET_AT"
+        printf 'skip_link_down=%s\n'  "$PO_L_SKIP_LINK"
+        printf 'skip_not_due=%s\n'    "$PO_L_SKIP_NOTDUE"
+        printf 'skip_unmeasured=%s\n' "$PO_L_SKIP_UNMEASURED"
+    } > "$tmp" 2>/dev/null && mv -f "$tmp" "$PO_LEDGER" 2>/dev/null || /bin/rm -f "$tmp" 2>/dev/null
+    return 0
+}
+
+po__bump() {   # po__bump <変数名>
+    po__ledger_read
+    eval "$1=\$(( \${$1:-0} + 1 ))"
+    po__ledger_write
+}
 
 # 呼び手(tunnel-observer)が持っている物。単体で撃つ時の為に既定を置く。
 [ -n "${LOG:-}" ]    || LOG="${RC_TUNNEL_LOG:-$HOME/.rc-backend/tunnel-observer.log}"
@@ -106,17 +160,48 @@ po__write() {  # po__write <試みた> <状態> <通知済み> <since> <測れ�
 
 # 照合を1回まわす。0=ok / 1=drift / 2=測れない
 po__measure() {
-    local orc frc
+    local orc frc now
+    now="$(date +%s)"
     PO_DETAIL=""
+    po__ledger_read
     [ -x "$PO_OBS" ] || return 2
     po__bounded "$PO_TIMEOUT" "$PO_OBS"; orc=$?
+    # ★**照合ごとに**結果を残す(Codex の指摘3b)。合算だけだと、片方が何日も
+    #   測れていないのにもう片方の緑で隠れる形が読めない。
+    PO_L_OBS_RC="$orc"; PO_L_OBS_AT="$now"; po__ledger_write
     [ "$orc" -eq 1 ] && { PO_DETAIL="観測器: $PO_LAST_OUT"; return 1; }
     [ "$orc" -ne 0 ] && return 2
     [ -x "$PO_FLEET" ] || return 2
     po__bounded "$PO_TIMEOUT" "$PO_FLEET"; frc=$?
+    PO_L_FLEET_RC="$frc"; PO_L_FLEET_AT="$now"; po__ledger_write
     [ "$frc" -eq 1 ] && { PO_DETAIL="plist: $PO_LAST_OUT"; return 1; }
     [ "$frc" -ne 0 ] && return 2
     return 0
+}
+
+# 台帳を人が読む形で出す。**判定はしない** —— 数を出すだけ。
+po__report() {
+    po__ledger_read
+    po__read
+    local now; now="$(date +%s)"
+    echo "parity-observer 台帳 ($PO_LEDGER)"
+    echo "  照合ごとの最後の結果 (rc: 0=一致 1=ずれ 2=測れない / '-'=まだ一度も):"
+    printf '    %-32s rc=%s%s\n' "observer-parity-check.sh" "$PO_L_OBS_RC" \
+        "$([ "$PO_L_OBS_AT" -gt 0 ] 2>/dev/null && printf ' (%s 前)' "$(po__ago $((now - PO_L_OBS_AT)))")"
+    printf '    %-32s rc=%s%s\n' "fleet-plist-parity-check.sh" "$PO_L_FLEET_RC" \
+        "$([ "$PO_L_FLEET_AT" -gt 0 ] 2>/dev/null && printf ' (%s 前)' "$(po__ago $((now - PO_L_FLEET_AT)))")"
+    echo "  飛ばした回数(理由別):"
+    printf '    link-down   = %s   (自分の回線が落ちている/判らない = 測りに行かない)\n' "$PO_L_SKIP_LINK"
+    printf '    not-due     = %s   (まだ周期が来ていない。★之が増えていなければ枝が呼ばれていない)\n' "$PO_L_SKIP_NOTDUE"
+    printf '    unmeasured  = %s   (行ったが測れなかった。時計は進めていない)\n' "$PO_L_SKIP_UNMEASURED"
+    echo "  今の状態: $PO_STATE_NAME / 最後に測れた: $([ "$PO_MEASURED" -gt 0 ] 2>/dev/null && po__ago $((now - PO_MEASURED)) || echo '一度も') 前"
+}
+
+po__ago() {  # 秒 → 人が読む長さ
+    local s="${1:-0}"
+    [ "$s" -lt 3600 ] 2>/dev/null && { printf '%d 分' $((s / 60)); return; }
+    [ "$s" -lt 86400 ] 2>/dev/null && { printf '%d 時間' $((s / 3600)); return; }
+    printf '%d 日' $((s / 86400))
 }
 
 # 呼び手から1回。自分の回線が生きている時だけ測る。
@@ -124,12 +209,12 @@ parity_observe() {
     local now state msg announced since
     now="$(date +%s)"
     po__read
-    [ $((now - PO_TS)) -lt "$PO_EVERY" ] && return 0
+    [ $((now - PO_TS)) -lt "$PO_EVERY" ] && { po__bump PO_L_SKIP_NOTDUE; return 0; }
 
     # ★自分の回線が落ちている / 判らない時は**測らない**。記録も進めない ——
     #   進めると「測ったが ok だった」と後から読める形になる。
     if command -v self_link_state >/dev/null 2>&1; then
-        self_link_state || return 0
+        self_link_state || { po__bump PO_L_SKIP_LINK; return 0; }
     fi
 
     po__measure; case $? in
@@ -151,6 +236,7 @@ parity_observe() {
     local measured="$PO_MEASURED" attempt="$now"
     if [ "$state" = "unmeasured" ]; then
         attempt="$PO_TS"          # 試みた時刻を据え置く = 次の tick で再挑戦
+        po__bump PO_L_SKIP_UNMEASURED
     else
         measured="$now"
     fi
@@ -181,4 +267,11 @@ parity_observe() {
     return 0
 }
 
-[ "${1:-}" = "--once" ] && { RC_PARITY_EVERY=0 parity_observe; exit 0; }
+[ "${1:-}" = "--report" ] && { po__report; exit 0; }
+# ★`PO_EVERY` を直に 0 にする(2026-08-31、実測で踏んだ)。元は
+#   `RC_PARITY_EVERY=0 parity_observe` と書いていたが、`PO_EVERY` は**読み込み時**に
+#   `${RC_PARITY_EVERY:-86400}` から確定済みなので、呼び出し時に env を差しても効かない。
+#   結果 `--once` は「今すぐ測る」と名乗りながら **not-due で帰るだけ**だった
+#   (実測: 台帳の `skip_not_due` が 1 増え、照合の rc は `-` のまま)。
+#   対照が捕まえられなかったのは、`run()` が **source する前**に env を差していたから。
+[ "${1:-}" = "--once" ] && { PO_EVERY=0; parity_observe; exit 0; }
