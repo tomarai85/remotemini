@@ -1,20 +1,10 @@
 #!/bin/bash
-# no-operator: 人が撃つ。配備の直後と「効いている筈なのに効かない」と思った時に1発。
-#   門から回さないのは、生きた机への ssh が要るから(手元だけでは何も測れない)。
-#
-# delivery-check.sh — **作ったのに配っていない物**を探す。2026-08-26 新設。
-#
-# なぜ要るか(同じ日に3回踏んだ)
-#   1. 拒否規則を作り、検査も緑、本番も稼働していた。だが**規則 file が手元にしか無く、
-#      拒否層は動いているのに1本も効いていなかった**。
-#   2. 危険承認を commit したが、本番と電話が1つ前の版のままだった。
-#   3. 添付の保管層を書いたが、机の木に配る前に「動いている」と思っていた。
-#
-#   共通の形は「**commit と稼働は揃っているのに、間の1段だけが抜けている**」。
-#   緑の数でも healthz でも出ない —— どちらも「配った物が正しい」しか言わないから。
-#
-# ★この台本は**直さない。報告するだけ。** 直す手は人が選ぶ(配る / 消す / 要らないと決める)。
-#   自動で配ると、消したつもりの物が黙って戻る。
+# 走らせる物: `rc-backend/test/delivery-check-controls.sh`(2026-08-31 新設)。
+#   偽の ssh / curl / launchctl / PlistBuddy を差して**判定の分岐だけ**を門から測る。
+#   ★`no-operator:` の印は其の時に外した —— 対照が出来た後も印が残ると、
+#     **回っている物を回っていないと記録する**事になる。
+#   本物の机に対しては**人が撃つ**: 配備の直後と「効いている筈なのに効かない」と思った時。
+#   其れは門から回せない(生きた机への ssh が要る)。
 set -uo pipefail
 
 HOST="${RC_FRIDAY_HOST:-athenas}"
@@ -26,14 +16,23 @@ ok=0; ng=0
 good() { printf '  OK   %s\n' "$1"; ok=$((ok+1)); }
 bad()  { printf '  ★NG  %s — %s\n' "$1" "$2"; ng=$((ng+1)); }
 
-rexec() { ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" "$@" 2>/dev/null; }
+# ★外へ出る道具は**差せる様に**する(2026-08-31)。此の台本は生きた机が要るので
+#   門から回せず、其の所為で**判定の分岐が一度も対照に掛かっていなかった** ——
+#   実際、時代判定の分岐は 20 分で2回 壊れた(書き忘れ / `date -j` の `-u` 落ち)。
+#   偽物を差せれば、机が無くても「どの入力でどの判定に落ちるか」を測れる。
+#   ★継ぎ目は**呼び出しの形を変えずに**足す(既定は今までと同じ実物)。
+SSH_BIN="${RC_DELIVERY_SSH:-ssh}"
+CURL_BIN="${RC_DELIVERY_CURL:-curl}"
+LAUNCHCTL_BIN="${RC_DELIVERY_LAUNCHCTL:-launchctl}"
+PLISTBUDDY_BIN="${RC_DELIVERY_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
+rexec() { "$SSH_BIN" -o ConnectTimeout=10 -o BatchMode=yes "$HOST" "$@" 2>/dev/null; }
 
 echo "=== 1. 版が3側で揃っているか(手元 / 本番 / 電話)==="
 LOCAL=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "?")
 # ★healthz は**1回だけ**叩いて両方の欄を採る(版と稼働秒)。稼働秒は下の 1b で
 #   「其のログ行が今の実装から出た物か」を決めるのに要る。2回叩くと、間に再起動が挟まった時に
 #   版と稼働秒が別の走行の物になる。
-HEALTH=$(curl -s --max-time 12 "${RC_TUNNEL_URL:-https://desk.tailnet.example:9443/healthz}" 2>/dev/null || echo "")
+HEALTH=$("$CURL_BIN" -s --max-time 12 "${RC_TUNNEL_URL:-https://desk.tailnet.example:9443/healthz}" 2>/dev/null || echo "")
 LIVE=$(printf '%s' "$HEALTH" | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin).get("version","?"))' 2>/dev/null || echo "?")
 UPTIME=$(printf '%s' "$HEALTH" | /usr/bin/python3 -c 'import json,sys;v=json.load(sys.stdin).get("uptime");print(int(v) if isinstance(v,(int,float)) else "")' 2>/dev/null || echo "")
 # ★之は「**最後に device 向けに焼いた物**」であって電話ではない(2026-08-31 に訂正)。
@@ -42,7 +41,7 @@ UPTIME=$(printf '%s' "$HEALTH" | /usr/bin/python3 -c 'import json,sys;v=json.loa
 #   「電話が手元と一致」と言う**道具だった —— 電話に何も入れていなくても。
 #   同じ日に `ota-freshness-check.sh` の生存検査が同型で偽の DEAD を出しており、
 #   `ios/build/signed/` を「配った物 / 電話の物」と読む癖は此の木に2箇所在った。
-BAKED=$(/usr/libexec/PlistBuddy -c "Print :RCBuildRev" "$ROOT/ios/build/signed/RemoteMini.app/Info.plist" 2>/dev/null || echo "?")
+BAKED=$("$PLISTBUDDY_BIN" -c "Print :RCBuildRev" "$ROOT/ios/build/signed/RemoteMini.app/Info.plist" 2>/dev/null || echo "?")
 printf '  手元=%s 本番=%s 直近に焼いた物=%s\n' "$LOCAL" "$LIVE" "$BAKED"
 # ★`-dirty` を許さない。汚れた木で焼いた物は、どの commit とも突き合わせられない。
 case "$LIVE" in *-dirty) bad "本番が汚れた木の版" "$LIVE";; "$LOCAL") good "本番が手元と一致";; *) bad "本番が手元と違う" "$LIVE != $LOCAL";; esac
@@ -120,7 +119,7 @@ echo "=== 2. 常設が全部 load されているか ==="
 for j in com.fleet.rc-backend com.fleet.rc-phone-window com.fleet.rc-health-observer; do
     if rexec "launchctl print gui/501/$j >/dev/null 2>&1"; then good "$j"; else bad "$j" "未 load"; fi
 done
-if launchctl print "gui/$(id -u)/com.tomtim.rc-tunnel-observer" >/dev/null 2>&1; then
+if "$LAUNCHCTL_BIN" print "gui/$(id -u)/com.tomtim.rc-tunnel-observer" >/dev/null 2>&1; then
     good "com.tomtim.rc-tunnel-observer(手元)"
 else
     bad "com.tomtim.rc-tunnel-observer(手元)" "未 load = 外からトンネルを見る目が無い"
@@ -167,7 +166,7 @@ case "$fxrc" in
 esac
 
 echo "=== 6. 外からトンネルが見えるか(loopback の緑は電話の緑ではない)==="
-code=$(curl -s -o /dev/null -m 12 -w '%{http_code}' "${RC_TUNNEL_URL:-https://desk.tailnet.example:9443/healthz}" 2>/dev/null)
+code=$("$CURL_BIN" -s -o /dev/null -m 12 -w '%{http_code}' "${RC_TUNNEL_URL:-https://desk.tailnet.example:9443/healthz}" 2>/dev/null)
 [ "$code" = "200" ] && good "外から 200" || bad "外からトンネル" "code=$code"
 
 echo ""
