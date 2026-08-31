@@ -3,6 +3,13 @@ import SwiftUI
 /// The List screen (Sprint 2 brief §3/§4/§4-a). Renders `ListViewModel.phase` --
 /// see that type for the full state-machine rationale; this file is display only.
 struct ListView: View {
+    /// 外(通知・URL)から来た「この会話を開け」。詳細は `DeepLink` の doc。
+    /// ★`@EnvironmentObject` にしたのは、`init` の引数が既に多く、呼び出し側が
+    ///   2 箇所(実物 / fixture)在るから —— 引数を増やすと両方を触る事になる。
+    @EnvironmentObject private var deepLink: DeepLink
+    /// deep link で開く会話の id。押して開く経路(`NavigationLink`)とは別の口。
+    /// ★`SessionRow` は `Hashable` ではないので id を運ぶ。行は開く時に相から引く。
+    @State private var deepLinkID: String?
     @StateObject private var viewModel: ListViewModel
     /// REQUIREMENTS §4-5/§5-8 の口。**既定値を持たせない**(呼ぶ側が必ず渡す)——
     /// Sprint 8 が同じ形で3回再発させた欠陥がこれで、fixture の画面が既定の本物の
@@ -119,6 +126,24 @@ struct ListView: View {
         }
         .refreshable { await viewModel.refresh() } // pull-to-refresh (brief §3-d trigger #2)
         .task { await viewModel.refresh() } // initial display (brief §3-d trigger #1)
+        // ── 外から来た「この会話を開け」の着地 ────────────────────────────────
+        // ★押して開く `NavigationLink` とは**別の口**。同じ物を使い回さないのは、
+        //   destination-closure 形式の `NavigationLink` は外から起動できない為。
+        .navigationDestination(item: $deepLinkID) { id in
+            if let row = loadedSessions.first(where: { $0.id == id }) {
+                ConversationView(viewModel: makeConversationViewModel(for: row))
+            } else {
+                // ★一覧に無い id を黙って開かない。保管済・別の机・古い通知 —— どれも
+                //   「其の会話は今この一覧に無い」であって、白紙の会話画面を出すのは嘘。
+                ContentUnavailableView("That session isn't in this list",
+                                       systemImage: "questionmark.folder",
+                                       description: Text("It may be archived, or on another desk."))
+            }
+        }
+        // 指示が来た時。一覧がまだ読めていなければ、読めた時に下の onChange が拾う。
+        .onChange(of: deepLink.pendingSessionID) { _, id in resolveDeepLink(id) }
+        // 一覧が読めた時。通知から起動した直後は此方が先に来る事の方が多い。
+        .onChange(of: viewModel.phase) { _, _ in resolveDeepLink(deepLink.pendingSessionID) }
         // Foreground-resume (brief §3-d trigger #3). No timer anywhere in this screen
         // (§2-2/§3-c): this is the one non-user-initiated refresh trigger, and it
         // fires once per background round trip, not on an interval.
@@ -340,7 +365,7 @@ struct ListView: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: listStyle.listRowVerticalInset, leading: 16,
-                                      bottom: listStyle.listRowVerticalInset, trailing: 10))
+                                      bottom: listStyle.listRowVerticalInset, trailing: 16))
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -447,6 +472,30 @@ struct ListView: View {
     /// 全部を読み直す設計だから(写しを抱えないので、複数インスタンスが互いの
     /// セッションを消さない)。「共有インスタンスにする」という呼ぶ側の約束に
     /// 正しさを預けない為の形で、`DraftStoreTests` の⑥がそれを固定している。
+    /// 今の相が持っている一覧。相ごとに持ち方が違うので 1 箇所で吸収する。
+    private var loadedSessions: [SessionRow] {
+        switch viewModel.phase {
+        case let .list(sessions, _):               return sessions
+        case let .paneFault(_, _, sessions, _):    return sessions
+        case let .retryable(prior):                return prior ?? []
+        case let .unreachable(prior):              return prior ?? []
+        default:                                   return []
+        }
+    }
+
+    /// 外から来た id を、一覧に在れば開く。
+    ///
+    /// ★**消費したら消す**(`deepLink.consume()`)。残すと、会話から一覧へ戻った瞬間に
+    ///   同じ id がもう一度 拾われて、押していないのに画面が飛び続ける。
+    /// ★一覧に無い間は消さない —— 通知から起動した直後は一覧がまだ空で、
+    ///   其処で捨てると「通知を叩いたのに一覧のまま」になる。読めた時に拾い直す。
+    private func resolveDeepLink(_ id: String?) {
+        guard let id, !id.isEmpty else { return }
+        guard loadedSessions.contains(where: { $0.id == id }) else { return }
+        deepLinkID = id
+        deepLink.consume()
+    }
+
     private func makeConversationViewModel(for row: SessionRow) -> ConversationViewModel {
         ConversationViewModel(
             clients: .live,
@@ -598,7 +647,7 @@ struct SessionRowView: View {
                 Spacer(minLength: 8)
                 Text(RelTime.relTime(row.updatedAt, nowMs: nowMs))
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             }
             Text(row.display.subtitle) // server-computed (brief §3-a) -- rendered as-is, never reassembled
                 .font(.subheadline)
@@ -633,7 +682,7 @@ struct SessionRowView: View {
                         .font(.caption2)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
             }
             .padding(.leading, 24)

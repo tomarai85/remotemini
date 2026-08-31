@@ -273,8 +273,14 @@ struct RCBackdrop: View {
                     .offset(x: 150, y: 700)
                 // 題と状態バーの裏を静める幕。文字は騒がしい地の上に置くと安く見える —
                 // 幕は variant 自身の基調色なので暗(J)でも明(K)でも正しく働く。
-                LinearGradient(colors: [RCTheme.background.opacity(0.9), RCTheme.background.opacity(0.0)],
-                               startPoint: .top, endPoint: .center)
+                //
+                // ★2026-08-31。以前は `.top → .center` で、**画面の下半分に幕が無かった**。
+                //   転写と入力欄は其処に居るので、光彩の玉の上に小さな字が素で乗っていた。
+                //   実測(監査): 玉の上で `.tertiary` 1.8:1 / `.secondary` 3.2:1 /
+                //   警告の `.orange` 2.9:1 —— **壊れている時に読む文字が一番読めない**状態。
+                //   全高へ伸ばし、下端にも床を作る。玉は残るので意匠は変わらない。
+                LinearGradient(colors: [RCTheme.background.opacity(0.9), RCTheme.background.opacity(0.45)],
+                               startPoint: .top, endPoint: .bottom)
             } else if RCTheme.usesGlass {
                 let glow: Double = RCTheme.glowStrength
                 Circle().fill(RCTheme.accent.opacity(glow))

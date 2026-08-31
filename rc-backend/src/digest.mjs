@@ -203,13 +203,19 @@ export function actionRequired(attentionState, d) {
   }
 }
 
+/** 単複を合わせる。`1 replies` は英語として壊れていて、**数字より先に目に付く**。
+ *  2026-08-31、実機の画面で `60m · 1 replies · 1 tool calls · 1 file targets` を観測。
+ *  此の1行は「今ノートを開くべきか」を判断する為の物なので、読んだ瞬間に
+ *  文法の粗が気を散らすのは、書いてある数字の価値をそのまま削る。 */
+function plural(n, one, many) { return `${n} ${n === 1 ? one : many}`; }
+
 /** 人が読む1行。**判断に使える語だけ**を並べる。 */
 export function digestLine(d, action) {
   const head = d?.complete === true
     ? [`${d.window.minutes}m`,
-       `${d.counts.assistant} replies`,
-       `${d.counts.tool} tool calls`,
-       ...(d.fileTargetsTotal ? [`${d.fileTargetsTotal} file targets`] : [])].join(" · ")
+       plural(d.counts.assistant, "reply", "replies"),
+       plural(d.counts.tool, "tool call", "tool calls"),
+       ...(d.fileTargetsTotal ? [plural(d.fileTargetsTotal, "file", "files")] : [])].join(" · ")
     : "Could not read the whole window — counts withheld on purpose";
 
   switch (action?.level) {
