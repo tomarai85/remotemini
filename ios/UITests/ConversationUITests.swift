@@ -200,10 +200,27 @@ final class ConversationUITests: XCTestCase {
 
         // 錨: 履歴が着いた事。`行 090` は最後の行なので、これが出た時点で
         // 「読み込めた」と「一番下に居る」が両方成り立っている。
-        XCTAssertTrue(
-            app.staticTexts["line 090"].waitForExistence(timeout: 10),
-            "錨: 90行の履歴が着いていない = 以下は何も測っていない"
-        )
+        // ★倒れた時に**画面に何が居たか**を必ず残す(2026-08-31)。
+        //   之を足した理由は、同じ赤を3回追って毎回「行が無い」までしか判らなかったから:
+        //     全掃き(752件)  FAIL / FAIL / PASS   ← 断続的
+        //     この class だけ  PASS
+        //     単体 x3          PASS(3.6 / 3.8 / 4.2 秒)
+        //     先行 class を1つずつ足す(Account / BuildIdentity / Attach / AwayDigest)PASS
+        //   待ちを 20 秒へ延ばしても倒れた(23.4 秒で、行は**遅いのではなく無い**)ので、
+        //   混み具合の問題ではない。次に倒れた1回で原因が判る様に、木と
+        //   「そもそも会話画面に居るのか」を書き出す。**直すのではなく記録する** ——
+        //   待ちを延ばすのは既に一度試して外した band-aid。
+        let anchorArrived = app.staticTexts["line 090"].waitForExistence(timeout: 10)
+        if !anchorArrived {
+            print("DIAG-LONG-CONVERSATION-BEGIN")
+            print("conversation.loadEarlier exists = \(element(app, "conversation.loadEarlier").exists)")
+            print("conversation.composerField exists = \(element(app, "conversation.composerField").exists)")
+            print("line 031 exists = \(app.staticTexts["line 031"].exists)")
+            print("line 090 exists = \(app.staticTexts["line 090"].exists)")
+            print(app.debugDescription)
+            print("DIAG-LONG-CONVERSATION-END")
+        }
+        XCTAssertTrue(anchorArrived, "錨: 90行の履歴が着いていない = 以下は何も測っていない")
         XCTAssertTrue(isOnScreen(app, "line 090"), "開いた時は一番新しい行が見えていなければならない")
 
         // 対照。これが偽なら「1画面に全部入っている」= 上の主張は位置を測っていない。
