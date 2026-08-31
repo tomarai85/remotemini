@@ -117,6 +117,13 @@ log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
 #     「既に在る物の上に2本目を建てる」提案を実測で取り下げている)。
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/parity-observer.sh"
 
+# ★「出来ているのに配っていない」を、配備の時でなく定期に気付く枝(2026-08-31)。
+#   `ota-freshness-check.sh` の rc=3 を撃つのは配る時と人の手だけで、
+#   **配った直後は必ず緑、其の後どれだけ離れても誰も言わない**状態だった。
+#   木は「其れは Jervis の担当」と書いていたのに、Jervis に其の担当が居なかった。
+#   相乗りの理由は parity と同じ(回線の判断を2箇所に持たない)。
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ota-undelivered-observer.sh"
+
 read_state() { # -> status fails lastRunAt lastOkAt
     /usr/bin/python3 - "$STATE" <<'PY' 2>/dev/null || echo "unknown 0 0 0"
 import json,sys
@@ -220,6 +227,7 @@ PY
 #   ★自分の回線が落ちている時に黙るのは `parity_observe` の中(`self_link_state`)。
 if [ "$DRY" -eq 0 ] && [ "$REPORT" -eq 0 ]; then
     parity_observe || true
+    undelivered_observe || true
 fi
 
 if [ "$st" = up ]; then

@@ -41,6 +41,13 @@
 #   単体で確かめたい時は `--once`。
 set -uo pipefail
 
+# ★**直に撃たれたか**(2026-08-31、実測で踏んだ)。此の file は `tunnel-observer.sh` が
+#   **source** する。source された時 `$1` は**呼び手の引数**なので、守り無しだと
+#   `tunnel-observer.sh --report` が下の枝に吸われ、宿主の報告を出さずに exit 0 する
+#   —— 実際に其れを出荷し、`tunnel-observer-controls.sh` の T1/T2/T9/T17 が
+#   赤くなって初めて判った。引数の枝は**直に撃たれた時だけ**通す。
+PO_DIRECT=0; [ "${BASH_SOURCE[0]}" = "$0" ] && PO_DIRECT=1
+
 PO_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PO_STATE="${RC_PARITY_STATE:-$HOME/.rc-backend/parity-state.json}"
 PO_EVERY="${RC_PARITY_EVERY:-86400}"          # 日に1回。配備は人が撃つ操作なので分単位は要らない
@@ -267,11 +274,11 @@ parity_observe() {
     return 0
 }
 
-[ "${1:-}" = "--report" ] && { po__report; exit 0; }
+[ "$PO_DIRECT" = 1 ] && [ "${1:-}" = "--report" ] && { po__report; exit 0; }
 # ★`PO_EVERY` を直に 0 にする(2026-08-31、実測で踏んだ)。元は
 #   `RC_PARITY_EVERY=0 parity_observe` と書いていたが、`PO_EVERY` は**読み込み時**に
 #   `${RC_PARITY_EVERY:-86400}` から確定済みなので、呼び出し時に env を差しても効かない。
 #   結果 `--once` は「今すぐ測る」と名乗りながら **not-due で帰るだけ**だった
 #   (実測: 台帳の `skip_not_due` が 1 増え、照合の rc は `-` のまま)。
 #   対照が捕まえられなかったのは、`run()` が **source する前**に env を差していたから。
-[ "${1:-}" = "--once" ] && { PO_EVERY=0; parity_observe; exit 0; }
+[ "$PO_DIRECT" = 1 ] && [ "${1:-}" = "--once" ] && { PO_EVERY=0; parity_observe; exit 0; }

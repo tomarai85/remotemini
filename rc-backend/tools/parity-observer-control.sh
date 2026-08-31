@@ -53,6 +53,18 @@ export RC_PARITY_LEDGER="$SB/ledger"
 #   —— 最初に書いた P16 が正にそれで、汚れているのに緑だった。
 REAL_LEDGER="${HOME}/.rc-backend/parity-ledger"
 real_at_start="$( [ -f "$REAL_LEDGER" ] && md5 -q "$REAL_LEDGER" 2>/dev/null || echo absent )"
+# ★rc の欄だけを別に控える。数え上げは本番の tick でも増えるが、rc の欄は
+#   「実際に照合を撃った時」しか動かない —— 汚染はそちらに出る。
+real_rcs_at_start="$( [ -f "$REAL_LEDGER" ] && /usr/bin/sed -n 's/^\(obs_rc\|fleet_rc\)=/&/p' "$REAL_LEDGER" 2>/dev/null | tr '\n' ' ' )"
+
+# 台帳が変わった時、其れが**本番の tick**か**対照の汚染**かを決める。
+# ★関数に出したのは、実物で此の枝を撃つには「suite の走行中に本番の 10 分刻みが
+#   挟まる」のを待つしかなく、**一度も発火しない枝**になるから(今日 何度も
+#   踏んだ型)。決めているのは rc の欄が動いたかどうかの1点だけ。
+ledger_change_kind() {  # <前の rc 欄> <後の rc 欄> → tick | pollution
+    [ "$1" = "$2" ] && { printf 'tick'; return; }
+    printf 'pollution'
+}
 restore() { cp -f "$SB/orig.sh" "$SUT"; }
 
 # 偽の照合台本。<rc> を返すだけ。
@@ -299,7 +311,30 @@ else ng "P17 --once" "obs_rc=[$(led obs_rc)] not_due=[$(led skip_not_due)] = 測
 real_at_end="$( [ -f "$REAL_LEDGER" ] && md5 -q "$REAL_LEDGER" 2>/dev/null || echo absent )"
 if [ "$real_at_start" = "$real_at_end" ]; then
     ok "P16 ★対照は実物の台帳を触らない(suite の最初から最後まで不変)"
-else ng "P16 実物を汚した" "前=$real_at_start 後=$real_at_end — 砂場を差し忘れた枝が在る"; fi
+else
+    # ★変わった = 汚した、とは限らない(2026-08-31、実測で1度 赤くなった)。
+    #   本番の観測器は **10 分毎**に走り、周期前なら `skip_not_due` を1つ進めて帰る ——
+    #   suite の途中に其の tick が挟まれば、汚していなくても中身は変わる。
+    #   **10 分に1回 赤くなる対照は読まれなくなる**ので、両者を区別する:
+    #     本番の tick が出来る事 = 数え上げが増えるだけ(rc の欄は触らない)
+    #     対照の汚染          = 偽の照合結果が `obs_rc` / `fleet_rc` に載る
+    #   後者だけを赤にし、前者は「測れなかった」として出す(緑にも丸めない)。
+    rcs_now="$( [ -f "$REAL_LEDGER" ] && /usr/bin/sed -n 's/^\(obs_rc\|fleet_rc\)=/&/p' "$REAL_LEDGER" 2>/dev/null | tr '\n' ' ' )"
+    case "$(ledger_change_kind "$real_rcs_at_start" "$rcs_now")" in
+        tick)      echo "SKIP  P16(suite の途中で本番の tick が入った = 測定不成立。rc の欄は不変: [$rcs_now])" ;;
+        pollution) ng "P16 実物を汚した" "rc の欄が変わった 前=[$real_rcs_at_start] 後=[$rcs_now] — 砂場を差し忘れた枝が在る" ;;
+    esac
+fi
+
+# ── P16b ★P16 の分岐そのものを測る ────────────────────────────────────────
+# 実物で此の分岐を撃つには本番の 10 分刻みが suite の途中に挟まるのを待つしかない ——
+# つまり放っておくと**一度も発火しない枝**になる。判定だけを直に撃つ。
+if [ "$(ledger_change_kind 'obs_rc=0 fleet_rc=0 ' 'obs_rc=0 fleet_rc=0 ')" = "tick" ]; then
+    ok "P16b ★数え上げだけ動いた変化を『本番の tick』と読む(誤って赤にしない)"
+else ng "P16b tick の判定" "rc が同じなのに汚染と読んだ"; fi
+if [ "$(ledger_change_kind 'obs_rc=0 fleet_rc=0 ' 'obs_rc=2 fleet_rc=0 ')" = "pollution" ]; then
+    ok "P16c ★rc の欄が動いた変化は『汚染』と読む(見逃さない)"
+else ng "P16c 汚染の判定" "rc が変わったのに tick と読んだ = 実物を汚しても緑になる"; fi
 
 echo ""
 echo "PARITY-OBSERVER-CONTROLS: pass=$pass fail=$fail"
