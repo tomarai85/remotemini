@@ -80,7 +80,13 @@ ms__wipe() {  # ms__wipe <dir>
 }
 
 ms_release() {
-    [ -n "${MS_LOCK:-}" ] && [ -d "$MS_LOCK" ] && /bin/rmdir "$MS_LOCK" 2>/dev/null
+    [ -n "${MS_LOCK:-}" ] && [ -d "$MS_LOCK" ] || return 0
+    # ★**自分の錠だけ**返す。他人の錠を返すと、走っている相手の下で砂場が入れ替わる。
+    local owner=""
+    [ -f "$MS_LOCK/pid" ] && owner="$(cat "$MS_LOCK/pid" 2>/dev/null)"
+    [ -n "$owner" ] && [ "$owner" != "$$" ] && return 0
+    /bin/rm -f "$MS_LOCK/pid" 2>/dev/null
+    /bin/rmdir "$MS_LOCK" 2>/dev/null
     return 0
 }
 
@@ -92,10 +98,27 @@ ms_prepare() {
     # ★**直列化**(Codex の指摘4)。砂場も derived data も共有なので、2本同時は互いを壊す。
     #   `mkdir` は原子的なので錠に使える。取れなければ持ち主を名指しして降りる。
     if ! mkdir "$MS_LOCK" 2>/dev/null; then
-        echo "mutation-sandbox: 砂場が使用中($MS_LOCK)。同時に2本は走らせない" >&2
-        echo "  古い残骸なら: /bin/rmdir '$MS_LOCK'" >&2
-        return 2
+        # ★**持ち主の生死で取り直す**(2026-08-30、実測で詰まった)。
+        #   錠を `mkdir` だけで持つと、走行が殺された1回で**以後すべてが詰まる** ——
+        #   人が `rmdir` するまで全対照が「砂場が使用中」で測定不成立になる。
+        #   実際に其れが起き、繰り延べ対照が 15 本 赤くなった。
+        #   直列化の為の錠が、直列化ごと止める道具になっていた。
+        local owner=""
+        [ -f "$MS_LOCK/pid" ] && owner="$(cat "$MS_LOCK/pid" 2>/dev/null)"
+        case "${owner:-}" in ''|*[!0-9]*) owner="" ;; esac
+        if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+            echo "mutation-sandbox: 砂場が使用中(pid $owner が生きている)。同時に2本は走らせない" >&2
+            return 2
+        fi
+        # 持ち主が居ない = 残骸。★取り直した事を**必ず言う**(黙って奪うと、
+        #   本当に2本走っていた時に片方が黙って壊れる)。
+        echo "mutation-sandbox: 錠の持ち主が居ない(pid=${owner:-不明})。残骸として取り直す" >&2
+        /bin/rm -f "$MS_LOCK/pid" 2>/dev/null
+        /bin/rmdir "$MS_LOCK" 2>/dev/null
+        mkdir "$MS_LOCK" 2>/dev/null || {
+            echo "mutation-sandbox: 錠を取り直せない($MS_LOCK)" >&2; return 2; }
     fi
+    printf '%s' "$$" > "$MS_LOCK/pid" 2>/dev/null
 
     # ★**前の走行の変異が残っていないか**を先に見る(Codex の指摘4)。
     #   残ったまま同期すると、`--delete` で消えるとはいえ「消えた事」を誰も確かめない。
@@ -126,7 +149,14 @@ ms_prepare() {
         echo "  ★一致しない砂場で緑を出すと、**出荷されない版**に対する緑になる" >&2
         ms_release; return 2
     fi
-    echo "mutation-sandbox: 同期 ok(指紋 ${MS_HASH_BEFORE:0:12}… / $MS_TREE)"
+    # ★**成功時は黙る**(2026-08-30)。最初は stdout、次に stderr へ書いたが、どちらも
+    #   呼び手の出力を読む側を壊した —— `mutation-deferral-control.sh` は
+    #   `--which` の出力を `2>&1` で丸ごと捕まえて本数を数えるので、
+    #   **どちらの流れに書いても**混ざる。source される土台は、成功したら何も言わない。
+    #   失敗は喋る(上の枝は全部 stderr へ書いて非ゼロで帰る)。
+    #   指紋を人が見たい時は `RC_MUTATION_SANDBOX_VERBOSE=1`。
+    [ -n "${RC_MUTATION_SANDBOX_VERBOSE:-}" ] && \
+        echo "mutation-sandbox: 同期 ok(指紋 ${MS_HASH_BEFORE:0:12}… / $MS_TREE)" >&2
     return 0
 }
 

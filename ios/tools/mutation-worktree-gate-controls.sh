@@ -23,6 +23,8 @@
 #   G8 実 repo で借金が**増えていない**
 #   G9 ★共通の砂場(`mutation-sandbox.sh`)を使う台本は挙げない
 #   G10 ★`MS_TREE` を自分で定義した台本は挙げる(名前だけでは許さない)
+#   G11 ★「触るのが不可避」は名前と理由を毎回出す(黙って許す一覧に化けない)
+#   G12 ★「不可避」に挙げた物が もう木を触らないなら赤(一覧が腐らない)
 #
 # 使い方: bash ios/tools/mutation-worktree-gate-controls.sh
 # 終了コード: 0=全部緑 / 1=1本でも赤
@@ -109,7 +111,11 @@ else ng "G5 未宣言" "rc=$rc / $out"; fi
 # 宣言に在るのに実態が無い → 赤(宣言が実態から離れると門は何も守らなくなる)。
 /bin/rm -f "$SB/scan/direct-control.sh"
 printf '#!/bin/bash\necho nothing\n' > "$SB/scan/account-ui-control.sh"
-out="$(RC_MWG_SCAN="$SB/scan" bash "$SUT" 2>&1)"; rc=$?
+# ★宣言を**此処で差す**(2026-08-30)。借金が 0 になった日、実物の宣言が空になって
+#   此の枝が「測れる宣言が無い」で赤くなった —— 対照が本番の状態に依存していた形。
+out="$(RC_MWG_SCAN="$SB/scan" RC_MWG_DEBT="
+account-ui-control.sh
+" bash "$SUT" 2>&1)"; rc=$?
 if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "宣言が実態より古い"; then
     ok "G6 宣言が実態より古ければ赤(消せる物を消させる)"
 else ng "G6 古い宣言" "rc=$rc / $(printf '%s' "$out" | tail -1)"; fi
@@ -123,6 +129,29 @@ RC_MWG_SCAN="$SB/empty" bash "$SUT" >/dev/null 2>&1
 bash "$SUT" >/dev/null 2>&1
 [ $? -eq 0 ] && ok "G8 実 repo で借金が増えていない" \
              || { ng "G8 実 repo" "$(bash "$SUT" 2>&1 | head -2)"; }
+
+# ── G11 ★「触るのが不可避」は理由ごと毎回出る(黙って許さない)────────────
+# 借金と別枠にした以上、抜け道になり得る。**理由が画面に出続ける**事が抑止で、
+# 出なくなったら其の枠は「黙って許す一覧」に化ける。
+out="$(bash "$SUT" 2>&1)"
+if printf '%s' "$out" | grep -q "触るのが不可避:" && printf '%s' "$out" | grep -q "digest"; then
+    ok "G11 ★『触るのが不可避』は名前と理由を毎回出す"
+else ng "G11 不可避の可視化" "理由が出ていない = 黙って許す一覧に化けている"; fi
+
+# ── G12 ★「不可避」に挙げた物が もう木を触らないなら赤(一覧が腐らない)──────
+# 実物を触らずに測る: 走査の根を空にすれば、挙げた名前は「もう触っていない」側に回る。
+mkdir -p "$SB/none"
+bash "$SUT" >/dev/null 2>&1
+RC_MWG_SCAN="$SB/scan2" bash "$SUT" >/dev/null 2>&1
+mkdir -p "$SB/scan2"
+printf '#!/bin/bash\nVM="$IOS/%s/A.swift"\n/usr/bin/%s "" "s/a/b/" "$VM"\n' "$SRC" "$SEDI" \
+    > "$SB/scan2/direct-control.sh"
+out="$(RC_MWG_SCAN="$SB/scan2" RC_MWG_DEBT="
+direct-control.sh
+" bash "$SUT" 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "もう木を触っていない"; then
+    ok "G12 ★『不可避』に挙げた物が走査に居なければ赤(一覧が実態から離れない)"
+else ng "G12 腐った不可避" "rc=$rc / $(printf '%s' "$out" | tail -1)"; fi
 
 echo ""
 echo "MUTATION-WORKTREE-GATE-CONTROLS: pass=$pass fail=$fail"
