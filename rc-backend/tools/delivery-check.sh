@@ -72,8 +72,8 @@ else
         ''|0) bad "電話の版" "机の reqlog.mjs がまだ UA から版を採る形 = build 欄は build 番号ではない(配れば直る)"; ERA_OK=0 ;;
     esac
     if [ "$ERA_OK" = 1 ] && [ -n "${UPTIME:-}" ]; then
-        FIX_MTIME=$(rexec "/usr/bin/stat -f %m $REMOTE_HOME/rc-backend/src/reqlog.mjs 2>/dev/null" | tr -d '[:space:]')
         BOOT_EPOCH=$(( $(date +%s) - UPTIME ))
+        FIX_MTIME=$(rexec "/usr/bin/stat -f %m $REMOTE_HOME/rc-backend/src/reqlog.mjs 2>/dev/null" | tr -d '[:space:]')
         case "${FIX_MTIME:-}" in
             ''|*[!0-9]*) : ;;
             *) if [ "$FIX_MTIME" -gt "$BOOT_EPOCH" ]; then
@@ -81,6 +81,20 @@ else
                    ERA_OK=0
                fi ;;
         esac
+        # (c) ★**其の行自体が今の process から出たか**(2026-08-31、配備直後に実測で踏んだ)。
+        #   (a)(b) は「今 書いている物は正しい」しか言わない。**既に書かれている行**は
+        #   古い実装の産物のまま残る —— 配備した直後は必ず其の状態で、実際に
+        #   直後の走行が偽の差「1 < 105 = 104 ビルド進む」を復活させた。
+        #   ★判定は `tools/log-line-era.sh` が持つ。此処に埋めていた時に 20 分で2回 壊れ、
+        #     どちらも「生きた机が要るので対照が書けない」場所だったから気付けなかった。
+        if [ "$ERA_OK" = 1 ] && [ -n "$PHONE_SEEN" ]; then
+            bash "$REPO/tools/log-line-era.sh" "$BOOT_EPOCH" "$PHONE_SEEN" >/dev/null 2>&1
+            case $? in
+                0) : ;;
+                2) bad "電話の版" "最後の app 要求($PHONE_SEEN)は今の机が起きる前の行 = 古い実装が書いた欄。電話が一度要求を出すまで判らない"; ERA_OK=0 ;;
+                *) bad "電話の版" "ログの刻を読めない($PHONE_SEEN)= 版は判らない"; ERA_OK=0 ;;
+            esac
+        fi
     fi
     PUB=$(rexec "/usr/libexec/PlistBuddy -c 'Print :items:0:metadata:bundle-version' \$HOME/ota/*/manifest.plist 2>/dev/null" | tr -d '[:space:]')
     printf '  電話=%s(最後に見たのは %s) 配布中=%s\n' \
