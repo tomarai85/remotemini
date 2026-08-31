@@ -106,8 +106,14 @@ final class BackendSession {
     ///   本番の経路は既定のまま通るので、差し口が在る事で挙動は変わらない。
     let appBuild: String?
 
-    init(configuration: URLSessionConfiguration = .default, appBuild: String? = BackendSession.appBuild) {
+    /// 此の instance が名乗る役(検査用の殻なら `control`)。差せるのは検査の為。
+    let appRole: String?
+
+    init(configuration: URLSessionConfiguration = .default,
+         appBuild: String? = BackendSession.appBuild,
+         appRole: String? = BackendSession.appRole) {
         self.appBuild = appBuild
+        self.appRole = appRole
         // The session-wide default stays the LONGEST of the three. A client that
         // forgets to set a per-request value therefore behaves exactly as this tree
         // did before the split -- the failure mode of forgetting is "no improvement,"
@@ -136,6 +142,21 @@ final class BackendSession {
     ///   名乗れない時は**何も送らない** —— 机側は header の不在を「版が判らない」と読む。
     static let appBuild: String? = normalizedBuild(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)
 
+    /// 自分の役。**一度だけ**読む。既定は束の `RCRole`。
+    /// ★`project.yml` の既定は 2026-08-31 に `control` へ倒した —— `build.sh` を通らない
+    ///   焼き手(自分で `xcodegen generate` を撃つ対照が 12 本)が役を名乗らないと、
+    ///   机の台帳で **Tom の要求と混ざる**。配る束だけが `build.sh` の刻印で空になる。
+    static let appRole: String? = normalizedRole(Bundle.main.object(forInfoDictionaryKey: "RCRole") as? String)
+
+    /// 生値 → 名乗ってよい役。`${…}` を弾くのは、`xcodegen` が未定義の変数を
+    /// **もっともらしい文字列**として書く為(`BuildInfo.displayRev` が同じ罠を扱う)。
+    static func normalizedRole(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !v.isEmpty, !v.contains("${") else { return nil }
+        return v
+    }
+
     /// 生値 → 名乗ってよい値。**規則だけを純関数に出す**ので、束を立てずに測れる。
     static func normalizedBuild(_ raw: String?) -> String? {
         guard let raw else { return nil }
@@ -160,6 +181,14 @@ final class BackendSession {
         var stamped = request
         if stamped.value(forHTTPHeaderField: "X-App-Build") == nil, let build = appBuild {
             stamped.setValue(build, forHTTPHeaderField: "X-App-Build")
+        }
+        // ★役も**同じ場所で**押す(2026-08-31)。版と全く同じ疎らさを持っていた ——
+        //   元は `SessionsClient` の一覧取得 1 箇所だけで、`/api/account` 等は役を
+        //   名乗らないので机は `client=app` と記録した。電話の版を見る枝は
+        //   `client=app` の行を数えるので、**押していない口が1つ在れば誤報が再発する**。
+        //   実測: 誤報 2 通の行は `/api/sessions` と `/api/account` の両方に出ていた。
+        if stamped.value(forHTTPHeaderField: "X-RC-Role") == nil, let role = appRole {
+            stamped.setValue(role, forHTTPHeaderField: "X-RC-Role")
         }
         return try await session.data(for: stamped)
     }
