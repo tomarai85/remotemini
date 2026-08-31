@@ -103,14 +103,47 @@ fi
 # 上の R1-R7 は全部 `RC_CTL_LEDGER` を差している。差すと `${VAR:-既定}` の既定側が
 # 一度も展開されないので、既定の式が壊れていても緑になる —— 実際に其れを出荷しかけた
 # (`$HERE` と書き、`set -u` で全走行が起動直後に死んでいた)。
-# ★差さずに1回 走らせて、**起動して集計まで到達する**事だけを見る。
-( cd "$HERE" && RC_CTL_LIST_FILE="$SB/list" RC_CTL_TIMEOUT_S=5 bash "$SUT" >"$SB/def.txt" 2>&1 )
+#
+# ★★但し「差さずに走らせる」を**本物の木の中で**やってはいけない(2026-08-31 実測)。
+#   既定は `$ROOT/../.harness/run-controls-ledger.tsv` = **本番の台帳**なので、
+#   偽の子 3 本の判定が本番の台帳へ書き込まれる —— 中には `r-controls.sh rc=1` という
+#   **存在しない対照の赤**まで在り、掃引の結果を読む者を必ず誤らせる。
+#   実際に 8/31 の完走で 3 行が混入した(120 本の筈が 123 行)。
+#   ★検査が本番の状態へ書くのは、対照の側の欠陥。砂場に自分の複製を建てて、
+#     其処で既定を展開させる = 測る物(既定の式)は同じで、書き先だけが移る。
+# ★門も一緒に据える。走者は対照の一覧を `staged-controls-gate.sh` から取るので、
+#   走者だけ複製すると「門から一覧を取れなかった」で**何も走らせずに集計行だけ刷る**。
+#   R8 の「集計まで到達した」は其の空振りでも通る —— 之を捕まえたのが下の R8b。
+#   (2026-08-31: 砂場化した其の場で R8b が赤を出し、判定の弱さを名指しした)
+SBROOT="$SB/repo"
+/bin/mkdir -p "$SBROOT/rc-backend/tools" "$SBROOT/.harness"
+/bin/cp "$SUT" "$SBROOT/rc-backend/tools/run-controls.sh"
+/bin/cp "$HERE/tools/staged-controls-gate.sh" "$SBROOT/rc-backend/tools/" 2>/dev/null || true
+( cd "$SBROOT/rc-backend" && RC_CTL_LIST_FILE="$SB/list" RC_CTL_TIMEOUT_S=5 \
+    bash tools/run-controls.sh >"$SB/def.txt" 2>&1 )
 if grep -q "unbound variable" "$SB/def.txt"; then
     ng "R8 既定の台帳" "起動直後に落ちている: $(grep -m1 'unbound variable' "$SB/def.txt")"
 elif grep -qE "RUN-CONTROLS:|合計" "$SB/def.txt"; then
     ok "R8 ★台帳を差さずに走らせても集計まで到達する(既定の式が生きている)"
 else
     ng "R8 既定の台帳" "集計行が出ていない: $(tail -1 "$SB/def.txt")"
+fi
+
+# ★R8b 既定の式が**実際に書いた先**を見る。「集計まで到達した」だけでは、既定が
+#   別の場所を指していても緑になる。砂場の中に台帳が出来ている事まで見て初めて、
+#   既定の経路が生きていると言える。
+if [ -s "$SBROOT/.harness/run-controls-ledger.tsv" ]; then
+    ok "R8b ★既定の経路が砂場の中に台帳を作った($(wc -l < "$SBROOT/.harness/run-controls-ledger.tsv" | tr -d ' ') 行)"
+else
+    ng "R8b 既定の書き先" "砂場に台帳が出来ていない = 既定の式が別の場所を指している"
+fi
+
+# ★R8c ★★本番の台帳へ書いていない事。之が無いと、上の砂場化が後で剥がれても気付けない。
+if grep -qE 'RC_CTL_LEDGER.*ROOT/\.\./\.harness' "$SUT" && \
+   ! grep -qE '^\( *cd "\$HERE" .*bash "\$SUT"' "${BASH_SOURCE[0]}"; then
+    ok "R8c ★既定の走行を本物の木の中で撃っていない(本番の台帳を汚さない)"
+else
+    ng "R8c 本番の台帳を汚す形" "既定の走行が本物の木の中に居る = 偽の判定が本番へ混ざる"
 fi
 
 echo ""

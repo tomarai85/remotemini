@@ -1300,6 +1300,16 @@ declare -a red_names=() unm_names=()
 GATE_FOR_SPECS="${GATE_FOR_SPECS:-$ROOT/tools/staged-controls-gate.sh}"
 REPO_ROOT_FOR_GATE="$(cd "$ROOT/.." && pwd)"
 SCAN_CTLS=()
+
+# ★★一覧を差した走行では、**門に一切 触らない**(2026-08-31)。
+#   下の `for` の中で `RC_CTL_LIST_FILE` を見て抜けていたが、其れでは遅い ——
+#   門が空の時の「UNMEASURED / exit 2」が此処より**前**に在るので、一覧を差した走行でも
+#   門が埋まっている事を要求してしまう。実物の木では門が必ず埋まっているので気付けず、
+#   砂場に走者だけを複製した瞬間に「何も走らせずに集計行だけ刷る」形で露見した
+#   (`test/run-controls-ledger-controls.sh` の R8b が名指しした)。
+#   差した一覧は repo の宣言と一致しなくて当然なのだから、照合そのものを立ち上げない。
+if [ -z "$RC_CTL_LIST_FILE" ]; then
+
 while IFS= read -r _p; do
     [ -n "$_p" ] || continue
     # 門の答えは repo の根から。此処の cwd は rc-backend なので基点を移す。
@@ -1321,7 +1331,6 @@ fi
 #   此の走者自身を測る対照(`test/run-controls-ledger-controls.sh` の R7)が捕まえた ——
 #   「飛ばす」と註記に書きながら実装していなかった、書いただけの規則。
 for _f in "${SCAN_CTLS[@]}"; do
-    [ -n "$RC_CTL_LIST_FILE" ] && break
     [ -f "$_f" ] || continue
     case " ${LOCAL_CTLS[*]} ${EDITH_CTLS[*]} ${EXCLUDED_CTLS[*]:-} " in
         *" $_f "*) : ;;
@@ -1330,6 +1339,8 @@ for _f in "${SCAN_CTLS[@]}"; do
            red=$((red+1)); red_names+=("$(basename "$_f")(未登録)") ;;
     esac
 done
+
+fi   # ← 一覧を差した走行は、此処までを丸ごと立ち上げない
 
 for c in "${list[@]}"; do
     if [ ! -f "$c" ]; then
