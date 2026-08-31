@@ -67,6 +67,49 @@ final class AppBuildHeaderTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.lastRequestHeaders?["X-App-Build"], "96")
     }
 
+    // MARK: - 役も同じ通り道で押す(2026-08-31)
+
+    /// ★版と**同じ疎らさ**を役も持っていた: 元は一覧取得だけが `X-RC-Role` を押し、
+    /// `/api/account` 等は役を名乗らないので机は `client=app` と記録した。
+    /// 電話の版を見る枝は `client=app` の行を数えるので、**押していない口が1つ在れば
+    /// 誤報が再発する**(実測: 誤報 2 通の行は両方の口に出ていた)。
+    func testEveryRequestThroughTheSessionCarriesTheRole() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data("{}".utf8))]
+
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/account"))
+        request.setValue("Bearer k", forHTTPHeaderField: "Authorization")
+        _ = try? await MockURLProtocol.makeSession(appRole: "control").data(for: request)
+
+        XCTAssertEqual(
+            MockURLProtocol.lastRequestHeaders?["X-RC-Role"], "control",
+            "一覧以外の口が役を名乗っていない = 机は其の行を Tom として数える"
+        )
+    }
+
+    /// ★陰性対照。配る束は役を持たないので、**押さない**事が一線。
+    func testNoRoleMeansNoHeader() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data("{}".utf8))]
+
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/account"))
+        request.setValue("Bearer k", forHTTPHeaderField: "Authorization")
+        _ = try? await MockURLProtocol.makeSession(appRole: nil).data(for: request)
+
+        XCTAssertNil(
+            MockURLProtocol.lastRequestHeaders?["X-RC-Role"],
+            "配る束が役を名乗ると、Tom の要求が control として記録される = 今 直そうとしている嘘の悪い版"
+        )
+    }
+
+    /// `xcodegen` が未定義の変数を書いた形(`${RC_ROLE}`)は名乗らない。
+    func testOnlyRealRolesAreAnnounced() {
+        XCTAssertEqual(BackendSession.normalizedRole("control"), "control")
+        XCTAssertEqual(BackendSession.normalizedRole("  control "), "control")
+        for bad in ["${RC_ROLE}", "", "   ", "a${b}c"] {
+            XCTAssertNil(BackendSession.normalizedRole(bad), "名乗ってはいけない役が通った: [\(bad)]")
+        }
+        XCTAssertNil(BackendSession.normalizedRole(nil))
+    }
+
     // MARK: - 名乗ってよい値の規則(束を立てずに測る)
 
     /// ★`xcodegen` は変数が未定義でも落ちず、`${...}` という**もっともらしい文字列**を

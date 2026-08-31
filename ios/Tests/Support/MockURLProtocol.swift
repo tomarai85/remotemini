@@ -116,10 +116,10 @@ final class MockURLProtocol: URLProtocol {
     /// ★`appBuild` を差せる(2026-08-31)。既定は `nil` = **版を名乗らない** ——
     ///   既存の 700 本余りが「header はこれだけ」と測っている所へ、fixture が勝手に
     ///   1本増やすと、其の主張の意味が静かに変わる。名乗りを測りたい検査だけが差す。
-    static func makeSession(appBuild: String? = nil) -> BackendSession {
+    static func makeSession(appBuild: String? = nil, appRole: String? = nil) -> BackendSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
-        return BackendSession(configuration: configuration, appBuild: appBuild)
+        return BackendSession(configuration: configuration, appBuild: appBuild, appRole: appRole)
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }

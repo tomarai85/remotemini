@@ -50,12 +50,17 @@ ng() { echo "FAIL  $1  ($2)"; fail=$((fail + 1)); }
 H="X-App""-Build"
 
 # ── S1 押す場所は1つ ──────────────────────────────────────────────────────
-n="$(grep -rl "$H" "$HERE/Sources" 2>/dev/null | wc -l | tr -d ' ')"
+# ★数えるのは「文字列を含む file」ではなく「**押している file**」(2026-08-31 に直した)。
+#   註記で header の名を出しただけの file を数えると、経緯を書くたびに赤くなる ——
+#   実際、役を通り道へ移した時に `SessionsClient` へ書いた1行の註記で S1 が赤くなった。
+#   同じ型を `mutation-worktree-gate` の G3 が先に書いている(註記だけの台本は挙げない)。
+STAMP="setValue(.*forHTTPHeaderField: \"$H\")"
+n="$(grep -rlE "$STAMP" "$HERE/Sources" 2>/dev/null | wc -l | tr -d ' ')"
 if [ "$n" = "1" ]; then ok "S1 ★版を名乗る場所は Sources の中で 1 file だけ"
 else ng "S1 押す場所の数" "$n file が書いている = client ごとに散っている(足し忘れが起きる形)"; fi
 
 # ── S2 其れは通り道 ───────────────────────────────────────────────────────
-f="$(grep -rl "$H" "$HERE/Sources" 2>/dev/null | head -1)"
+f="$(grep -rlE "$STAMP" "$HERE/Sources" 2>/dev/null | head -1)"
 case "${f##*/}" in
     BackendSession.swift) ok "S2 ★押しているのは通り道(BackendSession)" ;;
     *) ng "S2 押す場所" "${f:-無し} = client 側で押している" ;;
@@ -73,6 +78,17 @@ else ng "S3 押す位置" "data(for:) の外で押している = 通り道を素
 if printf '%s' "$body" | grep -q "setValue(build, forHTTPHeaderField: \"$H\")"; then
     ok "S7 ★押印が代入として在る(名を読むだけの形と区別できる)"
 else ng "S7 代入の有無" "setValue(build, …) が data(for:) の中に無い = 押していない"; fi
+
+# ── S8/S9 ★役も同じ通り道で1箇所(2026-08-31)────────────────────────────────
+# 版と**同じ疎らさ**を役も持っていた。`/api/account` が役を名乗らないと机は
+# `client=app` と記録し、電話の版を見る枝が誤報を出す(実測 2 通)。
+R="X-RC""-Role"
+RSTAMP="setValue(.*forHTTPHeaderField: \"$R\")"
+rn="$(grep -rlE "$RSTAMP" "$HERE/Sources" 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$rn" = "1" ]; then ok "S8 ★役を押す場所も Sources の中で 1 file だけ"
+else ng "S8 役を押す場所の数" "$rn file = client ごとに散っている(足し忘れが起きる形)"; fi
+if printf '%s' "$body" | grep -qE "$RSTAMP"; then ok "S9 ★役の押印も data(for:) の中"
+else ng "S9 役の押す位置" "data(for:) の外で押している = 通り道を素通りする経路が残る"; fi
 
 # ── S4 規則が純関数に出ている ────────────────────────────────────────────
 if grep -q 'static func normalizedBuild' "$SRC"; then

@@ -93,18 +93,9 @@ struct SessionsClient: SessionsListing {
         //   此処だけに在った頃は、一覧以外の口が全部 `build=-` で記録され、
         //   机側の道具が「最後の app 行」を読んで版を取り違えた。client が増えるたびに
         //   刻印を足す形は、足し忘れた日に静かに版が消える。
-        // ★検査用の殻だけが役を名乗る(2026-08-30)。空なら何も送らない = 机は UA で判ずる。
-        //   ★`${` を含む値は送らない —— xcodegen は変数が未定義でも落ちず、
-        //     `${RC_ROLE}` という**もっともらしい文字列**を Info.plist に書く(実測、
-        //     `BuildInfo.displayRev` が同じ罠を扱っている)。
-        //     ★之は**守りの重ね掛け**であって一線ではない: 机の分類器は `control` に
-        //       完全一致した時だけ役を採り、其れ以外は UA の判定へ落ちる。つまり
-        //       literal を送っても結果は現状(= `app`)で、害は無い。送らないのは
-        //       机の log に意味の無い文字列を残さない為。
-        if let role = Bundle.main.object(forInfoDictionaryKey: "RCRole") as? String,
-           !role.isEmpty, !role.contains("${") {
-            request.setValue(role, forHTTPHeaderField: "X-RC-Role")
-        }
+        // ★役の名乗りは `BackendSession.data(for:)` が**通り道で**打つ(2026-08-31 に移した)。
+        //   此処だけに在った頃は `/api/account` 等が役を名乗らず、机が `client=app` と
+        //   記録して電話の版を見る枝が誤報を出した —— 版(`X-App-Build`)と同じ疎らさ。
 
         let data: Data
         let response: URLResponse
