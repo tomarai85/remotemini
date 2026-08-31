@@ -89,15 +89,10 @@ struct SessionsClient: SessionsListing {
         request.httpMethod = "GET"
         request.timeoutInterval = BackendSession.interactiveTimeout
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        // ★自分の版を**明示のヘッダ**で名乗る(2026-08-30、Codex の指摘1)。
-        //   机は今まで `User-Agent` から読んでいたが、あれは iOS が既定で組み立てる物 =
-        //   **私が所有していない契約**。Apple が形を変えれば、机は「版が判らない」に落ち、
-        //   帯は黙る —— そして「版が判らない」と「解析が壊れた」が同じ null になるので、
-        //   **壊れた事に誰も気付かない**。名乗る側が名乗る。
-        //   ★UA 側の解析は残す(此のヘッダを持たない古い版からの要求を読める様に)。
-        if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String {
-            request.setValue(build, forHTTPHeaderField: "X-App-Build")
-        }
+        // ★版の名乗りは `BackendSession.data(for:)` が**通り道で**打つ(2026-08-31 に移した)。
+        //   此処だけに在った頃は、一覧以外の口が全部 `build=-` で記録され、
+        //   机側の道具が「最後の app 行」を読んで版を取り違えた。client が増えるたびに
+        //   刻印を足す形は、足し忘れた日に静かに版が消える。
         // ★検査用の殻だけが役を名乗る(2026-08-30)。空なら何も送らない = 机は UA で判ずる。
         //   ★`${` を含む値は送らない —— xcodegen は変数が未定義でも落ちず、
         //     `${RC_ROLE}` という**もっともらしい文字列**を Info.plist に書く(実測、

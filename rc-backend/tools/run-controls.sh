@@ -1000,6 +1000,13 @@ LOCAL_CTLS=(
                                      #   それで「max が守っている」という私の註記が
                                      #   実装とずれていた事が判った。1本にまとめると
                                      #   片方の機構が死んでいても緑が出る。
+    ../ios/tools/build-header-stamp-control.sh
+                                     # ★2026-08-31。電話が版を名乗る場所が**1つ**で、
+                                     #   其れが通り道(BackendSession.data(for:))に在る事。
+                                     #   client ごとに押していた頃、一覧以外の口が全部
+                                     #   `build=-` で記録され、机の道具が版を取り違えた。
+                                     #   ★挙動は測らない(simulator が要る)——
+                                     #     其方は ios/Tests/Core/AppBuildHeaderTests.swift。
     test/delivery-check-controls.sh
                                      # ★2026-08-31。`delivery-check.sh` は生きた机が
                                      #   要るので門から回せず、**判定の分岐が一度も対照に

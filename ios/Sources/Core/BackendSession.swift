@@ -100,7 +100,14 @@ final class BackendSession {
 
     let session: URLSession
 
-    init(configuration: URLSessionConfiguration = .default) {
+    /// 此の instance が名乗る build。既定は束から読んだ物。
+    /// ★差せる様にしてあるのは検査の為(束の `CFBundleVersion` は検査の走行では
+    ///   別の値になるので、差せないと「押しているか」を測れない)。
+    ///   本番の経路は既定のまま通るので、差し口が在る事で挙動は変わらない。
+    let appBuild: String?
+
+    init(configuration: URLSessionConfiguration = .default, appBuild: String? = BackendSession.appBuild) {
+        self.appBuild = appBuild
         // The session-wide default stays the LONGEST of the three. A client that
         // forgets to set a per-request value therefore behaves exactly as this tree
         // did before the split -- the failure mode of forgetting is "no improvement,"
@@ -121,11 +128,40 @@ final class BackendSession {
         self.session = URLSession(configuration: configuration, delegate: RedirectRefusingDelegate(), delegateQueue: nil)
     }
 
+    /// 自分の build 番号。**一度だけ**読む(要求ごとに Info.plist を引かない)。
+    ///
+    /// ★`nil` を返す条件を狭く保つ: 数字だけの値以外は名乗らない。`xcodegen` は変数が
+    ///   未定義でも落ちず `${...}` という**もっともらしい文字列**を Info.plist に書くので、
+    ///   素通しにすると其れが机の log に載る(`BuildInfo.displayRev` が同じ罠を扱っている)。
+    ///   名乗れない時は**何も送らない** —— 机側は header の不在を「版が判らない」と読む。
+    static let appBuild: String? = normalizedBuild(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)
+
+    /// 生値 → 名乗ってよい値。**規則だけを純関数に出す**ので、束を立てずに測れる。
+    static func normalizedBuild(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !v.isEmpty, v.count <= 9, v.allSatisfy({ $0.isNumber }) else { return nil }
+        return v
+    }
+
     /// The one call clients make. Kept here rather than having each client reach for
     /// `.session` so that "which session did this request actually go through" has a
     /// single answer, greppable in one place.
+    ///
+    /// ★版の名乗りは**此処で1回だけ**打つ(2026-08-31)。元は `SessionsClient` の
+    ///   一覧取得だけが `X-App-Build` を付けており、他の口は全部 `build=-` で記録された。
+    ///   其の疎らさは机側で実害になった: 同じミリ秒に `/api/sessions`(build=115)と
+    ///   `/api/account`(build=-)が並び、「最後の app 行」を読む道具が後者を掴んで
+    ///   **「電話は版を名乗っていない」と報告した** —— 電話は 115 だったのに。
+    ///   16 箇所の `Authorization` は全部この1本を通るので、**通り道で押す**方が
+    ///   「client を1つ足した日に版が消える」形を構造的に潰せる。
+    /// ★既に入っている値は上書きしない —— 検査が意図して差した値を消さない為。
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        try await session.data(for: request)
+        var stamped = request
+        if stamped.value(forHTTPHeaderField: "X-App-Build") == nil, let build = appBuild {
+            stamped.setValue(build, forHTTPHeaderField: "X-App-Build")
+        }
+        return try await session.data(for: stamped)
     }
 }
 
