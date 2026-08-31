@@ -30,13 +30,77 @@ rexec() { ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" "$@" 2>/dev/null; }
 
 echo "=== 1. 版が3側で揃っているか(手元 / 本番 / 電話)==="
 LOCAL=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "?")
-LIVE=$(curl -s --max-time 12 "${RC_TUNNEL_URL:-https://desk.tailnet.example:9443/healthz}" 2>/dev/null \
-       | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin).get("version","?"))' 2>/dev/null || echo "?")
-PHONE=$(/usr/libexec/PlistBuddy -c "Print :RCBuildRev" "$ROOT/ios/build/signed/RemoteMini.app/Info.plist" 2>/dev/null || echo "?")
-printf '  手元=%s 本番=%s 電話=%s\n' "$LOCAL" "$LIVE" "$PHONE"
+# ★healthz は**1回だけ**叩いて両方の欄を採る(版と稼働秒)。稼働秒は下の 1b で
+#   「其のログ行が今の実装から出た物か」を決めるのに要る。2回叩くと、間に再起動が挟まった時に
+#   版と稼働秒が別の走行の物になる。
+HEALTH=$(curl -s --max-time 12 "${RC_TUNNEL_URL:-https://desk.tailnet.example:9443/healthz}" 2>/dev/null || echo "")
+LIVE=$(printf '%s' "$HEALTH" | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin).get("version","?"))' 2>/dev/null || echo "?")
+UPTIME=$(printf '%s' "$HEALTH" | /usr/bin/python3 -c 'import json,sys;v=json.load(sys.stdin).get("uptime");print(int(v) if isinstance(v,(int,float)) else "")' 2>/dev/null || echo "")
+# ★之は「**最後に device 向けに焼いた物**」であって電話ではない(2026-08-31 に訂正)。
+#   書くのは `ios/tools/build.sh`(`OUT="$DERIVED/signed"`)で、配布と無関係な
+#   ただの開発ビルドでも動く。旧版は此れを `電話=` と印字しており、**手元で焼いた瞬間に
+#   「電話が手元と一致」と言う**道具だった —— 電話に何も入れていなくても。
+#   同じ日に `ota-freshness-check.sh` の生存検査が同型で偽の DEAD を出しており、
+#   `ios/build/signed/` を「配った物 / 電話の物」と読む癖は此の木に2箇所在った。
+BAKED=$(/usr/libexec/PlistBuddy -c "Print :RCBuildRev" "$ROOT/ios/build/signed/RemoteMini.app/Info.plist" 2>/dev/null || echo "?")
+printf '  手元=%s 本番=%s 直近に焼いた物=%s\n' "$LOCAL" "$LIVE" "$BAKED"
 # ★`-dirty` を許さない。汚れた木で焼いた物は、どの commit とも突き合わせられない。
 case "$LIVE" in *-dirty) bad "本番が汚れた木の版" "$LIVE";; "$LOCAL") good "本番が手元と一致";; *) bad "本番が手元と違う" "$LIVE != $LOCAL";; esac
-case "$PHONE" in *-dirty) bad "電話が汚れた木の版" "$PHONE";; "$LOCAL") good "電話が手元と一致";; *) bad "電話が手元と違う" "$PHONE != $LOCAL";; esac
+
+echo "=== 1b. 電話が実際に動かしている版(机の要求ログから)==="
+# ★電話の版は**電話が名乗った物**からしか判らない。手元の成果物は電話について何も語らない。
+#   材料は rc-backend の要求ログの `client=app` の行(`X-App-Build` → 無ければ UA)。
+#   ★比べる相手は HEAD ではなく**配っている版**。電話には配った物しか入りようがない。
+APPLOG="${RC_BACKEND_LOG:-$REMOTE_HOME/Library/Logs/rc-backend/rc-backend.log}"
+PHONE_LINE=$(rexec "grep 'client=app' '$APPLOG' 2>/dev/null | tail -1")
+if [ -z "$PHONE_LINE" ]; then
+    # ★「一度も無い」とは言えない —— この log は上限で切られる。測れた範囲だけを言う。
+    bad "電話の版" "この log に残っている範囲に app からの要求が1本も無い(切られた後かもしれない)"
+else
+    PHONE_BUILD=$(printf '%s' "$PHONE_LINE" | sed -n 's/.* build=\([0-9-]*\) .*/\1/p')
+    PHONE_SEEN=$(printf '%s' "$PHONE_LINE" | sed -n 's/^\[rc-backend\] req \([^ ]*\) .*/\1/p')
+    # ★**其の行を今の意味で読んでよいか**を確かめる(2026-08-31)。08-31 より前の机は
+    #   `build=` に UA 由来の**売り物の版**を書いていた(実測: 861 本 全部 `1`)。
+    #   古い行を今の意味で読むと「1 は 105 より 104 古い」という**存在しない差**を作る
+    #   —— 実際に一度書きかけた。だから条件は2つ、どちらも観測で決める:
+    #     (a) 机に**配ってある** reqlog.mjs が版をヘッダから採る形になっているか
+    #     (b) **走っている process** が其の file より後に起きたか
+    #   (a) だけでは足りない —— 配ったが再起動していない、が此の道具の存在理由そのもの。
+    ERA_OK=1
+    HAS_FIX=$(rexec "grep -c 'const build = headerBuild(' $REMOTE_HOME/rc-backend/src/reqlog.mjs 2>/dev/null" | tr -d '[:space:]')
+    case "${HAS_FIX:-0}" in
+        ''|0) bad "電話の版" "机の reqlog.mjs がまだ UA から版を採る形 = build 欄は build 番号ではない(配れば直る)"; ERA_OK=0 ;;
+    esac
+    if [ "$ERA_OK" = 1 ] && [ -n "${UPTIME:-}" ]; then
+        FIX_MTIME=$(rexec "/usr/bin/stat -f %m $REMOTE_HOME/rc-backend/src/reqlog.mjs 2>/dev/null" | tr -d '[:space:]')
+        BOOT_EPOCH=$(( $(date +%s) - UPTIME ))
+        case "${FIX_MTIME:-}" in
+            ''|*[!0-9]*) : ;;
+            *) if [ "$FIX_MTIME" -gt "$BOOT_EPOCH" ]; then
+                   bad "電話の版" "机の reqlog.mjs は直っているが、走っている process は其れより前に起きている = まだ古い実装が書いている"
+                   ERA_OK=0
+               fi ;;
+        esac
+    fi
+    PUB=$(rexec "/usr/libexec/PlistBuddy -c 'Print :items:0:metadata:bundle-version' \$HOME/ota/*/manifest.plist 2>/dev/null" | tr -d '[:space:]')
+    printf '  電話=%s(最後に見たのは %s) 配布中=%s\n' \
+        "$([ "$ERA_OK" = 1 ] && printf '%s' "${PHONE_BUILD:-?}" || printf '読めない')" \
+        "${PHONE_SEEN:-?}" "${PUB:-?}"
+    # ★時代が合わない時は**版の話をしない**。上で既に理由を1本 出しているので、
+    #   此処で更に「名乗っていない」と言うと、同じ事実に2つの違う説明が付く。
+    if [ "$ERA_OK" = 1 ]; then
+        case "${PHONE_BUILD:-}" in
+            ''|-|*[!0-9]*)
+                bad "電話の版" "app の行は在るが版を名乗っていない(= 08-30 以前の版。X-App-Build を持たない)" ;;
+            *)
+                case "${PUB:-}" in
+                    ''|*[!0-9]*) bad "電話の版" "配っている版を読めないので比べられない" ;;
+                    *) if [ "$PHONE_BUILD" -ge "$PUB" ]; then good "電話が配布中の版に追いついている($PHONE_BUILD >= $PUB)"
+                       else bad "電話が配布中より古い" "$PHONE_BUILD < $PUB = 栞を叩けば $((PUB - PHONE_BUILD)) ビルド進む"; fi ;;
+                esac ;;
+        esac
+    fi
+fi
 
 echo "=== 2. 常設が全部 load されているか ==="
 for j in com.fleet.rc-backend com.fleet.rc-phone-window com.fleet.rc-health-observer; do

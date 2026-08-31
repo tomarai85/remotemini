@@ -17,7 +17,7 @@ import { promisify } from "node:util";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords } from "./sessions.mjs";
 import { accountBody, gapItem, healthzBody, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
 import { publishedBuild } from "./ota-published.mjs";
-import { appBuild, headerBuild } from "./reqlog.mjs";
+import { headerBuild } from "./reqlog.mjs";
 import { parseFleetAccount, selectionMessage, selectionProblem } from "./account.mjs";
 import { parseCswapUsage, usageBackoffMs, usageRefreshDue } from "./usage.mjs";
 import { JsonlTail, formatPollCursor, pollDecision, resumeDecision } from "./tail.mjs";
@@ -1347,12 +1347,15 @@ const server = createServer(async (req, res) => {
       return json(res, 200, sessionsBody({
         sessions: listing, scan: scanBody, paneFault,
         publishedBuild: publishedBuild(OTA_ROOT),
-        // ★明示のヘッダを**先に**見る。`User-Agent` は iOS が既定で組み立てる物で、
-        //   私が所有していない契約(Codex 2026-08-30)。名乗るヘッダを持つ版は其れを使い、
-        //   持たない古い版だけ UA へ落ちる。どちらも `appBuild()` の同じ厳格な数字判定を通す。
-        appBuild: headerBuild(req.headers["x-app-build"]) !== "-"
-          ? headerBuild(req.headers["x-app-build"])
-          : appBuild(req.headers["user-agent"]),
+        // ★**電話が名乗った版だけ**を採る。`User-Agent` へ落ちる道は 2026-08-31 に消した ——
+        //   UA が運ぶのは `CFBundleShortVersionString`(売り物の版)であって build 番号ではなく、
+        //   落ちた先で**売り物の版と build 番号を引き算する**事になっていた
+        //   (実測: 短版 0.1 / build 106、机の log の app 要求は全部 `build=1`)。
+        //   名乗らない版は `"-"` → `updateNotice` が `null` を返す = 帯を出さない。
+        //   ★之で「名乗らない古い版には知らせない」事になるが、**知らせられない**のが事実:
+        //     build 105(今 配っている物)は帯の UI 自体を持たない(6e2a5a0 は 105 の 2h 後)。
+        //     嘘の数字を出すより黙る方が良い。106 以降は名乗るので正しく出る。
+        appBuild: headerBuild(req.headers["x-app-build"]),
       }));
     }
 

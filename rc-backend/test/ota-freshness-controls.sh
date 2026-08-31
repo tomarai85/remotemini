@@ -95,7 +95,36 @@ run 2 "C6 向こうの出力が数字でなければ 2(エラー文を版番号�
 
 export FAKE_OUT="99"
 /bin/rm -f "$SB/Info.plist"
-run 2 "C7 手元の署名済み plist が無ければ 2"
+# ★C7 は「承認の記録が**無い**時」の話。其の時だけ署名済み plist が比較の相手になる
+#   ので、読めなければ測定不成立。`run` は承認 file を `$SB/approved-default`
+#   (作っていない = 不在)に固定しているので、此の前提は満たされている。
+run 2 "C7 承認の記録も署名済み plist も無ければ 2"
+
+# ── C7b ★承認の記録が在るなら、署名済み plist が無くても答えられる(2026-08-31)──
+# 之を測る理由: 元の実装は plist の不在で**先に** 2 へ落ちており、承認が在っても
+# 黙っていた。判定に使わない入力を必須にしていた形 —— `ios/build/` を掃除しただけで
+# 巻き戻りの検査が黙る。「読めなかったを緑に丸めない」は守ったまま、
+# 「読む必要が無い物で黙らない」を足す。
+export FAKE_OUT="105"
+printf '105\n' > "$SB/approved-c7b"
+out="$(RC_OTA_SSH="$FAKE" RC_SIGNED_PLIST="$SB/does-not-exist.plist" \
+       RC_OTA_APPROVED_FILE="$SB/approved-c7b" \
+       RC_OTA_SECRET=deadbeefdeadbeefdeadbeef bash "$SUT" 2>&1)"; rc=$?
+# HEAD が 105 より先なら 3、そうでなければ 0。どちらも「答えた」= 2 でない事が要点。
+if [ "$rc" -ne 2 ] && ! printf '%s' "$out" | grep -q "測定不成立"; then
+    ok "C7b ★承認の記録が在れば、署名済み plist が無くても黙らない (rc=$rc)"
+else ng "C7b 承認が在る時の plist 不在" "rc=$rc / $(printf '%s' "$out" | tail -1)"; fi
+
+# ── C7c ★逆向きの対照。C7b が「plist を見なくなった」だけの緩和でない事を測る ──
+# 承認の記録が在る時、**配布 < 承認**は plist が無くても赤(1)でなければならない。
+export FAKE_OUT="100"
+out="$(RC_OTA_SSH="$FAKE" RC_SIGNED_PLIST="$SB/does-not-exist.plist" \
+       RC_OTA_APPROVED_FILE="$SB/approved-c7b" \
+       RC_OTA_SECRET=deadbeefdeadbeefdeadbeef bash "$SUT" 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "巻き戻る"; then
+    ok "C7c ★plist が無くても、配布が承認より古ければ赤(緩和ではない)"
+else ng "C7c plist 不在での巻き戻り検出" "rc=$rc(1 が期待) / $(printf '%s' "$out" | tail -1)"; fi
+export FAKE_OUT="99"
 
 # ★file は在るが key が無い場合。PlistBuddy は "File ... Will Create" ではなく
 #   "Does Not Exist" を返す。どちらも数字ではないので 2 に落ちる事を測る。
