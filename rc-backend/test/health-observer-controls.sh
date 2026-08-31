@@ -772,6 +772,64 @@ printf '#!/bin/bash\nexit 0\n' > "$SB/present-exposure-check.sh"; chmod +x "$SB/
 TEST_EXP_CHECK="$SB/present-exposure-check.sh" _exp
 chk "★(c) 台本が在れば鳴らない(何でも鳴る訳ではない)" "$(notify_count)" "0"
 
+# ── 電話が版を名乗った事を1回だけ言う(2026-08-31)────────────────────────
+# ★測る中心は「鳴るか」ではなく **1回だけ鳴るか** と **名乗っていない行で鳴らないか**。
+#   前者だけなら「毎回鳴る」実装で通り、其の警報は一週間で読まれなくなる。
+_phone() {  # _phone <log の中身...>  → 1回走らせる
+    : > "$SB/rc.log"
+    for l in "$@"; do printf '%s\n' "$l" >> "$SB/rc.log"; done
+    RC_HEALTH_PHONE_LOG="$SB/rc.log" RC_HEALTH_PHONE_MARK="$SB/phone.mark" \
+    RC_HEALTH_PHONE_EVERY=0 RC_HEALTH_CAP_MARK= RC_HEALTH_OTA_CHECK= \
+        _obs >/dev/null 2>&1
+}
+# ★錨。机は起動のたびに之を書く。**之より後**が今の走行の行。
+BOOT='[rc-backend] listening on http://127.0.0.1:8787 (key: /x/api.key)'
+# ★今の走行より前の行(古い実装が UA の売り物の版を書いた形)。数えてはいけない。
+LOLD='[rc-backend] req 2026-08-30T10:00:00.000Z GET /api/sessions route=r client=app build=1 code=200 reason=- ms=1'
+L114='[rc-backend] req 2026-08-31T20:00:00.000Z GET /api/sessions route=r client=app build=114 code=200 reason=- ms=1'
+L115='[rc-backend] req 2026-08-31T21:00:00.000Z GET /api/sessions route=r client=app build=115 code=200 reason=- ms=1'
+LNONE='[rc-backend] req 2026-08-31T19:00:00.000Z GET /api/sessions route=r client=app build=- code=200 reason=- ms=1'
+LTOOL='[rc-backend] req 2026-08-31T19:30:00.000Z GET /api/sessions route=r client=tool build=- code=200 reason=- ms=1'
+
+# ★数えるのは**この枝の通知だけ**。全部の通知を数えると、同じ走行で出る
+#   「机が応答しない」の1通が混ざり、枝の挙動と無関係にずれる(実測でずれた)。
+# ★`|| echo 0` を付けない。`grep -c` は0件でも **0 を印字してから非ゼロで終わる**ので、
+#   付けると "0\n0" になる(同じ罠を 2026-08-31 に2度踏んだ)。数は grep が出す。
+phone_notices() { local c; c="$(grep -c '電話が build=' "$FAKE_NOTIFY_LOG" 2>/dev/null)"; printf '%s' "${c:-0}"; }
+
+/bin/rm -f "$SB/phone.mark" "$SB/phone.mark.at"; : > "$FAKE_NOTIFY_LOG"
+_phone "$LOLD" "$BOOT" "$L114"
+chk "★電話が版を名乗ったら1通" "$(phone_notices)" "1"
+_phone "$LOLD" "$BOOT" "$L114"
+chk "★同じ版が続いても2通目は出ない(出来事であって状態ではない)" "$(phone_notices)" "1"
+_phone "$LOLD" "$BOOT" "$L114" "$L115"
+chk "★版が変われば また1通" "$(phone_notices)" "2"
+
+# ★巻き戻し(115 → 114)で **114 を二度 言わない**(Codex 2026-08-31)。
+#   「最後の版と違うか」で判じると此処で再び鳴る —— 憶えるのは集合であって最後の1つではない。
+_phone "$LOLD" "$BOOT" "$L115" "$L114"
+chk "★一度言った版は巻き戻っても二度と言わない(最後の1つではなく集合で憶える)" "$(phone_notices)" "2"
+
+# ★名乗っていない行では鳴らない。2026-08-31 に UA から版を採る経路を消したので、
+#   古い版からの要求は必ず `build=-` になる —— 其れを sighting と数えると、
+#   版が判らないまま毎回「新しい」と読めて鳴り続ける。
+/bin/rm -f "$SB/phone.mark" "$SB/phone.mark.at"; : > "$FAKE_NOTIFY_LOG"
+_phone "$BOOT" "$LNONE" "$LTOOL"
+chk "★版を名乗らない行(build=-)と道具の行では鳴らない" "$(phone_notices)" "0"
+
+# ★錨(`listening on`)が無い log では黙る。上限で切られて起動の行が消えた時に、
+#   古い実装が書いた数字を「今の版」と読まない為。「判らない」を「見た」に丸めない。
+/bin/rm -f "$SB/phone.mark" "$SB/phone.mark.at"; : > "$FAKE_NOTIFY_LOG"
+_phone "$LOLD" "$L114"
+chk "★起動の錨が無い log では黙る(切られた後を今の走行と読まない)" "$(phone_notices)" "0"
+
+# ★この機体では見ない(既定は空)。要求ログを持つのは机だけ。
+/bin/rm -f "$SB/phone.mark" "$SB/phone.mark.at"; : > "$FAKE_NOTIFY_LOG"
+: > "$SB/rc.log"; printf '%s\n' "$L114" >> "$SB/rc.log"
+RC_HEALTH_PHONE_LOG= RC_HEALTH_PHONE_MARK="$SB/phone.mark" RC_HEALTH_PHONE_EVERY=0 \
+RC_HEALTH_CAP_MARK= RC_HEALTH_OTA_CHECK= _obs >/dev/null 2>&1
+chk "★空 = この機体では見ない(指していない機体は語らない)" "$(phone_notices)" "0"
+
 echo ""
 echo "HEALTH-OBSERVER-CONTROLS: pass=$pass fail=$fail$([ "$KEY_UNMEASURED" -eq 1 ] && echo ' ★鍵の系統は測定不成立')"
 [ "$fail" -eq 0 ] || exit 1
