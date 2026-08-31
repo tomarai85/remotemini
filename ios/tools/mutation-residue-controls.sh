@@ -55,6 +55,11 @@ RC_IOS_INFLIGHT="$SB/inflight.tsv" bash "$SUT" >/dev/null 2>&1
 FAKE="$SB/fakeios"; mkdir -p "$FAKE/tools" "$FAKE/../.harness" 2>/dev/null
 mkdir -p "$SB/repo/ios/tools" "$SB/repo/.harness"
 cp "$SUT" "$SB/repo/ios/tools/"
+# ★門も置く(2026-08-30)。`mutation-residue-check.sh` は「誰が変異対照か」の判定を
+#   `mutation-worktree-gate.sh --is-mutator` へ委ねる様になった —— 規則が2箇所に
+#   在ると片方だけ直る日が来る為。砂場に門が無いと委譲が失敗し、
+#   検知器は「0 本 = 測定不成立」を返す(此の対照が測りたい「読めない対照」ではない)。
+cp "$HERE/mutation-worktree-gate.sh" "$SB/repo/ios/tools/"
 ( cd "$SB/repo" && git init -q && git config user.email t@e.invalid && git config user.name t )
 # 読める1本
 # ★綴りを**連結で組み立てる**(2026-08-30、書いた直後に踏んだ)。生の literal を此の file に
@@ -62,11 +67,20 @@ cp "$SUT" "$SB/repo/ios/tools/"
 #   **本物の宣言として拾われて**、実 repo の測定が不成立になる。
 #   `mutation-freeze-controls.sh` が 2026-08-03 に同じ結論を書いている。
 CO="git check""out --"
-printf '#!/bin/bash\nREL_TARGETS="$IOS/Sour""ces/Good.swift"\n%s $REL_TARGETS\n' "$CO" \
-    > "$SB/repo/ios/tools/a-control.sh" 
+SEDI="sed -""i"
+# ★偽物にも**実際の変異**を持たせる(2026-08-30)。門は「作業中の木を**書き換える**か」で
+#   数える様になったので、復元だけ持つ台本は正しく「変異対照ではない」と判ぜられる ——
+#   変異を持たない偽物では此の対照が測りたい状況(宣言が読めない変異対照)を作れない。
+# ★連結は**此の file の側だけ**で行い、書き出す中身は素の綴りにする。
+#   初版は `"$IOS/Sour""ces/Good.swift"` を printf の書式にそのまま置いていたので、
+#   **偽物の中に切れ目が書き込まれ**、宣言の走査(`="[^"]*Sources/[^"]*"`)に
+#   当たらなかった(2026-08-30 実測。門は正しく「変異対照ではない」と答えていた)。
+SRC="Sour""ces"
+printf '#!/bin/bash\nREL_TARGETS="$IOS/%s/Good.swift"\n/usr/bin/%s "" "s/a/b/" "$REL_TARGETS"\n%s $REL_TARGETS\n' \
+    "$SRC" "$SEDI" "$CO" > "$SB/repo/ios/tools/a-control.sh" 
 # 読めない1本(path を組み立てて渡すので右辺に Sources/ が出ない)
-printf '#!/bin/bash\nBASE="$IOS/Sour""ces"\nFILE="$BASE/Hidden.swift"\n%s "$FILE"\n' "$CO" \
-    > "$SB/repo/ios/tools/b-control.sh" 
+printf '#!/bin/bash\nBASE="$IOS/%s"\nFILE="$BASE/Hidden.swift"\n/usr/bin/%s "" "s/a/b/" "$FILE"\n%s "$FILE"\n' \
+    "$SRC" "$SEDI" "$CO" > "$SB/repo/ios/tools/b-control.sh" 
 mkdir -p "$SB/repo/ios/Sources"; printf 'x\n' > "$SB/repo/ios/Sources/Good.swift"
 ( cd "$SB/repo" && git add -A && git commit -qm init )
 out="$( cd "$SB/repo" && bash ios/tools/mutation-residue-check.sh 2>&1 )"; rc=$?
@@ -75,6 +89,28 @@ if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q "b-control.sh"; then
 else
     ng "C3 読めない対照" "rc=$rc / $(printf '%s' "$out" | tail -1)"
 fi
+
+# ── C7 ★写しから戻す対照(`git checkout --` を持たない)も数える ────────────
+# 2026-08-30 まで、此の検知器は `git checkout --` を持つ物だけを変異対照として数え、
+# **写しから戻す 6 本を丸ごと見ていなかった** —— 其の 6 本が殺されて木に変異を残しても
+# 「残骸なし」と報告していた。CF-12 で実際に残った 3 file のうち 2 つが其の側。
+# 今は門の判定との**和集合**で数える。片方に戻すと此処が赤くなる。
+# ★**読めない1本(b-control)を退けてから**測る。あれが居ると何を足しても
+#   「宣言を読めない対照が在る」で 2 に落ち、此処が測りたい事(写しから戻す台本を
+#   数えているか)に届かない。
+mv "$SB/repo/ios/tools/b-control.sh" "$SB/b-control.hold" 2>/dev/null
+printf '#!/bin/bash\nVM="$IOS/%s/CopyRestored.swift"\ncp "$VM" /tmp/snap.$$\n/usr/bin/%s "" "s/a/b/" "$VM"\ncp /tmp/snap.$$ "$VM"\n' \
+    "$SRC" "$SEDI" > "$SB/repo/ios/tools/copyrestore-control.sh"
+mkdir -p "$SB/repo/ios/Sources"; printf 'y\n' > "$SB/repo/ios/Sources/CopyRestored.swift"
+( cd "$SB/repo" && git add -A && git commit -qm c7 )
+out="$( cd "$SB/repo" && bash ios/tools/mutation-residue-check.sh 2>&1 )"; rc=$?
+if printf '%s' "$out" | grep -qE '[23] 本の対照'; then
+    ok "C7 ★写しから戻す対照(git checkout を持たない)も変異対照として数える"
+else
+    ng "C7 写しから戻す対照" "数えていない: $(printf '%s' "$out" | head -1)"
+fi
+/bin/rm -f "$SB/repo/ios/tools/copyrestore-control.sh"
+mv "$SB/b-control.hold" "$SB/repo/ios/tools/b-control.sh" 2>/dev/null
 
 # ── C5 書き換える対照が 0 本 ──────────────────────────────────────────────
 rm -f "$SB/repo/ios/tools/a-control.sh" "$SB/repo/ios/tools/b-control.sh"
