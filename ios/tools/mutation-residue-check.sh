@@ -114,11 +114,25 @@ for f in "$HERE"/tools/*control*.sh "$ROOT"/.harness/*controls.sh; do
     # ★sed の連鎖は使わない(2026-08-30、書いて壊した)。`#` を区切りに `$` や `\` を
     #   混ぜると綴りが読めなくなり、壊れた時に**何が抜けたかが出力に出ない**。
     #   shell の展開で1本ずつ潰す方が、読めるし、抜けたら下の判定に当たる。
-    raw="$(grep -hoE '^[A-Za-z_]+="[^"]*Sources/[^"]*"' "$f" 2>/dev/null \
+    # ★走査は `Sources` だけでなく `Tests|UITests` も(2026-08-30、門と揃えた)。
+    #   検査 file を書き換える対照も、殺されれば同じく木に変異を残す。
+    #   片方だけ広げると、門が「変異対照」と言った台本の宣言を此方が読めず
+    #   **測定不成立**になる —— 実際に `mutation-deferral-control.sh` で起きた。
+    raw="$(grep -hoE '^[A-Za-z_]+="[^"]*(Sources|Tests|UITests)/[^"]*"' "$f" 2>/dev/null \
            | sed 's/^[A-Za-z_]*="//' | sed 's/"$//' | tr ' ' '\n' | grep -E '\.swift$' || true)"
-    got=""
+    got=""; this_sandbox=0
     for t in $raw; do
         case "$t" in
+            # ★砂場を指す宣言は**追跡しない**。此処が探すのは「作業中の木に残った変異」で、
+            #   砂場の中身は次の `ms_prepare` が `--delete` 付きで消す。
+            #   ★名前だけで許さない: 其の file が助けを source している事を確かめる
+            #     (門の G10 と同じ理由 —— `MS_TREE=` を自分で定義して装える)。
+            '$MS_TREE/'*|'$MS_ROOT/'*)
+                if grep -qE '^[^#]*(\.|source)[[:space:]]+.*mutation-sandbox\.sh' "$f" 2>/dev/null \
+                   && ! grep -qE '^[[:space:]]*MS_(TREE|ROOT)=' "$f" 2>/dev/null; then
+                    sandbox_dropped="${sandbox_dropped:-} $t"; this_sandbox=1; continue
+                fi ;;
+            '$HERE/../'*) t="ios/${t#\$HERE/../}" ;;   # ios/tools から見た ios/ 直下
             '$IOS/'*)  t="ios/${t#\$IOS/}" ;;
             '$ROOT/'*) t="${t#\$ROOT/}" ;;
             "$HERE"/*) t="ios/${t#$HERE/}" ;;
@@ -129,6 +143,11 @@ for f in "$HERE"/tools/*control*.sh "$ROOT"/.harness/*controls.sh; do
     if [ -n "${got// /}" ]; then
         covered=$((covered + 1))
         targets="$targets $got"
+    elif [ "$this_sandbox" -eq 1 ]; then
+        # ★宣言は読めたが、**全部が砂場**だった。本物の木に対象が無いのだから
+        #   「拾い方が壊れている」ではない —— 移行が済んだ対照は必ず此処へ来る。
+        #   此処を uncovered に数えると、移行が進むほど検知器が測定不成立になる。
+        covered=$((covered + 1))
     else
         uncovered="$uncovered $(basename "$f")"
     fi
@@ -183,6 +202,7 @@ dirty="$( cd "$ROOT" && git diff --name-only -- $uniq_targets 2>/dev/null )"
 if [ -z "$dirty" ]; then
     echo "mutation-residue: 残骸なし($mutators 本の対照が宣言する $(printf '%s\n' $uniq_targets | wc -l | tr -d ' ') file を見た)"
     [ -n "${scratch_dropped:-}" ] && echo "  (写しを指す宣言は外した:$scratch_dropped)"
+    [ -n "${sandbox_dropped:-}" ] && echo "  (砂場を指す宣言は外した: $(printf '%s' "$sandbox_dropped" | wc -w | tr -d ' ') 件)"
     exit 0
 fi
 

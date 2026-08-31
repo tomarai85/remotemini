@@ -140,14 +140,23 @@ LOGDIR="${TMPDIR:-/tmp}"
 INFLIGHT="${TMPDIR:-/tmp}/rc-ios-mutation-inflight.tsv"
 PASS=0; FAIL=0; UNMEASURED=0
 
-AS="$IOS/Sources/AppState.swift"
-KV="$IOS/Sources/Screens/KeyEntry/KeyEntryView.swift"
-KM="$IOS/Sources/Screens/KeyEntry/KeyEntryViewModel.swift"
-SN="$IOS/Sources/Core/SignOutNotice.swift"
-RV="$IOS/Sources/RootView.swift"
-PR="$IOS/Sources/Core/Provisioning.swift"
-KC="$IOS/Sources/Core/KeychainCredentialStore.swift"
-KCT="$IOS/Tests/Core/KeychainCredentialStoreTests.swift"
+# ★書き換え先は**砂場**(2026-08-30、CF-21 の移行の最後の1本)。
+#   作業中の木は1バイトも触らない。此の台本は変異 31 箇所で最大手なので、
+#   殺された時に残る量も一番多かった。
+. "$IOS/tools/mutation-sandbox.sh"
+ms_prepare || exit 2
+AS="$MS_TREE/Sources/AppState.swift"
+KV="$MS_TREE/Sources/Screens/KeyEntry/KeyEntryView.swift"
+KM="$MS_TREE/Sources/Screens/KeyEntry/KeyEntryViewModel.swift"
+SN="$MS_TREE/Sources/Core/SignOutNotice.swift"
+RV="$MS_TREE/Sources/RootView.swift"
+PR="$MS_TREE/Sources/Core/Provisioning.swift"
+KC="$MS_TREE/Sources/Core/KeychainCredentialStore.swift"
+# ★`Tests/` も砂場側(2026-08-30)。移行の初回は `Sources/` だけを向け直し、
+#   此処を取り零した —— 変異が本物の検査 file に当たるのに、ビルドは砂場を読むので
+#   **効かない**。対照は其れを「欠陥を植えたのに全部緑」と自己申告して赤くなった
+#   (黙って緑にならなかったのが効いた)。しかも作業中の木を書き換えてもいた。
+KCT="$MS_TREE/Tests/Core/KeychainCredentialStoreTests.swift"
 # ★KCT だけ `Tests/` 側。変異が製品の中にしか植えられないと思い込むと、
 #   「検査が製品の項目を消す」型の欠陥は**測る手が無い**(2026-08-15 に実際に起きた)。
 TARGETS=("$AS" "$KV" "$KM" "$SN" "$RV" "$PR" "$KC" "$KCT")
@@ -159,7 +168,9 @@ TARGETS=("$AS" "$KV" "$KM" "$SN" "$RV" "$PR" "$KC" "$KCT")
 #   (裁定「門をもう増やさない」2026-08-11)。止めるかは人が決める。
 # ★印の中身は「其の時に測ったバイト」。commit の sha ではない —— 汚れた木で回した
 #   走行を「其の commit で緑だった」と読ませない為。
-STAMP="$IOS/build/.mutation-sweep-stamp"   # ios/.gitignore:6 で build/ ごと追跡外
+# ★砂場側へ移した(2026-08-30)。生成木の錠を外したので、`$IOS/build/` へ無施錠で
+#   書くと live のビルドと競る。読み手は此の台本だけ(repo 全体を grep して確認)。
+STAMP="$MS_ROOT/.mutation-sweep-stamp"
 sweep_digest() { # 変異が読む file 群のバイト。1本でも動けば前の全走行は効力を失う
     ( for _t in "${TARGETS[@]}"; do shasum "$_t" 2>/dev/null; done
       /usr/bin/find "$IOS/Tests" "$IOS/UITests" -name '*.swift' -print0 2>/dev/null \
@@ -332,8 +343,8 @@ cleanup() {
 # 2026-08-15、此れが無くて `build.sh --sim` と此の台本が `RC_BUILD_REV` の刻印を
 # 潰し合い、**偽の赤が 9 本**出た(製品の欠陥と見分けが付かない赤)。
 # 取れなければ此処で非零終了する = 生成物に触らないまま止まる。
-. "$IOS/tools/xcode-tree-guard.sh"
-trap 'cleanup; xtl_release' EXIT
+# ★生成木の錠は要らない(砂場で焼くので生成木を触らない)。直列化は砂場側の錠が持つ。
+trap 'cleanup; ms_release' EXIT
 
 # ---- 前回の走行が殺されていたら、その取り残しを先に戻す(ここから)-------------
 # ★この位置でなければならない: 下の複製 loop より**前**。後に置くと、変異したバイトを
@@ -455,11 +466,12 @@ xcb() { # $1 = log, 残り = -only-testing 群
     shift
     # macOS に GNU timeout は無いので `perl -e alarm` + `exec`。診断は log にだけ書く
     # (stdout は rc 専用 —— 下の ★ を参照)。
-    ( cd "$IOS" && xcodegen generate >/dev/null 2>&1 && \
+    # ★砂場で焼く。derived data も砂場側(固定 path なので温かいまま)。
+    ( cd "$MS_TREE" && xcodegen generate >/dev/null 2>&1 && \
       /usr/bin/perl -e 'alarm shift; exec @ARGV or exit 127' "$CONTROL_RUN_LIMIT_S" \
         xcodebuild -project RemoteMini.xcodeproj -scheme RemoteMini -configuration Debug \
         -sdk iphonesimulator -destination "platform=iOS Simulator,name=$SIM_NAME" \
-        -derivedDataPath "$IOS/build" "$@" test ) >"$log" 2>&1 || rc=$?
+        -derivedDataPath "$MS_ROOT/build" "$@" test ) >"$log" 2>&1 || rc=$?
     if [ "$rc" = "$LIMIT_RC" ]; then
         printf '\n[control] 上限 %s 秒で打ち切った(= 走行が返らなかった。期限の無い待ちを疑う)\n' \
             "$CONTROL_RUN_LIMIT_S" >>"$log"
@@ -903,6 +915,11 @@ if [ "$DEFER" -eq 0 ] && [ "$FAIL" -eq 0 ] && [ "$UNMEASURED" -eq 0 ] && [ "$RAN
         && echo "変異の全走行を記録した(出荷の口が此の印を読む): ${STAMP#"$ROOT/"}"
 fi
 
+if ! ms_assert_live_unchanged; then
+    echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $((UNMEASURED + 1)) ---"
+    echo "★本物の木が走行中に変わった = 此の走行の結果は使えない"
+    exit 2
+fi
 echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
 [ "$FAIL" -gt 0 ] && exit 1
 [ "$UNMEASURED" -gt 0 ] && exit 2

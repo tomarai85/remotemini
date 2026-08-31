@@ -65,9 +65,12 @@ SCAN_DIRS="${RC_MWG_SCAN:-$HERE $ROOT/.harness}"
 #   ★2026-08-30 の経緯: `dod-sprint-6.5-controls.sh` は
 #     `mktemp -d` で第二の木を作って其処を撃っており、作業中の木は触っていない ——
 #     **借金 9 本を移す時の、此の repo に既に在る手本**。
-DEBT="
-signout-notice-control.sh
-"
+# ★検査の継ぎ目(2026-08-30)。借金が 0 になった日、G6(宣言が実態より古い)は
+#   **測れる宣言が無くなって**赤くなった。宣言を差し替えられないと、
+#   0 に到達した瞬間に其の枝が永久に測れなくなる。
+#   `-`(コロン無し)なので、明示的な空も尊重する。
+DEBT="${RC_MWG_DEBT-
+}"
 # ── 直接書き込みの検出 ──────────────────────────────────────────────────────
 # ★**その場で書き換える**書き方だけを見る。`git checkout --`(戻す側)や
 #   `grep`(読む側)は当てない —— 復元を持つ事は美徳であって欠陥ではない。
@@ -82,7 +85,11 @@ signout-notice-control.sh
 #   2回目: `git checkout --` で戻すか → 註記の中の文まで当たり、**もう木を触らない台本**まで
 #          借金に数えた。更に、**写しから戻す**台本(`conversation-ui` / `signout-notice`)を
 #          丸ごと取り零した —— 其れらは木を書き換える当の主犯。
-#   3回目(今): **書き換え先の変数を追う**。`VAR="…Sources/….swift"` を集め、
+#   5回目(2026-08-30): 見るのを `Sources/` から **`Sources|Tests|UITests`** へ広げた。
+#     `signout-notice-control.sh` が `$IOS/Tests/…` を書き換えていたのを、移行の最中に
+#     取り零して初めて気付いた —— **検査 file を書き換える対照も、殺されれば
+#     作業中の木に変異を残す**。門は其れを一度も見ていなかった。
+#   3回目: **書き換え先の変数を追う**。`VAR="…Sources/….swift"` を集め、
 #          其の変数が `sed -i` / `perl -i` の対象や `cp` の宛先、`>` の先に出るかを見る。
 #          復元の仕方(git か写しか)に依存しない = 主犯を取り零さない。
 #   ★註記と `echo` の行は落としてから当てる(false positive も欠陥。
@@ -97,7 +104,7 @@ writes_live_tree() {  # writes_live_tree <file> → 0=書き換えている
     grep -qE 'git worktree add|^[[:space:]]*WT=' "$1" 2>/dev/null && return 1
     body="$(grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -v -E '(echo|printf)[[:space:]]')"
     # `<NAME>="…Sources/….swift…"` の左辺を集める。
-    vars="$(printf '%s\n' "$body" | grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z_0-9]*="[^"]*Sources/[^"]*"' \
+    vars="$(printf '%s\n' "$body" | grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z_0-9]*="[^"]*(Sources|Tests|UITests)/[^"]*"' \
             | sed 's/^[[:space:]]*//; s/=.*//' | sort -u)"
     [ -n "$vars" ] || return 1
     for v in $vars; do
@@ -161,6 +168,21 @@ writes_live_tree() {  # writes_live_tree <file> → 0=書き換えている
     return 1
 }
 
+# ── 触るのが不可避な物(借金とは別枠)──────────────────────────────────────
+# ★借金 = 「砂場へ移すべきだがまだ移していない」。此処は「**移せない**」——
+#   移すと測る物が消える。理由を書かせ、毎回表示させる事で抜け道にしない。
+#   ★1本増やす前に問う事: 本当に本物の木でなければ測れないのか。
+#     「面倒だから」は理由にならない。移行の 7 本はどれも移せた。
+MUST_TOUCH="mutation-deferral-control.sh"
+must_touch_reason() {
+    case "$1" in
+        mutation-deferral-control.sh)
+            printf '%s' "digest が**本物の木**の file 群から出ているかを測る。砂場に探りを置くと digest は動かず、検査が何も測らなくなる(一時 file を置いて即 rm する形)" ;;
+        *) printf '' ;;
+    esac
+}
+in_must_touch() { case " $(printf '%s' "$MUST_TOUCH" | tr '\n' ' ') " in *" $1 "*) return 0 ;; esac; return 1; }
+
 in_debt() { case " $(printf '%s' "$DEBT" | tr '\n' ' ') " in *" $1 "*) return 0 ;; esac; return 1; }
 
 offenders=""; n_scanned=0
@@ -202,7 +224,11 @@ fail=0
 
 # (a) 未宣言の新顔 = **増えた**
 new=""
-for o in $offenders; do in_debt "$o" || new="$new $o"; done
+for o in $offenders; do
+    in_debt "$o" && continue
+    in_must_touch "$o" && continue
+    new="$new $o"
+done
 if [ -n "${new// /}" ]; then
     echo "mutation-worktree-gate: ★作業中の木を直接書き換える対照が**増えた**:$new" >&2
     echo "  変異は使い捨ての worktree(`git worktree add`)か、mktemp した写しの上で撃つ事。" >&2
@@ -212,6 +238,15 @@ fi
 
 # (b) 借金の側が「もう書き換えていない」のに宣言が残っている = 宣言を消せる
 #     ★之を赤にする。放っておくと宣言が実態から離れ、門が何も守らなくなる。
+# 触るのが不可避な物は、**毎回 理由ごと出す**。黙って許すと抜け道になる。
+for mt in $MUST_TOUCH; do
+    case " $offenders " in
+        *" $mt "*) echo "  触るのが不可避: $mt — $(must_touch_reason "$mt")" ;;
+        *) echo "mutation-worktree-gate: 「不可避」に挙げた $mt が、もう木を触っていない。一覧から消す事" >&2
+           fail=1 ;;
+    esac
+done
+
 stale=""
 for dbt in $DEBT; do
     case " $offenders " in *" $dbt "*) ;; *) stale="$stale $dbt" ;; esac
@@ -223,9 +258,25 @@ if [ -n "${stale// /}" ]; then
 fi
 
 if [ "$fail" -eq 0 ]; then
-    cnt="$(printf '%s\n' $offenders | grep -c . || echo 0)"
-    echo "mutation-worktree-gate: 増えていない($n_scanned 本を走査 / 借金 $cnt 本)"
-    echo "  ★此の門は問題を解決しない。増えるのを止めるだけ。"
-    echo "  借金を減らす = 其の対照を worktree か写しの上で撃つ様に直し、宣言から消す。"
+    # ★`grep -c .` は 0 件で**非ゼロ終了**するので `|| echo 0` が走り、"0\n0" になる
+    #   (2026-08-30、借金が 0 になって初めて出た。0 を一度も通っていなかった)。
+    # ★「不可避」は借金に数えない。数えると 0 に到達できず、
+    #   「移行が終わった」を言えないまま門の文面が永久に途中のままになる。
+    cnt=0
+    for o in $offenders; do in_must_touch "$o" || cnt=$((cnt + 1)); done
+    if [ "$cnt" -eq 0 ]; then
+        # ★借金が 0 になった瞬間、此の門の意味が変わる ——
+        #   「増えていない」から「**作業中の木を書き換える対照は1本も無い**」へ。
+        #   CF-12(殺された掃引が3本の変異を残し、焼く3分前に気付いた)の再発路が閉じた。
+        echo "mutation-worktree-gate: ★借金 0 —— **作業中の木を書き換える変異対照は1本も無い**"
+        echo "  ($n_scanned 本を走査)。殺された走行が**変異**を木に残す道が閉じた。"
+        echo "  ★但し『触るのが不可避』の一覧は別(上に理由ごと出ている)。0 が意味するのは"
+        echo "    「移行すべき対照は残っていない」であって「誰も木に触らない」ではない。"
+        echo "  ★足そうとしたら此の門が止める。止まったら砂場(ios/tools/mutation-sandbox.sh)を使う事。"
+    else
+        echo "mutation-worktree-gate: 増えていない($n_scanned 本を走査 / 借金 $cnt 本)"
+        echo "  ★此の門は問題を解決しない。増えるのを止めるだけ。"
+        echo "  借金を減らす = 其の対照を砂場か写しの上で撃つ様に直し、宣言から消す。"
+    fi
 fi
 exit "$fail"
