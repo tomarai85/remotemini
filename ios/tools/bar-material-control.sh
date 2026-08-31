@@ -32,7 +32,12 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # = repo の根
 ROOT="$HERE"
-CV="$ROOT/ios/Sources/Screens/Conversation/ConversationView.swift"
+# ★書き換え先は**砂場**(2026-08-30、CF-21 の移行)。作業中の木は1バイトも触らない。
+#   此の対照は xcodebuild を使わず、node の検査に Swift を読ませる形なので、
+#   検査側にも読む根の継ぎ目(`RC_VIEW_ROOT`)を1本足してある。
+. "$ROOT/ios/tools/mutation-sandbox.sh"
+ms_prepare || exit 2
+CV="$MS_TREE/Sources/Screens/Conversation/ConversationView.swift"
 TEST="$ROOT/rc-backend/test/bar-is-composer-only.test.mjs"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bar-material-XXXXXX")" || { echo "UNMEASURED  作業場を作れない"; exit 2; }
@@ -68,7 +73,7 @@ cleanup() {
     find "$WORK" -type f -print0 2>/dev/null | xargs -0 /bin/rm -f 2>/dev/null
     find "$WORK" -type d -depth -exec /bin/rmdir {} + 2>/dev/null
 }
-trap cleanup EXIT
+trap 'cleanup; ms_release' EXIT
 
 # ---- 前回の走行が殺されていたら、その取り残しを先に戻す(ここから)-------------
 # ★この位置でなければならない: 下の複製 loop より**前**。後に置くと、変異したバイトを
@@ -112,7 +117,9 @@ un() { UNMEASURED=$((UNMEASURED+1)); echo "  UNM  $1"; }
 
 run_unit() { # $1 = log -> rc を印字
     local log="$1" rc=0
-    ( cd "$ROOT/rc-backend" && node --test test/bar-is-composer-only.test.mjs ) >"$log" 2>&1 || rc=$?
+    # ★検査に**砂場を読ませる**。既定のままだと本物を読むので、砂場の変異が効かず
+    #   「壊したのに赤くならない」= 変異が当たっていない、に見える。
+    ( cd "$ROOT/rc-backend" && RC_VIEW_ROOT="$MS_ROOT" node --test test/bar-is-composer-only.test.mjs ) >"$log" 2>&1 || rc=$?
     printf '%s' "$rc"
 }
 # 検査の名は日本語で空白を含むので、一覧を作らず1件ずつ問う。
@@ -232,6 +239,10 @@ if ! cmp -s "$(snap_path 0)" "$CV"; then
     un "走行後に ConversationView.swift が元へ戻っていない。git checkout -- で戻す事"
 fi
 
+if ! ms_assert_live_unchanged; then
+    echo "★本物の木が走行中に変わった = 此の走行の結果は使えない"
+    exit 2
+fi
 echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
 [ "$UNMEASURED" -gt 0 ] && exit 2
 [ "$FAIL" -gt 0 ] && exit 1

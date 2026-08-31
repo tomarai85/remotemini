@@ -66,8 +66,6 @@ SCAN_DIRS="${RC_MWG_SCAN:-$HERE $ROOT/.harness}"
 #     `mktemp -d` で第二の木を作って其処を撃っており、作業中の木は触っていない ——
 #     **借金 9 本を移す時の、此の repo に既に在る手本**。
 DEBT="
-bar-material-control.sh
-conversation-ui-control.sh
 signout-notice-control.sh
 "
 # ── 直接書き込みの検出 ──────────────────────────────────────────────────────

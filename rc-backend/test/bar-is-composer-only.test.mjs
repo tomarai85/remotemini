@@ -46,7 +46,13 @@ const BAR = ".fill(" + ".bar)";
 const GLASS_BAR = ".ultraThin" + "Material";
 const FOOTER_DECL = "private var loadEarlierFooter: some View {";
 
-const source = () => readFileSync(join(REPO, VIEW), "utf8");
+// ★読む根を差し替えられる継ぎ目(2026-08-30、CF-21 の移行)。
+//   `ios/tools/bar-material-control.sh` は此の検査を壊して赤くなる事を測るが、
+//   その為に **作業中の木の Swift を書き換えて**いた —— 走行が殺されれば変異が残る。
+//   砂場(`ios/tools/mutation-sandbox.sh`)の写しを読ませれば、本物を触らずに測れる。
+//   ★既定は今まで通り本物。継ぎ目を差さない限り挙動は1ミリも変わらない。
+const VIEW_ROOT = process.env.RC_VIEW_ROOT || REPO;
+const source = () => readFileSync(join(VIEW_ROOT, VIEW), "utf8");
 
 /**
  * `loadEarlierFooter` の本体を、宣言行から中括弧の深さが 0 に戻るまでで切り出す。

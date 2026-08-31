@@ -71,8 +71,11 @@ LOGDIR="${TMPDIR:-/tmp}"
 INFLIGHT="${TMPDIR:-/tmp}/rc-ios-mutation-inflight.tsv"
 PASS=0; FAIL=0; UNMEASURED=0
 
-VM="$IOS/Sources/Screens/Conversation/ConversationViewModel.swift"
-PF="$IOS/Sources/Core/PollFixture.swift"
+# ★書き換え先は**砂場**(2026-08-30、CF-21 の移行)。作業中の木は1バイトも触らない。
+. "$IOS/tools/mutation-sandbox.sh"
+ms_prepare || exit 2
+VM="$MS_TREE/Sources/Screens/Conversation/ConversationViewModel.swift"
+PF="$MS_TREE/Sources/Core/PollFixture.swift"
 TARGETS=("$VM" "$PF")
 
 ORIG="$WORK/orig"
@@ -107,8 +110,8 @@ cleanup() {
 # 2026-08-15、此れが無くて `build.sh --sim` と此の台本が `RC_BUILD_REV` の刻印を
 # 潰し合い、**偽の赤が 9 本**出た(製品の欠陥と見分けが付かない赤)。
 # 取れなければ此処で非零終了する = 生成物に触らないまま止まる。
-. "$IOS/tools/xcode-tree-guard.sh"
-trap 'cleanup; xtl_release' EXIT
+# ★生成木の錠は要らない(砂場で焼くので生成木を触らない)。直列化は砂場側の錠が持つ。
+trap 'cleanup; ms_release' EXIT
 
 # ---- 前回の走行が殺されていたら、その取り残しを先に戻す(ここから)-------------
 # ★この位置でなければならない: 下の複製 loop より**前**。後に置くと、変異したバイトを
@@ -179,10 +182,11 @@ un() { UNMEASURED=$((UNMEASURED+1)); echo "  UNM  $1"; }
 
 run_ui() { # $1 = log path -> rc を印字
     local log="$1" rc=0
-    ( cd "$IOS" && xcodegen generate >/dev/null 2>&1 && \
+    # ★砂場で焼く。derived data も砂場側(固定 path なので温かいまま)。
+    ( cd "$MS_TREE" && xcodegen generate >/dev/null 2>&1 && \
       xcodebuild -project RemoteMini.xcodeproj -scheme RemoteMini -configuration Debug \
         -sdk iphonesimulator -destination "platform=iOS Simulator,name=$SIM_NAME" \
-        -derivedDataPath "$IOS/build" \
+        -derivedDataPath "$MS_ROOT/build" \
         -only-testing:RemoteMiniUITests/ConversationUITests test ) >"$log" 2>&1 || rc=$?
     printf '%s' "$rc"
 }
@@ -292,6 +296,11 @@ else
     echo "復元を確認(対象 ${#TARGETS[@]} file すべて走る前のバイトと一致)"
 fi
 
+if ! ms_assert_live_unchanged; then
+    echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $((UNMEASURED + 1)) ---"
+    echo "★本物の木が走行中に変わった = 此の走行の結果は使えない"
+    exit 2
+fi
 echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
 [ "$FAIL" -gt 0 ] && exit 1
 [ "$UNMEASURED" -gt 0 ] && exit 2
