@@ -300,9 +300,22 @@ MUT = [
  ("M49 履歴を止める条件を行数にする(項目を生まない行が挟まると件数が足りない)", SES,
   'done: (lines) => entriesFromLines(lines).length >= limit,',
   'done: (lines) => lines.length >= limit,'),
+ # ★2026-08-31: 探索(`searchHistoryFromPath`)が同じ形を持ったので、的が **2 箇所**に
+ #   当たる様になり照合が NG になった。的を狭めて逃げず、**見張りを 1 本 足した** ——
+ #   同じ欠陥が 2 箇所に増えたのだから、見張りも 2 本 要る。
+ #   一意にする為、前後の行ごと錨にする(`slice(-limit)` 単体では区別できない)。
  ("M50 履歴を先頭側から切る(直近でなく一番古い会話が返る)", SES,
-  'history: all.slice(-limit),',
-  'history: all.slice(0, limit),'),
+  'history: all.slice(-limit),\n      truncated: !r.reachedStart || all.length > limit,',
+  'history: all.slice(0, limit),\n      truncated: !r.reachedStart || all.length > limit,'),
+ ("M50b 探索の結果を先頭側から切る(一番古い一致が返り、直近の一致が消える)", SES,
+  'history: all.slice(-limit),\n      matched: all.length,',
+  'history: all.slice(0, limit),\n      matched: all.length,'),
+ ("M50c 探索が空の問いを全件一致にする(検索したのに何も絞れない)", SES,
+  'if (!needle) return { history: [], matched: 0, reachedStart: false, scanned: 0 };',
+  'if (!needle) { /* 空でも通す */ }'),
+ ("M50d 探索が有界の 0 件を「本当に無い」と言う(最初まで見たと偽る)", SES,
+  'reachedStart: r.reachedStart,',
+  'reachedStart: true,'),
  ("M51 履歴の truncated を常に false(「これより前がある」を隠す)", SES,
   'truncated: !r.reachedStart || all.length > limit,',
   'truncated: false,'),

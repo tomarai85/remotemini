@@ -14,7 +14,7 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords } from "./sessions.mjs";
+import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords, searchHistoryFromPath } from "./sessions.mjs";
 import { accountBody, gapItem, healthzBody, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
 import { publishedBuild } from "./ota-published.mjs";
 import { headerBuild } from "./reqlog.mjs";
@@ -1516,6 +1516,27 @@ const server = createServer(async (req, res) => {
       //   (変異 P13)。頭が無い / 頭の file が見つからない = 祖先のまま = 何も失わない。
       const target = transcriptTarget();
       if (!target) return json(res, 200, { history: [] }); // まだ何も言っていない会話
+      // ★転写の中を探す(2026-08-31)。`q` が在る時だけ経路が変わる。
+      //   0 件には 2 つの意味が在る —— 走査した範囲に無かった / 会話の最初まで見て無かった。
+      //   混ぜると「無い」と言い切れない物を言い切る事になるので、`reachedStart` を返して
+      //   電話側が「此処までは見た」と言える様にする。
+      const q = (url.searchParams.get("q") || "").trim();
+      if (q) {
+        try {
+          const r = searchHistoryFromPath(target, q, limit);
+          return json(res, 200, {
+            history: r.history,
+            matched: r.matched,
+            // ★`truncated` は「これより前が在る」の意。探索では
+            //   **最初まで見ていない**事が其れに当たる。
+            truncated: !r.reachedStart,
+            searchedToStart: r.reachedStart,
+          });
+        } catch (e) {
+          if (e.code === "ENOENT") return json(res, 200, { history: [], matched: 0, truncated: false, searchedToStart: true });
+          return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", errno: errnoOf(e) });
+        }
+      }
       try {
         const h = readHistoryFromPath(target, limit);
         // truncated = これより前がある。電話側が「以前を読む」を出せる様に名乗る。

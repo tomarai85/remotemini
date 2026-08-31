@@ -204,6 +204,58 @@ export function readHistoryFromPath(path, limit = 50, opts = {}) {
 }
 
 /**
+ * 転写の中を後ろから探す。
+ *
+ * ── 何故 要るか(2026-08-31)────────────────────────────────────────────────
+ * 電話が読めるのは最新 500 件まで。3 時間走ったセッションを開いた時、
+ * 「どこで転けたか」へ跳ぶ手段が無く、**500 件の壁の向こうは存在しないのと同じ**だった。
+ * 調べた製品(Termius / Blink / Claude RC / Omnara / claudecodeui …)で
+ * **転写内検索を持つ物は 1 つも無かった**ので、此処は素直に効く。
+ *
+ * ★設計の中心は「速く探す」ではなく **「見つからないを正直に言う」**。
+ *   走査は有界(`maxBytes` / 見つけた件数)なので、0 件には 2 つの意味が在る:
+ *     (a) 走査した範囲に無かった
+ *     (b) 会話の最初まで見て無かった
+ *   之を混ぜると「無い」と言い切れない物を言い切る事になる。だから
+ *   `reachedStart` と `scanned` を返し、呼ぶ側が (a) と (b) を分けられる様にする。
+ *
+ * ★大小を区別しない。電話で打つ側は shift を押さない。
+ *
+ * @param {string} path
+ * @param {string} q 探す文字列(空なら何も返さない —— 全件を「一致」にしない)
+ * @param {number} limit 返す一致の数
+ * @param {object} [opts] io / chunk / maxBytes(test 用)
+ * @returns {{history:Array, matched:number, reachedStart:boolean, scanned:number}}
+ */
+export function searchHistoryFromPath(path, q, limit = 50, opts = {}) {
+  const needle = String(q ?? "").toLowerCase();
+  // ★空の問いを「全部に一致」にしない。空欄のまま送られた時に会話全部が返ると、
+  //   利用者は「検索したのに何も絞れない」を見る事になる。
+  if (!needle) return { history: [], matched: 0, reachedStart: false, scanned: 0 };
+
+  const hit = (e) => String(e?.text ?? "").toLowerCase().includes(needle);
+  const fd = openSync(path, "r");
+  try {
+    const r = readLinesBackward(opts.io ?? nodeIo, fd, {
+      chunk: opts.chunk,
+      maxBytes: opts.maxBytes,
+      // 「項目が limit 件」ではなく **「一致が limit 件」** で止める。
+      // 項目で数えると、一致が疎な会話で走査が早く止まって取りこぼす。
+      done: (lines) => entriesFromLines(lines).filter(hit).length >= limit,
+    });
+    const all = entriesFromLines(r.lines).filter(hit);
+    return {
+      history: all.slice(-limit),
+      matched: all.length,
+      reachedStart: r.reachedStart,
+      scanned: r.scanned,
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
  * jsonl の1レコードを表示用の項目列に直す。
  * 履歴(まとめ読み)とライブ配信(追記 tail)で**同じ関数**を通す — 2箇所に書くと、
  * 電話の画面で「後から読み直したら中身が違う」が起きる。

@@ -746,6 +746,42 @@ struct ConversationView: View {
                     .accessibilityIdentifier("conversation.limitedNotice")
             }
 
+            // ★机の slash command を画面に出す(2026-08-31、調査の3位)。
+            //
+            //   `POST .../messages` は本文を pane に打って Enter を押すので、
+            //   `/compact` `/context` `/model` は**机の側では既に動く** ——
+            //   机の拒否規則(`deny.mjs`)も先頭の `/` を弾かない事を実測した。
+            //   つまり能力は前から在って、**画面に存在が出ていなかっただけ**。
+            //
+            // ★押しても**送らない**。入力欄へ差し込むだけで、送るかどうかは人が決める
+            //   —— 写真の添付が既に同じ規約(パスを差すだけで Enter は打たない)で、
+            //   机を操作する物を「1タップで実行」にしない事に一貫性が要る。
+            //   `/compact` は会話を畳む破壊的な操作なので、尚更 確認の余地を残す。
+            //
+            // ★出すのは移動中に効く 3 つだけ。一覧にすると探す物になる。
+            if viewModel.composerEnabled {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(["/compact", "/context", "/model"], id: \.self) { cmd in
+                            Button {
+                                // 既に何か打っていれば消さない。前に足す。
+                                viewModel.draft = viewModel.draft.isEmpty
+                                    ? "\(cmd) " : "\(cmd) " + viewModel.draft
+                            } label: {
+                                Text(cmd)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(RCTheme.accent)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .modifier(RCChip(tint: RCTheme.surfaceStroke))
+                            }
+                            .accessibilityIdentifier("conversation.slash.\(cmd.dropFirst())")
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             HStack(alignment: .bottom, spacing: 8) {
                 // Left of the field, deliberately far from the send button: these two
                 // do opposite things and a mis-tap on a phone in one hand is the
