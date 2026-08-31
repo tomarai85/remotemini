@@ -1,47 +1,9 @@
 #!/bin/bash
-# no-operator: 人が撃つ。生きた机(friday)への ssh が要るので門からは回せない。配備の後と、plist を触った後に撃つ。
-# fleet-plist-parity-check.sh — friday の `~/Library/LaunchAgents/com.fleet.*.plist` が
-# repo と一致し、かつ**その job が登録されている**かを測る。何も配らない。
-#
-# ── なぜ要るか(2026-08-30)──────────────────────────────────────────────────
-# 同じ日に2つ踏んでいる:
-#   (1) `~/rc-observer/` が `deploy-to-friday.sh` の守備範囲の外に落ちていて、friday の
-#       `health-observer.sh` が **139 行・22 日**古いまま毎日 Tom へ誤報を投げていた。
-#       台本には `observer-parity-check.sh` を作って蓋をしたが、**plist は誰も見ていない**。
-#   (2) `com.edith.log-rotate-check` は plist が置いて在るのに登録されていない ——
-#       **置いた事は動いている事ではない**。此の検査はそこも見る。
-# 初回の走行で `com.fleet.rc-ota.plist` のずれを1件掴んだ(中身はコメント1行で、
-# friday 側が古い install 手順 `rc-backend/launchd/` を指していた)。
-#
-# ★測るのは**中身の一致**(md5)であって mtime ではない。0 バイトの file の mtime は
-#   「最後に書いた時刻」ではなく「最後に開いた時刻」で、同じ日にそれで誤診している。
-#   ★コメントだけの差も**残す**。今回の様に「配布経路が追随していない」実測だから。
-#
-# ★配る側と測る側を分ける。配る台本の自己申告(「配った」)は、配れた事の証拠にならない。
-#
-# ── ★★此の検査が言える事・言えない事(2026-08-30、Codex の指摘2)─────────────
-# `ok` が言えるのは **「disk の中身が一致していて、job が登録されている」**まで。
-# **今 launchd が使っている定義が其の file と同じ事は言えない** ——
-# plist を書き換えても `bootout` + `bootstrap` しなければ、launchd は掴んだままの
-# 古い定義で動き続ける(`kickstart` は再読込ではない。此の repo 自身が
-# `deploy-to-edith.sh` にその事故を記録している)。
-# 根治は「配る側が canonical な plist を置き、変えた時に bootout+bootstrap する」事で、
-# ★2026-08-30: 其の但し書きは**解消した**。launchd が実際に読み込んでいる
-#   `arguments` を向こうで読み、disk の `ProgramArguments` と比べる様にした。
-#   plist を書き換えて `bootout`+`bootstrap` を忘れると此処が赤くなる
-#   (`kickstart` では定義は読み直されないので、之は起こる方が普通の取り違え)。
-#
-# 使い方:
-#   bash rc-backend/tools/fleet-plist-parity-check.sh
-#   RC_FLEET_HOST=athenas bash …            # 宛先を差す(検査の継ぎ目)
-#
-# 終了コード:
-#   0 = 全部一致・全部登録済
-#   1 = **ずれ**(中身が違う / 向こうに無い / 未登録 / repo に無い job が居る)
-#   2 = **測定不成立**のみ(ssh が失敗 / 出力が空 / launchctl 自体が動かない /
-#       repo の glob が 0 本)。★不在は「測れなかった」ではなく**確定したずれ**なので 1。
-#       (2026-08-30、Codex の指摘4。初版は不在を 2 にしていて、対照がその誤った契約を
-#        12/12 緑で固定していた。)
+# 走らせる物: `rc-backend/tools/parity-observer.sh`(2026-08-31)。Jervis の
+#   `com.tomtim.rc-tunnel-observer` が 10 分毎に回り、其の中で日に1回 此れを撃つ。
+#   ★`no-operator:` の印は其の時に外した —— 呼ぶ物が出来た後も印が残ると、
+#     **走っている物を走っていないと記録する**事になり、次に読む人が判断を誤る。
+#   人が撃つ用途も残る(配備の後、plist を触った後)。
 set -uo pipefail
 
 HERE="${RC_FLEET_PLIST_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"   # = rc-backend/tools/
