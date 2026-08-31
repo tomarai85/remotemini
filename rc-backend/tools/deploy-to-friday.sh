@@ -46,4 +46,5 @@ RC_JOB_LABEL="com.fleet.rc-backend" \
 RC_REMOTE_LOG_DIR="/Users/athenas/Library/Logs/rc-backend" \
 RC_COLDBOOT_PLIST="/Users/athenas/Library/LaunchAgents/com.fleet.rc-backend.plist" \
 RC_COLDBOOT_USER="athenas" \
+RC_OBSERVER_DEPLOY="$HERE/deploy-observer-to-friday.sh" \
 exec bash "$HERE/deploy-to-edith.sh" "$@"
