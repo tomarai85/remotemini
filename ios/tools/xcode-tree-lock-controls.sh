@@ -1,6 +1,10 @@
 #!/bin/bash
-# ★N8/N9 の題材は 2026-08-30 に `list-return-refresh-control.sh` から
-#   `conversation-ui-control.sh` へ差し替えた。前者は砂場へ移って生成木の錠を
+# ★N8/N9 の題材は 2026-08-30 に **2 回**差し替えた:
+#   `list-return-refresh-control.sh` → `conversation-ui-control.sh` → `build.sh`。
+#   前の2つは砂場へ移って生成木の錠を使わなくなり、**錠の行を壊す変異が空振り**した。
+#   ★`build.sh` を選んだのは、**移行後も生成木を書き続ける**から ——
+#     製品のビルド本体が砂場へ移る事は無い。対照の題材は、移行で消えない物を選ぶ。
+#   (元の理由: 前者は砂場へ移って生成木の錠を
 #   使わなくなり、**錠の行を壊す変異が空振り**するので陰性対照が空虚になっていた
 #   (実測: 「変異が当たっていない」と自己申告して赤くなった = 黙って緑にはならなかった)。
 #   借金が 0 になる日には、此の題材も生成木を触る別の台本(`build.sh` 等)へ移す事。
@@ -425,14 +429,14 @@ FIX3="$SB/pathcov"
 mkdir -p "$FIX3"
 # ★先に「壊す前は解決する」を測る。砂場に写した時点で解決しないなら、下の N8 は
 #   変異ではなく**砂場のせい**で緑になる = 何も測っていない(dod-6.5 の 0 行目と同じ理屈)。
-cp "$HERE/conversation-ui-control.sh" "$FIX3/pristine.sh"
+cp "$HERE/build.sh" "$FIX3/pristine.sh"
 p0="$(resolve_guard_path "$FIX3/pristine.sh")"
 chk "N8-pre 壊す前は砂場でも解決する(= N8 が空虚でない事の確認)" "yes" \
     "$( [ -n "$p0" ] && [ -f "$p0" ] && echo yes || echo no )"
-mutate "$HERE/conversation-ui-control.sh" \
+mutate "$HERE/build.sh" \
     's#/tools/xcode-tree-guard\.sh#/tools/NOPE/xcode-tree-guard.sh#' \
-    "$FIX3/conversation-ui-control.sh" || true
-p="$(resolve_guard_path "$FIX3/conversation-ui-control.sh")"
+    "$FIX3/build.sh" || true
+p="$(resolve_guard_path "$FIX3/build.sh")"
 chk "N8 ★陰性: パスを壊すと C3 が捕まえる(名前は書いてあるのに不在)" "no" \
     "$( [ -n "$p" ] && [ -f "$p" ] && echo yes || echo no )"
 
@@ -471,16 +475,16 @@ chk "C4 ★最後の trap EXIT が錠を返す(後から掛けた trap は前の
 # 陰性: 取っ手の後ろに素の trap を 1 行足した写しを作り、C4 が挙げる事を測る。
 FIX4="$SB/trapcov"
 mkdir -p "$FIX4"
-cp "$HERE/conversation-ui-control.sh" "$FIX4/pristine.sh"
+cp "$HERE/build.sh" "$FIX4/pristine.sh"
 chk "N9-pre 壊す前の最後の trap は錠を返す(= N9 が空虚でない事の確認)" "yes" \
     "$(releases_lock "$FIX4/pristine.sh")"
 # ★`mutate` を通す(空振りしたら親が FAIL にする)。末尾に 1 行足すので `$` を狙う。
-mutate "$HERE/conversation-ui-control.sh" \
+mutate "$HERE/build.sh" \
     '$a\
 trap '"'"'cleanup'"'"' EXIT' \
-    "$FIX4/conversation-ui-control.sh" || true
+    "$FIX4/build.sh" || true
 chk "N9 ★陰性: 後ろに素の trap を足すと C4 が捕まえる(錠が黙って返らなくなる)" "no" \
-    "$(releases_lock "$FIX4/conversation-ui-control.sh")"
+    "$(releases_lock "$FIX4/build.sh")"
 
 # ★空振りした変異を最後に清算する(`mutate` は部分 shell の中でも走るので、
 #   数を持ち歩けない。file に落として親で数える)。
