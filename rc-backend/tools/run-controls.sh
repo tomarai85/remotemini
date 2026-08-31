@@ -37,8 +37,62 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 
-ALL=0
-[ "${1:-}" = "--all" ] && ALL=1
+ALL=0; RESUME=0
+for _a in "$@"; do
+    case "$_a" in
+        --all)    ALL=1 ;;
+        --resume) RESUME=1 ;;
+    esac
+done
+
+# ── 台帳・上限・差し替え可能な一覧(2026-08-31)────────────────────────────────
+# ★なぜ要るか: 全掃きは**一度も完走していない**。2.5 時間走って殺され、其の時点までに
+#   出ていた判定は**全部消えた** —— 走者は結果を画面へ刷るだけで、shell の変数にしか
+#   持っていなかったから。門は commit が触れた対照しか回さないので、対照どうしの
+#   干渉は測れないまま。「もう一度回す」は同じ 2.5 時間を買い直すだけで、
+#   途中で止まればまた全部消える。
+#   → **1本 終わるごとに台帳へ書く**(終わった物は二度と走らせない)/
+#     **1本あたりの上限**(固まった対照が掃引ごと道連れにしない)/
+#     一覧を差せる(対照が此の走者自身を測れる)。
+# ★`$ROOT`(= rc-backend/)を使う。`$HERE` は此の台本に無い —— 最初 `$HERE` と書き、
+#   `set -u` で **全走行が line 57 で死んだ**。私の対照は `RC_CTL_LEDGER` を差していたので
+#   `${VAR:-既定}` の既定側を一度も展開せず、**道具が壊れているのに緑**だった。
+#   下の R8 が既定の経路を撃つ(検査は利用者と同じ入口を通る事)。
+RC_CTL_LEDGER="${RC_CTL_LEDGER:-$ROOT/../.harness/run-controls-ledger.tsv}"
+RC_CTL_TIMEOUT_S="${RC_CTL_TIMEOUT_S:-1800}"
+RC_CTL_LIST_FILE="${RC_CTL_LIST_FILE:-}"
+CTL_PERL="$(command -v perl 2>/dev/null || echo '')"
+
+# 台帳の1行 = "<終えた epoch>\t<対照の名>\t<rc>\t<秒>"
+ledger_verdict() {  # ledger_verdict <名> → 記録済みの rc(無ければ空)
+    [ -f "$RC_CTL_LEDGER" ] || return 0
+    /usr/bin/awk -F'\t' -v n="$1" '$2==n{v=$3} END{if(v!="")print v}' "$RC_CTL_LEDGER" 2>/dev/null
+}
+ledger_write() {  # ledger_write <名> <rc> <秒>
+    local dir; dir="$(dirname "$RC_CTL_LEDGER")"
+    [ -d "$dir" ] || /bin/mkdir -p "$dir" 2>/dev/null || return 0
+    printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "$3" >> "$RC_CTL_LEDGER" 2>/dev/null || true
+}
+# 1本を上限つきで走らせる。★上限を越えたら **2(測っていない)** —— 赤ではない。
+#   固まった事は「壊れている」の証拠ではないので、緑にも赤にも丸めない。
+run_one_ctl() {  # run_one_ctl <台本> → 出力を印字し、rc を返す
+    # ★出力は**一時 file 経由**。`$( )` に直接流すと、上限で親を殺した後も
+    #   **孤児の孫がパイプを握ったまま**で命令置換が EOF を待つ ——
+    #   実測(2026-08-31): `sleep 60` の対照に上限 5 秒を掛けたのに、
+    #   台帳には rc=2 と書けたが**掛かった時間は 60 秒**だった。
+    #   同じ罠を今朝 `parity-observer.sh` で潰している(あちらの註記が正本)。
+    local _tf _rc
+    _tf="$(mktemp 2>/dev/null)" || { bash "$1" 2>&1; return $?; }
+    if [ -n "$CTL_PERL" ] && [ "$RC_CTL_TIMEOUT_S" -gt 0 ] 2>/dev/null; then
+        "$CTL_PERL" -e 'alarm shift; exec @ARGV' "$RC_CTL_TIMEOUT_S" bash "$1" > "$_tf" 2>&1
+        _rc=$?
+        [ "$_rc" -eq 142 ] && _rc=2         # SIGALRM = 上限超過 = 測れていない
+    else
+        bash "$1" > "$_tf" 2>&1; _rc=$?
+    fi
+    cat "$_tf"; /bin/rm -f "$_tf"
+    return "$_rc"
+}
 
 # ★束ねて回す側だけが「空くまで待つ」を立てる(既定は 0 = 即断る)。
 # 掛け場所は `xcodegen generate` を撃つ台本 1 本ずつなので、待つ相手の最長は
@@ -1010,6 +1064,11 @@ LOCAL_CTLS=(
                                      #   それで「max が守っている」という私の註記が
                                      #   実装とずれていた事が判った。1本にまとめると
                                      #   片方の機構が死んでいても緑が出る。
+    test/run-controls-ledger-controls.sh
+                                     # ★2026-08-31。全掃きが**途中で死んでも判定を失わない**事
+                                     #   (台帳 / --resume / 1本あたりの上限)。全掃きは一度も
+                                     #   完走しておらず、2.5 時間走って殺された時に判定が全部消えた。
+                                     #   ★中心は R5(上限が**実時間**を縛る)と R8(既定の経路を撃つ)。
     test/deploy-observer-carried-controls.sh
                                      # ★2026-08-31。本体を配ると観測器の木も一緒に運ばれる事。
                                      #   監視器は別 dir・別 label なので配備の守備範囲の外に落ちており、
@@ -1182,6 +1241,13 @@ EDITH_CTLS=(
 
 list=("${LOCAL_CTLS[@]}")
 [ "$ALL" -eq 1 ] && list+=("${EDITH_CTLS[@]}")
+# ★一覧を差せる(2026-08-31)。此の走者**自身**を測る対照が、本物の 60 本を回さずに
+#   台帳・再開・上限の挙動だけを撃てる様にする為。差した時は登録の照合も飛ばす
+#   —— 差し替えた一覧は repo の宣言と一致しないのが当たり前。
+if [ -n "$RC_CTL_LIST_FILE" ] && [ -f "$RC_CTL_LIST_FILE" ]; then
+    list=()
+    while IFS= read -r _l; do [ -n "$_l" ] && list+=("$_l"); done < "$RC_CTL_LIST_FILE"
+fi
 
 green=0; red=0; unmeasured=0
 declare -a red_names=() unm_names=()
@@ -1250,7 +1316,12 @@ if [ "${#SCAN_CTLS[@]}" -eq 0 ]; then
     exit 2
 fi
 
+# ★一覧を差した走行では登録の照合を**飛ばす**(2026-08-31)。差した一覧は repo の宣言と
+#   一致しないのが当たり前で、照合すると偽物の対照 1 本ごとに `UNREG` の赤が積まれる。
+#   此の走者自身を測る対照(`test/run-controls-ledger-controls.sh` の R7)が捕まえた ——
+#   「飛ばす」と註記に書きながら実装していなかった、書いただけの規則。
 for _f in "${SCAN_CTLS[@]}"; do
+    [ -n "$RC_CTL_LIST_FILE" ] && break
     [ -f "$_f" ] || continue
     case " ${LOCAL_CTLS[*]} ${EDITH_CTLS[*]} ${EXCLUDED_CTLS[*]:-} " in
         *" $_f "*) : ;;
@@ -1266,9 +1337,22 @@ for c in "${list[@]}"; do
         red=$((red+1)); red_names+=("$c(不在)")
         continue
     fi
+    _name="$(basename "$c")"
+    # ★再開: **緑と記録された物だけ**を飛ばす。赤も未測定も回し直す ——
+    #   「終わった」と「上手くいった」を混ぜると、赤を1度出した対照が
+    #   二度と走らない掃引になる。
+    if [ "$RESUME" -eq 1 ]; then
+        _prev="$(ledger_verdict "$_name")"
+        if [ "$_prev" = "0" ]; then
+            green=$((green+1))
+            printf 'SKIP   %-34s      台帳に緑(--resume)\n' "$_name"
+            continue
+        fi
+    fi
     t0=$(date +%s)
-    out="$(bash "$c" 2>&1)"; rc=$?
+    out="$(run_one_ctl "$c")"; rc=$?
     t1=$(date +%s)
+    ledger_write "$_name" "$rc" "$((t1-t0))"
     last="$(echo "$out" | tail -1)"
     case "$rc" in
         0) green=$((green+1));      printf 'GREEN  %-34s %3ds  %s\n' "$(basename "$c")" "$((t1-t0))" "$last" ;;
