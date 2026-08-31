@@ -84,7 +84,13 @@ git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
 mutators=0; covered=0; targets=""; uncovered=""
 for f in "$HERE"/tools/*control*.sh "$ROOT"/.harness/*controls.sh; do
     [ -f "$f" ] || continue
-    grep -q 'git checkout --' "$f" 2>/dev/null || continue     # 復元しない = 書き換えない
+    # ★**註記と実行を分ける**(2026-08-30)。`git checkout --` は「戻し方を人に伝える」
+    #   文としても書かれる。註記で数えると、木を一度も触らない台本まで「変異対照」に
+    #   数え、其れが宣言を持たない事を「拾い方が壊れている」と読んで**測定不成立**にする
+    #   —— 実際に `mutation-worktree-gate-controls.sh`(其の話題を説明した file)で
+    #   起きた。此の file の対照 N10b は同じ結論を先に書いている。
+    grep -v '^[[:space:]]*#' "$f" 2>/dev/null | grep -v -E '(echo|printf)[[:space:]]' \
+        | grep -q 'git checkout --' || continue     # 復元しない = 書き換えない
     mutators=$((mutators + 1))
     # `<なんらかの名前>="…Sources/….swift…"` の右辺を集め、**repo 根からの相対**へ直す。
     # ★sed の連鎖は使わない(2026-08-30、書いて壊した)。`#` を区切りに `$` や `\` を
