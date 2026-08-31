@@ -56,10 +56,20 @@ pass=0; fail=0
 ok() { echo "PASS  $1"; pass=$((pass + 1)); }
 ng() { echo "FAIL  $1  ($2)"; fail=$((fail + 1)); }
 
+# ★生成木(`RemoteMini.xcodeproj` / `ios/Info.plist`)へ書く走行を**1本に絞る**。
+#   之が無いと `build.sh --sim` や他の UI 対照と刻印を潰し合い、**偽の赤**が出る
+#   (2026-08-15 の実測では 9 本 —— 製品の欠陥と見分けが付かない赤)。
+#   ★同じ形を今日 自分でも踏んだ: 対照が回っている最中に `ios/Sources` を編集し、
+#     其の走行の結果を捨てる羽目になった。錠は其れを機械で止める。
+#   取れなければ此処で非零終了する = 生成物に触らないまま止まる。
+. "$IOS/tools/xcode-tree-guard.sh"
+
 # ★木を戻す手。`git checkout --` を使うのは、`mutation-residue-check.sh` が
 #   「復元を持つ台本 = 書き換える台本」として此の綴りで数えている為でもある。
 restore() { ( cd "$IOS/.." && git checkout -- "$MODELS" "$VM" "$LV" "$SNOOZE" ) 2>/dev/null; }
-trap 'restore' EXIT
+# ★錠の返却を**同じ trap に**入れる。後から掛けた trap は前のを置き換えるので、
+#   別々に書くと片方が消える(対照 C4 が此れを縛っている)。
+trap 'restore; xtl_release' EXIT
 
 # 汚れた木では測れない。意図した編集と変異の区別が付かないまま緑を出す方が悪い。
 dirty="$( cd "$IOS/.." && git diff --name-only -- "$MODELS" "$VM" "$LV" "$SNOOZE" )"

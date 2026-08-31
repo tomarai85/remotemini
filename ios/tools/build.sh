@@ -38,6 +38,9 @@ case "${1:-}" in
   --print-rev) MODE="rev" ;;
   --print-device) MODE="device" ;;
   --print-build-num) MODE="num" ;;
+  # ★「その mode で焼いたら誰の殻になるか」だけを答える。対照が実際に焼かずに
+  #   「署名経路には決して焼かれない」を測れる様にする為の口。
+  --print-role) MODE="role"; ROLE_QUERY="${2:-}" ;;
   "") ;;
   *) echo "usage: $0 [--no-install|--sim|--sim-app|--print-rev|--print-device|--print-build-num]" >&2; exit 2 ;;
 esac
@@ -83,6 +86,26 @@ build_rev() {
   # 汚れの中身は log にだけ出す(標準出力は版そのものなので混ぜられない)。
   [ "$rc" -eq 0 ] || printf '    作業木の汚れ(deploy-dirt rc=%s):\n%s\n' "$rc" "$dirt" >&2
 }
+
+# ★誰の殻かを決める規則(2026-08-30)。simulator 向けは**定義上いつも私の物**
+#   (Tom は simulator を持っていない)ので `control` を名乗らせ、机の台帳で数え分ける。
+#   ★署名する経路(`sign` = 配布される束)には**決して焼かない**。焼けば Tom の要求が
+#     `control` として記録され、「彼が使ったか」が永久に読めなくなる ——
+#     今 直そうとしている嘘の、より悪い版になる。
+#   ★判定を関数に出すのは、対照が**実際に焼かずに**此の一線を測れる様にする為
+#     (`--print-role <mode>`)。直書きだと確かめるのに毎回数分掛かり、いずれ確かめなくなる。
+role_for_mode() {
+  case "$1" in
+    sim|simapp) printf 'control' ;;
+    *)          printf '' ;;
+  esac
+}
+
+if [ "$MODE" = "role" ]; then
+  role_for_mode "${ROLE_QUERY:-}"
+  echo
+  exit 0
+fi
 
 if [ "$MODE" = "rev" ]; then
   # tools/shots.sh が同じ値を使う為の口。版の計算は此処にしか無い。
@@ -211,6 +234,15 @@ step "1. generate project"
 # それを版と読ませない分岐は ios/Sources/Core/BuildInfo.swift の displayRev に在る。
 RC_BUILD_REV="$(build_rev)"
 export RC_BUILD_REV
+# ★誰の殻かを刻む(2026-08-30)。simulator 向けは**定義上いつも私の物**(Tom は
+#   simulator を持っていない)ので `control` を名乗らせる。署名する経路には焼かない。
+#   之が要る理由(H-3 訂正、同日実測): `build.sh` が焼いた殻は**製品の Swift をそのまま**
+#   使うので `RemoteMini/<番号> CFNetwork/…` を名乗り、UA からは Tom の実機と1文字も
+#   違わない。述べ 593 件のうち 60 件が私の対照で、36 件だけが Tom だった ——
+#   私は**版番号で人を判じて**いて、彼が古い版に留まる日(= 普段)には壊れる読み方だった。
+RC_ROLE="$(role_for_mode "$MODE")"
+export RC_ROLE
+[ -n "$RC_ROLE" ] && echo "    役: $RC_ROLE(検査用の殻 = 机の台帳で Tom と数え分ける)"
 echo "    版: $RC_BUILD_REV"
 xcodegen generate >/dev/null
 
