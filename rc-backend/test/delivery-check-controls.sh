@@ -59,7 +59,11 @@ cat > "$BIN/ssh" <<'EOF'
 #!/bin/bash
 cmd="${*: -1}"
 case "$cmd" in
-    *"grep 'client=app'"*) printf '%s' "${FAKE_APPLINE:-}" ;;
+    # ★此の枝だけ**受け取った命令をそのまま走らせる**(2026-08-31)。
+    #   缶詰の答を返すと、道具の pipeline(どの行を選ぶか)を対照が測れない ——
+    #   実際、`tail -1` が名乗らない行を掴む欠陥を缶詰では捕まえられなかった。
+    #   log は砂場に在り、道具は `RC_BACKEND_LOG` で其処を指すので、命令は手元で成立する。
+    *"client=app"*) eval "$cmd" ;;
     *"grep -c 'const build = headerBuild('"*) printf '%s' "${FAKE_HASFIX:-1}" ;;
     *"stat -f %m"*) printf '%s' "${FAKE_FIXMTIME:-1}" ;;
     *"bundle-version"*) printf '%s' "${FAKE_PUB:-115}" ;;
@@ -69,9 +73,10 @@ EOF
 chmod +x "$BIN/ssh"
 
 run_sut() {  # run_sut → 1b の段だけを取り出して返す
+    printf '%s\n' "${FAKE_APPLINE:-}" > "$SB/rc.log"
     RC_DELIVERY_SSH="$BIN/ssh" RC_DELIVERY_CURL="$BIN/curl" \
     RC_DELIVERY_LAUNCHCTL="$BIN/false-tool" RC_DELIVERY_PLISTBUDDY="$BIN/false-tool" \
-    RC_FRIDAY_HOST=fake-desk.invalid \
+    RC_FRIDAY_HOST=fake-desk.invalid RC_BACKEND_LOG="$SB/rc.log" \
         bash "$SUT" 2>&1
 }
 
@@ -174,6 +179,18 @@ out="$(FAKE_VERSION=deadbee run_sut)"
 if printf '%s' "$out" | grep -q "突き合わせられない"; then
     ok "D10 ★机の刻がこの木に無ければ『判らない』と言う(緑に丸めない)"
 else ng "D10 fail-closed" "$(printf '%s' "$out" | sed -n '2,4p')"; fi
+
+# ── D11 ★名乗らない口の行に上書きされない(2026-08-31、本番で踏んだ)──────────
+# 電話が `X-App-Build` を付けるのは `/api/sessions` だけ。`/api/account` 等は付けない。
+# 実測: 同じミリ秒に sessions(build=115)と account(build=-)が並び、`tail -1` が
+# account を掴んで「電話は版を名乗っていない」と報告した —— **電話は 115 だったのに**。
+# 友の観測器は同じ log から 115 を読んでおり、**2つの計器の食い違い**で気付いた。
+APP115="$(line_for "$ISO_AFTER" 115)"
+APPNONE="[rc-backend] req ${ISO_AFTER} GET /api/account route=- client=app build=- code=0 reason=aborted ms=115"
+out="$(FAKE_UPTIME=100000 FAKE_PUB=115 FAKE_APPLINE="$(printf '%s\n%s' "$APP115" "$APPNONE")" run_sut)"
+if printf '%s' "$out" | grep -q "電話が配布中の版に追いついている"; then
+    ok "D11 ★名乗った行の後に名乗らない行が来ても、版を読み落とさない"
+else ng "D11 行の選び方" "$(printf '%s' "$out" | sed -n '5,7p')"; fi
 
 echo ""
 echo "DELIVERY-CHECK-CONTROLS: pass=$pass fail=$fail"
