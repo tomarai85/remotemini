@@ -106,11 +106,46 @@ umask 077
 #   mktemp は存在しない名前を原子的に作るので、先回りして symlink を置く手が効かない。
 tmpsnap="$(mktemp "$(dirname "$F")/.log-size-cap.XXXXXX" 2>/dev/null)" || {
     echo "log-size-cap: 一時 file を作れない: $(dirname "$F")" >&2; exit 1; }
-cleanup_tmp() { [ -n "${tmpsnap:-}" ] && /bin/rm -f "$tmpsnap" "$tmpsnap.body" 2>/dev/null; }
+keep_tmp_on_fail=0
+cleanup_tmp() {
+    rc=$?
+    # ★切った後に失敗したなら**退避を残す**。消せば末尾を丸ごと失う。
+    if [ "$rc" -ne 0 ] && [ "${keep_tmp_on_fail:-0}" -eq 1 ]; then
+        echo "log-size-cap: ★切った後で失敗した。末尾は $tmpsnap に在る(消していない)" >&2
+        /bin/rm -f "$tmpsnap.body" 2>/dev/null
+        return 0
+    fi
+    [ -n "${tmpsnap:-}" ] && /bin/rm -f "$tmpsnap" "$tmpsnap.body" 2>/dev/null
+}
 trap cleanup_tmp EXIT
 if ! tail -c "$keep" "$F" > "$tmpsnap" 2>/dev/null; then
     echo "log-size-cap: 末尾を退避できない: $F" >&2; exit 1
 fi
+
+# ★**読んだ直後に切る**(2026-08-30、`log-cap-live-appender-proof.sh` の実測で判った)。
+#   以前は退避の整形・`chmod`・`mv` を全部済ませてから切っていた。其の間も追記者は
+#   書き続けるので、**退避にも入らず、切られて消える**行が出る ——
+#   launchd が抱えた追記者相手の実測で **406 行**(番号 10480..10885)が消えた。
+#   本番の伸びは約 11 KB/時なので実害は殆ど無いが、**溢れる時 = 何かが暴走している時**で、
+#   窓が一番広がる状況と上限が発火する状況が重なる。順序を入れ替えるだけで窓は
+#   `tail` の直後の1呼び出しまで縮む。
+#   ★後段(整形・置き換え)が失敗した時に**退避を消さない**。切った後なので、
+#     消せば末尾を丸ごと失う。場所を告げて人が拾える様にする。
+# ★切る前に**退避が本当に書けているか**を検める(2026-08-30、Codex の指摘2)。
+#   `tail` が部分的にしか書けていない(disk が一杯 / I/O error / 途中で殺された)まま
+#   切ると、其の差分は**どこにも残らない**。`tail` の終了コードは上で見ているが、
+#   終了コードは「途中まで書けた」を成功として返す経路が在る。
+#   期待値は「元 file の大きさか、上限のどちらか小さい方」—— 其れを下回るなら切らない。
+snapsz="$(wc -c < "$tmpsnap" 2>/dev/null | tr -d ' ')"
+case "${snapsz:-}" in ''|*[!0-9]*) snapsz=0 ;; esac
+expect="$keep"; [ "$now" -lt "$keep" ] && expect="$now"
+if [ "$snapsz" -lt "$expect" ]; then
+    echo "log-size-cap: 退避が途中までしか書けていない($snapsz B / 期待 $expect B)。**切らない**" >&2
+    echo "  切れば其の差分はどこにも残らない。disk の空きと I/O を疑う事" >&2
+    exit 1
+fi
+keep_tmp_on_fail=1
+: > "$F" || { echo "log-size-cap: 空にできない: $F" >&2; exit 1; }
 # 先頭の欠けた行は落とす。**ただし、それで殆ど全部消えるなら落とさない** ——
 # 2026-08-30 に実測で踏んだ: 検体が巨大な1行だったので `sed 1d` が 500KB を **81 B** にした。
 # task の verifier は「上限以下かつ 0 でない」しか見ないので **PASS のまま**通った。
@@ -131,7 +166,7 @@ mv -f "$tmpsnap.body" "$snap" || { echo "log-size-cap: 退避を置けない: $s
 
 # 2) 元 file を**1回だけ**空にする。offset 0 から書き戻さないので、追記との競合で
 #    行を上書きする道が無い(失うのは 1) と 2) の間に入った行だけ)。
-: > "$F" || { echo "log-size-cap: 空にできない: $F"; exit 1; }
+# (切るのは上へ移した —— 退避を読んだ直後。窓を縮める為)
 
 # 3) 何処へ消えたかを本体に1行だけ残す。**`>>` は O_APPEND = 常に EOF へ書く**ので、
 #    同時に追記している writer の行を上書きしない(offset 0 へ書き戻す初版とはここが違う)。

@@ -92,14 +92,19 @@ if [ "${h:-1}" -eq 0 ] && [ "${b:-1}" -eq 0 ] && [ "${n:-0}" -gt 1000 ]; then
 else ng "C3 同時追記中に切っても欠け 0" "欠け=$h 壊れ=$b 行数=$n"; fi
 
 # ── C4 変異対照 ────────────────────────────────────────────────────────────
-# `: > "$F"`(1回だけ空にする)を `cp "$snap" "$F"`(書き戻し = Codex 前の形)に差し替える。
+# `: > "$F"`(1回だけ空にする)を **書き戻し**(Codex 前の形)に差し替える。
 # ★これで C3 が緑のままなら、C3 は何も測っていない。
+# ★2026-08-30 に当て先を `$snap` から `$tmpsnap` へ直した。上限が「退避を読んだ直後に
+#   切る」順序へ変わり(実測で 406 行の取り零しが判った為)、切る時点で `$snap` は
+#   まだ置かれていない —— 古い変異は `cp` が失敗して上限が何もせず終わり、
+#   **欠け 0 のまま緑**になっていた。変異が当たらないのに緑が出る形は、
+#   守っている振りの中で一番たちが悪い。
 MD="$(mktemp -d)"; MUT="$MD/mutant.sh"
-sed -e 's|^: > "\$F" .*|cp "$snap" "$F" \|\| exit 1|' \
+sed -e 's|^: > "\$F" .*|cp "$tmpsnap" "$F" \|\| exit 1|' \
     -e '/^printf .\[log-size-cap\] %s 時点/,+2d' "$CAP_ONE" > "$MUT"
 if ! bash -n "$MUT" 2>/dev/null; then
     ng "C4 変異対照" "変異が構文として成立しない = sed の当て先が動いた(対照を直す事)"
-elif ! grep -q 'cp "$snap" "$F"' "$MUT"; then
+elif ! grep -q 'cp "$tmpsnap" "$F"' "$MUT"; then
     ng "C4 変異対照" "変異が当たっていない = 元の台本の綴りが変わった(対照を直す事)"
 else
     read -r mh mb mn <<< "$(concurrent_holes "$MUT")"
@@ -259,6 +264,30 @@ ln "$D/api.key" "$D/h.log.tail" 2>/dev/null && {
         ok "C12c 退避先が hardlink なら拒む(rc=$rc)"
     else ng "C12c hardlink を拒む" "$hbefore -> $hafter / rc=$rc"; fi
 }
+/bin/rm -rf "$D"
+
+# ── C13 ★退避が途中までしか書けていなければ切らない(Codex 2026-08-30 の指摘2)──
+# `tail` の終了コードは「途中まで書けた」を成功として返す経路が在る。其のまま切ると
+# 差分は**どこにも残らない**。切る前に大きさで検める。
+D="$(mktemp -d)"
+F="$D/short.log"
+head -c 600000 /dev/urandom | base64 > "$F"
+before="$(wc -c < "$F" | tr -d ' ')"
+# `tail` を**途中までしか書かない偽物**に差し替えて撃つ。
+BIN="$D/bin"; mkdir -p "$BIN"
+# ★偽の `tail` は**引数の file を読む**。標準入力を読む版だと、`log-size-cap.sh` が
+#   `tail -c <n> <file>` と file を渡すので入力が来ず、**永久に待つ**
+#   (2026-08-30 実測で検査が固まった)。偽物も本物と同じ受け口を持たせる。
+printf '%s\n' '#!/bin/bash' 'f="${!#}"' '/usr/bin/head -c 100 "$f"' > "$BIN/tail"
+chmod +x "$BIN/tail"
+PATH="$BIN:$PATH" bash "$CAP_ONE" "$F" 200000 >/dev/null 2>&1
+rc=$?
+after="$(wc -c < "$F" | tr -d ' ')"
+if [ "$rc" -ne 0 ] && [ "$after" = "$before" ]; then
+    ok "C13 ★退避が途中までなら切らない(元 file は無傷 / rc=$rc)"
+else
+    ng "C13 途中までの退避" "rc=$rc / 元 $before B → $after B ← 差分が消えた"
+fi
 /bin/rm -rf "$D"
 
 echo ""
