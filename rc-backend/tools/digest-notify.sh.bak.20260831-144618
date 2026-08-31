@@ -202,36 +202,8 @@ fi
 
 [ -z "$out" ] && { log "鳴らす物は無い"; exit 0; }
 
-# ★通知に**会話の名前**と**そこへ跳ぶリンク**を載せる(2026-08-31)。
-#
-#   直す前は「机が返事を待っています(N分)」だけで、**どの会話かも書いていなかった**。
-#   受け取った側は、電話を開いて一覧から自分で探す事になる。
-#   調査(3本)が一致して指した欠陥がこれ ——「気付く → 着地する → 答える」の鎖の、
-#   **着地が切れている**。電話側は `remotemini` の scheme を Info.plist に登録済みなのに
-#   `onOpenURL` を受ける行が 1 つも無かったので、同じ commit で其方も繋いだ。
-#
-# ★新しい通知系を作らない。此の台本には既に重複抑止(同一指紋2回・経過時間)が
-#   入っていて、通知源が 2 つになると両方鳴って**狼少年になる** ——
-#   :175-190 の註が自分でその型を書いている。載せるのは既存の 1 本にだけ。
-title_of() {   # title_of <sid> -> 会話の名前(取れなければ空)
-    curl -s -m 5 -H "authorization: Bearer $KEY" "$API/api/sessions" 2>/dev/null \
-        | python3 -c "
-import sys, json
-sid = sys.argv[1]
-try:
-    for s in (json.load(sys.stdin) or {}).get('sessions', []):
-        if s.get('id') == sid:
-            print((s.get('title') or '').strip()); break
-except Exception:
-    pass
-" "$1" 2>/dev/null
-}
-
 printf '%s\n' "$out" | while IFS="$(printf '\t')" read -r sid attention level mins line; do
-    _t="$(title_of "$sid")"
-    # 名前が取れなければ id の頭 8 桁。**「どれか判らない通知」を出さない**のが此処の目的。
-    _label="${_t:-${sid:0:8}}"
-    msg="$(printf '%s が返事を待っています(%s分)\n%s\nremotemini://session/%s' "$_label" "$mins" "$line" "$sid")"
+    msg="机が返事を待っています(${mins}分)。${line}"
     log "鳴らす: ${sid:0:8} attention=$attention level=$level 経過=${mins}分"
     if [ "$DRY" -eq 1 ]; then
         echo "DRY: $msg"

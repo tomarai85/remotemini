@@ -338,13 +338,13 @@ struct ConversationView: View {
                         VStack(spacing: 10) {
                             Image(systemName: "text.bubble")
                                 .font(.system(size: 34, weight: .light))
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(.secondary)
                             Text("No messages yet")
                                 .font(.headline)
                                 .foregroundStyle(.secondary)
                             Text("Type below to start this conversation on the desk.")
                                 .font(.caption)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal, 32)
                         }
@@ -563,7 +563,12 @@ struct ConversationView: View {
                     Circle()
                         .fill(working ? RCTheme.accent : Color.secondary)
                         .frame(width: 7, height: 7)
-                    Text(working ? "Working" : "Idle")
+                    // ★「止まっている」と「**あなたを待っている**」は別(2026-08-31)。
+                    //   `.choice`(承認/選択の画面)でも `deskIsWorking == false` になるので、
+                    //   以前は机が返事を待って止まっている時に **`Idle`** と出ていた ——
+                    //   此の app の存在理由そのものの状態で、語が逆を向いていた。
+                    Text(working ? "Working"
+                         : (viewModel.screen?.classification == .choice ? "Waiting on you" : "Idle"))
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
@@ -722,6 +727,25 @@ struct ConversationView: View {
                     .accessibilityIdentifier("conversation.attachNotice")
             }
 
+            // ★上限の告知(2026-08-30、CF-15)。**composer の直ぐ上**に置く ——
+            //   一覧にも同じ事実は出るが、送るのは此処で、判断が要るのも此処。
+            //   前の画面で見た事は、次の画面で忘れる。
+            //
+            // ★★2026-08-31: 此処へ**移した**。以前は `if RCTheme.usesGlass` の **else 側**、
+            //   しかも `HStack` の子として置かれていた。既定の variant は `.glassFull` なので
+            //   `usesGlass == true` = **電話では一度も描かれていなかった**。
+            //   非 glass の系でも壊れていて、`HStack` の兄弟なので入力欄の**左**に
+            //   縦長の列として出る(註が言う「直ぐ上」にならない)。
+            //   検査(`LimitedNoticeTests`)は純関数 `limitedNotice()` しか見ていないので
+            //   **緑のまま死んでいた** —— 描画に触れない検査は、描かれない事を検出しない。
+            if let notice = Self.limitedNotice(viewModel.screen) {
+                Text(notice)
+                    .font(.caption2)
+                    .foregroundStyle(RCTheme.caution)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.limitedNotice")
+            }
+
             HStack(alignment: .bottom, spacing: 8) {
                 // Left of the field, deliberately far from the send button: these two
                 // do opposite things and a mis-tap on a phone in one hand is the
@@ -781,16 +805,6 @@ struct ConversationView: View {
                                     .strokeBorder(RCTheme.surfaceStroke, lineWidth: 1)
                             )
                     } else {
-                        // ★上限の告知(2026-08-30、CF-15)。**composer の直ぐ上**に置く ——
-                        //   一覧にも同じ事実は出るが、送るのは此処で、判断が要るのも此処。
-                        //   前の画面で見た事は、次の画面で忘れる。
-                        if let notice = Self.limitedNotice(viewModel.screen) {
-                            Text(notice)
-                                .font(.caption2)
-                                .foregroundStyle(RCTheme.caution)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .accessibilityIdentifier("conversation.limitedNotice")
-                        }
                         TextField("Message", text: $viewModel.draft, axis: .vertical)
                             .textFieldStyle(.roundedBorder)
                     }
@@ -1342,6 +1356,20 @@ struct ConversationView: View {
 private struct EntryBubble: View {
     let entry: HistoryEntry
 
+    /// ★**文字の左端**を 3 branch で 1 本に揃える為の内側 inset(2026-08-31)。
+    ///
+    /// 直す前は同じ会話の中に版面が 3 種類 立っていた:
+    ///   assistant の本文  x = 16(水平 padding 無し)
+    ///   tool の行        x = 26(Capsule の内側 10)
+    ///   user の本文      右端 W-30(bubble の内側 14)
+    /// tool 行は観測された転写の 13/25 を占める(下の註)ので、此の 10pt の差は
+    /// 画面の半分近くに出る。Tom の「列がズレてる」は比喩ではなく之。
+    ///
+    /// ★揃えるのは**箱の左端ではなく文字の左端**。箱(Capsule / bubble)は
+    ///   それぞれ違う形をしていて良いが、中の文字が乗る線は 1 本でなければ
+    ///   縦に読めない。だから各 branch は「箱の内側 inset を此の値に合わせる」。
+    private static let textInset: CGFloat = 10
+
     var body: some View {
         switch entry.role {
         case .tool:
@@ -1360,7 +1388,7 @@ private struct EntryBubble: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, Self.textInset)
             .padding(.vertical, 4)
             .background(RCTheme.usesGlass ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color(.systemGray6)),
                         in: Capsule())
@@ -1378,7 +1406,7 @@ private struct EntryBubble: View {
                     Text(entry.text)
                         .font(.body)
                         .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, Self.textInset)
                         .padding(.vertical, 9)
                         // glass の系では自分の発言を accent の淡い面に(地の光彩と同系で
                         // 「自分の色」が付く)。glass でない系は従来の柔らかい灰のまま。
@@ -1392,12 +1420,15 @@ private struct EntryBubble: View {
                 // Brief §0-a-3: `display.who` verbatim -- never reconstructed from `role`.
                 Text(entry.display.who)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                 Text(entry.text)
                     .font(.body)
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // ★面は足さない(2026-08-14 の裁定 = Claude の応答はバブル無しの素のテキスト)。
+            //   足すのは inset だけ —— 見た目は変えずに、文字が tool 行と同じ線へ乗る。
+            .padding(.horizontal, Self.textInset)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }

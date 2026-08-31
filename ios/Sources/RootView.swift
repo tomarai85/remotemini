@@ -5,6 +5,8 @@ import SwiftUI
 /// -- there is no direct Key-entry -> Conversation path.
 struct RootView: View {
     @StateObject private var appState = AppState.forLaunch()
+    /// 外(通知・URL)から来た「この会話を開け」。詳細は `DeepLink` の doc。
+    @StateObject private var deepLink = DeepLink()
 
     var body: some View {
         NavigationStack {
@@ -98,6 +100,10 @@ struct RootView: View {
             print("root flow:normal")
             await appState.loadStoredCredentials()
         }
+        // ★外から来た URL を受ける唯一の口。此処に無かったので、
+        //   scheme は登録済みなのに通知から会話へ着地できなかった(2026-08-31)。
+        .onOpenURL { deepLink.handle($0) }
+        .environmentObject(deepLink)
     }
 
     @ViewBuilder
