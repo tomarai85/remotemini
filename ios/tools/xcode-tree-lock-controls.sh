@@ -1,4 +1,9 @@
 #!/bin/bash
+# ★N8/N9 の題材は 2026-08-30 に `list-return-refresh-control.sh` から
+#   `conversation-ui-control.sh` へ差し替えた。前者は砂場へ移って生成木の錠を
+#   使わなくなり、**錠の行を壊す変異が空振り**するので陰性対照が空虚になっていた
+#   (実測: 「変異が当たっていない」と自己申告して赤くなった = 黙って緑にはならなかった)。
+#   借金が 0 になる日には、此の題材も生成木を触る別の台本(`build.sh` 等)へ移す事。
 # controls-for: ios/tools/xcode-tree-lock.sh ios/tools/xcode-tree-guard.sh ios/tools/build.sh ios/tools/shots.sh ios/tools/account-ui-control.sh ios/tools/conversation-ui-control.sh ios/tools/inflight-sentence-control.sh ios/tools/list-return-refresh-control.sh ios/tools/signout-notice-control.sh ios/tools/ui-fixture-absence-control.sh ios/tools/ui-fixture-behavior-control.sh .harness/dod-sprint-6.5-controls.sh
 # ★掛け先を全部並べているのは、C1-C4 が**其の11本の中身**を見ているから。
 #   1 本でも取っ手を外したり trap を上書きしたりすれば此の対照が赤くなる —— だから
@@ -323,6 +328,14 @@ scan_missing() { # scan_missing <触り方の正規表現> <走査の根>
         #   generate` を撃つ台本1本ずつ」と**説明しているだけ**で、自分では撃たない。
         #   此れを付けずに repo 全体へ広げると其の1本を誤って挙げる(実測した)。
         /usr/bin/grep -qE "^[^#]*($pat)" "$f" || continue
+        # ★**砂場で撃つ台本は生成木を触らない**(2026-08-30、CF-21 の移行で出来た形)。
+        #   `mutation-sandbox.sh` を source する台本は `$MS_TREE` の中で `xcodegen` を
+        #   撃つので、`ios/RemoteMini.xcodeproj` も `ios/Info.plist` も書かない。
+        #   直列化は砂場側の錠(`ms_prepare` の `mkdir`)が持つ —— 生成木の錠を
+        #   握らせると、触らない資源の為に他の台本を待たせるだけになる。
+        #   ★限界: 之は静的な信号なので「砂場を source しつつ**本物でも** xcodegen を
+        #     撃つ」台本は見逃す。静的に見分ける手は無い。見付けたら台本の側を直す事。
+        /usr/bin/grep -qE '^[^#]*(\.|source)[[:space:]]+.*mutation-sandbox\.sh' "$f" && continue
         /usr/bin/grep -q 'xcode-tree-guard.sh' "$f" || out="$out$(basename "$f") "
     done <<EOF
 $(find "$root" \( -name .git -o -name node_modules -o -name build -o -name dist -o -name .build \) -prune \
@@ -412,14 +425,14 @@ FIX3="$SB/pathcov"
 mkdir -p "$FIX3"
 # ★先に「壊す前は解決する」を測る。砂場に写した時点で解決しないなら、下の N8 は
 #   変異ではなく**砂場のせい**で緑になる = 何も測っていない(dod-6.5 の 0 行目と同じ理屈)。
-cp "$HERE/list-return-refresh-control.sh" "$FIX3/pristine.sh"
+cp "$HERE/conversation-ui-control.sh" "$FIX3/pristine.sh"
 p0="$(resolve_guard_path "$FIX3/pristine.sh")"
 chk "N8-pre 壊す前は砂場でも解決する(= N8 が空虚でない事の確認)" "yes" \
     "$( [ -n "$p0" ] && [ -f "$p0" ] && echo yes || echo no )"
-mutate "$HERE/list-return-refresh-control.sh" \
+mutate "$HERE/conversation-ui-control.sh" \
     's#/tools/xcode-tree-guard\.sh#/tools/NOPE/xcode-tree-guard.sh#' \
-    "$FIX3/list-return-refresh-control.sh" || true
-p="$(resolve_guard_path "$FIX3/list-return-refresh-control.sh")"
+    "$FIX3/conversation-ui-control.sh" || true
+p="$(resolve_guard_path "$FIX3/conversation-ui-control.sh")"
 chk "N8 ★陰性: パスを壊すと C3 が捕まえる(名前は書いてあるのに不在)" "no" \
     "$( [ -n "$p" ] && [ -f "$p" ] && echo yes || echo no )"
 
@@ -458,16 +471,16 @@ chk "C4 ★最後の trap EXIT が錠を返す(後から掛けた trap は前の
 # 陰性: 取っ手の後ろに素の trap を 1 行足した写しを作り、C4 が挙げる事を測る。
 FIX4="$SB/trapcov"
 mkdir -p "$FIX4"
-cp "$HERE/list-return-refresh-control.sh" "$FIX4/pristine.sh"
+cp "$HERE/conversation-ui-control.sh" "$FIX4/pristine.sh"
 chk "N9-pre 壊す前の最後の trap は錠を返す(= N9 が空虚でない事の確認)" "yes" \
     "$(releases_lock "$FIX4/pristine.sh")"
 # ★`mutate` を通す(空振りしたら親が FAIL にする)。末尾に 1 行足すので `$` を狙う。
-mutate "$HERE/list-return-refresh-control.sh" \
+mutate "$HERE/conversation-ui-control.sh" \
     '$a\
 trap '"'"'cleanup'"'"' EXIT' \
-    "$FIX4/list-return-refresh-control.sh" || true
+    "$FIX4/conversation-ui-control.sh" || true
 chk "N9 ★陰性: 後ろに素の trap を足すと C4 が捕まえる(錠が黙って返らなくなる)" "no" \
-    "$(releases_lock "$FIX4/list-return-refresh-control.sh")"
+    "$(releases_lock "$FIX4/conversation-ui-control.sh")"
 
 # ★空振りした変異を最後に清算する(`mutate` は部分 shell の中でも走るので、
 #   数を持ち歩けない。file に落として親で数える)。

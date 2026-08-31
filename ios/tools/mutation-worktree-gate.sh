@@ -69,8 +69,6 @@ DEBT="
 account-ui-control.sh
 bar-material-control.sh
 conversation-ui-control.sh
-inflight-sentence-control.sh
-list-return-refresh-control.sh
 signout-notice-control.sh
 update-notice-ui-control.sh
 "
@@ -118,6 +116,15 @@ writes_live_tree() {  # writes_live_tree <file> → 0=書き換えている
                 | sed 's/^[^=]*="//; s/".*//' | grep -oE '^\$[A-Za-z_][A-Za-z_0-9]*' | tr -d '$')"
         if [ -n "$root" ] && [ "$root" != "IOS" ] && [ "$root" != "ROOT" ]; then
             printf '%s\n' "$body" | grep -E "^[[:space:]]*$root=" | grep -qE 'mktemp|TMPDIR' && continue
+            # ★共通の砂場(`mutation-sandbox.sh`)を使う台本。根の変数は其の file に在るので
+            #   此の台本の中を幾ら探しても `mktemp` は出て来ない。**source している事**を
+            #   信号にする —— 名前だけで許すと、`MS_TREE=` を自分で定義して素通りできる。
+            case "$root" in
+                MS_TREE|MS_ROOT)
+                    printf '%s\n' "$body" | grep -qE '\.[[:space:]]+.*mutation-sandbox\.sh|source[[:space:]]+.*mutation-sandbox\.sh' \
+                        && ! printf '%s\n' "$body" | grep -qE "^[[:space:]]*$root=" \
+                        && continue ;;
+            esac
         fi
         # ★literal を先に組み、**固定文字列**で行を絞る。正規表現に変数名を織り込むと
         #   `\$$v` が後方参照に化けて grep が全滅する(2026-08-30 実測)。
@@ -146,6 +153,12 @@ writes_live_tree() {  # writes_live_tree <file> → 0=書き換えている
     # ★但し**写しを作る台本は外す**。`fixture-label-parity-controls.sh` は
     #   `$WORK/` の下(複製)を撃つので、宣言と道具が同居していても木は触らない。
     #   間接参照を当てる枝は広いので、此処で狭めないと**正しい台本まで借金に数える**。
+    # ★共通の砂場を source する台本も此処で外す。**per-var の除外だけでは足りない** ——
+    #   下の間接参照の枝が `sed -i` を見て先に `return 0` するので、
+    #   除外が素通りする(2026-08-30、対照 G9 が掴んだ。実物の対照は偶々 `WORK=` を
+    #   持っていた為に**別の理由で**外れており、砂場の判定は一度も発火していなかった)。
+    printf '%s\n' "$body" | grep -qE '(\.|source)[[:space:]]+.*mutation-sandbox\.sh' \
+        && ! printf '%s\n' "$body" | grep -qE '^[[:space:]]*MS_(TREE|ROOT)=' && return 1
     printf '%s\n' "$body" | grep -qE '(WORK=|mkcopy|cp -R|rsync)' && return 1
     printf '%s\n' "$body" | grep -qE '(sed|perl|ed)[[:space:]]+-i' && return 0
     printf '%s\n' "$body" | grep -qE 'python3?[[:space:]]+-([[:space:]]|$)|python3?[[:space:]]+-c' && return 0
