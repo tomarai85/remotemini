@@ -522,6 +522,20 @@ OTA_TIMEOUT="${RC_HEALTH_OTA_TIMEOUT:-45}"
 OTA_ARGS="${RC_HEALTH_OTA_ARGS:-}"
 PERL_BIN="${RC_HEALTH_PERL:-$(command -v perl 2>/dev/null || echo '')}"
 
+# ── 電話が現れた事を1回だけ言う(2026-08-31)──────────────────────────────
+# ★なぜ要るか: 「配布口が 115 を配っている」までは机の側で証明できるが、
+#   **Tom の電話が実際に其れを動かしているか**は電話が名乗るまで誰にも判らない。
+#   実測(2026-08-31): 彼の電話は配布口へ一度も取りに来ておらず、要求ログの
+#   `client=app` は 861 本 在るのに版は全部 `-`(名乗る前の版)。
+#   人が ssh して grep するしか無い状態だったので、机の側から1回だけ言わせる。
+# ★**1回だけ**。版が変わるまで黙る —— 毎時「電話は 115 です」と鳴る警報は読まれない。
+#   之は異常の通知ではなく**出来事の通知**なので、状態機械ではなく印 file で足りる。
+# ★既定は空 = **この機体では見ない**(`CAP_MARK` / `OTA_CHECK` と同じ形)。
+#   要求ログを持つのは机だけなので、他の機体が語る資格は無い。
+PHONE_LOG="${RC_HEALTH_PHONE_LOG-}"
+PHONE_MARK="${RC_HEALTH_PHONE_MARK:-$STATE.phone-seen}"
+PHONE_EVERY="${RC_HEALTH_PHONE_EVERY:-600}"   # grep 1回なので安い。既定は毎回
+
 # 記録の中身 = "<最後に測った epoch> <状態> <通知済み 0|1> <続いた回数> <未解決 0|1> <この状態になった epoch>"
 subject_path() { [ "$DRY" -eq 1 ] && printf '%s.dry' "$1" || printf '%s' "$1"; }
 
@@ -676,6 +690,59 @@ check_log_cap() {
     subject_settle "$f" "rc-log-cap" "$state" "$msg" "$now" "$grace"
 }
 
+# ── 電話が版を名乗ったら1回だけ言う ───────────────────────────────────────
+# 判定は3つだけ: 「見ていない」/「前と同じ版」/「新しい版を名乗った」。
+# 鳴るのは3つ目だけ。
+check_phone_sighting() {
+    local now line build seen f
+    now="$(date +%s)"
+    [ -n "$PHONE_LOG" ] || return 0
+    [ -f "$PHONE_LOG" ] || return 0
+    f="$(subject_path "$PHONE_MARK")"
+
+    # 周期。★印 file の**更新時刻**では測らない —— 印は「版が変わった時」だけ動くので、
+    #   其れを周期に使うと、変わらない限り毎回 grep する事になる(安いが、
+    #   「いつ見たか」と「いつ変わったか」を同じ数で持つと後から読めない)。
+    local last=0
+    [ -f "$f.at" ] && last="$(tr -d '[:space:]' < "$f.at" 2>/dev/null)"
+    case "${last:-}" in ''|*[!0-9]*) last=0 ;; esac
+    [ "$PHONE_EVERY" -gt 0 ] && [ $((now - last)) -lt "$PHONE_EVERY" ] && return 0
+    printf '%s\n' "$now" > "$f.at" 2>/dev/null
+
+    # ★見るのは**今 走っている実装が書いた行だけ**(2026-08-31、実測で踏んだ)。
+    #   08-31 より前の机は `build=` に UA 由来の**売り物の版**を書いていた(実測 `1`)。
+    #   全部の行を見ると、其の古い数字を「電話が build=1 を名乗った」と読んで鳴る ——
+    #   実際に friday の実ログで1度 鳴った。
+    #   境界は推測しない: 机は起動のたびに `[rc-backend] listening on …` を書くので、
+    #   **最後の其の行より後**が今の走行。時刻の比較も閾値も要らない。
+    #   ★上限で切られて錨が消えた時は**黙る** —— 「判らない」を「見た」に丸めない。
+    #   `build=-` は名乗っていない版(名乗るのは build 106 以降)。数えない。
+    line="$(/usr/bin/awk '
+        /^\[rc-backend\] listening on /  { seen = 1; last = ""; next }
+        seen && /client=app/ && !/build=-/ { last = $0 }
+        END { if (seen) print last }
+    ' "$PHONE_LOG" 2>/dev/null)"
+    [ -n "$line" ] || return 0
+    build="$(printf '%s' "$line" | /usr/bin/sed -n 's/.* build=\([0-9][0-9]*\) .*/\1/p')"
+    [ -n "$build" ] || return 0
+
+    # ★憶えるのは「最後の版」ではなく **今までに言った版の集合**(Codex 2026-08-31)。
+    #   最後の1つだけだと `114 → 115 → 114`(巻き戻し)で **114 を二度 言う**。
+    #   一度言った版は二度と言わない。file は追記だけなので壊れ方も単純。
+    if [ -f "$f" ] && grep -qx "$build" "$f" 2>/dev/null; then
+        return 0
+    fi
+    seen="$(tail -1 "$f" 2>/dev/null)"
+
+    log "電話が版を名乗った: build=$build(前回=${seen:-無し})"
+    # ★言えた時だけ憶える。出し先が落ちていたら次の回にもう一度言う
+    #   —— 重複は沈黙よりまし(此の木の他の枝と同じ判断)。
+    notify_fleet "電話の版" \
+        "$(hostname -s): 電話が build=$build を名乗りました(前回=${seen:-一度も無し})。" \
+        && printf '%s\n' "$build" >> "$f" 2>/dev/null
+    return 0
+}
+
 # ── 配布口が古い版を配っていないか ─────────────────────────────────────────
 # `ota-freshness-check.sh` の終了コード: 0=順当 / 1=**配布が承認済みより古い**(巻き戻り) /
 #   2=測れない / 3=承認済みが HEAD より古い(出来ているのに配っていない)。
@@ -729,6 +796,7 @@ check_ota_fresh() {
 
 check_log_cap
 check_ota_fresh
+check_phone_sighting
 
 # ── 1回叩く ───────────────────────────────────────────────────────
 # 本体は捨てずに見る: 200 を返すだけの別物(tailscale の受け口や proxy)を「生きている」と
