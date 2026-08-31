@@ -142,13 +142,36 @@ export function noteBody(res, obj) {
  *   §3-U の「行に中身が乗らない」は、本文やパスだけでなく端末の指紋にも掛かる。
  *   だから分類器は**閉じた語**を返し、呼び出し側は返り値しか書かない。
  *
+ *   control 私が焼いた検査用の殻(自分で `X-RC-Role: control` を名乗る)
  *   app   iOS の URLSession(実機でも Simulator でも CFNetwork を名乗る)
+ *
+ * ★★`app` は**上限**であって「Tom 本人」ではない(2026-08-30、Codex の指摘3)。
+ *   役を付けても曖昧さは消えず、移動しただけ:
+ *     control = たぶん私の、印を付けた殻
+ *     app     = Tom **または** 印を付け損ねた私の実機ビルド **または** 同じ UA の何か
+ *   使える非対称: **不在は強い陰性証拠**(app が1件も無ければ誰も来ていない ——
+ *   CF-17 の「栞は一度も叩かれていない」は此の向きで、生き残る)。
+ *   **存在は本人の行為を証明しない**。誰が押したかを言うには、認証された口座か
+ *   机が発行した設置 ID か、行為ごとの事象 ID が要る。UA と印の組み合わせは
+ *   背景の雑音を掃けるだけで、行為者を立証しない。★此の一行を消すと、
+ *   次に読む人が `app` の件数を「Tom の使用回数」として読む。
  *   tool  curl / node など —— この機体の常駐(digest-notify・health-observer)がこれ
  *   none  名乗りが無い
  *   other 上のどれでもない
  */
-export function clientClass(userAgent) {
+export function clientClass(userAgent, headers = {}) {
   const ua = String(userAgent || "");
+  // ★**自分で名乗った役**を最優先で見る(2026-08-30)。
+  //   `rc-live-*` の殻は実行ファイル名で外せたが、`ios/tools/build.sh` が焼く殻は
+  //   **製品の Swift をそのまま**使うので `RemoteMini/<番号> CFNetwork/…` を名乗り、
+  //   UA からは Tom の実機と1文字も違わない。実測(H-3 訂正、同日): 述べ 593 件のうち
+  //   `build=1` の 60 件が私の対照で、`build=96` の 36 件だけが Tom だった ——
+  //   **版番号で人を判じていた**ので、彼が古い版に留まる日(= 普段)には壊れる。
+  //   版は人ではない。名乗る側が名乗る。
+  //   ★之は**認証ではない**。詐称できるが、詐称して得をするのは自分の計器を汚す事だけ。
+  //     守っているのは「Tom が使ったか」を後から読める事であって、権限では無い。
+  const role = String((headers || {})["x-rc-role"] || "").trim().toLowerCase();
+  if (role === "control") return "control";
   if (!ua) return "none";
   // ★検査道具を **app より先に**外す(2026-08-27)。
   //   `ios/tools/live-*-check.sh` が建てる殻は**電話の製品 Swift をそのまま**使うので、
@@ -211,7 +234,7 @@ export function attachRequestLog(req, res, opt = {}) {
   const sid = sessionOf(rawPath);
   const method = methodOf(req.method);
   // ★分類は要求ごとに1回。生の名乗りはこの行から先へ**出さない**。
-  const client = clientClass((req.headers || {})["user-agent"]);
+  const client = clientClass((req.headers || {})["user-agent"], req.headers || {});
   // ★同じ header を2回読むが、**どちらも閉じた語しか返さない**ので生の名乗りは
   //   此の2行から先へ出ない。
   const build = appBuild((req.headers || {})["user-agent"]);

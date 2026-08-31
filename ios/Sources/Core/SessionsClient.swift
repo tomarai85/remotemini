@@ -98,6 +98,18 @@ struct SessionsClient: SessionsListing {
         if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String {
             request.setValue(build, forHTTPHeaderField: "X-App-Build")
         }
+        // ★検査用の殻だけが役を名乗る(2026-08-30)。空なら何も送らない = 机は UA で判ずる。
+        //   ★`${` を含む値は送らない —— xcodegen は変数が未定義でも落ちず、
+        //     `${RC_ROLE}` という**もっともらしい文字列**を Info.plist に書く(実測、
+        //     `BuildInfo.displayRev` が同じ罠を扱っている)。
+        //     ★之は**守りの重ね掛け**であって一線ではない: 机の分類器は `control` に
+        //       完全一致した時だけ役を採り、其れ以外は UA の判定へ落ちる。つまり
+        //       literal を送っても結果は現状(= `app`)で、害は無い。送らないのは
+        //       机の log に意味の無い文字列を残さない為。
+        if let role = Bundle.main.object(forInfoDictionaryKey: "RCRole") as? String,
+           !role.isEmpty, !role.contains("${") {
+            request.setValue(role, forHTTPHeaderField: "X-RC-Role")
+        }
 
         let data: Data
         let response: URLResponse

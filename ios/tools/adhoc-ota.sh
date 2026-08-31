@@ -144,6 +144,22 @@ bash "$HERE/tools/build.sh" --no-install >&2
 SIGNED="$DERIVED/signed/$APPNAME"
 [ -d "$SIGNED" ] || { echo "build.sh が $APPNAME を出していない" >&2; exit 1; }
 
+# ★**実物**に役が焼かれていない事を、配る前に検める(2026-08-30、Codex の指摘1)。
+#   `build.sh --print-role` が測るのは**方針**であって成果物ではない ——
+#   古い plist が残っていた / 別の経路で焼かれた、は其れを通り抜ける。
+#   焼かれた束が `control` を名乗ると、Tom の全要求が私の対照として記録され、
+#   「彼が使ったか」が永久に読めなくなる = 今 直そうとしている嘘の、より悪い版。
+BAKED_ROLE="$(/usr/libexec/PlistBuddy -c 'Print :RCRole' "$SIGNED/Info.plist" 2>/dev/null | tr -d '[:space:]')"
+case "$BAKED_ROLE" in
+    ''|'${RC_ROLE}')
+        : ;;   # 空、または差し込み損ねの literal。どちらも役を名乗らない = 正しい
+    *)
+        echo "★配る束に役が焼かれている(RCRole=$BAKED_ROLE)。配らない。" >&2
+        echo "  之を配ると Tom の要求が全部『私の対照』として記録される。" >&2
+        echo "  直す手: RC_ROLE を export したまま build.sh を呼んでいないか確かめる" >&2
+        exit 1 ;;
+esac
+
 [ -f "$PROFILE" ] || {
   echo "Ad Hoc の profile が無い: $PROFILE" >&2
   echo "  作り直す手: App Store Connect API で IOS_APP_ADHOC を1本(端末は登録済みの iPhone)" >&2
