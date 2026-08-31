@@ -109,6 +109,14 @@ sys.exit(0)" "$LOCK" || exit 0
 fi
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
 
+# ★配備した物が repo とずれた事を、**配備の時でなく定期に**気付く枝(2026-08-31、CF-22)。
+#   `observer-parity-check.sh` / `fleet-plist-parity-check.sh` は repo が要るので
+#   Jervis からしか回せず、今は配備の前後にしか走らない —— CF-7 の再発路。
+#   ★此の観測器に相乗りする理由: 既に「自分の回線が落ちている時は黙る」枝を持っている。
+#     新しい見張りを建てると、其の判断を2箇所で持つ事になる(CF-22 で一度
+#     「既に在る物の上に2本目を建てる」提案を実測で取り下げている)。
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/parity-observer.sh"
+
 read_state() { # -> status fails lastRunAt lastOkAt
     /usr/bin/python3 - "$STATE" <<'PY' 2>/dev/null || echo "unknown 0 0 0"
 import json,sys
@@ -203,6 +211,16 @@ fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path)); os.close(fd)
 open(tmp,"w").write(json.dumps(d))
 os.replace(tmp,path)
 PY
+
+# ★配備のずれを見る枝(2026-08-31、CF-22)。**up/down のどちらでも通る位置**に置く ——
+#   最初は下の `exit 0` より後ろに書いてしまい、**トンネルが落ちている時しか走らない**
+#   配線になっていた(通常は up なので、事実上一度も走らない)。
+#   「配線されて見えるのに走らない」は此の repo が繰り返し踏んだ型。
+#   ★`--dry-run` / `--report` では回さない(前者は「測るが鳴らさない」、後者は「測らない」)。
+#   ★自分の回線が落ちている時に黙るのは `parity_observe` の中(`self_link_state`)。
+if [ "$DRY" -eq 0 ] && [ "$REPORT" -eq 0 ]; then
+    parity_observe || true
+fi
 
 if [ "$st" = up ]; then
     [ "$prev_st" = down ] && { log "戻った(${code:-rc=$crc})"; [ "$DRY" = 0 ] && [ -x "$NOTIFY" ] && "$NOTIFY" "rc-backend のトンネルが戻りました: $URL" >/dev/null 2>&1; }
