@@ -44,7 +44,29 @@ UPTIME=$(printf '%s' "$HEALTH" | /usr/bin/python3 -c 'import json,sys;v=json.loa
 BAKED=$("$PLISTBUDDY_BIN" -c "Print :RCBuildRev" "$ROOT/ios/build/signed/RemoteMini.app/Info.plist" 2>/dev/null || echo "?")
 printf '  手元=%s 本番=%s 直近に焼いた物=%s\n' "$LOCAL" "$LIVE" "$BAKED"
 # ★`-dirty` を許さない。汚れた木で焼いた物は、どの commit とも突き合わせられない。
-case "$LIVE" in *-dirty) bad "本番が汚れた木の版" "$LIVE";; "$LOCAL") good "本番が手元と一致";; *) bad "本番が手元と違う" "$LIVE != $LOCAL";; esac
+# ★commit が違っても、**机が走らせる file が同じなら**それは「遅れ」ではない
+#   (2026-08-31 に実測で踏んだ)。此の行は commit の刻を比べるので、
+#   docs・検査・iOS だけの commit を1つ入れた瞬間に赤くなる —— 配備は要らないのに。
+#   **常に赤い検査は読まれなくなる**ので、赤の意味を「机が古いコードを走らせている」に絞る。
+#   判定は `git diff` に委ねる: 机の刻と手元の間で `rc-backend/src` と
+#   `package.json` に差が無ければ、走っている物は今の物。
+src_differs() {   # 0=差が在る / 1=無い / 2=判らない
+    local from="$1"
+    git -C "$ROOT" rev-parse --verify --quiet "$from^{commit}" >/dev/null 2>&1 || return 2
+    local n
+    n="$(git -C "$ROOT" diff --name-only "$from"..HEAD -- rc-backend/src rc-backend/package.json 2>/dev/null | wc -l | tr -d ' ')"
+    case "$n" in ''|*[!0-9]*) return 2 ;; 0) return 1 ;; *) return 0 ;; esac
+}
+case "$LIVE" in
+    *-dirty) bad "本番が汚れた木の版" "$LIVE" ;;
+    "$LOCAL") good "本番が手元と一致" ;;
+    *)
+        src_differs "$LIVE"; case $? in
+            1) good "本番は別の commit だが、机が走らせる file は手元と同一($LIVE → $LOCAL は src の外だけ)" ;;
+            0) bad "本番が古いコードを走らせている" "$LIVE != $LOCAL で rc-backend/src に差が在る = 配備が要る" ;;
+            *) bad "本番の版を突き合わせられない" "$LIVE がこの木に無い(別の機体から配った?)" ;;
+        esac ;;
+esac
 
 echo "=== 1b. 電話が実際に動かしている版(机の要求ログから)==="
 # ★電話の版は**電話が名乗った物**からしか判らない。手元の成果物は電話について何も語らない。
