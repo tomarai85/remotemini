@@ -340,6 +340,21 @@ scan_missing() { # scan_missing <触り方の正規表現> <走査の根>
         #   ★限界: 之は静的な信号なので「砂場を source しつつ**本物でも** xcodegen を
         #     撃つ」台本は見逃す。静的に見分ける手は無い。見付けたら台本の側を直す事。
         /usr/bin/grep -qE '^[^#]*(\.|source)[[:space:]]+.*mutation-sandbox\.sh' "$f" && continue
+        # ★**自分で `mktemp -d` した写しの中で撃つ台本**も同じく生成木を触らない
+        #   (2026-08-31、`client-role-controls.sh` の B9 が此の形)。砂場の助けを
+        #   source する形と守る物は同じで、根が使い捨てである事だけが違う。
+        #   ★名前では許さない: 撃っている**其の行**が `cd "$VAR…` で始まり、
+        #     其の `VAR` が同じ file の中で `mktemp` から代入されている事を要求する。
+        #     (`$WORK` と書いてあるだけ、では通さない —— 変数名は誰でも書ける)
+        _scratch_ok=0
+        while IFS= read -r _ln; do
+            _v="$(printf '%s' "$_ln" | /usr/bin/sed -n 's/.*cd "\$\([A-Za-z_][A-Za-z_0-9]*\).*/\1/p' | head -1)"
+            [ -n "$_v" ] || continue
+            /usr/bin/grep -qE "^[[:space:]]*$_v=.*mktemp" "$f" && _scratch_ok=1
+        done <<INNER
+$(/usr/bin/grep -E "^[^#]*($pat)" "$f")
+INNER
+        [ "$_scratch_ok" = 1 ] && continue
         /usr/bin/grep -q 'xcode-tree-guard.sh' "$f" || out="$out$(basename "$f") "
     done <<EOF
 $(find "$root" \( -name .git -o -name node_modules -o -name build -o -name dist -o -name .build \) -prune \
@@ -392,6 +407,25 @@ echo hi
 EOF
 chk "N10b 註釈で言及しているだけの台本は挙げない(false positive も欠陥)" \
     "rogue.sh " "$(scan_missing "$WRITES" "$FIX2")"
+
+# ── N10c/N10d ★使い捨ての写しの除外は**根が mktemp である事**を要求する ──────────
+# 2026-08-31 に足した除外。名前だけで許すと、`WORK="$IOS"` と書いて本物の生成木を
+# 撃つ台本が素通りする —— 変数名は誰でも書ける。両方向を測る。
+cat > "$FIX2/rc-backend/tools/scratch-ok.sh" <<'EOF'
+#!/bin/bash
+SB="$(mktemp -d)"
+( cd "$SB/ios" && xcodegen generate >/dev/null 2>&1 )
+EOF
+chk "N10c ★mktemp を根に持つ写しで撃つ台本は挙げない" \
+    "rogue.sh " "$(scan_missing "$WRITES" "$FIX2")"
+
+cat > "$FIX2/rc-backend/tools/fake-scratch.sh" <<'EOF'
+#!/bin/bash
+SB="$IOS"
+( cd "$SB/ios" && xcodegen generate >/dev/null 2>&1 )
+EOF
+chk "N10d ★名前が同じでも根が mktemp でなければ挙げる(名前だけでは許さない)" \
+    "fake-scratch.sh rogue.sh " "$(scan_missing "$WRITES" "$FIX2")"
 
 # ── C3 source の**パスが実在する**か ─────────────────────────────────────────
 # ★C1/C2 は「名前が書いてあるか」しか見ない。台本は全部 `set -uo pipefail` で
