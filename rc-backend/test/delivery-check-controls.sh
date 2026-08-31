@@ -63,7 +63,7 @@ case "$cmd" in
     #   缶詰の答を返すと、道具の pipeline(どの行を選ぶか)を対照が測れない ——
     #   実際、`tail -1` が名乗らない行を掴む欠陥を缶詰では捕まえられなかった。
     #   log は砂場に在り、道具は `RC_BACKEND_LOG` で其処を指すので、命令は手元で成立する。
-    *"client=app"*) eval "$cmd" ;;
+    *"client=app"*|*"client=control"*) eval "$cmd" ;;
     *"grep -c 'const build = headerBuild('"*) printf '%s' "${FAKE_HASFIX:-1}" ;;
     *"stat -f %m"*) printf '%s' "${FAKE_FIXMTIME:-1}" ;;
     *"bundle-version"*) printf '%s' "${FAKE_PUB:-115}" ;;
@@ -191,6 +191,28 @@ out="$(FAKE_UPTIME=100000 FAKE_PUB=115 FAKE_APPLINE="$(printf '%s\n%s' "$APP115"
 if printf '%s' "$out" | grep -q "電話が配布中の版に追いついている"; then
     ok "D11 ★名乗った行の後に名乗らない行が来ても、版を読み落とさない"
 else ng "D11 行の選び方" "$(printf '%s' "$out" | sed -n '5,7p')"; fi
+
+# ── D12 ★control としても現れた版は電話の版として採らない(2026-08-31 夕、実測)──────
+# 役の既定を control へ倒す前に焼いた砂場の app は `client=app build=1` として記録され、
+# 其の行が log に残る。机の起動より後なので時代の門も通り、道具は
+# 「電話=1 / 栞を叩けば 115 ビルド進む」という**存在しない差**を出した。
+# ★弾き方に数字の勘は使わない —— **同じ版が control の行にも在る**なら、
+#   其の版は私の焼いた殻だと log 自身から確定する(電話は control を名乗らない)。
+APP116="$(line_for "$ISO_AFTER" 116)"
+APP1_LATER="[rc-backend] req ${ISO_AFTER} GET /api/sessions route=- client=app build=1 code=200 reason=- ms=9"
+CTRL1="[rc-backend] req ${ISO_AFTER} GET /api/account route=- client=control build=1 code=200 reason=- ms=9"
+out="$(FAKE_UPTIME=100000 FAKE_PUB=116 \
+       FAKE_APPLINE="$(printf '%s\n%s\n%s' "$APP116" "$APP1_LATER" "$CTRL1")" run_sut)"
+if printf '%s' "$out" | grep -q "電話が配布中の版に追いついている"; then
+    ok "D12 ★control にも出た版(1)を飛ばして、電話の版(116)を採る"
+else ng "D12 control 版の除外" "$(printf '%s' "$out" | sed -n '5,7p')"; fi
+
+# ★陰性対照: control の行が無ければ、同じ並びで 1 を採る(= D12 が「常に 116」ではない)
+out="$(FAKE_UPTIME=100000 FAKE_PUB=116 \
+       FAKE_APPLINE="$(printf '%s\n%s' "$APP116" "$APP1_LATER")" run_sut)"
+if printf '%s' "$out" | grep -q "1 < 116"; then
+    ok "D12b ★control の行が無ければ最後の app 行(1)を採る(除外が効いている事の対照)"
+else ng "D12b 陰性" "$(printf '%s' "$out" | sed -n '5,7p')"; fi
 
 echo ""
 echo "DELIVERY-CHECK-CONTROLS: pass=$pass fail=$fail"

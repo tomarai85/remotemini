@@ -80,7 +80,18 @@ APPLOG="${RC_BACKEND_LOG:-$REMOTE_HOME/Library/Logs/rc-backend/rc-backend.log}"
 #   `tail -1` が account を掴んで「電話は版を名乗っていない」と報告した。
 #   **電話は 115 を名乗っていたのに**。友の観測器は同じ log から 115 を読んでおり、
 #   2つの計器が食い違った事で気付いた。
-PHONE_LINE=$(rexec "grep 'client=app' '$APPLOG' 2>/dev/null | grep -v 'build=-' | tail -1")
+# ★**control としても現れた版は私の殻**(2026-08-31 夕、実測で踏んだ)。
+#   役の既定を control へ倒す前に焼いた砂場の app は `client=app build=1` として
+#   記録されており、其の行が今も log に残る。机の起動より後なので時代の門も通る ——
+#   結果、道具は「電話=1 / 栞を叩けば 115 ビルド進む」という**存在しない差**を出した。
+#   ★弾き方に数字の勘は使わない: **同じ版が `client=control` の行にも出ている**なら、
+#     其の版は私の焼いた殻である事が log 自身から確定する(電話は control を名乗らない)。
+CTRL_BUILDS=$(rexec "grep 'client=control' '$APPLOG' 2>/dev/null | sed -n 's/.* build=\([0-9][0-9]*\) .*/\1/p' | sort -u | tr '\n' ' '")
+PHONE_LINE=$(rexec "grep 'client=app' '$APPLOG' 2>/dev/null | grep -v 'build=-' | tail -50" \
+    | /usr/bin/awk -v ctrl=" ${CTRL_BUILDS} " '
+        { b=""; for (i=1;i<=NF;i++) if ($i ~ /^build=[0-9]+$/) { b=substr($i,7) }
+          if (b != "" && index(ctrl, " " b " ") == 0) last=$0 }
+        END { print last }')
 if [ -z "$PHONE_LINE" ]; then
     # ★「一度も無い」とは言えない —— この log は上限で切られる。測れた範囲だけを言う。
     bad "電話の版" "この log に残っている範囲に app からの要求が1本も無い(切られた後かもしれない)"
