@@ -817,6 +817,20 @@ chk "★一度言った版は巻き戻っても二度と言わない(最後の1�
 _phone "$BOOT" "$LNONE" "$LTOOL"
 chk "★版を名乗らない行(build=-)と道具の行では鳴らない" "$(phone_notices)" "0"
 
+# ★`client=control`(私の走行)では鳴らない。2026-08-31 に役の既定を control へ倒し、
+#   役の名乗りを通り道へ移したので、検査用の殻の要求は全部 control として記録される。
+#   其れを sighting が拾うと、**誤報の根を直した意味が無くなる**(版が 1 でも 118 でも同じ)。
+#   枝は `client=app` を見るので構造的に拾わない筈 —— 其の「筈」を測る。
+LCTRL='[rc-backend] req 2026-08-31T22:00:00.000Z GET /api/account route=r client=control build=118 code=200 reason=- ms=1'
+/bin/rm -f "$SB/phone.mark" "$SB/phone.mark.at"; : > "$FAKE_NOTIFY_LOG"
+_phone "$BOOT" "$LCTRL"
+chk "★私の走行(client=control)では鳴らない(誤報の根を直した意味が消えない)" "$(phone_notices)" "0"
+# 陰性対照: 同じ版を app が名乗れば鳴る(= 上が「常に 0」の検査でない事)
+/bin/rm -f "$SB/phone.mark" "$SB/phone.mark.at"; : > "$FAKE_NOTIFY_LOG"
+LAPP118='[rc-backend] req 2026-08-31T22:00:01.000Z GET /api/account route=r client=app build=118 code=200 reason=- ms=1'
+_phone "$BOOT" "$LAPP118"
+chk "★同じ版でも app が名乗れば鳴る(control の検査が常に 0 ではない)" "$(phone_notices)" "1"
+
 # ★錨(`listening on`)が無い log では黙る。上限で切られて起動の行が消えた時に、
 #   古い実装が書いた数字を「今の版」と読まない為。「判らない」を「見た」に丸めない。
 /bin/rm -f "$SB/phone.mark" "$SB/phone.mark.at"; : > "$FAKE_NOTIFY_LOG"
