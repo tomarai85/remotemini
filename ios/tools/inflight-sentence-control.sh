@@ -86,8 +86,13 @@ LOGDIR="${TMPDIR:-/tmp}"
 INFLIGHT="${TMPDIR:-/tmp}/rc-ios-mutation-inflight.tsv"
 PASS=0; FAIL=0; UNMEASURED=0
 
-VM="$IOS/Sources/Screens/Conversation/ConversationViewModel.swift"
-CV="$IOS/Sources/Screens/Conversation/ConversationView.swift"
+# ★書き換え先は**砂場**。作業中の木は1バイトも触らない(CF-12 / CF-21)。
+#   殺されても木に変異は残らない —— trap が走るかどうかに安全が依存しなくなる。
+#   土台と、其の選択の理由(A/B/C の比較と実測)は `ios/tools/mutation-sandbox.sh`。
+. "$IOS/tools/mutation-sandbox.sh"
+ms_prepare || exit 2
+VM="$MS_TREE/Sources/Screens/Conversation/ConversationViewModel.swift"
+CV="$MS_TREE/Sources/Screens/Conversation/ConversationView.swift"
 TARGETS=("$VM" "$CV")
 
 # 基準で緑である事を確かめる的。**件数ではなく実名**で錨を打つ(数を発明しない)。
@@ -129,8 +134,9 @@ cleanup() {
 # 2026-08-15、此れが無くて `build.sh --sim` と此の台本が `RC_BUILD_REV` の刻印を
 # 潰し合い、**偽の赤が 9 本**出た(製品の欠陥と見分けが付かない赤)。
 # 取れなければ此処で非零終了する = 生成物に触らないまま止まる。
-. "$IOS/tools/xcode-tree-guard.sh"
-trap 'cleanup; xtl_release' EXIT
+# ★生成木の錠は**要らなくなった**。此の台本は生成木を触らないので、
+#   握れば他の台本を無駄に待たせるだけ。直列化は砂場側の錠が持つ(`ms_prepare`)。
+trap 'cleanup; ms_release' EXIT
 
 # ---- 前回の走行が殺されていたら、その取り残しを先に戻す(ここから)-------------
 # ★この位置でなければならない: 下の複製 loop より**前**。後に置くと、変異したバイトを
@@ -215,10 +221,13 @@ settle_sim() {
 
 run_unit_once() { # $1 = log path -> rc を印字
     local log="$1" rc=0
-    ( cd "$IOS" && xcodegen generate >/dev/null 2>&1 && \
+    # ★砂場で焼く。derived data も砂場側に持つので、生成木と潰し合わない。
+    #   固定 path なので温かいまま —— 実測: 変異を植てての再ビルド **4 秒**
+    #   (作業中の木を使っていた頃の此の対照は 86 秒だった)。
+    ( cd "$MS_TREE" && xcodegen generate >/dev/null 2>&1 && \
       xcodebuild -project RemoteMini.xcodeproj -scheme RemoteMini -configuration Debug \
         -sdk iphonesimulator -destination "platform=iOS Simulator,name=$SIM_NAME" \
-        -derivedDataPath "$IOS/build" \
+        -derivedDataPath "$MS_ROOT/build" \
         -only-testing:RemoteMiniTests/ConversationViewModelTests \
         -only-testing:RemoteMiniTests/ConversationViewTests test ) >"$log" 2>&1 || rc=$?
     printf '%s' "$rc"
@@ -370,6 +379,15 @@ else
     echo "復元を確認(対象 ${#TARGETS[@]} file すべて走る前のバイトと一致)"
 fi
 
+# ★走行が**本物の木を1バイトも触っていない**事を測る(Codex 2026-08-30 の指摘4)。
+#   「触らない設計だから触っていない」は証明ではない —— 設計が守られたかを測る。
+#   走行中に本物が変わったなら、対照が触ったか別の何かが同時に触ったかで、
+#   どちらでも結果は stale。緑を出さない。
+if ! ms_assert_live_unchanged; then
+    echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $((UNMEASURED + 1)) ---"
+    echo "★本物の木が走行中に変わった = 此の走行の結果は使えない"
+    exit 2
+fi
 echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
 [ "$FAIL" -gt 0 ] && exit 1
 [ "$UNMEASURED" -gt 0 ] && exit 2

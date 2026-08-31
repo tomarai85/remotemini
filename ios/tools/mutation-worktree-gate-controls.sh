@@ -21,6 +21,8 @@
 #   G6 宣言が実態より古い(もう書き換えていない)なら赤
 #   G7 走査対象が 0 本なら 2(綴りが変わった時に黙って緑にしない)
 #   G8 実 repo で借金が**増えていない**
+#   G9 ★共通の砂場(`mutation-sandbox.sh`)を使う台本は挙げない
+#   G10 ★`MS_TREE` を自分で定義した台本は挙げる(名前だけでは許さない)
 #
 # 使い方: bash ios/tools/mutation-worktree-gate-controls.sh
 # 終了コード: 0=全部緑 / 1=1本でも赤
@@ -78,6 +80,23 @@ printf '#!/bin/bash\nVM="$IOS/%s/A.swift"\nmut() { /usr/bin/python3 - "$1" <<EOF
     "$SRC" > "$SB/scan/indirect-control.sh"
 listed "indirect-control.sh" && ok "G4 ★関数へ変数を渡す形(間接参照)も挙げる" \
                              || ng "G4 間接参照" "挙げていない = 私が踏んだ取り零しが再発する"
+
+# ── G9 ★共通の砂場を使う台本は挙げない ─────────────────────────────────────
+# `mutation-sandbox.sh` を source して `$MS_TREE/Sources/…` を書き換える台本は、
+# 作業中の木を1バイトも触らない。根の変数は助けの側に在るので、
+# 此の台本の中を幾ら探しても `mktemp` は出て来ない —— **source している事**が信号。
+printf '#!/bin/bash\n. "$IOS/tools/mutation-sandbox.sh"\nms_prepare || exit 2\nVM="$MS_TREE/%s/A.swift"\n/usr/bin/%s "" "s/a/b/" "$VM"\n' \
+    "$SRC" "$SEDI" > "$SB/scan/sandboxed-control.sh"
+listed "sandboxed-control.sh" && ng "G9 砂場を使う台本" "挙げてしまう(移した台本が借金に残る)" \
+                              || ok "G9 ★共通の砂場を使う台本は挙げない"
+
+# ── G10 ★名前だけでは許さない(自分で MS_TREE を定義して素通りできない)──────
+# 名前の一致だけで許すと、`MS_TREE=` を自分で定義して砂場を装える。
+printf '#!/bin/bash\nMS_TREE="$IOS"\nVM="$MS_TREE/%s/A.swift"\n/usr/bin/%s "" "s/a/b/" "$VM"\n' \
+    "$SRC" "$SEDI" > "$SB/scan/fake-sandbox-control.sh"
+listed "fake-sandbox-control.sh" && ok "G10 ★MS_TREE を自分で定義した台本は挙げる(名前だけでは許さない)" \
+                                 || ng "G10 偽の砂場" "素通りした = 名前の一致だけで許している"
+/bin/rm -f "$SB/scan/sandboxed-control.sh" "$SB/scan/fake-sandbox-control.sh"
 
 # ── G5 / G6 宣言との突き合わせ ───────────────────────────────────────────
 # 宣言に在る物だけが在る状態 → 緑。
