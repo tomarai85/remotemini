@@ -262,6 +262,15 @@ RC_BUILD_NUM="$(build_num)"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $RC_BUILD_NUM" "$HERE/Info.plist" >/dev/null
 # 刻めた事を其の場で読み戻す。黙って効かない形(鍵の名前が変わった / 生成先が動いた)は
 # 読み戻さないと**焼いて電話に入れた後**にしか判らない。
+# ★役も此処で刻む(2026-08-31)。`project.yml` の既定は **control** に倒してあるので、
+#   build.sh を通らない焼き手は全部 control になる = 机の台帳で Tom と混ざらない。
+#   配る束(`sign`)だけが此処で**空に上書き**される —— 焼けば Tom の要求が control として
+#   記録され、「彼が使ったか」が永久に読めなくなる(其れが此の一線の理由)。
+/usr/libexec/PlistBuddy -c "Set :RCRole $RC_ROLE" "$HERE/Info.plist" >/dev/null 2>&1 \
+  || /usr/libexec/PlistBuddy -c "Add :RCRole string $RC_ROLE" "$HERE/Info.plist" >/dev/null 2>&1
+_role_stamped="$(/usr/libexec/PlistBuddy -c "Print :RCRole" "$HERE/Info.plist" 2>/dev/null || true)"
+[ "$_role_stamped" = "$RC_ROLE" ] || {
+  echo "役を刻めていない(期待=[$RC_ROLE] 実測=[$_role_stamped])" >&2; exit 1; }
 _stamped="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$HERE/Info.plist" 2>/dev/null || true)"
 [ "$_stamped" = "$RC_BUILD_NUM" ] || {
   echo "CFBundleVersion を刻めなかった(読み戻し=[$_stamped] 期待=[$RC_BUILD_NUM])" >&2

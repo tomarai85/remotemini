@@ -21,6 +21,8 @@
 #   B6 役を名乗らない要求は今まで通り(app / tool / probe / none)
 #   B7 ★配る直前に**実物**の Info.plist を検める門が在る(方針だけ測って終わらない)
 #   B8 ★app は**上限**であって「本人」ではない、と原文が言っている
+#   B9 ★**build.sh を通さずに焼いた物も control** になる(既定が安全側)
+#   B10 ★build.sh は generate の後に役を刻み、**読み戻して**確かめる
 #
 # 使い方: bash rc-backend/test/client-role-controls.sh
 # 終了コード: 0=全部緑 / 1=1本でも赤
@@ -96,6 +98,45 @@ else ng "B7 成果物の門" "adhoc-ota.sh が焼かれた役を見ていない"
 if grep -q "上限" "$REQLOG"; then
     ok "B8 app は上限であって本人ではない、と原文が言っている"
 else ng "B8 上限の註記" "reqlog.mjs に無い(読む人が app=本人 と取り違える)"; fi
+
+# ── B9 ★build.sh を通さない焼き手も control になる(2026-08-31、実測で踏んだ)──────
+# `RCRole` は元々 `"${RC_ROLE}"` で、build.sh が export した値を xcodegen が差し込む形
+# だった。だが**自分で `xcodegen generate` を撃つ台本が 12 本在り**、其処では
+# `RC_ROLE` が未定義なのでリテラル `${RC_ROLE}` が焼かれる —— app は `${` を含む値を
+# 送らないので、**役を名乗らない殻**が出来る。実測: 砂場の Info.plist が
+# `RCRole = ${RC_ROLE}` / `CFBundleVersion = 1`。其れが机へ届くと `client=app build=1`
+# と記録され、電話の版を見る枝が「新しい版」と読んで**誤報を2通**出した。
+# 1本ずつ直す形は 13 本目で破れるので、既定を安全側へ倒した。此処は其の担保。
+IOS_DIR="$(cd "$HERE/../ios" && pwd)"
+if command -v xcodegen >/dev/null 2>&1; then
+    _sb="$(mktemp -d)"
+    if rsync -a --exclude build --exclude .git "$IOS_DIR/" "$_sb/ios/" >/dev/null 2>&1        && ( cd "$_sb/ios" && env -u RC_ROLE xcodegen generate >/dev/null 2>&1 ); then
+        _role="$(/usr/libexec/PlistBuddy -c "Print :RCRole" "$_sb/ios/Info.plist" 2>/dev/null || true)"
+        if [ "$_role" = "control" ]; then
+            ok "B9 ★build.sh を通さず焼いた物も control(既定が安全側に倒れている)"
+        else
+            ng "B9 既定の役" "実測=[$_role] — 役を名乗らない殻が出来る = 机で Tom と混ざる"
+        fi
+    else
+        echo "SKIP  B9(砂場を組めない = 測定不成立)"
+    fi
+    /bin/rm -rf "$_sb"
+else
+    echo "SKIP  B9(xcodegen が無い = 測定不成立)"
+fi
+
+# ── B10 ★build.sh は役を刻み、読み戻して確かめる ─────────────────────────────
+# 既定を control にした以上、**配る束で空へ上書きされる**事が一線になった。
+# 刻むだけで読み戻さない形は、鍵の名前が変わった日に黙って効かなくなる
+# (同じ file が CFBundleVersion で先に其の教訓を書いている)。
+BUILD_SH="$IOS_DIR/tools/build.sh"
+if grep -qE 'PlistBuddy -c "Set :RCRole \$RC_ROLE"' "$BUILD_SH" \
+   && grep -qE '_role_stamped=' "$BUILD_SH" \
+   && grep -qE '\[ "\$_role_stamped" = "\$RC_ROLE" \]' "$BUILD_SH"; then
+    ok "B10 ★build.sh が役を刻み、読み戻して一致を確かめる"
+else
+    ng "B10 刻印と読み戻し" "刻むだけ / 読み戻していない = 黙って効かなくなる形"
+fi
 
 echo ""
 echo "CLIENT-ROLE-CONTROLS: pass=$pass fail=$fail"
