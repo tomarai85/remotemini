@@ -74,6 +74,10 @@ struct RootView: View {
         }
         .task {
             #if DEBUG
+            // ★検査用の注入口。既定(環境変数なし)では `Timer` を1つも作らない。
+            //   何をする物で何故 要るかは `MainThreadHog` の doc に全文。
+            //   `.task` は main actor 上で走るので、占有は必ず main run loop に載る。
+            MainThreadHog.startIfRequested()
             if let fixtureState = SessionsListingFactory.fixtureState {
                 // Sprint 2 DoD diagnostic line -- same convention as Sprint 1's
                 // `KeyEntryViewModel.swift` `print("healthz ok:...")` line, grepped
