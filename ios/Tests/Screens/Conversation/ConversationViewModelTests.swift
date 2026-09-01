@@ -20,7 +20,7 @@ final class ConversationViewModelTests: XCTestCase {
         /// order instead of actually exercising `isFetchingEarlier`.
         var deliveryDelay: Duration = .zero
 
-        func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
+        func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String?) async -> Result<HistoryResponse, SessionsFetchError> {
             requestedLimits.append(limit)
             if deliveryDelay > .zero {
                 try? await Task.sleep(for: deliveryDelay)
@@ -90,7 +90,7 @@ final class ConversationViewModelTests: XCTestCase {
         var whileFetching: (@MainActor () -> Void)?
         private(set) var probeCount = 0
 
-        func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
+        func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String?) async -> Result<HistoryResponse, SessionsFetchError> {
             if let whileFetching {
                 await MainActor.run { whileFetching() }
                 probeCount += 1

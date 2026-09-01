@@ -63,6 +63,12 @@ import { createIdemStore, validKey, IDEM_REFUSAL } from "./idem.mjs";
 const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
 const CLAUDE_WORK = process.env.RC_CLAUDE_WORK || join(HOME, "fleet-tools", "claude-work");
+// ★電話から新しい会話を始める時に使う(2026-08-31)。既定は `ensure-phone-window.sh` と
+//   **同じ値**にする —— 回復用の window と同じ入口で始めないと、登録簿(statusLine が書く)に
+//   載らない会話が生まれ、電話の一覧に出ない物を作る事になる。
+//   ★但し window の**名前**は分ける(あちらは「1 枚だけ在る」を冪等の鍵にしている)。
+const TMUX_SESSION = process.env.RC_PHONE_SESSION || "work";
+const CLAUDE_LAUNCHER = process.env.RC_PHONE_CMD || join(HOME, ".local", "bin", "rc-claude");
 const FLEET_ACCOUNT = process.env.RC_FLEET_ACCOUNT || join(HOME, "fleet-tools", "fleet-account");
 /**
  * 添付の置き場。★同期の木の**外**に置く(deploy の `--delete` に巻き込まれない為)。
@@ -1437,6 +1443,50 @@ const server = createServer(async (req, res) => {
     // ── 明示名(rename)。本家 RC のタイトル優先順の1段目(spec-audit A1)────────
     // body: {"title": "名前"} で付け、{"title": null} で外す。付けた名前は
     // /api/sessions の一覧に**合流後の一括 override** で乗る(生産者3人に配らない)。
+    // ★電話から**新しい会話を始める**(2026-08-31、調査の4位)。
+    //
+    //   今まで worker は `--resume` 固定(spawn の註)で、**既に在る会話にしか入れなかった**。
+    //   競合(omnara / vibe-kanban / claude-squad …)は全社 持っていて、
+    //   此の製品だけが構造的に持たない唯一の能力だった。
+    //
+    // ★部品は既に在る —— `ensure-phone-window.sh` が
+    //   「window を 1 枚 足すだけ・既存のペインには一切触れない」形を確立している。
+    //   其の形をそのまま使う(既存ペインへ打ち込む案は、人が打ちかけた行を壊し得るので
+    //   あちらで既に棄却されている)。
+    //
+    // ★何処で始めるかは**既に在る会話の cwd**から採る。ディレクトリを選ぶ画面を
+    //   電話に作らない —— 電話で path を打たせるのは、調査の 7 位(`@` 補完)が
+    //   未着手である以上、盲打ちを強いる事になる。「この会話と同じ場所で、もう1本」
+    //   が電話から一番自然な始め方。
+    //
+    // ★window 名は**回復用の `phone` と分ける**。あちらは「1 枚だけ在る」を冪等の鍵に
+    //   しているので、同じ名前で足すと 60 秒ごとの回復が此の window を自分の物と誤認する。
+    // ★`code` を本文へ書かない(2026-08-31、門が捕まえた)。`code` は 401/404 の
+    //   **復旧語彙専用**で、電話は其の鍵で画面を移す。別の意味を同じ名前で流すと
+    //   遷移の判断が壊れる。此処の分類は `reason` へ寄せる。
+    if (action === "new" && req.method === "POST") {
+      const cwd = cwdOfSessionFile(file);
+      if (!cwd) return json(res, 409, { error: "cwd_unknown", reason: "no_cwd" });
+      // ★実在を**同期に**確かめてから作る(spawn 側と同じ理由 —— 検査と実行の間に
+      //   dir が消える競合。作った後で気付くと「始めた」と答えた後に死ぬ)。
+      try { realpathSync(cwd); }
+      catch { return json(res, 409, { error: "cwd_gone", reason: "no_cwd" }); }
+
+      const name = `phone-new-${Date.now().toString(36)}`;
+      const out = tmuxRunner.run([
+        "new-window", "-d", "-P", "-F", "#{window_id} #{pane_id}",
+        "-t", TMUX_SESSION, "-n", name, "-c", cwd, `exec ${CLAUDE_LAUNCHER}`,
+      ]);
+      const ids = String(out || "").trim().split(/\s+/);
+      if (ids.length < 2 || !ids[0].startsWith("@")) {
+        return json(res, 502, { error: "new_window_failed", reason: "tmux_failed" });
+      }
+      // ★202。会話の id は**まだ無い** —— Claude Code が jsonl を書き、登録簿が拾って
+      //   初めて一覧に出る。此処で id を作って返すと、存在しない物を電話に持たせる事になる。
+      //   電話は一覧を引き直して新しい行を見つける。
+      return json(res, 202, { started: true, window: ids[0], pane: ids[1], cwd });
+    }
+
     if (action === "title" && req.method === "POST") {
       let body;
       try {

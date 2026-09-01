@@ -1,7 +1,18 @@
 import Foundation
 
 protocol HistoryFetching {
-    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError>
+    /// `query` を渡すと**転写の中を探す**(2026-08-31)。渡さなければ従来通り末尾を読む。
+    ///
+    /// ★別の client を作らないのは、同じ経路が 2 本になると**片方だけ腐る**から ——
+    ///   此の repo が `title` / `archive` で既に踏んでいる形。口は 1 本、引数で分ける。
+    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String?) async -> Result<HistoryResponse, SessionsFetchError>
+}
+
+extension HistoryFetching {
+    /// 従来の呼び方。既存の呼び出し側を触らない為の入口。
+    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
+        await fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: limit, query: nil)
+    }
 }
 
 /// `GET /api/sessions/<id>/history?limit=N` -- same shape as `SessionsClient`
@@ -18,12 +29,18 @@ struct HistoryClient: HistoryFetching {
         self.session = session
     }
 
-    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
+    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String?) async -> Result<HistoryResponse, SessionsFetchError> {
         var components = URLComponents(
             url: baseURL.appendingPathComponent("api/sessions/\(sessionID)/history"),
             resolvingAgainstBaseURL: false
         )
-        components?.queryItems = [URLQueryItem(name: "limit", value: String(limit))]
+        var items = [URLQueryItem(name: "limit", value: String(limit))]
+        // ★空白だけの問いを送らない。机は空を「全件一致にしない」で受けるが、
+        //   送らない方が往復 1 回ぶん安く、机の判断に頼らずに済む。
+        if let q = query?.trimmingCharacters(in: .whitespacesAndNewlines), !q.isEmpty {
+            items.append(URLQueryItem(name: "q", value: q))
+        }
+        components?.queryItems = items
         guard let url = components?.url else {
             // Not observed in practice (session ids are opaque server-issued
             // strings), but `URLComponents` construction is technically failable --
