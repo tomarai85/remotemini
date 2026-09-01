@@ -33,6 +33,19 @@ export const DIGEST_TOP_TARGETS = 3;
  */
 const FILE_TOOLS = new Set(["Edit", "Write", "NotebookEdit", "Read", "MultiEdit"]);
 
+/**
+ * ★**書き換えた**側の道具(2026-08-31)。
+ *
+ * 直す前は `Read` と `Edit` が同じ箱に入っていて、**読んだ file と書き換えた file が
+ * 区別できなかった**。此の 1 行が答えようとしている問いは「今ノートを開くべきか」で、
+ * 其の判断に効くのは**読んだ 20 件ではなく、書き換えた 3 件**の方。
+ *
+ * ★名前は `fileTargets` と同じ理由で `written` ではなく `writeTargets` ——
+ *   `input` は「触った証拠」ではなく**モデルが書いた指定**で、失敗・取り消しで簡単にズレる
+ *   (Codex 2026-08-26 の裁定。此処でも同じ線を引く)。
+ */
+const WRITE_TOOLS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
+
 /** 画面の分類器が返しうる注意状態。**`unknown` を `none` に丸めない。** */
 export const ATTENTION_STATES = ["none", "input", "choice", "permission", "unknown"];
 
@@ -89,6 +102,7 @@ export function digestOf(records, o) {
   const counts = { user: 0, assistant: 0, tool: 0 };
   const toolN = new Map();
   const fileTargets = [];
+  const writeTargets = [];
   let sawUndated = false;
   let firstAt = null;
 
@@ -120,6 +134,10 @@ export function digestOf(records, o) {
           const p = u.input?.file_path ?? u.input?.path ?? u.input?.notebook_path;
           // 文字列である事だけを要求し、中身は解釈しない(存在確認もしない)。
           if (typeof p === "string" && p && !fileTargets.includes(p)) fileTargets.push(p);
+          // ★書き換えた側を別に数える。読んだ物と混ぜない。
+          if (typeof p === "string" && p && WRITE_TOOLS.has(u.name) && !writeTargets.includes(p)) {
+            writeTargets.push(p);
+          }
         }
       }
     }
@@ -141,6 +159,8 @@ export function digestOf(records, o) {
     // ★名前が「触った」ではなく「対象」。上位だけ出して残りは数で言う。
     fileTargets: fileTargets.slice(0, DIGEST_TOP_TARGETS),
     fileTargetsTotal: fileTargets.length,
+    writeTargets: writeTargets.slice(0, DIGEST_TOP_TARGETS),
+    writeTargetsTotal: writeTargets.length,
     lastAssistant: tail.text,
     lastAt: tail.at,
   };
@@ -171,6 +191,8 @@ function incomplete(win, reason, tail) {
     counts: null,
     tools: null,
     fileTargets: null,
+    writeTargets: null,
+    writeTargetsTotal: null,
     fileTargetsTotal: null,
     // 末尾だけは読めているので出す(数は伏せる)。
     lastAssistant: tail?.text ?? null,
@@ -215,7 +237,12 @@ export function digestLine(d, action) {
     ? [`${d.window.minutes}m`,
        plural(d.counts.assistant, "reply", "replies"),
        plural(d.counts.tool, "tool call", "tool calls"),
-       ...(d.fileTargetsTotal ? [plural(d.fileTargetsTotal, "file", "files")] : [])].join(" · ")
+       // ★出すのは**書き換えた**側(2026-08-31)。読んだ file の数は
+       //   「今ノートを開くべきか」を動かさない —— 20 件 読んで何も変えていない事は
+       //   在り得るし、其の時に「20 files」と出るのは判断を誤らせる。
+       //   `writeTargetsTotal` が無い古い机とも噛み合う様に、値が無ければ黙る。
+       ...(d.writeTargetsTotal ? [`${plural(d.writeTargetsTotal, "file", "files")} changed`] : [])
+      ].join(" · ")
     : "Could not read the whole window — counts withheld on purpose";
 
   switch (action?.level) {
