@@ -179,3 +179,48 @@ test("★数える筈の行に時刻が無ければ、やはり不完全(上の�
   assert.equal(d.complete, false);
   assert.equal(d.incompleteReason, "undated-records");
 });
+
+// ── 読んだ file と書き換えた file を分ける(2026-08-31)────────────────────────
+// 直す前は `Read` と `Edit` が同じ箱に入っていて、区別できなかった。
+// 此の 1 行が答える問いは「今ノートを開くべきか」で、其の判断に効くのは
+// **読んだ 20 件ではなく、書き換えた 3 件**の方。
+
+test("★読んだだけの file を「変えた」と数えない", () => {
+  const now = Date.parse("2026-08-31T12:00:00Z");
+  const since = now - 3600_000;
+  const rec = (name, path) => ({
+    type: "assistant", timestamp: new Date(now - 60_000).toISOString(),
+    message: { content: [{ type: "tool_use", name, input: { file_path: path } }] },
+  });
+  const d = digestOf([rec("Read", "/a.txt"), rec("Read", "/b.txt")], { sinceMs: since, nowMs: now, reachedStart: true });
+  assert.equal(d.fileTargetsTotal, 2, "読んだ側は従来通り数える");
+  assert.equal(d.writeTargetsTotal, 0, "★読んだだけを「変えた」に数えてはいけない");
+});
+
+test("★書き換えた file だけを数える", () => {
+  const now = Date.parse("2026-08-31T12:00:00Z");
+  const since = now - 3600_000;
+  const rec = (name, path) => ({
+    type: "assistant", timestamp: new Date(now - 60_000).toISOString(),
+    message: { content: [{ type: "tool_use", name, input: { file_path: path } }] },
+  });
+  const d = digestOf([rec("Read", "/a.txt"), rec("Edit", "/b.txt"), rec("Write", "/c.txt")],
+                     { sinceMs: since, nowMs: now, reachedStart: true });
+  assert.equal(d.fileTargetsTotal, 3);
+  assert.equal(d.writeTargetsTotal, 2, "Edit と Write だけ");
+});
+
+test("★1 行は書き換えが無い時に黙る(読んだ数を出さない)", () => {
+  const base = { complete: true, window: { minutes: 60 }, counts: { assistant: 3, tool: 20 } };
+  const noWrite = digestLine({ ...base, writeTargetsTotal: 0 }, { level: "soon" });
+  assert.ok(!/file/.test(noWrite), `読んだだけなのに file を出している: ${noWrite}`);
+  const withWrite = digestLine({ ...base, writeTargetsTotal: 3 }, { level: "soon" });
+  assert.ok(/3 files changed/.test(withWrite), withWrite);
+});
+
+test("読み切れなかった時は書き換えの数も伏せる(0 に丸めない)", () => {
+  const now = Date.parse("2026-08-31T12:00:00Z");
+  const d = digestOf([], { sinceMs: now - 3600_000, nowMs: now, reachedStart: false });
+  assert.equal(d.complete, false);
+  assert.equal(d.writeTargetsTotal, null, "★null であって 0 ではない(0 は「変えなかった」)");
+});
