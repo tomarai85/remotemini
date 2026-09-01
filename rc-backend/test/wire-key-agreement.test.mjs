@@ -677,6 +677,12 @@ const UNPAIRED = {
     "断りの形。組むのは `attachBody` ではなく各ルートの `json(res, 400, …)` で、"
     + "同じ2鍵(`reason` / `code`)を複数のルートが別々に出す。1つの builder に"
     + "紐付けると、紐付けなかった側の断りが 測り漏れる",
+  "NewSessionClient.Wire": "新規会話の応答(`202 {started}` / 409 `{error, reason}` / "
+    + "502 `{error, reason}`)。`src/server.mjs` の new 分岐が直に書く(builder ではない)。"
+    + "★電話が読むのは `reason` **1 本だけ** —— 会話の id は 202 の時点でまだ存在せず"
+    + "(登録簿が拾って初めて出来る)、電話は一覧を引き直して見つける。"
+    + "★測る対 = `ios/Tests/Core/NewSessionClientTests.swift`(request の全次元 + "
+    + "机の断り 3 通りを潰さない事)と `NewSessionOutcomeTests`(答えの読み分け)",
   "ArchiveClient.Wire": "保管の応答(`{archived}` / 400 の `{error}`)。`src/server.mjs` の "
     + "archive 分岐が `json(res, 200, { archived })` を直に書く(builder ではない)。"
     + "★測る対 = `test/titles.test.mjs`(台帳の往復・transcript 削除機構の不在)と "

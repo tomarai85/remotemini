@@ -54,7 +54,16 @@ struct HistoryFetchingFixture: HistoryFetching {
 
     let state: State
 
-    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
+    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String?) async -> Result<HistoryResponse, SessionsFetchError> {
+        // ★探索の fixture は**実物と同じ絞り方**をする(2026-08-31)。
+        //   固定の答えを返すと、画面が「探した振り」で緑になり、
+        //   絞り込みが壊れた日に気付けない。
+        if let q = query?.trimmingCharacters(in: .whitespacesAndNewlines), !q.isEmpty {
+            let base = await fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: limit)
+            guard case let .success(r) = base else { return base }
+            let hits = r.history.filter { $0.text.lowercased().contains(q.lowercased()) }
+            return .success(HistoryResponse(history: hits, truncated: false))
+        }
         switch state {
         case .threeRoles, .degraded, .stalled, .busy, .choice, .choiceKeys:
             return .success(Self.threeRolesResponse)

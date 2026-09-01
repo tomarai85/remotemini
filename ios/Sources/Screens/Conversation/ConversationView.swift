@@ -525,7 +525,10 @@ struct ConversationView: View {
     /// composer belongs. It renders only inside `.loaded` -- there is nothing to send
     /// INTO a conversation that failed to load, and a composer over a failure view
     /// would invite typing into a screen whose session may not exist.
-    @ViewBuilder
+    // ★`@ViewBuilder` を外した(2026-08-31)。此処は View を組む関数ではなく
+    //   `async` の手続き。上の doc は composer の物で、属性だけが取り残されていた
+    //   —— 間に doc コメントが挟まったので、属性が**次の宣言**に付いていた。
+    //   コンパイラも「明示的な `return` で result builder が無効」と警告していた。
     /// 選ばれた写真を机へ送る。
     ///
     /// ★ここで**画像を作り直さない**。机側が形式を先頭バイトで判定し、HEIC は向こうで

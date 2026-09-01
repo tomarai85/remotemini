@@ -35,6 +35,11 @@ struct ListView: View {
     /// 既定を本物にすると fixture の面が `ui-fixture.invalid` へ本当に飛ぶ。Sprint 8 で3回)。
     private let renamer: SessionRenaming
     private let archiver: SessionArchiving
+    /// ★既定値を持つのは、呼び出し側 2 箇所(実物 / fixture)を触らない為。
+    ///   束(`ConversationClients`)の様に「既定を持たせない」規約が在る所とは違い、
+    ///   此処は既存の init が既に長く、1 本 足す度に両方を書き換えると
+    ///   **fixture 側だけ古い口が残る**(2026-08-08 に 3 sprint 続けて起きた形)。
+    private let newSessionStarter: NewSessionStarting
     private let returner: ReturnRequesting
     private let archivedLister: ArchivedListing
 
@@ -52,6 +57,9 @@ struct ListView: View {
     @State private var renameNotice: String?
     @State private var returnTarget: SessionRow?
     @State private var returnNotice: String?
+    /// 新しい会話を始めた後の一文。★「始めました」で終わらせない —— 一覧に出るまで
+    ///   間が在るので、其の間を黙ると押した人は「効かなかった」と読んで二度押しする。
+    @State private var newSessionNotice: String?
 
     init(
         viewModel: @autoclosure @escaping () -> ListViewModel,
@@ -60,6 +68,7 @@ struct ListView: View {
         apiKey: String,
         renamer: SessionRenaming,
         archiver: SessionArchiving,
+        newSessionStarter: NewSessionStarting = NewSessionClient(),
         returner: ReturnRequesting,
         archivedLister: ArchivedListing,
         onUnauthorized: @escaping () -> Void,
@@ -71,6 +80,7 @@ struct ListView: View {
         self.apiKey = apiKey
         self.renamer = renamer
         self.archiver = archiver
+        self.newSessionStarter = newSessionStarter
         self.returner = returner
         self.archivedLister = archivedLister
         self.onUnauthorized = onUnauthorized
@@ -326,6 +336,26 @@ struct ListView: View {
                     Task { await archive(row) }
                 } label: {
                     Label("Archive", systemImage: "archivebox")
+                }
+                // ★此の会話と**同じ場所**で、新しい会話を始める(2026-08-31)。
+                //   机の worker は `--resume` 固定で、今まで既に在る会話にしか入れなかった。
+                //   ★場所を選ぶ画面は作らない —— `@` のパス補完がまだ無い以上、
+                //     電話で path を打たせるのは盲打ちを強いる事になる。
+                //     行から始めれば場所は既に決まっている。
+                Button {
+                    Task {
+                        let outcome = await newSessionStarter.startNear(
+                            baseURL: baseURL, apiKey: apiKey, sessionID: row.id)
+                        newSessionNotice = outcome.text
+                        if outcome == .started {
+                            // 少し置いてから引き直す。机が Claude Code を起こし、
+                            // 登録簿が拾うまで間が在る(即座に引くと必ず空振りする)。
+                            try? await Task.sleep(nanoseconds: 3_000_000_000)
+                            await viewModel.refresh()
+                        }
+                    }
+                } label: {
+                    Label("New session here", systemImage: "plus.bubble")
                 }
                 if row.isCheckout {
                     Button {
