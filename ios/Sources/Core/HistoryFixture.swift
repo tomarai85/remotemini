@@ -50,29 +50,112 @@ struct HistoryFetchingFixture: HistoryFetching {
         /// `advanced == false`(一番古い行が動かない)になり、押した後どこへ寄るかを
         /// 決める道筋そのものが走らない。
         case long = "conversation-long"
+        /// ★2026-09-01。**探索の 5 面を UI から全部 出せる**唯一の状態。
+        ///
+        /// 上の 7 つでは足りない理由が 2 つ在る:
+        ///   1. どれも走査の窓(下の `scanWindow` = 120)より短いので、後方読みは
+        ///      必ず会話の頭に着く = `coverage` が常に `.wholeConversation`。
+        ///      **`emptyBounded` が原理的に出せない** —— 之は依頼文の核心
+        ///      (0 件の 2 意味)を UI の扉から測れないという事。
+        ///   2. どれも `limit`(100)を超える一致を作れないので、
+        ///      `isCapped`(= 「全部は見せていない」)も出せない。
+        /// だから 240 行 持つ。窓 120 を跨ぐので走査は頭に着かず、`line` を含む問いは
+        /// 120 件 一致して 100 で切られる。
+        case search = "conversation-search"
+        /// 探索**だけ**が机に届かない状態。転写は普通に読めている。
+        ///
+        /// 分けたのは、S7(`Couldn't reach the desk.`)を出す為に問いの文字列へ
+        /// 合図を仕込む(`q == "!fail"` 等)道を採らない為。合図は fixture の中に
+        /// 「実物に無い絞り込み規則」を 1 本 増やす事で、それは此の型が
+        /// 自分の doc で禁じている「探した振り」の別形。状態で分ければ、
+        /// 絞り込みの実装は 1 本のまま。
+        case searchUnreachable = "conversation-search-unreachable"
     }
 
     let state: State
 
-    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String?) async -> Result<HistoryResponse, SessionsFetchError> {
-        // ★探索の fixture は**実物と同じ絞り方**をする(2026-08-31)。
-        //   固定の答えを返すと、画面が「探した振り」で緑になり、
-        //   絞り込みが壊れた日に気付けない。
-        if let q = query?.trimmingCharacters(in: .whitespacesAndNewlines), !q.isEmpty {
-            let base = await fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: limit)
-            guard case let .success(r) = base else { return base }
-            let hits = r.history.filter { $0.text.lowercased().contains(q.lowercased()) }
-            return .success(HistoryResponse(history: hits, truncated: false))
-        }
+    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
         switch state {
-        case .threeRoles, .degraded, .stalled, .busy, .choice, .choiceKeys:
+        case .threeRoles, .degraded, .stalled, .busy, .choice, .choiceKeys, .searchUnreachable:
             return .success(Self.threeRolesResponse)
         case .long:
             // `ConversationViewModel.initialLimit` は 50、「以前を読む」は
             // `MergeHistory.nextHistoryLimit(50) == 150` を要求する。境界を 50 に
             // 置くのは、実物の2つの呼び出しがちょうどその両側に落ちる為。
             return .success(limit > Self.initialLimitBoundary ? Self.longWithOlder : Self.longTail)
+        case .search:
+            let all = Self.searchTranscript
+            let shown = Array(all.suffix(limit))
+            return .success(HistoryResponse(history: shown, truncated: shown.count < all.count))
         }
+    }
+
+    /// ★探索の fixture は**実物と同じ機構**を回す(2026-09-01 に絞り込みだけから拡張)。
+    ///
+    /// 2026-08-31 版は「返ってきた窓を `contains` で絞る」だけで、`matched` も
+    /// `searchedToStart` も持っていなかった(`HistoryResponse` しか無かったので当然)。
+    /// 新しい型はその 2 つを運ぶので、**固定値を入れると面が「探した振り」で緑になる**。
+    /// 特に `searchedToStart: true` を焼き付けると、画面は毎回
+    /// 「この会話のどこにも在りません」と言い切る —— 依頼文が名指しで禁じている嘘。
+    ///
+    /// だから机の 3 つの止まり方を写す(`sessions.mjs` / `listing.mjs`):
+    ///   - 後方へ**チャンク単位**で遡る(`scanChunk`)
+    ///   - 遡れる上限が在る(`scanWindow` ↔ 机の `TAIL_MAX` = 1 MiB)
+    ///   - 一致が `limit` に届いたらそのチャンクの**末**で止まる(= 少し超過する
+    ///     ので `matched > limit` が起きる。机の `all.slice(-limit)` と同じ形)
+    /// `reachedStart` は「頭の 1 件まで見た」時だけ真。
+    func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async -> Result<TranscriptSearchResponse, SessionsFetchError> {
+        if state == .searchUnreachable { return .failure(.unreachable) }
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // 机は空の問いを「全件一致」にしない。電話は其れ以前に送らないが、
+        // fixture 側でも同じ答え(0 件・頭まで見ていない)を返す。
+        guard !needle.isEmpty else {
+            return .success(TranscriptSearchResponse(history: [], matched: 0, coverage: .boundedScan))
+        }
+        return .success(Self.scan(Self.transcript(for: state), needle: needle, limit: limit))
+    }
+
+    /// 走査の 1 歩(机の `TAIL_CHUNK` = 64 KiB に当たる)。
+    private static let scanChunk = 32
+    /// 遡れる上限(机の `TAIL_MAX` = 1 MiB に当たる)。
+    /// ★120 なのは、上の 7 状態(最長 90 行)が**全部この内側に収まり**、
+    ///   `.search`(240 行)**だけ**が外へ出る為。境界を跨ぐ状態が 1 つ在る事が、
+    ///   `.wholeConversation` と `.boundedScan` を UI から撃ち分ける唯一の手段。
+    private static let scanWindow = 120
+
+    private static func transcript(for state: State) -> [HistoryEntry] {
+        switch state {
+        case .threeRoles, .degraded, .stalled, .busy, .choice, .choiceKeys, .searchUnreachable:
+            return threeRolesResponse.history
+        // 「以前を読む」で全部 出る側が会話の全体。探索は読み込み済みの窓ではなく
+        // **会話そのもの**を対象にする(窓の外を探すのが目的なので)。
+        case .long: return longWithOlder.history
+        case .search: return searchTranscript
+        }
+    }
+
+    private static func scan(_ all: [HistoryEntry], needle: String, limit: Int) -> TranscriptSearchResponse {
+        var matches: [HistoryEntry] = []   // 机と同じく**古い順**を保つ
+        var scanned = 0
+        var cursor = all.count             // 之より後ろは見た
+        var reachedStart = all.isEmpty     // 空の転写は「頭まで見た」で正しい
+        while scanned < scanWindow {
+            let step = min(scanChunk, min(cursor, scanWindow - scanned))
+            if step <= 0 { break }
+            let lower = cursor - step
+            matches = all[lower..<cursor].filter { $0.text.lowercased().contains(needle) } + matches
+            cursor = lower
+            scanned += step
+            if cursor == 0 { reachedStart = true; break }
+            // ★止まるのは**チャンクを読み切った後**。机の `done(lines)` が
+            //   チャンク境界でしか評価されないのと同じで、之が `matched > limit` を生む。
+            if matches.count >= limit { break }
+        }
+        return TranscriptSearchResponse(
+            history: Array(matches.suffix(limit)),
+            matched: matches.count,
+            coverage: reachedStart ? .wholeConversation : .boundedScan
+        )
     }
 
     // MARK: - conversation-long
@@ -106,6 +189,20 @@ struct HistoryFetchingFixture: HistoryFetching {
         history: (1...90).map(line),
         truncated: false
     )
+
+    // MARK: - conversation-search
+
+    /// 240 行。**窓(120)の 2 倍**在る事が此の状態の全部で、其れが
+    /// `.boundedScan` と `isCapped` を UI から出せる唯一の性質。
+    ///
+    /// 本文は `line(_:)` を使い回す(新しい `who` の書き方を増やさない ——
+    /// `rc-backend/test/fixture-labels-producible.test.mjs` が此の file の
+    /// 発言者名を「サーバが作れる名前か」で数えている)。
+    /// 問いごとの当たり方:
+    ///   `line`     → 窓の中の 120 件 全部に当たる。100 で切られるので `isCapped`
+    ///   `line 23`  → `line 230`…`line 239` の 10 件。切られない
+    ///   何にも当たらない語 → 0 件・**頭までは見ていない**(= `emptyBounded`)
+    private static let searchTranscript: [HistoryEntry] = (1...240).map(line)
 
     private static let threeRolesResponse = HistoryResponse(
         history: [

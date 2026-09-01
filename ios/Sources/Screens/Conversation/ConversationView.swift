@@ -231,9 +231,42 @@ struct ConversationView: View {
         _viewModel = StateObject(wrappedValue: viewModel())
     }
 
+    /// 検索欄の文字。**要求はこれが変わっても飛ばない**(`.onSubmit(of: .search)` だけ)。
+    @State private var searchText = ""
+    /// 検索が有効か。`.searchable(isPresented:)` の札。
+    ///
+    /// ★「有効」を `searchText.isEmpty` で代用しない。取り消しボタンを押した瞬間に
+    ///   文字だけ消えて面が残る / 文字を全部消しただけで面が畳まれる、の 2 通りが
+    ///   同じ式から出てしまう。畳むのは利用者が畳んだ時だけ。
+    @State private var isSearchPresented = false
+
     var body: some View {
         content
             .background(RCBackdrop())
+            // ★置き場は `.navigationBarDrawer(displayMode: .always)`(→ spec D-A)。
+            //   `.automatic` はスクロールで欄を畳むので、**ナビ周りの高さが動く** ——
+            //   その高さは着地の輪が測る `viewportHeight` そのもので、2026-08-31 に
+            //   1 セッション掛けて閉じたばかりの輪へ、開閉の度に変動を注ぎ込む事になる。
+            //   `.always` なら欄は常に 1 行ぶん場所を取る代わりに、高さが動かない。
+            .searchable(
+                text: $searchText,
+                isPresented: $isSearchPresented,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "Search this transcript"
+            )
+            // ★打鍵ごとに撃たない(→ spec D-B / §7)。机の 1 回は「最大 1 MiB の
+            //   後方読み + 走査した全行の `JSON.parse`」で、しかも**未確定の日本語入力**
+            //   (= どこにも一致しない = `limit` に届かない = 毎回 1 MiB を読み切る)で
+            //   負荷が最大になる。同じ機械で Claude Code のセッションが走っている。
+            //   debounce も解にならない(IME の変換中の停止は普通に 300ms を超える)。
+            .onSubmit(of: .search) {
+                Task { await viewModel.search(query: searchText) }
+            }
+            .onChange(of: isSearchPresented) { _, presented in
+                // 畳んだら結果を捨てる。保持すると「前に探した語の結果」が
+                // 今の転写と食い違ったまま残る面ができる。
+                if !presented { viewModel.cancelSearch() }
+            }
             // Brief §3-c: the title comes from the List row that navigated here and
             // survives any failure phase below -- never re-derived from `/history`
             // (which carries no title), never blanked while retrying.
@@ -508,13 +541,203 @@ struct ConversationView: View {
                         }
                     }
                 }
-                loadEarlierFooter
-                composer
-                    .onChange(of: pickedPhoto) { _, item in
-                        guard let item else { return }
-                        Task { await sendPicked(item) }
-                    }
+                // ★探索が有効な間は**描かない**(→ spec §2-d)。
+                //   composer を残すと、探しながら机へ送れてしまう(送信ボタンが
+                //   結果の面の下で生きる)。`loadEarlierFooter` を残すと、探索中に
+                //   `currentLimit` と `history` が黙って動く = 転写の窓が
+                //   「探しただけ」で変わる。
+                //   ★下書きは失われない —— `ConversationViewModel.draft` は `didSet` で
+                //     打鍵ごとに `draftStore` へ書かれるので、面を消しても値は残る。
+                if !isSearchPresented {
+                    loadEarlierFooter
+                    composer
+                        .onChange(of: pickedPhoto) { _, item in
+                            guard let item else { return }
+                            Task { await sendPicked(item) }
+                        }
+                }
             }
+            // ★**重ねる**。差し替え(`if isSearching { 結果 } else { 転写 }`)を採らない
+            //   (→ spec D-A / §6-a)。差し替えると取り消しで転写の `ScrollView` の
+            //   `.onAppear` が再発火し、`armInitialLanding()` が
+            //   `landingCorrections` / `firstLandingDistance` を初期化する ——
+            //   上へ遡って読んでいた人が、取り消した瞬間に下端へ引き戻される。
+            //   `overlay` なら転写は階層に残るので `.onAppear` は再発火せず、
+            //   門(`initialLandingPending`)は既に閉じているので背後で layout が
+            //   続いても `@State` は 1 つも書かれない。
+            //   之が壊れていない事は `conversation.landingDistance` の読み出しが
+            //   検索の開閉を跨いでバイト単位で同一である事で測る。
+            .overlay {
+                if isSearchPresented { searchResultsPanel }
+            }
+        }
+    }
+
+    // MARK: - 探索の面(2026-09-01)
+
+    /// 転写の上に重なる結果の面。
+    ///
+    /// ★地は転写と同じ(`RCBackdrop`)。灰色(`.bar`)を敷かないのは、この画面で
+    ///   灰色が「電話の道具」を意味する材質として既に予約されている為(§2.63 の裁定)。
+    ///   所属は**上端の区切り 1 本と見出し行**で示す。
+    /// ★行は `EntryBubble` を**そのまま**使う。転写と結果で本文の描画器を 2 本 置くと
+    ///   片方だけが古くなる(机が `entriesFromRecord` を 1 本にしているのと同じ判断)。
+    @ViewBuilder
+    private var searchResultsPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Divider()
+            searchHeader
+            searchStatusLines
+            searchRows
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(RCBackdrop())
+    }
+
+    /// 面から出る口。
+    ///
+    /// ★之は spec に無い。実機で測って**穴が在ったから足した**(2026-09-01):
+    ///   `.searchable` の "Cancel" は**入力中しか出ない**。`displayMode: .always` で
+    ///   欄を常設した上で `\n` で確定すると、編集が終わって Cancel が消え、
+    ///   `isPresented` は真のまま —— 結果の面から出る手が画面に 1 つも無くなる。
+    ///   composer も「以前を読む」も隠してあるので、**会話が使えなくなる**。
+    ///   実測: `testTheDraftSurvivesOpeningAndCancellingASearch` が
+    ///   「Cancel が 5 秒 現れない」で落ちた。spec は `.searchable` が取り消しを
+    ///   常に用意する前提で書かれていて、其の前提が偽だった。
+    ///   ★面を消す機構は SwiftUI 側に頼らず、自分が持っている札(`isSearchPresented`)で
+    ///     閉じる。閉じれば `onChange` が結果も捨てる。
+    private var searchHeader: some View {
+        HStack {
+            Text("Results")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button {
+                isSearchPresented = false
+            } label: {
+                Text("Done").tapTarget()
+            }
+            .accessibilityIdentifier("conversation.search.close")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+    }
+
+    /// 独立した事実は独立した行に置く(`statusBanners` の既存規約と同じ)。
+    /// 1 行に詰めると、片方だけが真の時に嘘が混ざる。
+    @ViewBuilder
+    private var searchStatusLines: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            switch viewModel.searchState {
+            case .idle:
+                // 面は `isSearchPresented` の間ずっと出るので、まだ何も探していない
+                // 間に**空の板**になる。spec の表には無い行だが、空白は
+                // 「壊れている様に見える所」なので、次に何をすればいいかまで言う。
+                Text("Type a word and press return.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("conversation.search.hint")
+
+            case .running:
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Searching…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("conversation.search.busy")
+
+            case .results(let r):
+                Text("\(r.matched) matches")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("conversation.search.summary")
+                // ★S3 と S4 は**独立**。両方 真なら 2 行とも出る。
+                if r.isCapped {
+                    Text("Showing the newest \(r.rows.count).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("conversation.search.shownCap")
+                }
+                if r.coverage == .boundedScan {
+                    // ★数量も時刻も言わない。電話は `scanned` を持っていない
+                    //   (ルートが転送していない)ので、言えるのは
+                    //   「頭までは見ていない」だけ。
+                    Text("The search stopped before the start of this conversation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("conversation.search.boundedScan")
+                }
+
+            case .emptyWhole:
+                // ★この面**だけ**が言い切りの文を出せる。
+                Text("No match anywhere in this conversation.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("conversation.search.emptyWhole")
+
+            case .emptyBounded:
+                Text("No match in the part that was searched. "
+                     + "The search stopped before the start of this conversation.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("conversation.search.emptyBounded")
+
+            case .failed(let why, let query):
+                Text(Self.searchFailureText(why))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("conversation.search.failed")
+                Button {
+                    Task { await viewModel.search(query: query) }
+                } label: {
+                    // ★`.tapTarget()` は **label の内側**に当てる(`TapTarget.swift` の
+                    //   註: 外に当てると layout の枠だけ育って、押せる領域は文字のまま残る)。
+                    Text("Try again").tapTarget()
+                }
+                .accessibilityIdentifier("conversation.search.retry")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    static func searchFailureText(_ why: TranscriptSearchFailure) -> String {
+        switch why {
+        case .unreachable: return "Couldn't reach the desk."
+        case .malformedBody: return "The desk's answer wasn't in a form this app can read."
+        }
+    }
+
+    @ViewBuilder
+    private var searchRows: some View {
+        if case .results(let r) = viewModel.searchState {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    // ★行は**押せない**(→ spec §5)。押せる見た目も出さない。
+                    //   机は一致の位置を返しておらず(`scanned` も offset も線に無い)、
+                    //   `HistoryEntry` は id も時刻も持たない。本文で転写を引く手は
+                    //   在るが、当たるのは読み込み済みの窓の中だけ = **探索が要る場面
+                    //   ほど当たらない**上、同じ本文が複数在れば最初の 1 件に当たる。
+                    //   跳び先が間違っている事の在る UI は、跳べない UI より悪い。
+                    //   ★**行を短く切らない**(`lineLimit` を付けない)。付けると
+                    //     一致箇所が見えている範囲の外に在る行が「誤検出」に見える。
+                    ForEach(Array(r.rows.enumerated()), id: \.offset) { _, entry in
+                        EntryBubble(entry: entry)
+                    }
+                    // 出さない機能の理由を黙らない。
+                    Text("Results can't jump into the transcript yet — "
+                         + "the desk doesn't say where each match sits.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                        .accessibilityIdentifier("conversation.search.noJumpNote")
+                }
+                .padding()
+            }
+        } else {
+            Spacer(minLength: 0)
         }
     }
 
@@ -829,28 +1052,31 @@ struct ConversationView: View {
                 .accessibilityLabel("Attach a photo")
 
                 // ★`.roundedBorder` を使わない(2026-08-29、Tom「黒い箱が洗練されていない」)。
-                //   あの様式は暗い系で**真っ黒な矩形**を描き、ガラスの上に穴が空いた様に見える。
-                //   glass の系では自前のガラス面(material + 淡い縁)に載せ、
-                //   glass でない系は従来通り `.roundedBorder` に落とす(意匠の系を跨がない)。
-                Group {
-                    if RCTheme.usesGlass {
-                        TextField("Message", text: $viewModel.draft, axis: .vertical)
-                            .textFieldStyle(.plain)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                //   あの様式は暗い系で**真っ黒な矩形**を描き、面に穴が空いた様に見える。
+                //
+                // ★★2026-09-01: 枝を消した。上の直しは長い間 `if RCTheme.usesGlass` の
+                //   **ガラス側にしか入っておらず**、else 側は `.roundedBorder` のままだった。
+                //   既定が graphite(平らな面)に替わった瞬間に直しが 1 行も効かなくなり、
+                //   実測の画で入力欄の中が **(0,0,0) の純黒**に戻っていた —— 此の配色で
+                //   唯一の純黒で、しかも視線が最初に行く場所。
+                //   分岐が在る限り「片側だけ直す」が何度でも起きるので、**分岐そのものを
+                //   token 1 個(`RCTheme.composerFieldFill`)へ畳んだ**。縁は
+                //   `surfaceStroke` が graphite で `.clear` なので自動で消える。
+                TextField("Message", text: $viewModel.draft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(RCTheme.composerFieldFill)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                                     .strokeBorder(RCTheme.surfaceStroke, lineWidth: 1)
                             )
-                    } else {
-                        TextField("Message", text: $viewModel.draft, axis: .vertical)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                }
-                .lineLimit(1...5)
-                .disabled(!viewModel.composerEnabled)
-                .accessibilityIdentifier("conversation.composerField")
+                    )
+                    .lineLimit(1...5)
+                    .disabled(!viewModel.composerEnabled)
+                    .accessibilityIdentifier("conversation.composerField")
 
                 Button {
                     Task { await viewModel.send() }
@@ -878,21 +1104,27 @@ struct ConversationView: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
-        // ★`.bar` は灰色の帯を敷く(2026-08-29、Tom「洗練されていない」)。glass の系では
-        //   ガラスの面 + 髪の毛1本の縁に替える —— 上の転写が下に透けて、帯が板に見えない。
-        //   ★`bar-is-composer-only` の錨(2026-08-18)は「帯を composer 以外に敷くな」で
-        //   あって「.bar である事」ではない。面の系だけを glass に合わせ、置き場は動かさない。
+        // ★`bar-is-composer-only` の錨(2026-08-18)は「**帯を composer 以外に敷くな**」で
+        //   あって「`.bar` という綴りである事」ではない。置き場は今まで通り動かさない。
+        //
+        // ★★2026-09-01: 枝を消し、面を下の 1 個の token へ畳んだ。
+        //   (token 名を此の註に素で書かない —— `bar-is-composer-only.test.mjs` は
+        //    「其の綴りが此の file に丁度 1 回」で composer 以外への流出を測るので、
+        //    註で言及するだけで 2 箇所に数えられて赤くなる。実測済み。)
+        //   ・入力欄で踏んだのと同じ理由 —— 枝が在ると「片側だけ直す」が何度でも起きる。
+        //   ・平らな側は `.bar`(中立灰、実測 (31,33,35))から配色の面へ。**帯が
+        //     「電話の道具」を意味する事は変えていない** —— 転写の地より明るい層で在る、
+        //     が意味の担い手であって、灰色の系統ではない。
+        //   ・★`RCTheme.surface` を直に書かないのが要点。あれはカードもチップも使う
+        //     汎用トークンで、綴りが衝突して `bar-is-composer-only.test.mjs` の
+        //     **前提ごと壊れた**(検査 2 本が赤)。帯には帯の名前が要る。
         .background {
-            if RCTheme.usesGlass {
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-                    .overlay(alignment: .top) {
-                        Rectangle().fill(RCTheme.surfaceStroke).frame(height: 0.5)
-                    }
-                    .ignoresSafeArea(edges: .bottom)
-            } else {
-                Rectangle().fill(.bar).ignoresSafeArea(edges: .bottom)
-            }
+            Rectangle()
+                .fill(RCTheme.composerBarFill)
+                .overlay(alignment: .top) {
+                    Rectangle().fill(RCTheme.surfaceStroke).frame(height: 0.5)
+                }
+                .ignoresSafeArea(edges: .bottom)
         }
     }
 
@@ -1429,7 +1661,9 @@ private struct EntryBubble: View {
             }
             .padding(.horizontal, Self.textInset)
             .padding(.vertical, 4)
-            .background(RCTheme.usesGlass ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color(.systemGray6)),
+            // ★2026-09-01: 平らな側を `Color(.systemGray6)`(中立灰)から配色の面へ。
+            //   系統の混在の直し —— 詳細は `RCTheme.surfaceElevated` の頭。
+            .background(RCTheme.usesGlass ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(RCTheme.surface),
                         in: Capsule())
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -1449,7 +1683,10 @@ private struct EntryBubble: View {
                         .padding(.vertical, 9)
                         // glass の系では自分の発言を accent の淡い面に(地の光彩と同系で
                         // 「自分の色」が付く)。glass でない系は従来の柔らかい灰のまま。
-                        .background(RCTheme.usesGlass ? RCTheme.accent.opacity(0.26) : Color(.systemGray5),
+                        // ★2026-09-01: 平らな側を `Color(.systemGray5)`(中立灰)から
+                        //   配色の 1 段上の面へ。実測で泡 (44,44,46) / 面 (26,30,38) と
+                        //   灰色の系統が割れていた。
+                        .background(RCTheme.usesGlass ? RCTheme.accent.opacity(0.26) : RCTheme.surfaceElevated,
                                     in: RoundedRectangle(cornerRadius: 18))
                 }
             }

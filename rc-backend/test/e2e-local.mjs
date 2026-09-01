@@ -136,6 +136,7 @@ writeFileSync(join(PROJ, `${SID1}.jsonl`), [
 ].join("\n"));
 writeFileSync(join(PROJ, "22222222-2222-2222-2222-222222222222.jsonl"),
   JSON.stringify({ entrypoint: "sdk-cli", cwd: "/x", type: "user", message: { content: "noise" } }));
+
 const FIXTURED = new Set();
 function fixture(sid, cwd, title) {
   // ★同じ id を二度書かない。黙って上書きすると、**先に書いた会話の設定が消えた事**が
@@ -163,6 +164,45 @@ for (const sid of [SID_REG_A, SID_REG_B, SID_REG_C, SID_STALE]) fixture(sid, CWD
 fixture(SID_UNREG, CWD_UNREG, "未登録");
 fixture(SID_LIMIT, CWD_LIMIT, "上限に当たっている");
 fixture(SID_MISMATCH, CWD_REG, "居場所不一致"); // 会話は CWD_REG。登録先ペインは CWD_OTHER に居る
+
+// ★転写の探索(2026-09-01、§8 の扉E)。**後方読みが 1 チャンクで終わらない長さ**の会話。
+//
+//   何故 長さが要るか: `readLinesBackward` は 64 KiB ずつ後方へ遡り、file の先頭に
+//   着いた時だけ `reachedStart: true` を返す。上の SID1 は 4 行なので最初のチャンクで
+//   `pos === 0` に着き、**`searchedToStart` は常に true** —— 之だけを検体にすると、
+//   `searchedToStart: true` を焼き付けた実装でも e2e は緑のままになる。
+//   0 件の 2 意味(走査した範囲に無い / 会話の頭まで見て無い)は、この案件の核心なので、
+//   **両方の値が実際に線へ出る**事を測れる検体を置く。
+//
+//   仕掛け: 目印は**末尾 3 件だけ**に置き、残りは詰め物。同じ問いを
+//     `limit=1`  で撃つ → 最初のチャンクで一致が上限に達し、遡りが**そこで止まる**
+//                          = `searchedToStart:false`
+//     `limit=500` で撃つ → 上限に届かないので file の先頭まで遡る
+//                          = `searchedToStart:true`
+//   問いも file も同じで、違うのは `limit` だけ。よって差が出たなら、それは
+//   **走査が本当に止まったか**の差以外ではあり得ない。
+const SID_SEARCH = "aaaaaaaa-0000-0000-0000-000000000050";
+const SEARCH_NEEDLE = "しっぽの目印";
+{
+  // ★`fixture()` と**同じ衝突の門**を通す(2026-09-01)。此処を素の `writeFileSync` で
+  //   書いて、実際に `SID_NOTRUST`(…030)と衝突させた —— 私の 300 行の転写が
+  //   2 行の `{"text":"q"}` に静かに上書きされ、探索の検査 3 本が「一致 0 件」で落ちた。
+  //   :208 の註が 2026-08-03 に同じ事故を記録している。門を通せば次は名前で止まる。
+  if (FIXTURED.has(SID_SEARCH)) throw new Error(`fixture の id が衝突している: ${SID_SEARCH}(探索用)`);
+  FIXTURED.add(SID_SEARCH);
+  const pad = "x".repeat(400); // 1 行 ≈ 450B。300 行で ≈ 135 KiB > 64 KiB のチャンク
+  const lines = [
+    JSON.stringify({ entrypoint: "cli", cwd: CWD_WORK, type: "user", message: { role: "user", content: `頭の一言 ${pad}` } }),
+  ];
+  for (let i = 0; i < 300; i += 1) {
+    lines.push(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: `詰め物 ${i} ${pad}` }] } }));
+  }
+  for (let i = 0; i < 3; i += 1) {
+    lines.push(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: `${SEARCH_NEEDLE} ${i}` }] } }));
+  }
+  lines.push(JSON.stringify({ type: "ai-title", aiTitle: "探索用の長い会話" }));
+  writeFileSync(join(PROJ, `${SID_SEARCH}.jsonl`), lines.join("\n"));
+}
 
 // ---- 偽 tmux ----------------------------------------------------------------
 // 実物の観測に合わせてある(2026-07-31 edith):
@@ -807,6 +847,83 @@ try {
       { role: "assistant", text: "最初の答え" },
       { role: "tool", text: "⚙ Bash" },
     ]), JSON.stringify(hist.history));
+
+  // 3-S. 転写の探索(`?q=`)—— **扉E**(spec §8)。
+  //
+  // ★何故 此処に置くのが必須か。2026-09-01 の実測で、`?q=` を **HTTP から叩く検査は
+  //   この repo に 1 本も無かった**(`test/history-search.test.mjs` は
+  //   `searchHistoryFromPath` を import して直接呼ぶ = 関数の扉)。
+  //   2026-08-31 の実例(`server.mjs` の宣言順序の誤りで全ルートが死に、iOS 777 件と
+  //   backend 約 1000 件が全部緑のまま、捕まえたのは実サーバへ HTTP を撃つ対照 1 本だけ)が
+  //   そのまま当てはまる。**配線を足すのだから、関数の扉の検査は証拠にならない。**
+  //
+  // ★特に `truncated === !searchedToStart` は、**電話が意図的に読まない鍵**の話なので
+  //   Swift 側のどの扉でも赤くならない。此処が唯一の守り手。
+  {
+    const q = encodeURIComponent("最初");
+    const sr = await fetch(`${B}/api/sessions/${SID1}/history?q=${q}&limit=100`, { headers: H });
+    const sj = await sr.json();
+    check("★探索: 日本語の問いが percent-encode されて往復し、200 で返る",
+      sr.status === 200 && Array.isArray(sj.history), `status=${sr.status} ${JSON.stringify(sj).slice(0, 200)}`);
+    // 綴りを**その字**で見る。電話の `TranscriptSearchResponse` が必須鍵にしているので、
+    // どちらかが改名されれば電話は 200 を `.malformedBody` と読む(= 画面が壊れる)。
+    check("★探索: body が `matched` / `searchedToStart` を**その綴りで**持つ",
+      typeof sj.matched === "number" && typeof sj.searchedToStart === "boolean",
+      JSON.stringify(sj).slice(0, 200));
+    check("★探索: 問いを含む行だけが返る(絞り込みが本当に効いている)",
+      sj.history.length === 2 && sj.history.every((e) => e.text.includes("最初")),
+      JSON.stringify(sj.history));
+    check("★探索: `matched` は走査で見つかった総数",
+      sj.matched === 2, JSON.stringify(sj.matched));
+    // ★★2026-09-01、**実機の机を撃って見つけた欠陥**の守り。
+    //   旧のハンドラは `history: r.history` と生で返していて `.map(withWho)` を
+    //   通しておらず、探索の項目にだけ `display` が無かった(素の履歴には在る)。
+    //   電話の `HistoryEntry.display` は非 optional なので、其の応答は復号ごと落ちる
+    //   = 実機で探索すると必ず「読めない形」になる。**出荷前から 100% 壊れていた**。
+    //   ★木の中の検体は全部 `display` 付きで組んであったので、誰も気付けなかった。
+    //     此の 1 行が、其の穴を検査の側から塞ぐ。
+    check("★探索: 項目は素の履歴と同じく `display.who` を持つ(電話が復号できる形)",
+      sj.history.length > 0 && sj.history.every((e) => typeof e?.display?.who === "string"),
+      JSON.stringify(sj.history[0]));
+    // 対照: 素の履歴と**同じ名前**が付く(探索だけ別の名付けをしていない)。
+    check("★探索の対照: `display.who` は素の履歴と同じ規則で付く",
+      sj.history.every((e) => e.display.who === whoOf(e.role)),
+      JSON.stringify(sj.history.map((e) => [e.role, e.display.who])));
+    // ★電話が読まない鍵。机側でしか守れない(spec §9 の M7)。
+    check("★探索: `truncated` は `searchedToStart` の否定である",
+      sj.truncated === !sj.searchedToStart, JSON.stringify({ t: sj.truncated, s: sj.searchedToStart }));
+
+    // `q` 無し = 素の履歴経路。**2 経路が実際に分かれている**事の対照 ——
+    // これが無いと、上の主張は「/history が常に matched を返す」でも緑になる。
+    const plain = await (await fetch(`${B}/api/sessions/${SID1}/history?limit=100`, { headers: H })).json();
+    check("★探索の対照: `q` 無しの応答は `matched` を**持たない**(経路が分かれている)",
+      !("matched" in plain) && !("searchedToStart" in plain), JSON.stringify(plain).slice(0, 160));
+
+    // 一致 0 件。頭まで見ているので `searchedToStart` は真 = 電話は言い切ってよい面。
+    const none = await (await fetch(
+      `${B}/api/sessions/${SID1}/history?q=${encodeURIComponent("存在しない語")}&limit=100`, { headers: H })).json();
+    check("★探索: 0 件でも `matched` / `searchedToStart` は付く(短い会話は頭まで見る)",
+      none.matched === 0 && none.searchedToStart === true && none.history.length === 0,
+      JSON.stringify(none).slice(0, 200));
+
+    // ★★両向き。**問いも file も同じで `limit` だけが違う**ので、差が出たなら
+    //   それは「走査が本当に途中で止まったか」以外ではあり得ない。
+    const nq = encodeURIComponent(SEARCH_NEEDLE);
+    const stopped = await (await fetch(
+      `${B}/api/sessions/${SID_SEARCH}/history?q=${nq}&limit=1`, { headers: H })).json();
+    const toStart = await (await fetch(
+      `${B}/api/sessions/${SID_SEARCH}/history?q=${nq}&limit=500`, { headers: H })).json();
+    check("★探索: 一致が上限に達すると遡りは途中で止まる(`searchedToStart:false`)",
+      stopped.searchedToStart === false && stopped.truncated === true && stopped.matched >= 1,
+      JSON.stringify({ s: stopped.searchedToStart, t: stopped.truncated, m: stopped.matched }));
+    check("★探索: 上限に届かなければ会話の頭まで遡る(`searchedToStart:true`)",
+      toStart.searchedToStart === true && toStart.truncated === false && toStart.matched === 3,
+      JSON.stringify({ s: toStart.searchedToStart, t: toStart.truncated, m: toStart.matched }));
+    // ★否定の対照。上の2本が同じ値を返す実装(= 定数を焼いた実装)では此処が落ちる。
+    check("★探索の対照: 同じ問いでも `limit` で `searchedToStart` が変わる(定数を焼いていない)",
+      stopped.searchedToStart !== toStart.searchedToStart,
+      JSON.stringify({ stopped: stopped.searchedToStart, toStart: toStart.searchedToStart }));
+  }
 
   // 4. account —— **電話が読む封筒**(`wire.mjs` の `accountBody`)が端から端まで組める事。
   //    旧版は台本の標準出力の素通し1本しか見ておらず、机が解析を挟んだ日に

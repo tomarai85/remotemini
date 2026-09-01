@@ -1,18 +1,23 @@
 import Foundation
 
 protocol HistoryFetching {
-    /// `query` を渡すと**転写の中を探す**(2026-08-31)。渡さなければ従来通り末尾を読む。
+    /// 転写の末尾を読む。**探索の口ではない。**
     ///
-    /// ★別の client を作らないのは、同じ経路が 2 本になると**片方だけ腐る**から ——
-    ///   此の repo が `title` / `archive` で既に踏んでいる形。口は 1 本、引数で分ける。
-    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String?) async -> Result<HistoryResponse, SessionsFetchError>
-}
+    /// ★2026-09-01 に `query:` 引数を**外した**。2026-08-31 に此処へ足した時の判断
+    ///   (「口は 1 本、引数で分ける」)は client を 2 型に割らない事については今も
+    ///   正しいが、引数で分ける形は**戻り値の型まで同じにしてしまう**。探索の応答は
+    ///   `truncated` の意味が違い(`TranscriptSearchResponse` の doc)、
+    ///   `HistoryResponse` で受けた瞬間にそれが `loadEarlierState` へ流れ込む。
+    ///   引数を残すと、今日 誰も呼んでいないだけで**その配線は生きたまま**なので、
+    ///   経路ごと畳んだ。分けたのは client ではなく戻り値で、request の組み立ては
+    ///   下の `HistoryClient` の中で 1 本を共有している。
+    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError>
 
-extension HistoryFetching {
-    /// 従来の呼び方。既存の呼び出し側を触らない為の入口。
-    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
-        await fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: limit, query: nil)
-    }
+    /// 転写の中を探す(`?q=`)。返るのは**探索専用の型**。
+    ///
+    /// `limit` は「返す一致の数」であって走査量ではない —— 机は一致が `limit` 件
+    /// 集まった所で後方読みを止めるので、`limit` は速さと網羅の両方に効く。
+    func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async -> Result<TranscriptSearchResponse, SessionsFetchError>
 }
 
 /// `GET /api/sessions/<id>/history?limit=N` -- same shape as `SessionsClient`
@@ -29,17 +34,50 @@ struct HistoryClient: HistoryFetching {
         self.session = session
     }
 
-    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String?) async -> Result<HistoryResponse, SessionsFetchError> {
+    func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
+        await get(
+            HistoryResponse.self,
+            baseURL: baseURL, apiKey: apiKey, sessionID: sessionID,
+            items: [URLQueryItem(name: "limit", value: String(limit))]
+        )
+    }
+
+    func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async -> Result<TranscriptSearchResponse, SessionsFetchError> {
+        var items = [URLQueryItem(name: "limit", value: String(limit))]
+        // ★空白だけの問いを送らない。机は空を「全件一致にしない」で受けるが、
+        //   送らない方が往復 1 回ぶん安く、机の判断に頼らずに済む。
+        //   ★`q` が落ちた要求は机の**素の履歴経路**へ落ち、`matched` の無い body が
+        //     返る。`TranscriptSearchResponse` が `matched` を必須にしているので、
+        //     其れは `.success` ではなく `.malformedBody` になる —— 空の問いが
+        //     「直近 100 行が全部一致」の顔で返る道が、型の側で塞がっている。
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            items.append(URLQueryItem(name: "q", value: trimmed))
+        }
+        return await get(
+            TranscriptSearchResponse.self,
+            baseURL: baseURL, apiKey: apiKey, sessionID: sessionID,
+            items: items
+        )
+    }
+
+    /// 2 つの口が共有する **1 本の**要求の組み立てと status の読み。
+    ///
+    /// ★分けたのは戻り値の型だけ、という主張の実体が此処。URL の組み立て・method・
+    ///   `Bearer` header・待ち時間・status の写像を 2 箇所に書くと、片方だけが
+    ///   直る日が来る(此の repo が `title` / `archive` で実演済み)。違うのは
+    ///   最後の 1 行 —— どの型へ復号するか —— だけ。
+    private func get<T: Decodable>(
+        _ type: T.Type,
+        baseURL: URL,
+        apiKey: String,
+        sessionID: String,
+        items: [URLQueryItem]
+    ) async -> Result<T, SessionsFetchError> {
         var components = URLComponents(
             url: baseURL.appendingPathComponent("api/sessions/\(sessionID)/history"),
             resolvingAgainstBaseURL: false
         )
-        var items = [URLQueryItem(name: "limit", value: String(limit))]
-        // ★空白だけの問いを送らない。机は空を「全件一致にしない」で受けるが、
-        //   送らない方が往復 1 回ぶん安く、机の判断に頼らずに済む。
-        if let q = query?.trimmingCharacters(in: .whitespacesAndNewlines), !q.isEmpty {
-            items.append(URLQueryItem(name: "q", value: q))
-        }
         components?.queryItems = items
         guard let url = components?.url else {
             // Not observed in practice (session ids are opaque server-issued
@@ -104,7 +142,7 @@ struct HistoryClient: HistoryFetching {
             return .failure(.unreachable)
         }
 
-        guard let decoded = try? JSONDecoder().decode(HistoryResponse.self, from: data) else {
+        guard let decoded = try? JSONDecoder().decode(T.self, from: data) else {
             return .failure(.malformedBody)
         }
         return .success(decoded)
