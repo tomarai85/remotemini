@@ -7,9 +7,18 @@ struct ListView: View {
     /// ★`@EnvironmentObject` にしたのは、`init` の引数が既に多く、呼び出し側が
     ///   2 箇所(実物 / fixture)在るから —— 引数を増やすと両方を触る事になる。
     @EnvironmentObject private var deepLink: DeepLink
-    /// deep link で開く会話の id。押して開く経路(`NavigationLink`)とは別の口。
+    /// 今 開こうとしている会話の id。**押して開く時も、外から来た時も此処に入る**。
+    ///
+    /// ★2026-09-01 に 2 本を 1 本へ束ねた。以前は行が `NavigationLink` を持ち、外からの
+    ///   着地だけが此の `navigationDestination` を使っていた。分けていた理由は
+    ///   「destination-closure 形式の `NavigationLink` は外から起動できない」だったが、
+    ///   **行を Button にすれば其の制約自体が消える**。束ねると副産物が 2 つ:
+    ///   ・`List` が `NavigationLink` に自動で足す `>` が消える(カードの外に浮いていた)
+    ///   ・会話画面を組み立てる場所が 1 箇所になり、2 経路で挙動が割れ得なくなる
+    ///   ★遅延評価は保たれる —— `navigationDestination(item:)` の closure も、
+    ///     item が nil でない時にしか呼ばれない(= 行ごとの ViewModel は作られない)。
     /// ★`SessionRow` は `Hashable` ではないので id を運ぶ。行は開く時に相から引く。
-    @State private var deepLinkID: String?
+    @State private var openSessionID: String?
     @StateObject private var viewModel: ListViewModel
     /// REQUIREMENTS §4-5/§5-8 の口。**既定値を持たせない**(呼ぶ側が必ず渡す)——
     /// Sprint 8 が同じ形で3回再発させた欠陥がこれで、fixture の画面が既定の本物の
@@ -139,7 +148,7 @@ struct ListView: View {
         // ── 外から来た「この会話を開け」の着地 ────────────────────────────────
         // ★押して開く `NavigationLink` とは**別の口**。同じ物を使い回さないのは、
         //   destination-closure 形式の `NavigationLink` は外から起動できない為。
-        .navigationDestination(item: $deepLinkID) { id in
+        .navigationDestination(item: $openSessionID) { id in
             if let row = loadedSessions.first(where: { $0.id == id }) {
                 ConversationView(viewModel: makeConversationViewModel(for: row))
             } else {
@@ -319,11 +328,14 @@ struct ListView: View {
             // eagerly construct a `ConversationViewModel` (and issue no fetch until
             // `ConversationView`'s own `.task` runs) per row just because the List
             // rendered.
-            NavigationLink {
-                ConversationView(viewModel: makeConversationViewModel(for: row))
+            Button {
+                openSessionID = row.id
             } label: {
                 SessionRowView(row: row, nowMs: Date().timeIntervalSince1970 * 1000, style: listStyle)
             }
+            // ★`.plain` = Button の既定の装飾(文字を accent 色に染める)を降ろす。
+            //   行の中身は自前のカードなので、色を触られると題名が青くなる。
+            .buttonStyle(.plain)
             // 行の操作(長押し = iOS の標準の置き場)。名前(A1)・保管(§9-1)・戻し(§9-2)。
             .contextMenu {
                 Button {
@@ -394,6 +406,12 @@ struct ListView: View {
             // List 側の標準装飾(区切り線・行背景)は全部降ろす。
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
+            // ★2026-09-01: `>` を消した。Tom「UI が汚い」。
+            //   `NavigationLink` が自動で足す指示子はカードの**外**に浮き、右端が
+            //   40pt ほどずれて見えていた(実測の画 `shots-clean/flat-list-normal.png`)。
+            //   ★`.listRowSeparatorTint(.clear)` で消そうとしたのは誤り —— 其れは
+            //     区切り**線**の色で、指示子には触れない。指示子を消す API は SwiftUI に
+            //     無いので、`NavigationLink` を使うのを止める以外に道が無い(上の Button)。
             .listRowInsets(EdgeInsets(top: listStyle.listRowVerticalInset, leading: 16,
                                       bottom: listStyle.listRowVerticalInset, trailing: 16))
         }
@@ -522,7 +540,7 @@ struct ListView: View {
     private func resolveDeepLink(_ id: String?) {
         guard let id, !id.isEmpty else { return }
         guard loadedSessions.contains(where: { $0.id == id }) else { return }
-        deepLinkID = id
+        openSessionID = id
         deepLink.consume()
     }
 

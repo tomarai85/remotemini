@@ -236,6 +236,47 @@ export function historyBody({ entries, truncated }) {
 }
 
 /**
+ * `GET /api/sessions/<id>/history?q=<語>` の封筒(2026-09-01 に切り出し)。
+ *
+ * 切り出した理由は `test/wire-key-agreement.test.mjs` が「**実行して出た鍵**」を側Aとして
+ * 取る為で、`src/server.mjs` は import した瞬間に listen するので単体から呼べない =
+ * 直書きの分岐は鍵名を突き合わせる者が構造的に存在しない。新設した
+ * `TranscriptSearchResponse` の鍵を、生まれた日から無監視にしない為に此処へ出す。
+ *
+ * ★★**振る舞いは変わる。1 つだけ、意図的に。**(2026-09-01)
+ *   最初 此処に「振る舞いの変更はゼロ」と書いた。**偽だった** —— 実機の机
+ *   (friday:9443)へ GET を撃って判った。旧のハンドラは `history: r.history` と
+ *   **生のまま**返しており、`.map(withWho)` を通していなかった。実測:
+ *     探索の 1 件 = `{"role":"assistant","text":"…"}`          ← `display` が無い
+ *     素の履歴の 1 件 = `{"role":"assistant","text":"…","display":{"who":"Claude"}}`
+ *   電話の `HistoryEntry.display` は**非 optional** なので、`display` を欠く項目は
+ *   復号ごと落ちる = 実機で探索すると必ず
+ *   「The desk's answer wasn't in a form this app can read.」になる。
+ *   **機能は出荷前から 100% 壊れていた**。
+ *   ★之を捕まえた者が木の中に 1 人も居ない理由まで書く: fixture も、私が書いた
+ *     検体 body も、全部 `display` を入れて組んである。**検体は自分が知っている形しか
+ *     名乗らない** —— 実機を撃つまで、誰も「机が本当に何を吐くか」を見ていなかった。
+ *   だから此の builder は `.map(withWho)` を通す(素の履歴と同じ 1 本の道)。
+ *   守り: `test/e2e-local.mjs` の「探索の項目も `display.who` を持つ」。
+ *
+ * ★`truncated` と `searchedToStart` が**同じ事実の裏表**で並ぶのは意図。
+ *   `truncated` = 「これより前が在る」という素の履歴の語彙で、探索では
+ *   「最初まで見ていない」が其れに当たる。出荷済みの電話が `truncated` を読むので
+ *   消せず、新しい電話は `searchedToStart` だけを読む(`truncated` は復号しない)。
+ *   ★**電話が読まない鍵は、机側の扉でしか守れない** —— 2 つが逆を向いていない事は
+ *     `test/e2e-local.mjs` の `truncated === !searchedToStart` が実サーバへ HTTP を
+ *     撃って測る。関数の扉にも Swift の扉にも、之を赤くする手は無い。
+ */
+export function historySearchBody({ entries, matched, reachedStart }) {
+  return {
+    history: entries.map(withWho),
+    matched,
+    truncated: !reachedStart,
+    searchedToStart: reachedStart,
+  };
+}
+
+/**
  * `GET /healthz` の封筒(DESIGN §7-P)。**認証の外に出る唯一の応答**。
  *
  * ★引数を分解して受ける = 時計も pid もここでは読まない。読むとハンドラが渡した値と

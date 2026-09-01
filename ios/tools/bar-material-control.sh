@@ -127,7 +127,7 @@ is_red()   { grep -q "^not ok [0-9]* - .*$2" "$1"; }
 is_green() { grep -q "^ok [0-9]* - .*$2" "$1"; }
 
 N_ANCHOR1="切り出しが両端とも合っている"
-N_ANCHOR2=".fill(.bar) は会話画面の何処かに在る"
+N_ANCHOR2="RCTheme.composerBarFill は会話画面の何処かに在る"
 N_ANCHOR3=".ultraThinMaterial は会話画面の何処かに在る"
 N_CLAIM="灰色の帯は composer だけ"
 
@@ -141,26 +141,30 @@ mut = os.environ["MUT"]
 # ★2026-08-29: composer の帯が系ごとに2つになった(glass = material の Rectangle /
 # 非 glass = `Rectangle().fill(.bar)`)。植える側も**両方**を植えないと、glass の系で
 # 帯が footer へ戻った日にこの対照が沈黙する —— 変異は守っている物と同じ数だけ要る。
-BAR = ".fill(" + ".bar)"
+# ★2026-09-01: 追う綴りが `.fill(.bar)` から帯の固有名へ移った。
+# 汎用の `RCTheme.surface` を直に書いた時、カード・チップと綴りが衝突して
+# 検査の前提(此の画面で一意)ごと壊れた。植える側も同じ名前へ揃える。
+BAR = "RCTheme.composer" + "BarFill"
 GLASS_BAR = ".ultraThin" + "Material"
 if mut == "bar-ceiling":
     a = '                .accessibilityIdentifier("conversation.loadEarlierCeiling")'
     if s.count(a) == 1:
-        s = s.replace(a, "                .background(Rectangle().fill(.bar))\n" + a)
+        s = s.replace(a, "                .background(Rectangle().fill(" + BAR + "))\n" + a)
 elif mut == "bar-button":
     a = "            .frame(maxWidth: .infinity)\n\n        case .atCeiling:"
     if s.count(a) == 1:
         s = s.replace(a, "            .frame(maxWidth: .infinity)\n"
-                      + "            .background(Rectangle().fill(.bar))\n\n        case .atCeiling:")
+                      + "            .background(Rectangle().fill(" + BAR + "))\n\n        case .atCeiling:")
 elif mut == "anchor-truncated":
     a = "conversation.loadEarlierCeiling"
     if s.count(a) == 1:
         s = s.replace(a, "conversation.ceilingNotice")
 elif mut == "spelling-gone":
-    # 非 glass の枝の帯を丸ごと消す。錨②(`.fill(.bar)` が在る)が赤くなるべき所。
-    a = "Rectangle().fill(.bar).ignoresSafeArea(edges: .bottom)"
+    # 帯の面を作る綴りを消す。錨②(其の綴りが在る)が赤くなるべき所。
+    # ★2026-09-01: 枝を畳んだので `.fill(<帯の名>)` 一箇所を潰せば足りる。
+    a = ".fill(" + BAR + ")"
     if a in s:
-        s = s.replace(a, "Color.clear", 1)
+        s = s.replace(a, ".fill(Color.clear)", 1)
 elif mut == "glass-bar-ceiling":
     # ★新規(2026-08-29): glass の系の帯を footer へ戻す。主張の glass 版が赤くなるべき所。
     a = '                .accessibilityIdentifier("conversation.loadEarlierCeiling")'

@@ -276,7 +276,177 @@ final class HistoryClientTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.requestedTimeouts, [BackendSession.interactiveTimeout])
     }
 
+    // MARK: - 転写を探す(2026-09-01、spec §2-b。扉A)
+
+    /// ★扉Aで守れる事と守れない事を先に書く。此処が見るのは
+    ///   「`HistoryClient` が組み立てた `URLRequest`」まで —— **綴りが机の読む綴りと
+    ///   一致するか**は見ない(`MockURLProtocol` は何を送っても 200 を返す)。
+    ///   `q` という綴りが机に通じる事は `test/e2e-local.mjs` の往復(扉E)が持つ。
+    ///   両方 要る: 此処だけなら机の綴りが変わっても緑、扉Eだけなら
+    ///   電話が `q` を組み立てる行を消しても(要求が飛ばないだけで)気付きにくい。
+
+    /// spec §9 の M1。`URLQueryItem(name: "q", …)` の行を消すと此処が赤くなる。
+    func testSearchRequestCarriesTheQueryAsQParam() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validSearchBody.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.search(baseURL: baseURL, apiKey: "x", sessionID: "sess-abc-123", limit: 100, query: "boot")
+
+        let requested = MockURLProtocol.requestedURLs.last
+        XCTAssertEqual(requested?.path, "/api/sessions/sess-abc-123/history")
+        let items = URLComponents(url: requested!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(items.first(where: { $0.name == "limit" })?.value, "100")
+        XCTAssertEqual(items.first(where: { $0.name == "q" })?.value, "boot")
+    }
+
+    /// 日本語の問いが percent-encode されて往復する。**電話で打つ側は英語で打たない。**
+    func testSearchCarriesAJapaneseQueryPercentEncoded() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validSearchBody.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        let result = await client.search(baseURL: baseURL, apiKey: "x", sessionID: "s", limit: 100, query: "こんにちは")
+
+        let raw = MockURLProtocol.requestedURLs.last?.absoluteString ?? ""
+        XCTAssertTrue(raw.contains("q=%E3%81%93%E3%82%93%E3%81%AB%E3%81%A1%E3%81%AF"), raw)
+        // 送れた事だけでなく、**返って来た物が探索の型として読める**所まで見る。
+        guard case .success(let response) = result else { return XCTFail("expected .success, got \(result)") }
+        XCTAssertEqual(response.matched, 7)
+    }
+
+    /// 空白だけの問いでは `q` を**付けない**(既存 `HistoryClient` の判断の継承)。
+    /// ★付けてしまうと机は素の履歴経路へ落ち、`matched` の無い body が返る =
+    ///   電話はそれを `.malformedBody` と読む。付けない方が往復 1 回ぶん安い。
+    func testSearchOmitsQForABlankQuery() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validSearchBody.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.search(baseURL: baseURL, apiKey: "x", sessionID: "s", limit: 100, query: "   \n ")
+
+        let items = URLComponents(url: MockURLProtocol.requestedURLs.last!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertNil(items.first(where: { $0.name == "q" }))
+        XCTAssertEqual(items.first(where: { $0.name == "limit" })?.value, "100")
+    }
+
+    func testSearchRequestMethodIsGETAndCarriesNoBody() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validSearchBody.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.search(baseURL: baseURL, apiKey: "x", sessionID: "s", limit: 100, query: "boot")
+
+        XCTAssertEqual(MockURLProtocol.requestedMethods.last, "GET")
+        XCTAssertEqual((MockURLProtocol.requestedBodies.last ?? nil)?.count ?? 0, 0)
+    }
+
+    func testSearchRequestCarriesTheKeyAsABearerAuthorizationHeader() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validSearchBody.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.search(baseURL: baseURL, apiKey: "correct-fixture-key", sessionID: "s", limit: 100, query: "boot")
+
+        XCTAssertEqual(MockURLProtocol.lastRequestHeaders?["Authorization"], "Bearer correct-fixture-key")
+    }
+
+    /// spec §9 の M9。規約 2 は URL / method / header に加えて**待ち時間**も見る。
+    /// 探索は人が待っている往復なので、`writeTimeout` ではなく `interactiveTimeout`。
+    func testSearchUsesTheInteractiveTimeout() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validSearchBody.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.search(baseURL: baseURL, apiKey: "x", sessionID: "s", limit: 100, query: "boot")
+
+        XCTAssertEqual(MockURLProtocol.requestedTimeouts, [BackendSession.interactiveTimeout])
+    }
+
+    // MARK: - 探索の status 写像(7 分岐)
+
+    private func search(status: Int, body: String? = nil) async -> Result<TranscriptSearchResponse, SessionsFetchError> {
+        MockURLProtocol.stubQueue = [.init(statusCode: status, body: Data((body ?? "").utf8))]
+        return await HistoryClient(session: MockURLProtocol.makeSession())
+            .search(baseURL: baseURL, apiKey: "x", sessionID: "s", limit: 100, query: "boot")
+    }
+
+    func testSearchStatus200DecodesToSuccess() async {
+        guard case .success(let r) = await search(status: 200, body: Self.validSearchBody) else {
+            return XCTFail("expected .success")
+        }
+        XCTAssertEqual(r.matched, 7)
+        XCTAssertEqual(r.coverage, .boundedScan)
+    }
+
+    func testSearchStatus401IsUnauthorized() async {
+        let r = await search(status: 401)
+        XCTAssertEqual(r, .failure(.unauthorized))
+    }
+
+    func testSearchStatus404WithSessionNotFoundIsNotFound() async {
+        let r = await search(status: 404, body: Self.sessionNotFoundBody)
+        XCTAssertEqual(r, .failure(.notFound))
+    }
+
+    func testSearchStatus404WithNoSuchRouteIsContractViolation() async {
+        let r = await search(status: 404, body: #"{"error":"not found","code":"NO_SUCH_ROUTE"}"#)
+        XCTAssertEqual(r, .failure(.contractViolation(ResponseContractViolation(status: 404, code: "NO_SUCH_ROUTE"))))
+    }
+
+    /// ★200 で `matched` の無い body(= 机が素の履歴経路へ落ちた)は
+    ///   `.malformedBody`。**`.success` にしてはいけない** —— spec §2-a の芯。
+    func testSearchStatus200WithoutMatchedIsMalformedBody() async {
+        let r = await search(status: 200, body: #"{"history":[],"truncated":false}"#)
+        XCTAssertEqual(r, .failure(.malformedBody))
+    }
+
+    func testSearchConnectionFailureIsUnreachable() async {
+        MockURLProtocol.stubQueue = []
+        let r = await HistoryClient(session: MockURLProtocol.makeSession())
+            .search(baseURL: baseURL, apiKey: "x", sessionID: "s", limit: 100, query: "boot")
+        XCTAssertEqual(r, .failure(.unreachable))
+    }
+
+    func testSearchCancellationMapsToCancelled() async {
+        MockURLProtocol.injectedError = URLError(.cancelled)
+        let r = await HistoryClient(session: MockURLProtocol.makeSession())
+            .search(baseURL: baseURL, apiKey: "x", sessionID: "s", limit: 100, query: "boot")
+        XCTAssertEqual(r, .failure(.cancelled))
+    }
+
+    // MARK: - 陰性対照: 探索でも 7 分岐が畳まれていない(spec §2-b)
+
+    /// 既存の `fetch` 側と**同じ形**で 3 本。同じ enum でも `switch` が新しい口に
+    /// 生えれば写像を間違える新しい場所になる、という此の file 冒頭の判断の継承。
+    func testSearchUnauthorizedIsNotCollapsedIntoUnreachableNegativeControl() async {
+        let unauthorized = await search(status: 401)
+        let unreachable = await search(status: 500)
+        XCTAssertNotEqual(unauthorized, unreachable)
+    }
+
+    func testSearchNotFoundIsNotCollapsedIntoContractViolationNegativeControl() async {
+        let gone = await search(status: 404, body: Self.sessionNotFoundBody)
+        let badPath = await search(status: 404, body: #"{"error":"not found","code":"NO_SUCH_ROUTE"}"#)
+        XCTAssertNotEqual(gone, badPath)
+    }
+
+    func testSearchMalformedBodyIsNotCollapsedIntoUnreachableNegativeControl() async {
+        let malformed = await search(status: 200, body: #"{"history":[],"truncated":false}"#)
+        let unreachable = await search(status: 500)
+        XCTAssertNotEqual(malformed, unreachable)
+    }
+
     // MARK: - Fixture
+
+    /// 机が探索の 200 で実際に吐く 4 鍵(`wire.mjs` の `historySearchBody`)。
+    /// ★`truncated` を**入れてある**のが要点: 電話は読まないが線には出るので、
+    ///   検体から抜くと「読まない事」を測っている顔で、実は来ない鍵を無視している
+    ///   だけの検査になる。
+    private static let validSearchBody = """
+    {
+      "history": [
+        { "role": "user", "text": "a", "display": { "who": "Tom" } }
+      ],
+      "matched": 7,
+      "truncated": true,
+      "searchedToStart": false
+    }
+    """
 
     /// What `server.mjs` actually sends from its `SESSION_NOT_FOUND` frozen constant.
     private static let sessionNotFoundBody = #"{"error":"unknown session","code":"SESSION_NOT_FOUND"}"#

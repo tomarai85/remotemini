@@ -241,6 +241,15 @@ const CASES = {
     [{ entries: ENTRIES, truncated: true }],
     [{ entries: [], truncated: false }],
   ],
+  // 転写の探索(2026-09-01)。★**両向きの `reachedStart`** を通す。片方だけだと
+  //   `truncated` と `searchedToStart` が常に同じ値で出るので、2 つが逆を向いている
+  //   (= 一方が他方の否定である)事を、鍵名の照合以前に入力が隠してしまう。
+  //   値そのものを測るのは `test/e2e-local.mjs`(実サーバへ HTTP)の役目だが、
+  //   側Aの入力が痩せている状態を此処で作らない。
+  historySearchBody: [
+    [{ entries: ENTRIES, matched: 2, reachedStart: true }],
+    [{ entries: [], matched: 0, reachedStart: false }],
+  ],
   // 枝が1本しか無い唯一の builder。分岐が無い(`ok` は定数、残り3つは受けた値をそのまま)
   // ので、枝を増やしても出る鍵は1組しか無い —— ②が「原文に在るのに出ない鍵」で裏を取る。
   healthzBody: [[{ pid: 4242, uptime: 61, version: "abc1234" }]],
@@ -299,6 +308,7 @@ const MODULE_OF = {
   pollBodyTmux: ["wire", "src/wire.mjs", "export function pollBodyTmux({ items, screen, cursor, more }) {"],
   pollBodyWorker: ["wire", "src/wire.mjs", "export function pollBodyWorker({ items, queued, cursor, more }) {"],
   historyBody: ["wire", "src/wire.mjs", "export function historyBody({ entries, truncated }) {"],
+  historySearchBody: ["wire", "src/wire.mjs", "export function historySearchBody({ entries, matched, reachedStart }) {"],
   healthzBody: ["wire", "src/wire.mjs", "export function healthzBody({ pid, uptime, version }) {"],
   // 第2引数を分解するので目印を明示する(既定の目印だと `{ raw = "" }` = **引数の分解**を
   // 本文と読んで、鍵が0件になる。②が其れを赤で捕まえるが、先に正しく書く)。
@@ -614,6 +624,17 @@ const PAIRS = [
   { swift: "HistoryResponse", builders: ["historyBody"], at: "" },
   { swift: "HistoryEntry", builders: ["withWho"], at: "" },
   { swift: "HistoryEntry.EntryDisplay", builders: ["withWho"], at: "display" },
+  {
+    // 転写の探索(2026-09-01)。`historyBody` と**別の組**なのが要点 —— 同じルート・
+    // 同じ status だが `truncated` の意味が違うので、電話側も別の型で受けている。
+    swift: "TranscriptSearchResponse", builders: ["historySearchBody"], at: "",
+    mode: "phone-subset",
+    // `truncated` = 探索文脈では `!searchedToStart` の**写し**。出荷済みの電話が
+    // 素の履歴の語彙として読むので机からは消せないが、新しい電話は復号しない
+    // (2 本 置けば必ず片方が先に古くなる)。読み落としではなく**読まないと決めた**
+    // 事を、此の 1 行が宣言している。
+    serverOnly: ["truncated"],
+  },
   // ---- 生存信号(2026-08-09 / 監査 S8-26 の続き)
   // **完全一致**(`mode` 無し)。認証の外へ出る唯一の応答なので、電話が読まない鍵が
   // サーバ側に生える事を許さない —— `serverOnly` を1つでも認めた瞬間、
@@ -859,7 +880,7 @@ test("ハンドラは切り出した builder を通って封筒を組んでい�
     "sessionsBody({", "sessionRow(", "unreadableRow({",
     // S8-26 で切り出した6本。`.map(withWho)` だけ呼び方が違うのは、これがハンドラ側で
     // **束に対して**掛かる為(封筒の引数として渡る形が本番の姿)。
-    "historyBody({", "messageItem({", "pollBodyTmux({", "pollBodyWorker({", "gapItem(", ".map(withWho)",
+    "historyBody({", "historySearchBody({", "messageItem({", "pollBodyTmux({", "pollBodyWorker({", "gapItem(", ".map(withWho)",
     "healthzBody({",
     // 口座(2026-08-15)。3つの口が同じ封筒を通る —— `GET /api/account` / `POST …/select` /
     // `POST …/next`。此処が直書きへ戻ると、電話が読む鍵の照合が丸ごと飾りになる。
@@ -869,6 +890,12 @@ test("ハンドラは切り出した builder を通って封筒を組んでい�
   }
   assert.match(src, /json\(res,\s*200,\s*sessionsBody\(/, "`/api/sessions` の 200 が `sessionsBody` を通っていない");
   assert.match(src, /json\(res,\s*200,\s*historyBody\(/, "`/history` の 200 が `historyBody` を通っていない");
+  // ★探索は **2 つ**数える(2026-09-01)。探した枝と、file がまだ無い枝の
+  //   両方が同じ封筒を通る。`assert.match` は 1 本でも在れば緑になるので、
+  //   片方が直書きへ戻っても気付けない —— 実際「会話が未だ無い」側だけが
+  //   `matched` を落とす形になれば、電話はその応答を `.malformedBody` と読む。
+  assert.equal((src.match(/json\(res,\s*200,\s*historySearchBody\(/g) ?? []).length, 2,
+    "`/history?q=` の 200(探した枝 / file が無い枝)が 2 本とも `historySearchBody` を通っていない");
   // ★`/healthz` は認証の**外**。ここが直書きへ戻ると、鍵を1本足す改修が
   //   電話側の照合を1つも通らずに認証の外へ出る道になる。
   assert.match(src, /json\(res,\s*200,\s*healthzBody\(/, "`/healthz` の 200 が `healthzBody` を通っていない");
@@ -903,8 +930,12 @@ test("`phone-subset` の宣言が、緩める言い訳になっていない", ()
   //   `DigestEnvelope.Digest.Window` … 3 つの ISO 時刻は `minutes` に畳んである。
   //     電話が描くのは「何分の窓か」だけで、絶対時刻は**時計のずれた 2 台の間で
   //     意味が揺れる**(Friday は 2026-08-26 に JST→CDT が動いた実績が在る)。
+  // ★ 2026-09-01 に `TranscriptSearchResponse` が 1 つ増えた。理由:
+  //   `truncated` は探索応答では `!searchedToStart` の写しでしかなく、電話が
+  //   2 本読むと必ず片方が先に古くなる。且つ机からは消せない ——
+  //   出荷済みの電話が素の履歴の語彙として読む。
   assert.deepEqual(PAIRS.filter((p) => p.mode === "phone-subset").map((p) => p.swift),
     ["DigestEnvelope.Digest", "DigestEnvelope.Digest.Window",
      "AttachClient.Envelope", "SessionsResponse", "SessionRow", "PollResponse",
-     "MessageItem", "GapItem", "AccountClient.Wire"]);
+     "MessageItem", "GapItem", "TranscriptSearchResponse", "AccountClient.Wire"]);
 });

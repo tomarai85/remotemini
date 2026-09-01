@@ -62,7 +62,7 @@ final class PollFetchingFixture: PollFetching {
             // than folded into a `default` so adding a 7th state is a compile error
             // here instead of a silent `unreadableTarget = 0`.
             unreadableTarget = 0
-        case .threeRoles, .long:
+        case .threeRoles, .long, .search, .searchUnreachable:
             // No degradation intended for this state -- 0 means the very first call
             // already falls through to the "hold forever" branch below, so
             // `unreadableStage` never leaves `.normal`.
@@ -70,6 +70,13 @@ final class PollFetchingFixture: PollFetching {
             // `.long` は位置(開いた時どこに居るか / 「以前を読む」の後どこへ寄るか)
             // だけを測る為の状態なので、ライブ行もバナーも出さない -- 画面に他の
             // 動きが在ると、位置が動いた理由がどちらか言えなくなる。
+            //
+            // `.search` / `.searchUnreachable` も同じ理由で静かにする(2026-09-01)。
+            // 加えて此処には固有の要求が在る: 探索の UI 検査は「検索の開閉を跨いで
+            // `conversation.landingDistance` が **1 バイトも動かない**」を測る。
+            // ライブ行が 1 本でも届けば `tailToken` が進み、読み出しの `corr=` /
+            // `h=` が変わって、着地の輪が再起動したのか poll が伸ばしたのかを
+            // 言えなくなる —— 対照が測る対象を失う。
             unreadableTarget = 0
         case .degraded:
             unreadableTarget = 1 // streak 1, below the stage-2 floor of 3.
@@ -97,7 +104,7 @@ final class PollFetchingFixture: PollFetching {
         switch state {
         case .busy: return .busy
         case .choice, .choiceKeys: return .choice
-        case .threeRoles, .degraded, .stalled, .long: return nil
+        case .threeRoles, .degraded, .stalled, .long, .search, .searchUnreachable: return nil
         }
     }
 
@@ -217,7 +224,7 @@ final class PollFetchingFixture: PollFetching {
                 ],
                 digest: "fixture-benign"
             ))
-        case .threeRoles, .degraded, .stalled, .busy, .long:
+        case .threeRoles, .degraded, .stalled, .busy, .long, .search, .searchUnreachable:
             return nil
         }
     }

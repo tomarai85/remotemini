@@ -96,11 +96,12 @@ for sid in $sessions; do
 done
 
 # ---- 判定と状態の更新は1つの python に閉じる(shell で JSON を切り貼りしない)-------
-out="$("$PY" - "$tmp" "$STATE" "$now_epoch" "$SOON_MIN" "$NOW_OBS" "$STALE_MIN" <<'PY'
+out="$("$PY" - "$tmp" "$STATE" "$now_epoch" "$SOON_MIN" "$NOW_OBS" "$STALE_MIN" "$DRY" <<'PY'
 import json, os, sys, hashlib
 
-feed, statep, now, soon_min, now_obs, stale_min = sys.argv[1:7]
+feed, statep, now, soon_min, now_obs, stale_min, dry = sys.argv[1:8]
 now = int(now); soon_min = int(soon_min); now_obs = int(now_obs); stale_min = int(stale_min)
+dry = dry == "1"
 
 try:
     state = json.load(open(statep))
@@ -166,7 +167,21 @@ for sid, v in (state or {}).items():
     if (now - int(v.get("seen", 0))) // 60 < stale_min:
         fresh[sid] = v
 
-json.dump(fresh, open(statep, "w"), ensure_ascii=False, indent=1)
+# ★★2026-09-01: `--dry-run` では**書かない**。
+#
+#   直前まで此の行は無条件だった —— つまり `--dry-run` が指紋台帳に `alerted: True` を
+#   書き込み、**次の本番実行が「もう鳴らした」と判断して黙る**。
+#   「鳴らさずに判定だけ出す」と名乗る旗が、**実際の通知を 1 回食べていた**。
+#   `DRY` は python に渡されてすらいなかった(引数 6 個)ので、旗は此の層に届いていない。
+#
+#   ★同じ形は 2026-08-31 にも踏んでいる(dry-run が実在のカードを食べ、
+#     「消失を通知しない」旗が締切をカレンダーから消した)。**旗が守るのは
+#     「見える側」だけで、「書く側」は別に止めないと止まらない。**
+#
+#   刈り込み(古い記録の掃除)も dry では起きないが、それで正しい ——
+#   観測する物が状態を変えないのが dry-run の定義。
+if not dry:
+    json.dump(fresh, open(statep, "w"), ensure_ascii=False, indent=1)
 for a in alerts:
     print("%s\t%s\t%s\t%s\t%s" % (a["sid"], a["attention"], a["level"], a["elapsed_min"], a["line"]))
 PY

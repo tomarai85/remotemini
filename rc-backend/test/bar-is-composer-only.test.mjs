@@ -40,7 +40,17 @@ const GATE = requireOutside(["ios", VIEW]);
 //   (`Rectangle().fill(.bar)`)なので、綴りが `.background(` から `.fill(` へ動いた。
 //   守る不変条件は変わらない:**帯は composer だけの物で、「以前を読む」には敷かれない**。
 //   だから検査は綴りを1つ追うのをやめ、**帯を作る2つの手段の両方**を測る。
-const BAR = ".fill(" + ".bar)";
+// ★★2026-09-01: 追う綴りを `.fill(.bar)` から `RCTheme.composerBarFill` へ移した。
+//   守る不変条件は 1 ミリも動いていない —— **帯は composer だけの物で、
+//   「以前を読む」には敷かれない**。動いたのは帯を作る綴りの方。
+//
+//   経緯(この訂正の順序ごと残す): 意匠を平らな面へ替えた回に、私は composer の帯を
+//   `Rectangle().fill(RCTheme.surface)` と書いた。`RCTheme.surface` は**カードもチップも
+//   使う汎用トークン**なので、此の検査が立っていた「綴りが此の画面で一意」という前提が
+//   壊れ、錨②と主張の 2 本が赤くなった。
+//   ★正しい直し方は検査を緩める事ではなく、**帯に固有の名前を与えて一意性を戻す事**
+//     (`RCTheme.composerBarFill`)。検査に合わせて実装を直した、が事実の順序。
+const BAR = "RCTheme.composer" + "BarFill";
 // glass の系で帯を作る材質。composer 以外にも出る綴り(道具チップ・入力欄)なので
 // **数では押さえない** —— footer に入っていない事だけを測る。
 const GLASS_BAR = ".ultraThin" + "Material";

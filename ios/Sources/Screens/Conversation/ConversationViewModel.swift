@@ -1,6 +1,52 @@
 import Foundation
 import os
 
+/// 探索の面が置ける状態(2026-09-01)。
+///
+/// ★`emptyBounded` と `emptyWhole` を **1 つに畳まない**のが此の型の存在理由。
+///   畳んだ瞬間、画面は「見つかりません」と言い切れない物を言い切る形になる ——
+///   走査は転写の末尾しか見ないので、言い切れる場面(`.wholeConversation`)は
+///   短い会話でしか来ない。畳みを塞ぐ陰性対照が
+///   `ConversationViewModelTests.testTheTwoZeroMeaningsAreNotCollapsedNegativeControl`。
+enum TranscriptSearchState: Equatable {
+    case idle
+    case running(query: String)
+    /// `matched > 0`。
+    case results(TranscriptSearchResults)
+    /// 0 件 + 頭までは見ていない。言えるのは「走査した範囲には無い」まで。
+    case emptyBounded(query: String)
+    /// 0 件 + 頭まで見た。**此処だけ**が言い切りの文を出せる面。
+    case emptyWhole(query: String)
+    /// 探索の面の中で終わる失敗。転写は生きているので画面全部は取らない(§D-E)。
+    case failed(TranscriptSearchFailure, query: String)
+}
+
+/// 探索の面に留めてよい失敗の 2 種。
+///
+/// `.unauthorized` / `.notFound` / `.contractViolation` が此処に無いのは意図で、
+/// あの 3 つは探索固有の話ではない(鍵が死んだ / 会話が消えた / 再試行で治らない)
+/// ので画面ごと escalate する。`ConversationViewModel.applySearch` の表が正本。
+enum TranscriptSearchFailure: Equatable {
+    case unreachable
+    case malformedBody
+}
+
+struct TranscriptSearchResults: Equatable {
+    let query: String
+    /// **新しい順**。机は古い順(`all.slice(-limit)`)で返すので電話側で反転する。
+    /// 動機が「どこで転けたか」= 直近の一致なので、一番役に立つ行が最上段に来る。
+    /// ★副次的に重要: 一番上から始まる面は下端へ寄せる機構を要らなくするので、
+    ///   2026-08-31 に安定させた着地の輪に一切 触れない。
+    let rows: [HistoryEntry]
+    /// 走査した範囲で見つかった総数。`rows.count` は `limit` で切られた後の数。
+    let matched: Int
+    let coverage: TranscriptScanCoverage
+    /// 「全部は見せていない」。★之を `false` に固定する変異を
+    /// `testCappedResultsAnnounceTheCap` が捕まえる —— 黙って切った面は
+    /// 「他に無い」と読まれるので、切った事は数と同じ強さで名乗る。
+    var isCapped: Bool { matched > rows.count }
+}
+
 /// The Conversation screen's state machine (Sprint 3 brief §3). Same split as
 /// `ListViewModel`: `apply(_:)` is separated from the async fetch call so tests can
 /// drive it directly without racing a real `Task` (see `ConversationViewModelTests`).
@@ -524,6 +570,25 @@ final class ConversationViewModel: ObservableObject {
 
     private var currentLimit: Int
     private var isFetchingEarlier = false
+
+    // MARK: - 転写を探す(2026-09-01)
+
+    /// 返す一致の上限。**100**。
+    ///
+    /// 机の上限は 500(`server.mjs` の `Math.min(…, 500)`)。1 MiB の窓に 500 件の
+    /// 一致は現実に起きる(1 一致あたり 2 KiB 程度)ので、500 は携帯回線に重い。
+    /// 100 なら 1 往復で 1 画面ぶんが収まり、超過分は `isCapped` が正直に名乗る。
+    static let searchLimit = 100
+
+    @Published private(set) var searchState: TranscriptSearchState = .idle
+
+    /// 二重起動の錠。`loadEarlier()` の `isFetchingEarlier` と**同じ形** ——
+    /// `await` の前(= 同期のうち)に立てるので、最初の呼びが suspend する前に
+    /// 届いた 2 本目は必ず此れを見て降りる。
+    ///
+    /// ★`@Published` にしない。画面が読むのは `searchState`(`.running` を持つ)で、
+    ///   同じ事実を 2 つの property に持たせると必ず片方が先に古くなる。
+    private var isSearching = false
 
     private var unreadableMeter: UnreadableMeter?
     /// Brief §3-c: "2回目以降は「読み直す」を人が押した時のみ" -- the automatic,
@@ -1351,6 +1416,110 @@ final class ConversationViewModel: ObservableObject {
             // ordinary-looking explanation available.
             applyContractViolation(violation)
         }
+    }
+
+    // MARK: - 転写を探す
+
+    /// 1 回の探索。**転写の窓を一切 動かさない。**
+    ///
+    /// ★`history` / `truncated` / `currentLimit` / `loadEarlierState` を書かない事が
+    ///   此のメソッドの一番硬い約束。探索応答の `truncated` は「最初まで見ていない」で
+    ///   あって「これより前が在る」ではないので(`TranscriptSearchResponse` の doc)、
+    ///   1 文字でも `loadEarlierState` 側へ流すと**探索の走査距離が読み進みボタンを
+    ///   動かす**。型を分けた意味が此処で消える。
+    ///
+    /// ★`MergeHistory.merge` も通さない。`live` は転写の末尾に来る追記で、
+    ///   探索結果と混ぜる意味が無い。`entries` は転写専用のまま。
+    func search(query: String) async {
+        // 空白だけの問いは撃たない(`HistoryClient.search` と同じ判断を、
+        // 往復を作る前に置く)。**最小文字数の門は置かない** —— 日本語の 1 文字は
+        // 正当な問いで、机が拒むのは空だけ。
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return }
+        guard !isSearching else { return }
+
+        isSearching = true
+        // ★面を退避する。`loadEarlier()` の `stateBeforeAttempt` と**同じ形**。
+        //
+        //   之が要る事は検査が教えた(2026-09-01、`.unauthorized` と `.cancelled` の
+        //   2 本が赤で出た)。spec §2-c の表は「`searchState` は触らない」と書いていて、
+        //   私は `applySearch` の中で触らない事だと読んだが、`search()` は既に
+        //   `.running` を置いた後である。結果を持たない終わり方 —— 鍵の失効 /
+        //   会話の消失 / 契約違反 / 取り消し —— で其のままにすると、面は
+        //   **永久に回り続ける独楽**になる。表の意図は「探索の面にその失敗を記録しない」
+        //   であって「回しっぱなしにする」ではないので、呼び出し全体を通して
+        //   面が変わらない形にする = 退避して戻す。
+        let faceBefore = searchState
+        searchState = .running(query: q)
+        let result = await client.search(
+            baseURL: baseURL, apiKey: apiKey, sessionID: sessionID,
+            limit: Self.searchLimit, query: q
+        )
+        applySearch(result, query: q, faceBefore: faceBefore)
+        isSearching = false
+    }
+
+    /// 応答を面へ写す。失敗の行き先は 2 つに割れている:
+    ///
+    /// | 失敗 | 行き先 | 何故 |
+    /// |---|---|---|
+    /// | `.unauthorized` | `onUnauthorized()` | 鍵の話。会話も含めて全部が使えない |
+    /// | `.notFound` | `phase = .notFound` | 会話そのものが消えた(`applyLoadEarlier` と同じ) |
+    /// | `.contractViolation` | `applyContractViolation` | 再試行で治らない。全面表示へ合流 |
+    /// | `.unreachable` | 探索の面の中 | 転写は読めていて生きている |
+    /// | `.malformedBody` | 探索の面の中 | 探索応答の形は履歴応答と**別物**なので、其の復号失敗は転写の健康を否定しない |
+    /// | `.cancelled` | 何もしない | 「新しい要求が結果を持つ」(`applyInitial` の既存規約) |
+    /// `faceBefore` = `search()` が `.running` を置く**前**の面。結果を持たない
+    /// 終わり方で此処へ戻す(既定は `.idle` = 直に呼ぶ検査の為の値)。
+    func applySearch(
+        _ result: Result<TranscriptSearchResponse, SessionsFetchError>,
+        query: String,
+        faceBefore: TranscriptSearchState = .idle
+    ) {
+        switch result {
+        case .success(let response):
+            guard response.matched > 0 else {
+                // ★此の 2 行が依頼文の核心。`coverage` を無視して 1 つの面に畳むと、
+                //   走査が末尾で止まった時にも「この会話のどこにも在りません」と
+                //   言い切る事になる —— 探索が要る場面(長い会話)ほど、その断言は嘘になる。
+                searchState = response.coverage == .wholeConversation
+                    ? .emptyWhole(query: query)
+                    : .emptyBounded(query: query)
+                return
+            }
+            searchState = .results(TranscriptSearchResults(
+                query: query,
+                // 机は古い順で返す。動機が「直近の転倒点」なので反転して新しい順にする。
+                rows: response.history.reversed(),
+                matched: response.matched,
+                coverage: response.coverage
+            ))
+        // ★下の 3 つは探索固有の話ではないので画面ごと escalate し、探索の面は
+        //   **元へ戻す**(この失敗を探索の面に記録しない = spec §2-c の表)。
+        case .failure(.unauthorized):
+            searchState = faceBefore
+            onUnauthorized()
+        case .failure(.notFound):
+            searchState = faceBefore
+            phase = .notFound
+        case .failure(.contractViolation(let violation)):
+            searchState = faceBefore
+            applyContractViolation(violation)
+        case .failure(.unreachable):
+            searchState = .failed(.unreachable, query: query)
+        case .failure(.malformedBody):
+            searchState = .failed(.malformedBody, query: query)
+        case .failure(.cancelled):
+            // 「新しい要求が結果を持つ」。此の要求は面に何も書かずに降りる ——
+            // `applyLoadEarlier` の `.cancelled` が `stateBeforeAttempt` を戻すのと同じ。
+            searchState = faceBefore
+        }
+    }
+
+    /// 探索を畳む。**結果は捨てる**(保持しない = 再入力で撃ち直す)。
+    /// 保持すると「前に探した語の結果」が、今の転写と食い違ったまま残る面ができる。
+    func cancelSearch() {
+        searchState = .idle
     }
 
     /// Brief §3-b-1: reuses `MergeHistory.sameRoleAndText`, not a new equality

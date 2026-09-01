@@ -58,9 +58,17 @@ enum RCTheme {
             print("theme variant env:absent")
         }
         #endif
-        // 既定 = J(全面ガラス・暗)。2026-08-29 Tom「全部 Glass、Liquid glass っぽいのがいい」
-        // を受けて D から昇格(D は 2026-08-17 裁定の旧既定として variant に残る)。
-        return .glassFull
+        // 既定 = graphite(平らな暗い面)。2026-09-01 Tom 裁定で glassFull から差し替え。
+        //
+        // ★何故 降りたか(Tom 逐語「UI が汚い」「無駄だねキーボードしかガラスっぽくないし」):
+        //   ガラスは面・縁・屈折・光彩が**常に同時に**効くので、引き算ができない。
+        //   実際 2026-09-01 に枠を外そうとしたが、縁を描いているのは `RCCard` ではなく
+        //   iOS 26 の `glassEffect` 自身で、SwiftUI からは消せなかった。
+        //   ★更に本質的な指摘: ガラスが**ガラスに見えるのは後ろが動く時だけ**。
+        //     動かない一覧の上では屈折する物が無く、濁った灰色の板にしかならない。
+        //     キーボード(後ろを内容が流れる)だけが本当にガラスに見えていた。
+        //   2026-08-29 の「全部 Glass」は Tom 自身の裁定だったが、実物を見て撤回された。
+        return .graphite
     }
 
     /// ボタン・リンク・選択の tint。
@@ -154,12 +162,41 @@ enum RCTheme {
         }
     }()
 
+    /// 面の 1 段上(自分の発言の泡など、カードより手前に在る物)。
+    ///
+    /// ★2026-09-01 新設。理由は「色が気に入らない」ではなく**系統の混在**:
+    ///   平らな variant の側だけ `Color(.systemGray5)` / `.systemGray6` / `.bar` ——
+    ///   Apple のシステム灰 = **中立灰(R≒G≒B)**を使っていた。此の配色の本体は
+    ///   青寄り(graphite の面 #1A1E26 は B が R より 12 高い)なので、
+    ///   一画面に灰色の系統が 2 つ並ぶ。実測: 泡 (44,44,46) / 面 (26,30,38)。
+    ///   ★人は「青い灰」と「中立の灰」を色名では区別しないが、**隣に並ぶと**
+    ///     片方が汚れて見える。「洗練されていない」の実体は大体これ。
+    static let surfaceElevated: Color = {
+        switch variant {
+        case .claudeWarm: return Color(red: 0x3E / 255.0, green: 0x3B / 255.0, blue: 0x35 / 255.0)
+        case .lightMinimal: return Color(red: 0xE9 / 255.0, green: 0xE9 / 255.0, blue: 0xEE / 255.0)
+        case .graphite: return Color(red: 0x26 / 255.0, green: 0x2C / 255.0, blue: 0x38 / 255.0)
+        // glass の系では自分の泡は accent の淡い面なので此処は使われない。
+        // それでも定義するのは、後から平らな variant を足した時に穴が開かない為。
+        case .glassDark: return Color.white.opacity(0.12)
+        case .glassLight: return Color.white.opacity(0.70)
+        case .glassMax: return Color.white.opacity(0.16)
+        case .glassTerm: return Color.white.opacity(0.13)
+        case .glassPolish: return Color.white.opacity(0.14)
+        case .glassFull: return Color.white.opacity(0.20)
+        case .glassBright: return Color.white.opacity(0.65)
+        }
+    }()
+
     /// カードの縁(暗い variant はこれが影の代わり)。
     static let surfaceStroke: Color = {
         switch variant {
         case .claudeWarm: return Color.white.opacity(0.07)
         case .lightMinimal: return Color.black.opacity(0.06)
-        case .graphite: return Color.white.opacity(0.08)
+        // ★2026-09-01: 枠を消した(0.08 → 0)。カードが縦に並ぶ時、薄い枠は
+        //   「箱の羅列」に見える。面の明度差(地 #0F1115 / 面 #1A1E26)だけで
+        //   充分に分かれるので、線は要らない。
+        case .graphite: return Color.clear
         case .glassDark: return Color.white.opacity(0.12)
         case .glassLight: return Color.white.opacity(0.65)
         case .glassMax: return Color.white.opacity(0.16)
@@ -214,7 +251,11 @@ enum RCTheme {
     static let glowStrength: Double = {
         switch variant {
         case .glassMax: return 0.50
-        case .glassFull: return 0.80
+        // ★2026-09-01: 0.80 → 0.34。Tom「UI が汚い」。
+        //   0.80 は 400-500pt の玉 4 個が全面に効いていて、其の上に半透明の面を
+        //   重ねるので**濁る**。色が意味を持たず、只 全部を紫にしていた。
+        //   薄くすると、色は「地の気配」に戻り、意味を持つのは状態の色だけになる。
+        case .glassFull: return 0.34
         case .glassBright: return 0.55
         case .glassPolish: return 0.40
         case .glassTerm: return 0.30
@@ -313,57 +354,94 @@ extension View {
 struct RCChip: ViewModifier {
     let tint: Color
     func body(content: Content) -> some View {
-        if RCTheme.usesGlass {
-            content
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay(Capsule().strokeBorder(tint.opacity(0.4), lineWidth: 0.8))
-        } else {
-            content.background(tint.opacity(0.12), in: Capsule())
-        }
+        // ★2026-09-01: 面と縁を落とし、**淡い塗りだけ**にした。Tom「UI が汚い」。
+        //   material + 色の縁は、1 行に 2 個 並ぶと「小さい箱の羅列」に見える ——
+        //   一覧の行は既にカードの面に乗っているので、其の上で更に面を重ねると
+        //   層が 3 枚になり、何が容器で何が中身か読めなくなる。
+        //   色は文字が持ち、面は気配だけ持つ。
+        content.background(tint.opacity(0.14), in: Capsule())
     }
 }
 
 /// カード1枚の面。glass 系は iOS 26 の Liquid Glass(旧 OS は material に落ちる)、
 /// それ以外は塗り + 縁。`emphasized` = choice 行(机側の Enter が承認/課金になり得る
 /// 唯一の状態)だけ橙で名指しする。
+extension RCTheme {
+    /// composer の入力欄の**面**。
+    ///
+    /// ★2026-09-01 に token 化した。理由は色ではなく**構造**:
+    ///   2026-08-29 に Tom が「黒い箱が洗練されていない」と言った時、私は直しを
+    ///   `if RCTheme.usesGlass` の**ガラス側の枝にだけ**入れ、else 側は
+    ///   `.textFieldStyle(.roundedBorder)` のまま残した。既定が graphite に
+    ///   替わった瞬間、其の直しは 1 行も効かなくなり、実測の画で入力欄の中が
+    ///   **(0,0,0) の純黒** —— 配色の中で唯一の純黒 —— に戻っていた。
+    ///   同じ形を上限告知でも踏んでいる(`usesGlass` の else 側に在って電話で
+    ///   一度も描かれていなかった)。★**直しが枝の片側にしか無い状態を作らない**
+    ///   為に、枝を消して差を token 1 個へ畳んだ。呼ぶ側は 1 本道になる。
+    /// composer の**帯**の面(転写と composer を分ける層)。
+    ///
+    /// ★2026-09-01 に token 化した。理由は色ではなく**検査が成立するかどうか**:
+    ///   平らな側は `Rectangle().fill(.bar)` という**この画面で一意な綴り**だった。
+    ///   `bar-is-composer-only.test.mjs` は其の一意性の上に立っていて、
+    ///   「帯の材質が `loadEarlierFooter` に敷かれていない」を**バイトで**測る
+    ///   (XCUITest は色も材質も読めないので、この repo に他の測り方が無い)。
+    ///   私が `.bar` を汎用の `RCTheme.surface` へ替えた時、綴りがカード・チップと
+    ///   衝突して**門の前提ごと壊れた**(検査 2 本が赤)。
+    ///   ★門を緩めるのではなく、**帯に固有の名前を返す**のが正しい直し方。
+    ///     不変条件(帯は composer だけの物)は 1 ミリも動いていない。
+    static var composerBarFill: AnyShapeStyle {
+        usesGlass ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(surface)
+    }
+
+    static var composerFieldFill: AnyShapeStyle {
+        usesGlass ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(background)
+    }
+}
+
 struct RCCard: ViewModifier {
     var emphasized = false
 
     func body(content: Content) -> some View {
         if RCTheme.usesGlass {
+            // ★2026-09-01: 縁のキャッチライトを外した。Tom「UI が汚い」。
+            //   硝子の面・縁の光・枠線の **3 重**が同時に効いていて、
+            //   カードが縦に並ぶと灰色の箱の羅列に見える(= 開発ツールの見た目)。
+            //   面だけ残し、分離は**余白**に持たせる。装飾を足すのではなく引く。
             glassBody(content)
-                .overlay {
-                    // J/K のみ: 縁のキャッチライト(左上から差す1px の光)。素の glassEffect は
-                    // 暗い地では縁が沈み、板が地に溶ける — 実物の硝子は必ず縁が光を拾う。
-                    if RCTheme.glassRich {
-                        RoundedRectangle(cornerRadius: RCTheme.cardRadius, style: .continuous)
-                            .strokeBorder(
-                                LinearGradient(
-                                    colors: [Color.white.opacity(RCTheme.colorScheme == .dark ? 0.45 : 0.9),
-                                             Color.white.opacity(0.05)],
-                                    startPoint: .topLeading, endPoint: .bottomTrailing),
-                                lineWidth: 1)
-                    }
-                }
         } else {
             content
+                // ★2026-09-01: 強調でも**面は他の行と同じ**にした。
+                //   以前は橙 12% を敷いていたが、地が炭色(#0F1115)なので橙は色として
+                //   立たず**茶色い汚れ**に見える(実測の画 `shots-clean/flat-list-normal.png`
+                //   の 1 枚目)。硝子の側で同じ理由から 0.30 → 0.10 に落としており、
+                //   平らな面では 0 まで行くのが正しかった。
+                //   ★「今 Tom を待っている」は 橙の点・橙の文字・橙の枠が既に 3 度
+                //     言っている。面まで染めるのは 4 度目で、しかも一番濁る言い方。
                 .background(
                     RoundedRectangle(cornerRadius: RCTheme.cardRadius, style: .continuous)
-                        .fill(emphasized ? Color.orange.opacity(0.12) : RCTheme.surface)
+                        .fill(RCTheme.surface)
                         .shadow(color: .black.opacity(RCTheme.cardShadowOpacity), radius: 6, y: 2)
                 )
-                .overlay(
-                    RoundedRectangle(cornerRadius: RCTheme.cardRadius, style: .continuous)
-                        .stroke(emphasized ? Color.orange.opacity(0.45) : RCTheme.surfaceStroke, lineWidth: 1)
-                )
+                .overlay {
+                    if emphasized {
+                        // 枠は残す —— 枠が**この 1 枚だけ**に付くから意味が出る。
+                        // 全部に付いていた頃(2026-09-01 朝まで)は箱の羅列だった。
+                        RoundedRectangle(cornerRadius: RCTheme.cardRadius, style: .continuous)
+                            .stroke(Color.orange.opacity(0.55), lineWidth: 1)
+                    }
+                }
         }
     }
 
     @ViewBuilder
     private func glassBody(_ content: Content) -> some View {
         if #available(iOS 26.0, *) {
+            // ★2026-09-01: 強調の塗りを 0.30 → 0.10。Tom「UI が汚い」。
+            //   0.30 は面が**茶色く濁る**(硝子の上の橙は色として立たず、汚れに見える)。
+            //   「今 Tom を待っている」を伝えるのは既に橙の点と橙の文字がやっている ——
+            //   面まで染めるのは 3 度言っている事になり、しかも一番濁る言い方だった。
             content.glassEffect(
-                emphasized ? .regular.tint(Color.orange.opacity(0.30)) : .regular,
+                emphasized ? .regular.tint(Color.orange.opacity(0.10)) : .regular,
                 in: .rect(cornerRadius: RCTheme.cardRadius)
             )
         } else {
@@ -371,10 +449,14 @@ struct RCCard: ViewModifier {
             content
                 .background(.ultraThinMaterial,
                             in: RoundedRectangle(cornerRadius: RCTheme.cardRadius, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: RCTheme.cardRadius, style: .continuous)
-                        .stroke(emphasized ? Color.orange.opacity(0.45) : RCTheme.surfaceStroke, lineWidth: 1)
-                )
+                // ★強調(要返信)の時だけ縁を出す。常時 出すと「全部が主役」になり、
+                //   本当に見てほしい 1 枚が沈む。
+                .overlay {
+                    if emphasized {
+                        RoundedRectangle(cornerRadius: RCTheme.cardRadius, style: .continuous)
+                            .stroke(Color.orange.opacity(0.45), lineWidth: 1)
+                    }
+                }
         }
     }
 }

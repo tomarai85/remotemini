@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords, searchHistoryFromPath } from "./sessions.mjs";
-import { accountBody, gapItem, healthzBody, historyBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
+import { accountBody, gapItem, healthzBody, historyBody, historySearchBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
 import { publishedBuild } from "./ota-published.mjs";
 import { headerBuild } from "./reqlog.mjs";
 import { parseFleetAccount, selectionMessage, selectionProblem } from "./account.mjs";
@@ -1574,16 +1574,18 @@ const server = createServer(async (req, res) => {
       if (q) {
         try {
           const r = searchHistoryFromPath(target, q, limit);
-          return json(res, 200, {
-            history: r.history,
-            matched: r.matched,
-            // ★`truncated` は「これより前が在る」の意。探索では
-            //   **最初まで見ていない**事が其れに当たる。
-            truncated: !r.reachedStart,
-            searchedToStart: r.reachedStart,
-          });
+          // ★封筒は `historySearchBody`(`src/wire.mjs`)。直書きへ戻すと、
+          //   電話の `TranscriptSearchResponse` と鍵名を突き合わせる者が
+          //   居なくなる(`test/wire-key-agreement.test.mjs` の⑦が之を測る)。
+          return json(res, 200, historySearchBody({
+            entries: r.history, matched: r.matched, reachedStart: r.reachedStart,
+          }));
         } catch (e) {
-          if (e.code === "ENOENT") return json(res, 200, { history: [], matched: 0, truncated: false, searchedToStart: true });
+          // まだ file が無い = 「頭まで見て 0 件」で正しい。**同じ封筒**を通す ——
+          // 枝ごとに手で組むと、鍵が 1 つ増えた日に片方だけが古くなる。
+          if (e.code === "ENOENT") {
+            return json(res, 200, historySearchBody({ entries: [], matched: 0, reachedStart: true }));
+          }
           return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", errno: errnoOf(e) });
         }
       }

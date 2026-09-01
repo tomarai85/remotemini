@@ -20,13 +20,33 @@ final class ConversationViewModelTests: XCTestCase {
         /// order instead of actually exercising `isFetchingEarlier`.
         var deliveryDelay: Duration = .zero
 
-        func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String?) async -> Result<HistoryResponse, SessionsFetchError> {
+        func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
             requestedLimits.append(limit)
             if deliveryDelay > .zero {
                 try? await Task.sleep(for: deliveryDelay)
             }
             guard !resultQueue.isEmpty else { return .failure(.unreachable) }
             return resultQueue.removeFirst()
+        }
+
+        // MARK: - 探索(2026-09-01)
+
+        /// ★探索の記録は**転写の記録と混ぜない**。`requestedLimits` に相乗りさせると、
+        ///   「探索が転写の窓を動かさない」を測る検査が、動かした事に気付けなくなる
+        ///   (同じ配列が伸びるだけなので、どちらが伸ばしたか言えない)。
+        var searchQueue: [Result<TranscriptSearchResponse, SessionsFetchError>] = []
+        private(set) var searchedQueries: [String] = []
+        private(set) var searchedLimits: [Int] = []
+        var searchDeliveryDelay: Duration = .zero
+
+        func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async -> Result<TranscriptSearchResponse, SessionsFetchError> {
+            searchedQueries.append(query)
+            searchedLimits.append(limit)
+            if searchDeliveryDelay > .zero {
+                try? await Task.sleep(for: searchDeliveryDelay)
+            }
+            guard !searchQueue.isEmpty else { return .failure(.unreachable) }
+            return searchQueue.removeFirst()
         }
     }
 
@@ -90,13 +110,20 @@ final class ConversationViewModelTests: XCTestCase {
         var whileFetching: (@MainActor () -> Void)?
         private(set) var probeCount = 0
 
-        func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String?) async -> Result<HistoryResponse, SessionsFetchError> {
+        func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
             if let whileFetching {
                 await MainActor.run { whileFetching() }
                 probeCount += 1
             }
             guard !resultQueue.isEmpty else { return .failure(.unreachable) }
             return resultQueue.removeFirst()
+        }
+
+        /// 此の stub は送信の取り直しを覗く為の物で、探索は通らない。通ったら
+        /// 「もっともらしい `.unreachable`」ではなく**名前の付いた赤**を出す。
+        func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async -> Result<TranscriptSearchResponse, SessionsFetchError> {
+            XCTFail("this test's view model was not expected to search the transcript")
+            return .failure(.unreachable)
         }
     }
 
@@ -2962,5 +2989,334 @@ final class ConversationViewModelTests: XCTestCase {
 
         XCTAssertEqual(counting.calls, 1)
         XCTAssertEqual(vm.queueBanner, counting.outcome)
+    }
+
+    // MARK: - 転写を探す(2026-09-01、spec §2-c。扉B)
+
+    /// 転写を読み終えた `.loaded` の画面を1つ作る。探索の検査は全部この状態から始まる
+    /// —— `phase` が `.loaded` でない画面には探索の面が乗らないので、そこから始めると
+    /// 「変わらなかった」が「そもそも無かった」と区別できない。
+    private func loadedViewModel(
+        _ client: RecordingClient,
+        history: [HistoryEntry]? = nil,
+        truncated: Bool = true
+    ) async -> ConversationViewModel {
+        let h = history ?? [e(.user, "a"), e(.assistant, "b")]
+        client.resultQueue = [.success(HistoryResponse(history: h, truncated: truncated))]
+        let vm = makeViewModel(client: client)
+        await vm.load()
+        return vm
+    }
+
+    private func hits(_ n: Int) -> [HistoryEntry] {
+        (0..<n).map { e(.assistant, "hit \($0)") }
+    }
+
+    func testMatchesBecomeResultsCarryingTheCoverage() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.success(TranscriptSearchResponse(
+            history: hits(3), matched: 3, coverage: .boundedScan))]
+
+        await vm.search(query: "boot")
+
+        guard case .results(let r) = vm.searchState else {
+            return XCTFail("expected .results, got \(vm.searchState)")
+        }
+        XCTAssertEqual(r.rows.count, 3)
+        XCTAssertEqual(r.matched, 3)
+        XCTAssertEqual(r.coverage, .boundedScan)
+        XCTAssertFalse(r.isCapped)
+        XCTAssertEqual(r.query, "boot")
+    }
+
+    /// 机は古い順で返す。動機が「直近の転倒点」なので、面は**新しい順**にする。
+    func testResultsAreNewestFirst() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        let oldestFirst = [e(.user, "old"), e(.user, "mid"), e(.user, "new")]
+        client.searchQueue = [.success(TranscriptSearchResponse(
+            history: oldestFirst, matched: 3, coverage: .wholeConversation))]
+
+        await vm.search(query: "x")
+
+        guard case .results(let r) = vm.searchState else { return XCTFail("expected .results") }
+        XCTAssertEqual(r.rows.map(\.text), ["new", "mid", "old"])
+    }
+
+    func testZeroMatchesWithABoundedScanIsEmptyBounded() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.success(TranscriptSearchResponse(
+            history: [], matched: 0, coverage: .boundedScan))]
+
+        await vm.search(query: "boot")
+
+        XCTAssertEqual(vm.searchState, .emptyBounded(query: "boot"))
+    }
+
+    func testZeroMatchesAfterReachingTheStartIsEmptyWhole() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.success(TranscriptSearchResponse(
+            history: [], matched: 0, coverage: .wholeConversation))]
+
+        await vm.search(query: "boot")
+
+        XCTAssertEqual(vm.searchState, .emptyWhole(query: "boot"))
+    }
+
+    /// ★spec §9 の M3。依頼文の核心である「0 件の 2 意味」が畳まれていない事。
+    ///
+    /// 上の 2 本は片方ずつしか見ないので、`.emptyWhole` を `.emptyBounded` へ写像する
+    /// 変異(case を畳む)は**片方を落とすだけ**で、読む側は「文言が変わった」と
+    /// 読める。此処が落ちれば、落ちた理由は 1 つしかない。
+    func testTheTwoZeroMeaningsAreNotCollapsedNegativeControl() async {
+        let a = RecordingClient()
+        let vmA = await loadedViewModel(a)
+        a.searchQueue = [.success(TranscriptSearchResponse(history: [], matched: 0, coverage: .boundedScan))]
+        await vmA.search(query: "boot")
+
+        let b = RecordingClient()
+        let vmB = await loadedViewModel(b)
+        b.searchQueue = [.success(TranscriptSearchResponse(history: [], matched: 0, coverage: .wholeConversation))]
+        await vmB.search(query: "boot")
+
+        XCTAssertNotEqual(
+            vmA.searchState, vmB.searchState,
+            "走査した範囲に無い / 会話の頭まで見て無い を同じ面にした = 言い切れない物を言い切っている"
+        )
+    }
+
+    /// spec §9 の M10。切った事は数と同じ強さで名乗る。
+    func testCappedResultsAnnounceTheCap() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.success(TranscriptSearchResponse(
+            history: hits(100), matched: 120, coverage: .boundedScan))]
+
+        await vm.search(query: "line")
+
+        guard case .results(let r) = vm.searchState else { return XCTFail("expected .results") }
+        XCTAssertTrue(r.isCapped, "120 件 見つけて 100 件しか返していないのに『全部見せている』の顔になっている")
+        XCTAssertEqual(r.rows.count, 100)
+        XCTAssertEqual(r.matched, 120)
+    }
+
+    /// 対照: 切っていない時は名乗らない。上の 1 本だけだと `isCapped = true` の
+    /// 定数でも緑になる。
+    func testUncappedResultsDoNotAnnounceACapNegativeControl() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.success(TranscriptSearchResponse(
+            history: hits(3), matched: 3, coverage: .boundedScan))]
+
+        await vm.search(query: "line")
+
+        guard case .results(let r) = vm.searchState else { return XCTFail("expected .results") }
+        XCTAssertFalse(r.isCapped)
+    }
+
+    // MARK: - 探索は転写の窓を動かさない(spec §2-c の不変条件)
+
+    func testSearchLeavesTheTranscriptWindowUntouched() async {
+        let client = RecordingClient()
+        let h = [e(.user, "a"), e(.assistant, "b")]
+        let vm = await loadedViewModel(client, history: h, truncated: true)
+
+        let historyBefore = vm.history
+        let truncatedBefore = vm.truncated
+        let stateBefore = vm.loadEarlierState
+        let entriesBefore = vm.entries
+        let limitsBefore = client.requestedLimits
+
+        client.searchQueue = [.success(TranscriptSearchResponse(
+            history: hits(2), matched: 2, coverage: .boundedScan))]
+        await vm.search(query: "boot")
+
+        XCTAssertEqual(vm.history, historyBefore)
+        XCTAssertEqual(vm.truncated, truncatedBefore)
+        XCTAssertEqual(vm.loadEarlierState, stateBefore)
+        XCTAssertEqual(vm.entries, entriesBefore, "探索の行が転写の描画配列へ混ざっている")
+        XCTAssertEqual(client.requestedLimits, limitsBefore, "探索が `/history` を撃ち直した")
+    }
+
+    /// 探索は**探索の口**を、`limit` 100 で、trim した問いで叩く。
+    func testSearchAsksTheSearchPortWithTheSearchLimit() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.success(TranscriptSearchResponse(history: [], matched: 0, coverage: .wholeConversation))]
+
+        await vm.search(query: "  boot  ")
+
+        XCTAssertEqual(client.searchedQueries, ["boot"])
+        XCTAssertEqual(client.searchedLimits, [ConversationViewModel.searchLimit])
+        XCTAssertEqual(ConversationViewModel.searchLimit, 100)
+    }
+
+    /// 空白だけの問いは**撃たない**。机まで往復させない。
+    func testBlankQueryNeverLeavesThePhone() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+
+        await vm.search(query: "   \n  ")
+
+        XCTAssertEqual(client.searchedQueries, [])
+        XCTAssertEqual(vm.searchState, .idle)
+    }
+
+    /// 日本語の 1 文字は正当な問い。**最小文字数の門を置かない**事の対照。
+    func testASingleJapaneseCharacterIsAValidQuery() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.success(TranscriptSearchResponse(history: hits(1), matched: 1, coverage: .boundedScan))]
+
+        await vm.search(query: "鍵")
+
+        XCTAssertEqual(client.searchedQueries, ["鍵"])
+    }
+
+    // MARK: - 失敗の振り分け(spec §2-c の表)
+
+    func testUnreachableStaysInsideTheSearchFace() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.failure(.unreachable)]
+
+        await vm.search(query: "boot")
+
+        XCTAssertEqual(vm.searchState, .failed(.unreachable, query: "boot"))
+        // ★転写は生きている。探索が届かない事は会話が読めない事ではない。
+        guard case .loaded = vm.phase else { return XCTFail("探索の失敗が画面全部を取った: \(vm.phase)") }
+    }
+
+    func testMalformedBodyStaysInsideTheSearchFace() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.failure(.malformedBody)]
+
+        await vm.search(query: "boot")
+
+        XCTAssertEqual(vm.searchState, .failed(.malformedBody, query: "boot"))
+        guard case .loaded = vm.phase else { return XCTFail("探索の失敗が画面全部を取った: \(vm.phase)") }
+    }
+
+    /// 対照: 面の中に留める失敗と、画面ごと取る失敗が**同じ扱いになっていない**事。
+    func testTransportFailureAndSessionLossAreNotCollapsedNegativeControl() async {
+        let a = RecordingClient()
+        let vmA = await loadedViewModel(a)
+        a.searchQueue = [.failure(.unreachable)]
+        await vmA.search(query: "boot")
+
+        let b = RecordingClient()
+        let vmB = await loadedViewModel(b)
+        b.searchQueue = [.failure(.notFound)]
+        await vmB.search(query: "boot")
+
+        XCTAssertEqual(vmA.phase, .loaded)
+        XCTAssertEqual(vmB.phase, .notFound)
+        XCTAssertNotEqual(vmA.phase, vmB.phase)
+    }
+
+    func testUnauthorizedEscalatesAndLeavesTheSearchFaceAlone() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.failure(.unauthorized)]
+
+        await vm.search(query: "boot")
+
+        XCTAssertEqual(unauthorizedCallCount, 1)
+        XCTAssertEqual(vm.searchState, .idle, "鍵の失効は探索の面の話ではない")
+    }
+
+    func testNotFoundBecomesTheWholeScreen() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.failure(.notFound)]
+
+        await vm.search(query: "boot")
+
+        XCTAssertEqual(vm.phase, .notFound)
+    }
+
+    func testContractViolationBecomesTheWholeScreen() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        let violation = ResponseContractViolation(status: 404, code: "NO_SUCH_ROUTE")
+        client.searchQueue = [.failure(.contractViolation(violation))]
+
+        await vm.search(query: "boot")
+
+        XCTAssertEqual(vm.phase, .contractViolation(violation))
+        XCTAssertEqual(vm.lastContractViolation, violation)
+    }
+
+    /// 取り消しは「新しい要求が結果を持つ」。面は触らない。
+    func testCancelledLeavesTheFaceWhereItWas() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.success(TranscriptSearchResponse(history: hits(2), matched: 2, coverage: .boundedScan))]
+        await vm.search(query: "boot")
+        let before = vm.searchState
+
+        client.searchQueue = [.failure(.cancelled)]
+        await vm.search(query: "boot")
+
+        XCTAssertEqual(vm.searchState, before)
+    }
+
+    // MARK: - 多重発火と取り消し
+
+    /// `loadEarlier()` の `isFetchingEarlier` と同じ形。`await` の前に立てた同期の錠が
+    /// 効いている事は、**要求の本数**でしか測れない。
+    func testASecondSearchWhileOneIsInFlightDoesNotLaunchASecondRequest() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchDeliveryDelay = .milliseconds(120)
+        client.searchQueue = [
+            .success(TranscriptSearchResponse(history: hits(1), matched: 1, coverage: .boundedScan)),
+            .success(TranscriptSearchResponse(history: hits(9), matched: 9, coverage: .boundedScan)),
+        ]
+
+        async let first: Void = vm.search(query: "first")
+        try? await Task.sleep(for: .milliseconds(20))
+        async let second: Void = vm.search(query: "second")
+        _ = await (first, second)
+
+        XCTAssertEqual(client.searchedQueries, ["first"], "飛んでいる間の 2 本目が要求を作った")
+    }
+
+    func testCancelSearchDropsTheResults() async {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.success(TranscriptSearchResponse(history: hits(2), matched: 2, coverage: .boundedScan))]
+        await vm.search(query: "boot")
+
+        vm.cancelSearch()
+
+        XCTAssertEqual(vm.searchState, .idle)
+    }
+
+    /// 探索中に poll が `live` を伸ばしても、結果の行は動かない
+    /// (= 探索は `MergeHistory.merge` を通っていない)。
+    func testLiveArrivalsDoNotChangeTheSearchRows() async throws {
+        let client = RecordingClient()
+        let vm = await loadedViewModel(client)
+        client.searchQueue = [.success(TranscriptSearchResponse(history: hits(2), matched: 2, coverage: .boundedScan))]
+        await vm.search(query: "boot")
+        guard case .results(let before) = vm.searchState else { return XCTFail("expected .results") }
+        let entriesBefore = vm.entries
+
+        vm.applyPollStep(try readableStep("""
+        { "items": [ { "kind": "message", "seq": 1, "entries": [ { "role": "assistant", "text": "live-1", "display": { "who": "w" } } ] } ], "cursor": "t.a.1.0", "more": false }
+        """))
+
+        guard case .results(let after) = vm.searchState else { return XCTFail("expected .results") }
+        XCTAssertEqual(before.rows, after.rows, "poll の追記が探索の行へ流れ込んだ")
+        XCTAssertEqual(after.matched, 2)
+        // 錨: `live` は本当に伸びた(伸びていなければ上の主張は空回りで、
+        // 「変わらなかった」ではなく「何も起きなかった」を見ている事になる)。
+        XCTAssertEqual(vm.live.count, 1)
+        XCTAssertNotEqual(vm.entries, entriesBefore, "転写の側は伸びている筈")
     }
 }
