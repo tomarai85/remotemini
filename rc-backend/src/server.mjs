@@ -16,8 +16,10 @@ import { spawn as nodeSpawn, execFileSync, execFile } from "node:child_process";
 import { makeDiffCache } from "./gitdiff.mjs";
 import { promisify } from "node:util";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords, searchHistoryFromPath } from "./sessions.mjs";
-import { accountBody, gapItem, healthzBody, historyBody, historySearchBody, messageItem, pathsBody, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
+import { accountBody, diffBody, gapItem, healthzBody, historyBody, historySearchBody, messageItem, pathsBody, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
 import { completePaths, clampLimit as clampPathsLimit, PATHS_NO_CWD } from "./paths.mjs";
+// 差分を読む(対照表 #4)。git を撃つのは此の module だけで、撃つ動詞は `diff` のみ。
+import { readWorkingDiff } from "./sessiondiff.mjs";
 import { publishedBuild } from "./ota-published.mjs";
 import { headerBuild } from "./reqlog.mjs";
 import { parseFleetAccount, selectionMessage, selectionProblem } from "./account.mjs";
@@ -1577,6 +1579,27 @@ const server = createServer(async (req, res) => {
       return json(res, 200, pathsBody({
         entries: r.paths, truncated: r.truncated, reason: r.reason,
       }));
+    }
+
+    // ★差分を電話で読む(2026-09-02、対照表 #4)。一覧の ± バッジ(#5)が
+    //   「幾ら変わったか」を出すのに対し、此処は**何が変わったか**を返す。
+    //
+    // ★読むだけの道。撃つ git は `diff` の 2 本で、書く動詞は 1 つも無い
+    //   (repo の設定で外部プログラムを走らせない事・index の錠を取らない事は
+    //   `src/sessiondiff.mjs` の頭に書いた)。
+    // ★読めない事は**異常ではなく状態**なので 200 + `reason` で返す。
+    //   cwd が無い会話は珍しくないし、git 管理外の dir で作業する事も在る ——
+    //   其れを 4xx/5xx にすると、電話は「壊れた」と読んで再試行を勧める。
+    if (action === "diff" && req.method === "GET") {
+      const cwd = sessionCwd();
+      if (!cwd) {
+        return json(res, 200, diffBody({ files: [], truncated: false, totalBytes: 0, reason: "no_cwd" }));
+      }
+      // ★`await` する = 事象ループを止めない。一覧の ± バッジ(#5)は同期の cache を
+      //   選んだのと同じ理由(41 本の会話 × git 1 本で一覧が固まる)だが、
+      //   此方は「1 本の会話を人が開いた時だけ」なので、cache は持たずに素で読む。
+      const r = await readWorkingDiff(cwd);
+      return json(res, 200, diffBody(r));
     }
 
     /**

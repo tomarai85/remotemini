@@ -607,9 +607,13 @@ final class ConversationViewModel: ObservableObject {
     /// すると、`RootView` の UI 検査用の面が黙って実機の `UserDefaults` を触る。
     /// 本番は `ListView` だけが `UserDefaultsDraftStore` を渡す。
     private let draftStore: DraftStoring
-    private let baseURL: URL
-    private let apiKey: String
-    private let sessionID: String
+    // ★diff(#4、2026-09-02)。`private` から緩めた -- `ConversationView` が工具帯の
+    //   `NavigationLink` で `DiffViewModel` を組む為に読む。此の3つはどれも
+    //   会話1本を指すだけの値(秘密は `apiKey` だが、其れは元々 `viewModel` を渡した
+    //   側 = `ListView` が持っている物と同じ値で、此処で漏れる面は増えない)。
+    let baseURL: URL
+    let apiKey: String
+    let sessionID: String
     private let onUnauthorized: () -> Void
 
     private var currentLimit: Int

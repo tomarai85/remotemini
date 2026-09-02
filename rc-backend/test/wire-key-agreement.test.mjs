@@ -274,6 +274,27 @@ const CASES = {
   ],
   // 候補1件。file と dir の**両方**を通す(`kind` は此の2値しか出ない)。
   pathItem: [[PATH_ITEMS[0]], [PATH_ITEMS[1]]],
+  // diff(#4、2026-09-02)。★**両枝**を通す: 読めた側(files/hunks/lines が3段とも
+  //   非空 = 入れ子の鍵を実行で出す唯一の道)と、読めない側(`reason` が値を持つ)。
+  //   片方だけだと下の入れ子3本(files[] / hunks[] / lines[])のどれかが0件のまま
+  //   突き合わせを一度も走らせない。#5(一覧の ± バッジ、`sessionRow` の `diff` 引数)
+  //   とは別の builder -- 此方は `sessiondiff.mjs` の hunks の中身、あちらは `gitdiff.mjs`
+  //   の数だけ。二重登録ではない。
+  diffBody: [
+    [{
+      files: [
+        {
+          path: "src/app.js", staged: false, binary: false, added: 1, removed: 1, truncated: false,
+          hunks: [{ header: "@@ -1,1 +1,2 @@", lines: [
+            { kind: "ctx", text: "const x = 1;" }, { kind: "add", text: "const y = 2;" },
+          ] }],
+        },
+        { path: "logo.png", staged: true, binary: true, added: 0, removed: 0, truncated: false, hunks: [] },
+      ],
+      truncated: false, totalBytes: 120, reason: null,
+    }],
+    [{ files: [], truncated: false, totalBytes: 0, reason: "not_a_repo" }],
+  ],
   // 枝が1本しか無い唯一の builder。分岐が無い(`ok` は定数、残り3つは受けた値をそのまま)
   // ので、枝を増やしても出る鍵は1組しか無い —— ②が「原文に在るのに出ない鍵」で裏を取る。
   healthzBody: [[{ pid: 4242, uptime: 61, version: "abc1234" }]],
@@ -337,6 +358,7 @@ const MODULE_OF = {
   pathsBody: ["wire", "src/wire.mjs", "export function pathsBody({ entries, truncated, reason }) {"],
   // `pathItem(p)` は分解しないので既定の目印で本文に届く。
   pathItem: ["wire", "src/wire.mjs"],
+  diffBody: ["wire", "src/wire.mjs", "export function diffBody({ files, truncated, totalBytes, reason }) {"],
   healthzBody: ["wire", "src/wire.mjs", "export function healthzBody({ pid, uptime, version }) {"],
   // 第2引数を分解するので目印を明示する(既定の目印だと `{ raw = "" }` = **引数の分解**を
   // 本文と読んで、鍵が0件になる。②が其れを赤で捕まえるが、先に正しく書く)。
@@ -674,6 +696,14 @@ const PAIRS = [
   // 1つも無いので、増えたら赤、が此処では正しい既定(`HealthzClient.Wire` と同じ判断)。
   { swift: "PathCompletionResponse", builders: ["pathsBody"], at: "" },
   { swift: "PathSuggestion", builders: ["pathItem"], at: "" },
+  // ---- 差分(2026-09-02、対照表 #4)。電話が持つ4つの型を`diffBody`の4段
+  // (封筒 / files[] / files[].hunks[] / files[].hunks[].lines[])とそれぞれ組む。
+  // #5(一覧の ± バッジ、`SessionRow.Diff`)は `sessionRow` builder の側で別途登録済み
+  // (main 側の追加) -- 此処は封筒だけ、二重登録しない。
+  { swift: "SessionDiffBody", builders: ["diffBody"], at: "" },
+  { swift: "DiffFile", builders: ["diffBody"], at: "files[]" },
+  { swift: "DiffHunk", builders: ["diffBody"], at: "files[].hunks[]" },
+  { swift: "DiffLine", builders: ["diffBody"], at: "files[].hunks[].lines[]" },
   // ---- 生存信号(2026-08-09 / 監査 S8-26 の続き)
   // **完全一致**(`mode` 無し)。認証の外へ出る唯一の応答なので、電話が読まない鍵が
   // サーバ側に生える事を許さない —— `serverOnly` を1つでも認めた瞬間、
@@ -802,6 +832,7 @@ const SINGLE_VALUE_EXTENSIONS = [
   "GapWhy",                  // 同・欠落の理由
   "EntryRole",               // 同・履歴の発言者
   "PathKind",                // 同・補完の候補の種別(知らない語は .unrecognized へ)
+  "DiffLineKind",            // 同・diff の行種(add/del/ctx)、対照表 #4(2026-09-02)
 ];
 
 // --- ① 側Aは実際に呼んで測る ---------------------------------------------------

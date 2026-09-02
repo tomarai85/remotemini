@@ -130,6 +130,11 @@ const PHONE_ONLY = {
   //   (2026-08-12、走行のログの `root flow:normal` で確定。UI 検査5本が同じ理由で赤)。
   //   相が直交するなら変数も分ける、が此の2本目が在る理由。
   RC_UI_ACCOUNT_FIXTURE: "電話の環境変数名(口座の相を一覧の相と独立に振る為)。線には出ない",
+  // ★同じ形の2件目(diff、2026-09-02)。最初 `RC_UI_FIXTURE` に相乗りさせて
+  //   `RC_UI_ACCOUNT_FIXTURE` の doc が名指しで警告している壊れ方をそのまま踏んだ
+  //   (会話の fixture 名を diff 側が解決できず、本物の `DiffClient` へ落ちた)。
+  //   `AccountFixture.fromEnvironment()` と同じく名前空間を分けて直した。
+  RC_UI_DIFF_FIXTURE: "電話の環境変数名(diff の相を会話の相と独立に振る為)。線には出ない",
   RC_THEME_VARIANT: "電話の環境変数名(DEBUG 限定で意匠の variant を切替、既定は glassfull = 2026-08-29 昇格)。線には出ない",
   // ★2026-08-27。`WaitEscalation` の閾値(既定10秒 = Nielsen の注意限界)を検査から縮める口。
   //   線に出ないのは、待ちの長さが**電話の側だけの体験**だから —— サーバは自分の応答が
@@ -185,6 +190,8 @@ const SERVER_ONLY = {
   EADDRINUSE: "起動失敗時の errno。線が開く前に落ちるので電話へ届く道が無い",
   EPIPE: "書き込み中断の errno。診断欄止まり",
   ETIMEDOUT: "子プロセスの時間切れ errno。診断欄止まり",
+  ENOBUFS: "diff(#4、2026-09-02)。子プロセスの出力が器を超えた時に載る errno の一つ。\n    線には出ない —— `sessiondiff.mjs` の `readWorkingDiff` が捕まえて `truncated: true` へ\n    言い換えてから返す(MUTEX_BUSY と同じ『言い換えてから線に出る』形)",
+  ERR_CHILD_PROCESS_STDIO_MAXBUFFER: "diff(#4)。Node の `maxBuffer` 超過時に載る同じ意味の\n    errno(node のバージョン/環境で `ENOBUFS` と使い分かれる)。同じく `truncated` へ\n    言い換えて返すので、生の綴りは応答に一度も乗らない",
   SIGKILL: "子プロセスの止め方。応答には載らない",
   SIGTERM: "同じく子プロセスの止め方。応答には載らない",
   // DELETE は 2026-08-14 に許可表から**降りた**: v2 のキュー取り消しで電話が

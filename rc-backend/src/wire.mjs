@@ -452,3 +452,46 @@ export function attachBody(stored, injected, injectReason, swept) {
     swept,
   };
 }
+
+/**
+ * `GET /api/sessions/<id>/diff` の封筒(2026-09-02、対照表 #4)。
+ *
+ * 中身を作るのは `src/sessiondiff.mjs`。此処が持つのは**鍵名だけ** ——
+ * 其れが此の file の役目で、電話の `Decodable` と突き合わせられる唯一の場所。
+ *
+ * ★`reason` は成功でも `null` で**必ず載せる**。欄ごと消すと、電話は
+ *   「差分が無い」と「読めなかった」を本文の形で見分ける事になり、
+ *   其の判定が机と電話の 2 箇所に増える。
+ * ★`truncated` と `totalBytes` は**対**で読む。切った事(真偽)と、切る前に
+ *   どれだけ在ったか(数)。片方だけだと「全部出ているのか」に答えられない。
+ * ★`added` / `removed` は**切る前の全文から**数えた値(`capFiles` の註)。
+ *   本文が途中で止まっても数は正しい = 電話は「+42 -18(表示は途中まで)」と言える。
+ *
+ * ★#5(一覧の ± バッジ、`sessionRow` の `diff` 引数)とは**別の型**。あちらは
+ *   `{files, added, removed}` の**数**だけを一覧の全会話ぶん同期で持つ(`gitdiff.mjs`
+ *   の `makeDiffCache`)。此方は**1 会話を開いた時だけ**、hunks の中身まで運ぶ。
+ *   両方が同じ `git diff --shortstat` 相当を二重に撃たない様、此の関数は
+ *   `src/sessiondiff.mjs`(`readWorkingDiff`)としか組まない。
+ */
+export function diffBody({ files, truncated, totalBytes, reason }) {
+  return {
+    files: (files ?? []).map((f) => ({
+      path: f.path,
+      // index の側か。同じ path が 2 行出る事が在る(stage 済みの変更に、
+      // さらに手が入っている作業木)。其の 2 行を見分ける唯一の欄。
+      staged: f.staged,
+      binary: f.binary,
+      added: f.added,
+      removed: f.removed,
+      // 此の file の本文だけが切られたか(全体の `truncated` とは別の事実)。
+      truncated: f.truncated,
+      hunks: (f.hunks ?? []).map((h) => ({
+        header: h.header,
+        lines: (h.lines ?? []).map((l) => ({ kind: l.kind, text: l.text })),
+      })),
+    })),
+    truncated,
+    totalBytes,
+    reason: reason ?? null,
+  };
+}

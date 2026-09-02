@@ -272,6 +272,22 @@ struct ConversationView: View {
             // (which carries no title), never blanked while retrying.
             .navigationTitle(viewModel.title)
             .navigationBarTitleDisplayMode(.inline)
+            // ★diff(#4、2026-09-02、対照表 "今日から着手できる上位5件" #3)。押して開く
+            //   `NavigationLink` -- このアプリのどの画面も `.sheet` を使っていない
+            //   (`AccountBar`/`ArchivedListView` と同じ push 遷移)。`SessionRow.diff`
+            //   (#5、± バッジ)には依存しない -- 一覧に載る数と、此処が開く中身は別の型
+            //   (`SessionDiffBody`、main 側 `gitdiff.mjs`/`SessionRow.diff` と衝突しない
+            //   名前を付けてある)。
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        DiffView(viewModel: makeDiffViewModel())
+                    } label: {
+                        Image(systemName: "plusminus")
+                    }
+                    .accessibilityIdentifier("conversation.diff.open")
+                }
+            }
             .task { await viewModel.load() }
             // Brief §2-b: the poll loop belongs to this screen, not to the app -- it
             // must not keep running once nobody is looking at it (nav pop, or the
@@ -1290,6 +1306,20 @@ struct ConversationView: View {
     /// 一斉に回り、「押した鍵だけが回る」という当の性質が消えたまま緑になる。
     static func spins(key: String, inFlight: String?) -> Bool {
         inFlight == key
+    }
+
+    /// `DiffFactory`(`ConversationHistoryFactory` と同じ形)-- `RC_UI_FIXTURE` が
+    /// 立っていれば fixture の client を、無ければ本物の `DiffClient` を渡す。
+    private func makeDiffViewModel() -> DiffViewModel {
+        #if DEBUG
+        if let state = DiffFactory.fixtureState {
+            return DiffViewModel(
+                client: DiffFetchingFixture(state: state),
+                baseURL: viewModel.baseURL, apiKey: viewModel.apiKey, sessionID: viewModel.sessionID
+            )
+        }
+        #endif
+        return DiffViewModel(baseURL: viewModel.baseURL, apiKey: viewModel.apiKey, sessionID: viewModel.sessionID)
     }
 
     private func failureView(message: String, identifier: String) -> some View {
