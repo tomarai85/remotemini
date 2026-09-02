@@ -110,11 +110,11 @@ final class ConversationViewModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .initialLoading
-    @Published private(set) var history: [HistoryEntry] = [] { didSet { entriesRevision &+= 1 } }
+    @Published private(set) var history: [HistoryEntry] = [] { didSet { entriesCache = nil } }
     /// Populated by the poll loop as of Sprint 4 (brief §1-a items 1-3) -- previously
     /// always empty (Sprint 3 brief §2-d: no poll loop existed yet). Still never
     /// mutated directly by the View; only `applyReadablePoll(_:)` appends to it.
-    @Published private(set) var live: [HistoryEntry] = [] { didSet { entriesRevision &+= 1 } }
+    @Published private(set) var live: [HistoryEntry] = [] { didSet { entriesCache = nil } }
     @Published private(set) var truncated = false
     @Published private(set) var loadEarlierState: LoadEarlierState = .hidden
 
@@ -569,21 +569,24 @@ final class ConversationViewModel: ObservableObject {
     /// ★鍵に**件数を使わない**。件数は同じで中身が違う状態が実在する(追記が 1 件 届いて
     ///   古い 1 件が落ちる、行の本文だけが変わる 等)。件数を鍵にすると
     ///   **古い並びを新しい物として返す**ので、速さの為に正しさを捨てる事になる。
-    ///   代わりに `history` / `live` への**代入**そのものを数える(`didSet`)。
-    ///   ★代入されれば中身が同じでも版が進む = 安全側。取りこぼす方向には倒れない。
+    ///   代わりに `history` / `live` への**代入**そのもので記憶を捨てる(`didSet`)。
+    ///   ★代入されれば中身が同じでも捨てる = 安全側。取りこぼす方向には倒れない。
+    /// ★版番号で「古いか」を判定する形(2026-09-02 午前)から、代入で**捨てる**形へ
+    ///   (同日 午後、Codex 批評 #7)。版番号だと、配列を空にした後も古い merged 配列が
+    ///   次に `entries` を読むまで残る = 巨大な会話を閉じても記憶が生きる。捨てる形なら
+    ///   代入の瞬間に解放される。判定の意味(代入 = 無効)は同じ。
     ///
     /// ★此のクラスは `@MainActor` の class なので、getter の中で cache を書いてよい
     ///   (値型なら書けないし、並行に触られる型なら競合する)。
     var entries: [HistoryEntry] {
-        if let cached = entriesCache, cached.revision == entriesRevision { return cached.value }
+        if let cached = entriesCache { return cached }
         let merged = MergeHistory.merge(history, live)
-        entriesCache = (entriesRevision, merged)
+        entriesCache = merged
         return merged
     }
 
-    /// `history` / `live` への代入回数。`entries` の記憶が古いかどうかの唯一の鍵。
-    private var entriesRevision: UInt64 = 0
-    private var entriesCache: (revision: UInt64, value: [HistoryEntry])?
+    /// `history` / `live` の代入で nil に戻る。nil = 次の読みで merge し直す。
+    private var entriesCache: [HistoryEntry]?
 
     /// From the List row that navigated here (brief §3-c: the title survives a
     /// failed fetch -- it is never re-derived from a `/history` response, which
