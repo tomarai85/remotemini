@@ -59,7 +59,14 @@ enum RCListStyle: String, CaseIterable, Identifiable {
     }
     /// 入場の動きを持つか。持たない案では transition も delay も一切張らない
     /// (「動かない」を「動きが速い」で代用しない)。
-    var animatesEntry: Bool { self == .airy }
+    ///
+    /// ★2026-09-02: `.airy` 限定を外し、**全案で持つ**様にした。
+    ///   実測: 画面全体でアニメーションの記述は 2 箇所しか無く、既定の案は
+    ///   `animatesEntry == false` なので**入場の動きが 1 つも無かった**。
+    ///   此の旗は元々「3 案を比べる為の差」として置かれたが、比べる対象が
+    ///   「動く / 動かない」では**片方が明らかに劣る**ので、差にならない。
+    ///   案の差は寸法(余白・字送り・本文の行数)に残し、動きは全案の土台にする。
+    var animatesEntry: Bool { true }
 
     // MARK: - 保存(選定中だけの物なので UserDefaults で足りる)
 

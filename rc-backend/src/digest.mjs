@@ -163,7 +163,29 @@ export function digestOf(records, o) {
     writeTargetsTotal: writeTargets.length,
     lastAssistant: tail.text,
     lastAt: tail.at,
+    // ★2026-09-02: 会話が**今 何で走っているか**。転写の各レコードが `model` /
+    //   `gitBranch` / `version` を持つ(実機で確認: `claude-sonnet-4-6` / `main` /
+    //   `2.1.128`)。公式は接続端末に現用モデルを出す(対照表 #14-16)が、電話には
+    //   今まで何も出ていなかった。**最新のレコードの値**を採る —— 途中で `/model` を
+    //   切り替えた会話では古い行が別のモデルを名乗るので、頭の値では嘘になる。
+    //   ★無い物は無いと言う(`null`)。0 件の窓や古い版の転写には項目自体が無い。
+    session: sessionOf(sorted),
   };
+}
+
+/// 転写の最新レコードから、会話の実行環境を拾う。**後ろから前へ**見て、初めて値を持つ
+/// レコードの物を採る(最後の 1 件がメタ行で持たない事が普通に在る)。
+function sessionOf(sorted) {
+  let model = null, gitBranch = null, version = null;
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const r = sorted[i];
+    if (!r || typeof r !== "object") continue;
+    if (model === null && typeof r?.message?.model === "string") model = r.message.model;
+    if (gitBranch === null && typeof r.gitBranch === "string") gitBranch = r.gitBranch;
+    if (version === null && typeof r.version === "string") version = r.version;
+    if (model !== null && gitBranch !== null && version !== null) break;
+  }
+  return { model, gitBranch, version };
 }
 
 /** 窓の中で最後に喋った内容。**不完全でも返す**(後方走査なので末尾は読めている)。 */
@@ -182,8 +204,12 @@ function lastAssistantOf(list, sinceMs, nowMs) {
   return { text: best === null ? null : trimTail(best), at: bestAt === null ? null : new Date(bestAt).toISOString() };
 }
 
-function incomplete(win, reason, tail) {
+// ★`session` は不完全な時も**項目として在る**(既定は全部 null)。電話の復号は
+//   「項目が無い」と「値が null」を同じに扱うが、線の形が読めた/読めないで変わると
+//   `wire-shape-capture` が別形として数える。形は 1 つに保つ。
+function incomplete(win, reason, tail, session = { model: null, gitBranch: null, version: null }) {
   return {
+    session,
     complete: false,
     incompleteReason: reason,
     window: win,

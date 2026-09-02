@@ -13,6 +13,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync, execFile } from "node:child_process";
+import { makeDiffCache } from "./gitdiff.mjs";
 import { promisify } from "node:util";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords, searchHistoryFromPath } from "./sessions.mjs";
 import { accountBody, gapItem, healthzBody, historyBody, historySearchBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
@@ -1021,6 +1022,10 @@ function speaks(res, fn) {
  *   次のリクエストへ持ち越される。凍らせておけば黙って漏れずに其の場で例外になる。
  */
 const AUTH_REQUIRED = Object.freeze({ error: "unauthorized", code: "AUTH_REQUIRED" });
+/// 転写検索の後方走査の上限。素の履歴の `TAIL_MAX`(1 MiB)とは**別に持つ** —— 用途が違う。
+export const SEARCH_TAIL_MAX = 16 * 1024 * 1024;
+/// 作業木の差分の数(一覧の ± バッジ)。同期で返し、裏で cwd ごとに取り直す。
+const diffCache = makeDiffCache();
 const SESSION_NOT_FOUND = Object.freeze({ error: "unknown session", code: "SESSION_NOT_FOUND" });
 const NO_SUCH_ROUTE = Object.freeze({ error: "not found", code: "NO_SUCH_ROUTE" });
 
@@ -1335,7 +1340,7 @@ const server = createServer(async (req, res) => {
               returnRequestedAt: readReturnRequest(MIRROR_ROOT, checkoutId)?.at ?? null,
             }
           : { kind: "desk", checkoutId: null, returnRequestedAt: null };
-        return sessionRow(s, live, machine);
+        return sessionRow(s, live, machine, diffCache.get(s.cwd));
       });
       // 何本見て何本開いたかを毎回名乗る。★「速い」を主張する側が計器を持たないと、
       // 遅くなった時に「気のせい」で片付く(この置き換え自体、測って初めて見つかった)。
@@ -1573,7 +1578,13 @@ const server = createServer(async (req, res) => {
       const q = (url.searchParams.get("q") || "").trim();
       if (q) {
         try {
-          const r = searchHistoryFromPath(target, q, limit);
+          // ★2026-09-02: 走査距離を `TAIL_MAX`(1 MiB)から `SEARCH_TAIL_MAX` へ。
+          //   `opts` を渡さないと `readLinesBackward` の既定 1 MiB に落ち、最長の会話
+          //   (280 MB)では**末尾 0.36% しか見ない**。検索は submit の時だけ走る(毎打鍵では
+          //   ない)ので、素の履歴と同じ上限に縛る理由が無い。
+          //   ★上げ過ぎない —— 280 MB を毎回 舐めると机が固まる。16 MiB は数千行ぶんで、
+          //     「3 時間前に転けた所」を探す動機には足り、読み切りに 1 秒かからない。
+          const r = searchHistoryFromPath(target, q, limit, { maxBytes: SEARCH_TAIL_MAX });
           // ★封筒は `historySearchBody`(`src/wire.mjs`)。直書きへ戻すと、
           //   電話の `TranscriptSearchResponse` と鍵名を突き合わせる者が
           //   居なくなる(`test/wire-key-agreement.test.mjs` の⑦が之を測る)。

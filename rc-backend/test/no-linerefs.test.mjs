@@ -106,6 +106,9 @@ const NOT_A_TREE = [
   [".git", "版の記録。走査対象の拡張子 0 件(実測 2026-08-07: 拡張子を持つのは " +
     "hooks の見本 14 件の .sample だけ)"],
   ["research", "調査の記録。中身は md 3 件だけで走査対象の拡張子は 0 件(実測 2026-08-07)"],
+  [".claude", "並列エージェントの worktree(`isolation: worktree` が作る)。中身は本流の写しで、" +
+    "走査すると同じ file を二重に数える(実測 2026-09-02: `.claude/worktrees/agent-*/` が 2 本)。" +
+    "git には追跡されない"],
 ];
 /** 実在する木だけ走る。**居ない事は下の検査が必ず名指しで報告する**(黙って減らさない)。 */
 const present = (t) => existsSync(t.root) && statSync(t.root).isDirectory();

@@ -331,11 +331,18 @@ struct ListView: View {
             Button {
                 openSessionID = row.id
             } label: {
-                SessionRowView(row: row, nowMs: Date().timeIntervalSince1970 * 1000, style: listStyle)
+                SessionRowView(row: row, nowMs: Date().timeIntervalSince1970 * 1000, style: listStyle,
+                               position: sessions.firstIndex(where: { $0.id == row.id }) ?? 0)
             }
-            // ★`.plain` = Button の既定の装飾(文字を accent 色に染める)を降ろす。
-            //   行の中身は自前のカードなので、色を触られると題名が青くなる。
-            .buttonStyle(.plain)
+            // ★2026-09-02: `.plain` から `RCPressable` へ。
+            //   `.plain` は装飾を全部降ろすので、**題名が青くならない代わりに
+            //   押下の反応まで消えて**いた(`NavigationLink` を止めた回の巻き添え)。
+            //   `RCPressable` は色を触らず、縮みと僅かな明るさだけを返す。
+            .buttonStyle(RCPressable())
+            // ★`list.row`(2026-09-02): 実机を叩く UI 検査が**前から探していた**識別子。
+            //   付いていなかったので検査は `app.cells.firstMatch` へ逃げ、新品の sim では
+            //   初回起動画面の Form のセルを掴んで「会話へ行けない」= 赤になっていた。
+            .accessibilityIdentifier("list.row")
             // 行の操作(長押し = iOS の標準の置き場)。名前(A1)・保管(§9-1)・戻し(§9-2)。
             .contextMenu {
                 Button {
@@ -684,6 +691,11 @@ struct SessionRowView: View {
     let nowMs: Double
     /// 2026-08-26: 選定用。寸法と動きだけがここで分岐する(色・地・glass は不変)。
     var style: RCListStyle = .current
+    /// 一覧の中での位置。入場の**段差**にだけ使う(2026-09-02)。
+    /// ★全行が同時に出ると、動いていても機械的に見える —— 目が「一斉に現れた面」を
+    ///   1 枚の絵として処理してしまい、順番の情報が乗らない。少しずらすと
+    ///   上から下へ読む順序が動きに現れる。
+    var position: Int = 0
     @State private var appeared = false
 
     /// 2026-08-14 の UI 作り直し(Tom「UIも論外」)。北極星 = Claude の公式アプリの
@@ -734,6 +746,20 @@ struct SessionRowView: View {
                         .padding(.vertical, 2)
                         .modifier(RCChip(tint: statusColor))
                 }
+                // 作業木の差分(2026-09-02、対照表 #5「一覧の ± バッジ」)。公式は `+42 -18`。
+                // ★0 件なら出さない ——「差分なし」は札で言う事ではなく、静かで良い。
+                //   null(読めていない)も出さない。出るのは**在る時だけ**。
+                if let d = row.diff, d.files > 0 {
+                    HStack(spacing: 3) {
+                        Text("+\(d.added)").foregroundStyle(Color.green)
+                        Text("−\(d.removed)").foregroundStyle(RCTheme.danger)
+                    }
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .modifier(RCChip(tint: .secondary))
+                    .accessibilityIdentifier("list.diffBadge")
+                }
                 // 診断の原文は**壊れている行にだけ**出す(2026-08-16、§9-4「一覧の行に
                 // 内部語を並べない」)。健康な行では status の言葉が全てで、原文は
                 // 説明でなく雑音になる。壊れた行(blocked / unknown)では原文こそが
@@ -758,7 +784,11 @@ struct SessionRowView: View {
         .offset(y: style.animatesEntry ? (appeared ? 0 : 14) : 0)
         .onAppear {
             guard style.animatesEntry, !appeared else { appeared = true; return }
-            withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { appeared = true }
+            // ★段差は 8 行で頭打ち。会話は 41 本 在る事が実測で判っており、
+            //   線形に伸ばすと最後の行が 1.4 秒後に出る = 待たされる動きになる。
+            //   画面に入るのは 6-7 行なので、8 行ぶんで足りる。
+            let delay = Double(min(position, 8)) * 0.035
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.86).delay(delay)) { appeared = true }
         }
     }
 

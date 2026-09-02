@@ -316,6 +316,36 @@ final class ConversationViewModelTests: XCTestCase {
     // ★件数を鍵にしていたら此処が赤くなる、という形の検体を選んである
     //   (下の 2 本は件数が同じまま中身だけが変わる)。
 
+    // MARK: - 今 走っている道具(対照表 #7、2026-09-02)
+
+    func testCurrentToolIsTheTailToolRowsName() async {
+        let client = RecordingClient()
+        let h = [e(.user, "run it"), e(.assistant, "on it"), e(.tool, "Bash")]
+        client.resultQueue = [.success(HistoryResponse(history: h, truncated: false))]
+        let vm = makeViewModel(client: client)
+        await vm.load()
+        XCTAssertEqual(vm.currentTool, "Bash")
+    }
+
+    func testCurrentToolIsNilWhenTheTailIsNotATool() async {
+        let client = RecordingClient()
+        // 道具の行の**後に** assistant が来た = 道具は終わっている。名前を残さない。
+        let h = [e(.tool, "Bash"), e(.assistant, "done")]
+        client.resultQueue = [.success(HistoryResponse(history: h, truncated: false))]
+        let vm = makeViewModel(client: client)
+        await vm.load()
+        XCTAssertNil(vm.currentTool, "終わった道具の名前を「今 走っている」として残してはいけない")
+    }
+
+    func testCurrentToolIsNilForABlankToolName() async {
+        let client = RecordingClient()
+        let h = [e(.tool, "   ")]
+        client.resultQueue = [.success(HistoryResponse(history: h, truncated: false))]
+        let vm = makeViewModel(client: client)
+        await vm.load()
+        XCTAssertNil(vm.currentTool)
+    }
+
     func testRenderArrayFollowsHistoryReassignmentAtTheSameCount() async {
         let client = RecordingClient()
         let first = [e(.user, "a"), e(.assistant, "b")]

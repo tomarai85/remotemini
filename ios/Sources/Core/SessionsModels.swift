@@ -133,6 +133,15 @@ struct SessionRow: Decodable, Equatable {
     ///   **「判らない」**なので、札を出さない側へ倒す(`unknown` を急かしに使わない、
     ///   という 2026-08-26 の裁定と同じ)。
     let requiresOwnerInput: Bool?
+    /// 作業木の未コミット差分の数(対照表 #5、2026-09-02)。`sessionRow` の `diff`。
+    /// ★null = 読めなかった / まだ読んでいない / git 管理外。0 件とは別の意味。
+    /// ★`var … = nil` は、古い机が此の鍵を送らない為と、既存の memberwise 呼び出しを壊さない為。
+    var diff: Diff? = nil
+    struct Diff: Decodable, Equatable {
+        let files: Int
+        let added: Int
+        let removed: Int
+    }
 
     struct RowDisplay: Decodable, Equatable {
         let route: RouteLabel

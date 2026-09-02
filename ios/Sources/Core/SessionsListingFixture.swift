@@ -171,7 +171,16 @@ struct SessionsListingFixture: SessionsListing {
     ///   `routeLabel` が**出しうる集合**と突き合わせる(1つの代表とのバイト一致ではない ——
     ///   同日、その形にしたら正しい blocked 行を誤って赤にした)。文言を変える時は先に
     ///   サーバを変える事。この表を先に書き換えると、検査が「本番に作れない札」として止める。
-    private static let sampleRows: [SessionRow] = [
+    // ★差分の検体(対照表 #5)は**配列を組んだ後**に付ける(下の `.map`)。行の中に
+    //   `diff:` を挟むと、`.harness/wire-vocabulary-agreement-controls.sh` と
+    //   `.harness/fixture-label-parity-controls.sh` が変異を植える**錨(行の形)**が外れ、
+    //   両方が「植える先が定まらない / 植えても緑」で commit を止める(2026-09-02 実測)。
+    private static let sampleRows: [SessionRow] = sampleRowsBase.map { r in
+        var r = r
+        if r.id == "fixture-tmux-002" { r.diff = .init(files: 3, added: 42, removed: 18) }
+        return r
+    }
+    private static let sampleRowsBase: [SessionRow] = [
         row(id: "fixture-choice-001", title: "Waiting for approval", kind: .choice, short: "Needs input",
             text: "Open on desktop · needs input (Enter may approve or spend)", screen: "CHOICE"),
         // ★`screen` は `"MAIN"` だった(2026-08-09 に訂正)。サーバの `routeLabel` が tmux の枝で

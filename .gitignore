@@ -2,3 +2,6 @@
 # python の中間物(tools/*.py を import して動かすと出る。2026-08-05 に一度 stage されかけた)
 __pycache__/
 *.pyc
+
+# 並列エージェントの worktree(isolation: worktree が作る)。本流の写しなので追跡しない(2026-09-02)
+.claude/
