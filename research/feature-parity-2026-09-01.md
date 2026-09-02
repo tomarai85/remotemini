@@ -42,6 +42,7 @@ subagent の個別停止 #8 / model・effort の**選択** #14-15)。#4 が入�
 |---|---|---|
 | slash チップを公式の全一覧へ広げる(#13-15、上位5件の1位) | **裁定**。註は★3ブロック在り、引用したのは1つ目だけだった。2つ目 =「押しても**送らない**」は写真添付と同じ規約で意図的、3つ目 =「**出すのは移動中に効く 3 つだけ。一覧にすると探す物になる**」 | `ios/Sources/Screens/Conversation/ConversationView.swift` の slash 註(3ブロック全部) |
 | 転写のコード等幅化 / markdown 描画(#40) | **裁定**。検出に Markdown 解釈が要り、v1 は解釈しないと決めてある。覆すなら Tom の裁定が要る(座標側が別途 起票済み・重複禁止) | `ios/Sources/Core/HistoryModels.swift の `HistoryEntry.text` の doc「no Markdown interpretation, no truncation in v1」` — `no Markdown interpretation, no truncation in v1` |
+| 通知の経路を「ntfy + `remotemini://`」と書いた(#31、2026-09-02 に判明) | **前提違い**。机で鳴らすのは `digest-notify.sh` → `~/bin/discord-notify.sh`(**Discord**)で、ntfy を撃つ物は机の木・hook・設定に無い。深いリンクの部分(`remotemini://session/<sid>`)は正しい | `rc-backend/tools/digest-notify.sh` の `NOTIFY="${RC_DIGEST_NOTIFY:-$HOME/bin/discord-notify.sh}"` と、鳴らす文に `remotemini://session/%s` を入れる行 |
 
 **一般則(この表を使う者への引き継ぎ)**: 「実装に無い」を欠陥として挙げる前に、
 **コードの註と決定記録に当たり、裁定として記録されていないかを確かめる**。
@@ -154,7 +155,7 @@ voice 入力 / 下書き保存 / キーボードツールバー / 複数行の�
 | **1** | ~~**slash チップを公式の一覧に合わせ、送信まで行かせる**(#13 / #14 / #15)~~ **★却下 — 上の「訂正」の表に在る裁定(3 つだけ / 押しても送らない)。此の行は訂正前の記述のまま残っていて、2026-09-02 に此処からレーンを 1 本 誤配した。着手するな** | `ios/Sources/Screens/Conversation/ConversationView.swift の `ForEach(["/compact", "/context", "/model"])` の slash チップ` — 配列 `["/compact","/context","/model"]` | 費用が最小で効果が確実。**能力は既に机に在り、画面に出ていないだけ**だと同行の註が実測付きで明言している。机に一切触らない。`/effort` `/clear` `/context` `/usage` を足し、`/model` `/effort` は引数まで入れたチップにする |
 | **2** | **permission mode を `status` に載せて帯に出す**(#16) | `rc-backend/src/server.mjs の `action === "status"` の分岐` — `action === "status"` の分岐 | 読むだけなので設計 D4(#17)の裁定に触れない。机が bypass で走っているかを電話から知る手段が今は無い。1 往復で入る |
 | **3** | **diff の口を机に開ける**(#4 → #5 → #6) | `rc-backend/src/reqlog.mjs の `export const SESSION_ROUTE_RE`(動詞表)` — `SESSION_ROUTE_RE` に `diff` を追加 | 一番大きい穴。**まず「ファイル名と ± の数」だけ**返す版で価値の大半が出る。cwd は登録簿が既に持っている(`rc-backend/src/listing.mjs`)。#5 のバッジはその副産物 |
-| **4** | **ntfy の購読が生きているか測る**(#31 / #32) | `ios/Sources/Core/DeepLink.swift の `handle(_:)`(外から来た URL を受ける唯一の口)` — `handle(_:)` が受ける側、机側は `Notification` hook | 実装ではなく**測定**。ここが死んでいると #1〜#3 が全部「開いた時だけ効く機能」に落ちる。鎖の最後の1段が Tom ゲート(iPhone で topic を購読)なので、生死を先に確定する |
+| **4** | ~~**ntfy の購読が生きているか測る**(#31 / #32)~~ **★測定済み(2026-09-02)** — 鳴らす経路は ntfy ではなく **Discord**: friday の `com.fleet.rc-digest-notify`(2.5 分ごと、3,043 走行、exit 0)が `digest-notify.sh` → `~/bin/discord-notify.sh` で `remotemini://session/<sid>` 付きの文を送る。発報は 8/26 以降 9 件、最後は 8/31 15:41(efe9ee71 / attention=input / soon)、以後は毎回「鳴らす物は無い」= 設計どおり。**電話側**(Discord 通知の tap → `DeepLink.handle`)が生きているかは Tom の実機でしか測れない(机には受信の痕跡が無い) | `ios/Sources/Core/DeepLink.swift の `handle(_:)`(外から来た URL を受ける唯一の口)` — `handle(_:)` が受ける側、机側は `Notification` hook | 実装ではなく**測定**。ここが死んでいると #1〜#3 が全部「開いた時だけ効く機能」に落ちる。鎖の最後の1段が Tom ゲート(iPhone で topic を購読)なので、生死を先に確定する |
 | **5** | **転写の走査距離を上げる**(#2) | `rc-backend/src/listing.mjs の `export const TAIL_MAX`` — `TAIL_MAX = 1024 * 1024` | 出荷したばかりの検索(#1)の実用性を**単独で最も左右する変数**。本番は `opts` を渡さないのでこの既定がそのまま効いており、280 MB の会話に対し到達率 0.36%。`scanned` を画面の線に載せるところまで含めて別 spec |
 
 ### Tom に1つだけ確認したい事(Yes/No)
