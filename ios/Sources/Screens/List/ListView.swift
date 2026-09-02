@@ -572,7 +572,8 @@ struct ListView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal)
                     .padding(.vertical, 4)
-                    .background(.bar)
+                    // ★2026-09-01: 中立灰 → 配色の面(一覧の帯 3 本を同時に寄せた)。
+                    .background(RCTheme.surface)
                     .accessibilityIdentifier("list.freshness")
             }
         }
@@ -585,7 +586,13 @@ struct ListView: View {
     ///   CF-17 の実測ではそれが 9 ビルド分続いた。
     /// ★黙るのは**その版だけ**。次の版が出れば再び出る(記憶の鍵が版番号)。
     private func updateBar(_ message: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        // ★2026-09-01: `.firstTextBaseline` を `.center` へ。実測の画
+        //   (`sweep/list-update.png`)で本文が 2 行になり、「後で」が**1 行目の
+        //   ベースラインに釘付けのまま右上へ孤立**して、2 行目の右に大きな空白が
+        //   残っていた。文が 1 行に収まる時しか成立しない揃え方だった ——
+        //   そして版の帯は「手元 96 → 配布 105」の様に数字が入るので、
+        //   **2 行は例外ではなく既定**。
+        HStack(alignment: .center, spacing: 8) {
             Text(message)
                 .font(.caption)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -597,7 +604,12 @@ struct ListView: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 6)
-        .background(.bar)
+        // ★2026-09-01: `.bar`(Apple の中立灰)から配色の面へ。今日 会話画面の
+        //   3 箇所を配色へ寄せた時、**一覧のこの帯だけ取り残されていた**。
+        //   一画面に中立灰と青寄りの灰が混ざると、片方が汚れて見える(実測済み)。
+        //   カードと同じ `surface` で良い —— 帯は画面幅いっぱいに敷き、カードは
+        //   左右 16pt 内側なので、形で区別が付く。
+        .background(RCTheme.surface)
         // ★`.contain` が無いと、識別子だけ付けても SwiftUI は素の並びを
         //   アクセシビリティの要素として公開せず、UI 検査から**一度も見つけられない**
         //   (2026-08-27 に `list.loading.slow` で実測)。
@@ -612,7 +624,8 @@ struct ListView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal)
             .padding(.vertical, 6)
-            .background(.bar)
+            // ★2026-09-01: 中立灰 → 配色の面(一覧の帯 3 本を同時に寄せた)。
+            .background(RCTheme.surface)
             .accessibilityIdentifier(identifier)
     }
 
