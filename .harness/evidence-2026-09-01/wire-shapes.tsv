@@ -1,0 +1,18 @@
+endpoint	source	method	status	swift_type	required_keys	emitted_keys	missing
+healthz	live	GET	200	HealthzClient.Wire	ok,pid,uptime,version	ok,pid,uptime,version	-
+sessions	live	GET	200	SessionsResponse	display,sessions	display,paneFault,scan,sessions	-
+sessions.row	live	GET	200	SessionRow	display,id,title,updatedAt	cwd,display,id,lastPrompt,live,machine,metadataIncomplete,project,requiresOwnerInput,title,turns,updatedAt	-
+history	live	GET	200	HistoryResponse	history	history,truncated	-
+history.entry	live	GET	200	HistoryEntry	display,role,text	display,role,text	-
+history.search	live	GET	200	TranscriptSearchResponse	history,matched,searchedToStart	history,matched,searchedToStart,truncated	-
+poll	live	GET	200	PollResponse	cursor,items,more	cursor,display,items,more,queued,route,screen	-
+account	live	GET	200	AccountClient.Wire	accounts,display,ok	account,accounts,anomalies,current,display,ok,parseStatus,usageAgeSeconds	-
+digest	live	GET	200	DigestEnvelope		action,attention,digest,line	-
+local.healthz	local	GET	200	HealthzClient.Wire	ok,pid,uptime,version	ok,pid,uptime,version	-
+local.sessions	local	GET	200	SessionsResponse	display,sessions	display,paneFault,scan,sessions	-
+local.history	local	GET	200	HistoryResponse	history	history,truncated	-
+local.history.entry	local	GET	200	HistoryEntry	display,role,text	display,role,text	-
+local.search	local	GET	200	TranscriptSearchResponse	history,matched,searchedToStart	history,matched,searchedToStart,truncated	-
+local.search.entry	local	GET	200	HistoryEntry	display,role,text	display,role,text	-
+local.poll	local	GET	200	PollResponse	cursor,items,more	cursor,items,more,queued,route,screen	-
+local.digest	local	GET	200	DigestEnvelope		action,attention,digest,line	-
