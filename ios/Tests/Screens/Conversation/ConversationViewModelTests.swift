@@ -307,6 +307,46 @@ final class ConversationViewModelTests: XCTestCase {
 
     // MARK: - ① initial fetch -> render array matches mergeHistory(history, live)
 
+    // MARK: - `entries` の記憶が古くならない事(2026-09-01)
+    //
+    // `entries` は触る度に `MergeHistory.merge` を回していたのを記憶するようにした。
+    // 見た目は 1px も変わらないので、**壊れ方は「速くならない」ではなく「古い並びを
+    // 返す」**。だから測るのは速さではなく、**版が進んだ時に必ず作り直す事**。
+    //
+    // ★件数を鍵にしていたら此処が赤くなる、という形の検体を選んである
+    //   (下の 2 本は件数が同じまま中身だけが変わる)。
+
+    func testRenderArrayFollowsHistoryReassignmentAtTheSameCount() async {
+        let client = RecordingClient()
+        let first = [e(.user, "a"), e(.assistant, "b")]
+        let second = [e(.user, "a"), e(.assistant, "B-changed")]   // ★件数は同じ
+        client.resultQueue = [
+            .success(HistoryResponse(history: first, truncated: false)),
+            .success(HistoryResponse(history: second, truncated: false)),
+        ]
+        let vm = makeViewModel(client: client)
+
+        await vm.load()
+        XCTAssertEqual(vm.entries, first)
+        _ = vm.entries            // 記憶させる(此の 1 行が無いと古い値を返す枝を通らない)
+
+        await vm.load()
+        XCTAssertEqual(
+            vm.entries, second,
+            "件数が同じままでも、代入されたら作り直す事。件数を鍵にすると此処が赤くなる")
+    }
+
+    func testRepeatedAccessReturnsTheSameArray() async {
+        let client = RecordingClient()
+        let h = [e(.user, "a"), e(.assistant, "b")]
+        client.resultQueue = [.success(HistoryResponse(history: h, truncated: false))]
+        let vm = makeViewModel(client: client)
+
+        await vm.load()
+        XCTAssertEqual(vm.entries, vm.entries, "同じ版で 2 回読んだら同じ物")
+        XCTAssertEqual(vm.entries, h)
+    }
+
     func testInitialFetchRenderArrayMatchesHistorySinceLiveStaysEmpty() async {
         let client = RecordingClient()
         let h = [e(.user, "a"), e(.assistant, "b")]
