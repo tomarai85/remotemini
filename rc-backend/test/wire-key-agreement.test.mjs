@@ -57,6 +57,9 @@ const NEED = [
   // 此の file が無い木は「測れていない」と言わせる。書かないと、消えた時に
   // 「電話側に居ない = 改名か削除」という**別の理由**の赤に化ける。
   "ios/Sources/Core/HistoryModels.swift",
+  // 2026-09-02 に `PathCompletionResponse` / `PathSuggestion` を組へ入れたので、
+  // 此の file が無い木は「測れていない」と言わせる(上の 1 行と同じ理由)。
+  "ios/Sources/Core/PathCompletionModels.swift",
 ];
 const gate = requireOutside(NEED);
 const skip = gate.skip;
@@ -164,6 +167,13 @@ const SAMPLE_USAGE = {
   willLastToReset: true,
 };
 
+// `@` の補完の候補(2026-09-02)。実物の走査が出す形をそのまま写した
+// (`src/paths.mjs` の `completePaths` は `{ path, kind }` しか push しない)。
+const PATH_ITEMS = [
+  { path: "src/wire.mjs", kind: "file" },
+  { path: "src", kind: "dir" },
+];
+
 const CASES = {
   routeLabel: [
     [{ route: "tmux", screen: "CHOICE", limited: true }],
@@ -254,6 +264,16 @@ const CASES = {
     [{ entries: ENTRIES, matched: 2, reachedStart: true }],
     [{ entries: [], matched: 0, reachedStart: false }],
   ],
+  // `@` のパス補完(2026-09-02)。★**答えられた枝と断った枝の両方**を通す ——
+  //   `reason` は成功時 `null`・断り時 語 で、片方だけだと「載る鍵」は同じでも
+  //   `reason` が常に一方の型で出る = `pathsBody` が `?? null` を落とした改修に気付けない。
+  //   `truncated` も両向きにする(片方だけだと定数を焼いた実装が通る)。
+  pathsBody: [
+    [{ entries: PATH_ITEMS, truncated: false, reason: null }],
+    [{ entries: [], truncated: true, reason: "no_cwd" }],
+  ],
+  // 候補1件。file と dir の**両方**を通す(`kind` は此の2値しか出ない)。
+  pathItem: [[PATH_ITEMS[0]], [PATH_ITEMS[1]]],
   // 枝が1本しか無い唯一の builder。分岐が無い(`ok` は定数、残り3つは受けた値をそのまま)
   // ので、枝を増やしても出る鍵は1組しか無い —— ②が「原文に在るのに出ない鍵」で裏を取る。
   healthzBody: [[{ pid: 4242, uptime: 61, version: "abc1234" }]],
@@ -313,6 +333,10 @@ const MODULE_OF = {
   pollBodyWorker: ["wire", "src/wire.mjs", "export function pollBodyWorker({ items, queued, cursor, more }) {"],
   historyBody: ["wire", "src/wire.mjs", "export function historyBody({ entries, truncated }) {"],
   historySearchBody: ["wire", "src/wire.mjs", "export function historySearchBody({ entries, matched, reachedStart }) {"],
+  // 分解するので目印を明示(既定だと**引数の分解**を本文と読んで鍵が0件になる)。
+  pathsBody: ["wire", "src/wire.mjs", "export function pathsBody({ entries, truncated, reason }) {"],
+  // `pathItem(p)` は分解しないので既定の目印で本文に届く。
+  pathItem: ["wire", "src/wire.mjs"],
   healthzBody: ["wire", "src/wire.mjs", "export function healthzBody({ pid, uptime, version }) {"],
   // 第2引数を分解するので目印を明示する(既定の目印だと `{ raw = "" }` = **引数の分解**を
   // 本文と読んで、鍵が0件になる。②が其れを赤で捕まえるが、先に正しく書く)。
@@ -645,6 +669,11 @@ const PAIRS = [
     // 事を、此の 1 行が宣言している。
     serverOnly: ["truncated"],
   },
+  // ---- `@` のパス補完(2026-09-02)。**完全一致**(`mode` 無し)。
+  // 封筒は3鍵しか無く、電話は3つとも読む —— 読まない鍵をサーバに生やす理由が
+  // 1つも無いので、増えたら赤、が此処では正しい既定(`HealthzClient.Wire` と同じ判断)。
+  { swift: "PathCompletionResponse", builders: ["pathsBody"], at: "" },
+  { swift: "PathSuggestion", builders: ["pathItem"], at: "" },
   // ---- 生存信号(2026-08-09 / 監査 S8-26 の続き)
   // **完全一致**(`mode` 無し)。認証の外へ出る唯一の応答なので、電話が読まない鍵が
   // サーバ側に生える事を許さない —— `serverOnly` を1つでも認めた瞬間、
@@ -772,6 +801,7 @@ const SINGLE_VALUE_EXTENSIONS = [
   "ScreenBody.Classification", // 同・画面の分類語
   "GapWhy",                  // 同・欠落の理由
   "EntryRole",               // 同・履歴の発言者
+  "PathKind",                // 同・補完の候補の種別(知らない語は .unrecognized へ)
 ];
 
 // --- ① 側Aは実際に呼んで測る ---------------------------------------------------

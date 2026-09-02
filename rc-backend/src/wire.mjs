@@ -280,6 +280,40 @@ export function historySearchBody({ entries, matched, reachedStart }) {
 }
 
 /**
+ * 補完の候補1件(2026-09-02)。**2鍵しか無いのが要点。**
+ *
+ * ★大きさ・時刻・権限・絶対 path を足さない。電話が要るのは「入力欄へ差す文字列」と
+ *   「其れが dir なら続けて降りられる」の2つだけで、他は会話の作業場所の中身を
+ *   認証の外へ運ぶ材料にしかならない(`attachBody` が絶対 path の欄を持たないのと同じ判断)。
+ * ★`path` は cwd からの**相対**。絶対にすると机の置き場が API に固まる。
+ */
+export function pathItem(p) {
+  return { path: p.path, kind: p.kind };
+}
+
+/**
+ * `GET /api/sessions/<id>/paths?q=<語>` の封筒(2026-09-02)。
+ *
+ * ★`reason` は**当たっていない時も `null` で載せる**。`gapItem` の `seq` の様に
+ *   「無い時は鍵ごと生やさない」形にしなかったのは、此処の `reason` が
+ *   **成功と失敗の両方で電話が読む欄**だから —— 鍵の有無で分岐させると、
+ *   電話側は「鍵が無い」と「`null`」を区別できる形で書く事になり、区別に意味が無い所に
+ *   区別が生まれる。`attachBody` の `injectReason` と同じ形(載った時は `null`)。
+ *
+ * ★`truncated` = 上限に当たって**途中で止めた**。除外した dir(`node_modules` 等)や、
+ *   問いが空の時に直下だけを返す事は打ち切りではない —— あれは範囲の定義であって
+ *   予算の枯渇ではない。混ぜると此の鍵は常に真になり、電話の「…」が意味を失う。
+ *   正本は `src/paths.mjs` の `completePaths`。
+ */
+export function pathsBody({ entries, truncated, reason }) {
+  return {
+    paths: entries.map(pathItem),
+    truncated,
+    reason: reason ?? null,
+  };
+}
+
+/**
  * `GET /healthz` の封筒(DESIGN §7-P)。**認証の外に出る唯一の応答**。
  *
  * ★引数を分解して受ける = 時計も pid もここでは読まない。読むとハンドラが渡した値と

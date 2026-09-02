@@ -187,8 +187,13 @@ final class ConversationViewModel: ObservableObject {
     /// `didSet` は init 内の代入では発火しない。復元(`init` の `self.draft = …`)が
     /// 書き戻しにならないのはその為で、§2.53 の「同じ本文で時刻を若返らせない」は
     /// store 側にも独立して置いてある(呼ぶ側の作法に正しさを預けない)。
+    /// ★2026-09-02: `@` の補完も此処から始まる。打鍵ごとに撃つのではなく、
+    /// `pathCompletionDraftChanged()` が**前の要求を捨てて**待ち直す(全文は其方)。
     @Published var draft: String = "" {
-        didSet { draftStore.save(draft, sessionID: sessionID) }
+        didSet {
+            draftStore.save(draft, sessionID: sessionID)
+            pathCompletionDraftChanged()
+        }
     }
     /// True from the moment the send button is pressed until the response has been
     /// applied. The composer text is deliberately NOT cleared on entry to this state
@@ -593,6 +598,8 @@ final class ConversationViewModel: ObservableObject {
     private let choiceClient: ChoiceSending
     private let clearQueueClient: QueueClearing
     private let digestClient: DigestFetching
+    private let pathsClient: PathCompleting
+    private let pathDebounce: TimeInterval
     /// 打ちかけの置き場(DESIGN §2.53)。**既定値を持たせていない** —— 既定を本物に
     /// すると、`RootView` の UI 検査用の面が黙って実機の `UserDefaults` を触る。
     /// 本番は `ListView` だけが `UserDefaultsDraftStore` を渡す。
@@ -624,6 +631,42 @@ final class ConversationViewModel: ObservableObject {
     ///   同じ事実を 2 つの property に持たせると必ず片方が先に古くなる。
     private var isSearching = false
 
+    // MARK: - `@` のパス補完(2026-09-02)
+
+    /// 貰う候補の上限。**30**。
+    ///
+    /// 机の枠は 200(`src/paths.mjs` の `PATHS_MAX_LIMIT`)。候補列は横1本の帯なので、
+    /// 30 を超えた分は指で辿れない = 運ぶ意味が無い。超過は `pathSuggestionsTruncated`
+    /// が正直に名乗る(`searchLimit` と同じ判断)。
+    static let pathCompletionLimit = 30
+
+    /// 打鍵が止まってから撃つまで(秒)。**250ms**。
+    ///
+    /// ★打鍵ごとに撃たない理由は帯域ではなく**机**: あの口は fs を舐めるので、
+    ///   未確定の入力1文字ごとに走査を起こす事になる。
+    ///
+    /// ★`nonisolated` を付ける理由: `init` の**既定引数**から読むから。付けないと
+    ///   「MainActor に隔離された static を非隔離の文脈から参照している」の警告が出る
+    ///   —— 既存の `initialLimit` が丁度その状態で、此の木は「新しい警告を足さない」を
+    ///   規約にしている(§2 の `restartPolling` の註が同じ判断を書いている)。
+    ///   `let` の Sendable なので隔離を外して安全。
+    nonisolated static let pathCompletionDebounce: TimeInterval = 0.25
+
+    /// 今出ている候補。空 = 出さない。
+    @Published private(set) var pathSuggestions: [PathSuggestion] = []
+    /// 机が上限に当たって切った。画面は候補列の末尾に「…」を出す(隠さない)。
+    @Published private(set) var pathSuggestionsTruncated = false
+
+    /// 此の会話では補完が**構造的に**出来ない(転写が作業場所を名乗っていない)。
+    ///
+    /// ★一度こう答えられたら、以後は打鍵ごとに訊きに行かない —— `no_cwd` は
+    ///   会話の性質であって一時的な不調ではないので、訊き直しても答えは変わらない。
+    ///   `cwd_unreadable`(dir が消えた / 権限)では**立てない**: あれは戻り得る。
+    private var pathCompletionUnavailable = false
+
+    /// 飛んでいる補完の要求。**次の打鍵で捨てる**のが此の property の全部。
+    private var pathTask: Task<Void, Never>?
+
     private var unreadableMeter: UnreadableMeter?
     /// Brief §3-c: "2回目以降は「読み直す」を人が押した時のみ" -- the automatic,
     /// one-shot resync fires once per stalled *episode*; this flag is what makes it
@@ -654,7 +697,11 @@ final class ConversationViewModel: ObservableObject {
         sessionID: String,
         title: String,
         onUnauthorized: @escaping () -> Void,
-        initialLimit: Int = ConversationViewModel.initialLimit
+        initialLimit: Int = ConversationViewModel.initialLimit,
+        // ★待ちを注入できる形にする(2026-09-02)。検査で 250ms を**本当に**待つと、
+        //   補完の検査 1 本ごとに実時間が乗り、遅い機械で落ちる非決定な検査になる。
+        //   既定は製品の値なので、渡さない呼び手の振る舞いは1つも変わらない。
+        pathCompletionDebounce: TimeInterval = ConversationViewModel.pathCompletionDebounce
     ) {
         self.client = clients.history
         self.pollClient = clients.poll
@@ -664,6 +711,8 @@ final class ConversationViewModel: ObservableObject {
         self.choiceClient = clients.choice
         self.clearQueueClient = clients.clearQueue
         self.digestClient = clients.digest
+        self.pathsClient = clients.paths
+        self.pathDebounce = pathCompletionDebounce
         self.draftStore = draftStore
         self.baseURL = baseURL
         self.apiKey = apiKey
@@ -1450,6 +1499,97 @@ final class ConversationViewModel: ObservableObject {
             // ordinary-looking explanation available.
             applyContractViolation(violation)
         }
+    }
+
+    // MARK: - `@` のパス補完(2026-09-02)
+
+    /// 入力が変わった。**前の要求を捨てて**待ち直す。
+    ///
+    /// ★此処が「打鍵ごとに撃たない」の全部。`pathTask?.cancel()` を先に置くので、
+    ///   速く打っている間は待ちの中で死に続け、指が止まった時の1本だけが机に届く。
+    /// ★書きかけの `@` が消えた時は**待たずにその場で**候補を消す。待つと、`@` を
+    ///   消した後も 250ms のあいだ古い候補が押せる状態で残る = 消した筈の物を差せる。
+    private func pathCompletionDraftChanged() {
+        pathTask?.cancel()
+        pathTask = nil
+
+        guard !pathCompletionUnavailable,
+              let query = PathMention.trailingQuery(in: draft) else {
+            clearPathSuggestions()
+            return
+        }
+
+        pathTask = Task { [weak self] in
+            guard let self else { return }
+            // `try?` で握るのは取り消しの例外。取り消しは常態なので、下の
+            // `Task.isCancelled` が本当の判定で、此の行は待ちを解くだけ。
+            try? await Task.sleep(nanoseconds: UInt64(max(0, self.pathDebounce) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self.fetchPathSuggestions(query: query)
+        }
+    }
+
+    /// 机へ問いを撃つ。`internal` にしてあるのは検査が待ちを跨がずに直に呼べる様にする為
+    /// (`applySearch` を別に置いてあるのと同じ理由)。
+    func fetchPathSuggestions(query: String) async {
+        let result = await pathsClient.complete(
+            baseURL: baseURL, apiKey: apiKey, sessionID: sessionID,
+            query: query, limit: Self.pathCompletionLimit
+        )
+        guard !Task.isCancelled else { return }
+        applyPathSuggestions(result, query: query)
+    }
+
+    /// 答えを面へ写す。
+    ///
+    /// ★**遅れて着いた答えを捨てる**のが最初の1行。`Task` の取り消しだけに頼ると、
+    ///   取り消しが間に合わなかった1本が、もう画面に無い問いの候補を置く ——
+    ///   人は `@src/` と打っているのに `@t` の候補が並ぶ形で、押すと文が壊れる。
+    ///   判定を「今の入力から読み直した問い」と比べるので、比べる相手は常に画面の現在。
+    func applyPathSuggestions(
+        _ result: Result<PathCompletionResponse, SessionsFetchError>, query: String
+    ) {
+        guard PathMention.trailingQuery(in: draft) == query else { return }
+
+        switch result {
+        case .success(let response):
+            // ★机が「此の会話には作業場所が無い」と言った = 訊き直しても変わらない。
+            //   以後 打鍵ごとに撃つのをやめる(`cwd_unreadable` では止めない —— あれは戻る)。
+            if response.reason == PathCompletionReason.noCwd {
+                pathCompletionUnavailable = true
+                clearPathSuggestions()
+                return
+            }
+            pathSuggestions = response.paths
+            pathSuggestionsTruncated = response.truncated
+        case .failure(.unauthorized):
+            // 鍵の話。会話ごと使えないので、履歴側と同じ合流点へ。
+            clearPathSuggestions()
+            onUnauthorized()
+        case .failure(.cancelled):
+            // 面を触らない。次の要求が置く —— 此処で消すと、速く打っている間じゅう
+            // 候補が点滅する(取り消しは常態なので、消す側に倒すと殆どの時間 消える)。
+            break
+        case .failure:
+            // 届かない / 形が読めない / 会話が消えた。**古い候補を残さない** ——
+            // 補完は「今の机の中身」を名乗る物なので、答えられない時に前の答えを
+            // 出したままにすると、消えた file を差せる。
+            clearPathSuggestions()
+        }
+    }
+
+    /// 候補を選んだ。**送らない** —— 入力欄へ差すだけ(写真の添付・slash と同じ規約)。
+    ///
+    /// dir を選ぶと `draft` の末尾が `@…/` になり、`didSet` から次の問いが自動で飛ぶ
+    /// = 一段 降りる。file を選ぶと末尾に空白が付いて `trailingQuery` が `nil` になり、
+    /// 候補列はその場で消える(`PathMention.replacingTrailingQuery` の註)。
+    func applyPathSuggestion(_ suggestion: PathSuggestion) {
+        draft = PathMention.replacingTrailingQuery(in: draft, with: suggestion)
+    }
+
+    private func clearPathSuggestions() {
+        pathSuggestions = []
+        pathSuggestionsTruncated = false
     }
 
     // MARK: - 転写を探す

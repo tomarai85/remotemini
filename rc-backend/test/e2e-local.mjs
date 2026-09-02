@@ -204,6 +204,44 @@ const SEARCH_NEEDLE = "しっぽの目印";
   writeFileSync(join(PROJ, `${SID_SEARCH}.jsonl`), lines.join("\n"));
 }
 
+// ★`@` のパス補完(2026-09-02、扉E)。**実在する木**を砂場に建てて、其処を cwd に持つ
+//   会話を1本と、cwd を**名乗らない**会話を1本置く。
+//
+//   何故 e2e が要るか(此の案件の核心): 2026-08-31 に `server.mjs` の新ルートを `const` の
+//   宣言より前へ置いて全ルートを壊し、iOS 777 件 + backend 約 1000 件が緑のままだった。
+//   捕まえたのは実サーバへ HTTP を撃つ対照 1 本だけ。**配線・順序・登録を変えたのだから、
+//   関数の扉(`test/paths.test.mjs`)は証拠にならない。**
+//   加えて此の口は `SESSION_ROUTE_RE`(動詞表)への登録が要る = 登録漏れは
+//   404 でしか現れず、`completePaths` の検査を何本書いても永遠に緑になる。
+const SID_PATHS    = "aaaaaaaa-0000-0000-0000-000000000060";
+const SID_PATHS_NO = "aaaaaaaa-0000-0000-0000-000000000061"; // cwd を名乗らない会話
+const CWD_PATHS    = join(SB, "paths-work");
+{
+  mkdirSync(join(CWD_PATHS, "src", "deep"), { recursive: true });
+  mkdirSync(join(CWD_PATHS, "node_modules", "left"), { recursive: true });
+  mkdirSync(join(CWD_PATHS, ".git"), { recursive: true });
+  writeFileSync(join(CWD_PATHS, "README.md"), "x");
+  // ★直下に「問いを**含む**が、問いで**始まらない**」名前(2026-09-02、変異 M2)。
+  //   根の直下は枝刈りを通らないので、一致の規則そのものへ届く唯一の的になる。
+  writeFileSync(join(CWD_PATHS, "old-README.md"), "x");
+  writeFileSync(join(CWD_PATHS, "src", "wire.mjs"), "x");
+  writeFileSync(join(CWD_PATHS, "src", "widget.mjs"), "x");
+  writeFileSync(join(CWD_PATHS, "src", "deep", "wonder.txt"), "x");
+  writeFileSync(join(CWD_PATHS, "node_modules", "left", "index.js"), "x");
+  writeFileSync(join(CWD_PATHS, ".git", "HEAD"), "x");
+}
+fixture(SID_PATHS, CWD_PATHS, "補完の木");
+{
+  // cwd の欄そのものが無い転写。`fixture()` は必ず cwd を書くので手で組むが、
+  // 衝突の門は同じ物を通す(:208 の 2026-08-03 の事故と、探索の検体の註と同じ理由)。
+  if (FIXTURED.has(SID_PATHS_NO)) throw new Error(`fixture の id が衝突している: ${SID_PATHS_NO}(補完・cwd 無し)`);
+  FIXTURED.add(SID_PATHS_NO);
+  writeFileSync(join(PROJ, `${SID_PATHS_NO}.jsonl`), [
+    JSON.stringify({ entrypoint: "cli", type: "user", message: { role: "user", content: "q" } }),
+    JSON.stringify({ type: "ai-title", aiTitle: "作業場所を名乗らない会話" }),
+  ].join("\n"));
+}
+
 // ---- 偽 tmux ----------------------------------------------------------------
 // 実物の観測に合わせてある(2026-07-31 edith):
 //   list-panes -F "#{pane_id}<SEP>#{pane_current_command}<SEP>#{pane_tty}<SEP>#{pane_current_path}"
@@ -923,6 +961,101 @@ try {
     check("★探索の対照: 同じ問いでも `limit` で `searchedToStart` が変わる(定数を焼いていない)",
       stopped.searchedToStart !== toStart.searchedToStart,
       JSON.stringify({ stopped: stopped.searchedToStart, toStart: toStart.searchedToStart }));
+  }
+
+  // 3-P. `@` のパス補完(`/paths`)—— **扉E**(2026-09-02)。
+  //
+  // 測るのは 3 層:
+  //   ① 動詞表に登録されて**届く**(登録漏れは 404 で、`completePaths` の検査は全部緑のまま)
+  //   ② 封筒の鍵が `paths` / `truncated` / `reason` の綴りで出る(電話が必須にしている)
+  //   ③ 走査の性質(前方一致が区切りを跨ぐ / 除外 / 上限 / 断りの語)が**本物のサーバ越しに**効く
+  {
+    const get = async (sid, qs) =>
+      (await fetch(`${B}/api/sessions/${sid}/paths${qs}`, { headers: H })).json();
+
+    const r = await fetch(`${B}/api/sessions/${SID_PATHS}/paths?q=${encodeURIComponent("src/wi")}`, { headers: H });
+    const j = await r.json();
+    check("★補完: 動詞表に登録されていて 200 で返る(登録漏れなら此処が 404)",
+      r.status === 200 && Array.isArray(j.paths), `status=${r.status} ${JSON.stringify(j).slice(0, 200)}`);
+    check("★補完: body が `paths` / `truncated` / `reason` を**その綴りで**持つ",
+      Array.isArray(j.paths) && typeof j.truncated === "boolean" && "reason" in j,
+      JSON.stringify(j).slice(0, 200));
+    check("★補完: 前方一致が区切りを跨ぐ(`src/wi` → `src/wire.mjs`)",
+      j.paths.map((p) => p.path).sort().join(",") === "src/widget.mjs,src/wire.mjs",
+      JSON.stringify(j.paths));
+    check("★補完: 項目は `path` と `kind` の2鍵だけ(大きさも時刻も絶対 path も載せない)",
+      j.paths.every((p) => Object.keys(p).sort().join(",") === "kind,path"),
+      JSON.stringify(j.paths[0]));
+    check("補完: 当たらない問いは 0 件、断りの語は付かない",
+      (await get(SID_PATHS, "?q=zzzz")).paths.length === 0 && (await get(SID_PATHS, "?q=zzzz")).reason === null);
+    // ★対照: **部分一致ではない**。`old-README.md` は `README` を含むが `README` で
+    //   始まらないので出てはいけない。的を**直下**に置くのが要点(深い所は枝刈りが
+    //   先に止めるので、一致の規則そのものには届かない —— 2026-09-02 の変異 M2 の実測)。
+    const pre = await get(SID_PATHS, `?q=${encodeURIComponent("README")}`);
+    check("★補完の対照: 前方一致であって部分一致ではない",
+      pre.paths.map((p) => p.path).join(",") === "README.md", JSON.stringify(pre.paths));
+
+    // ★問いが空 = 直下だけ。全走査に化けていないかを、深い物が出ない事で測る。
+    const top = await get(SID_PATHS, "");
+    check("★補完: 問いが空なら cwd の直下だけ(全走査しない)",
+      top.paths.map((p) => p.path).sort().join(",") === "README.md,old-README.md,src"
+      && top.truncated === false,
+      JSON.stringify(top));
+    check("★補完: 直下だけ返す事は打ち切りではない(`truncated` を立てない)",
+      top.truncated === false, JSON.stringify(top.truncated));
+    check("補完: dir は `kind:\"dir\"` を名乗る(電話が続けて降りられる印)",
+      top.paths.find((p) => p.path === "src")?.kind === "dir"
+      && top.paths.find((p) => p.path === "README.md")?.kind === "file",
+      JSON.stringify(top.paths));
+
+    // ★生成木。名前で当てても出ない = 候補にも降りにも入っていない。
+    const nm = await get(SID_PATHS, `?q=${encodeURIComponent("node_modules")}`);
+    const dotgit = await get(SID_PATHS, `?q=${encodeURIComponent(".git")}`);
+    check("★補完: 生成木は候補に出ない(`node_modules` / `.git`)",
+      nm.paths.length === 0 && dotgit.paths.length === 0,
+      JSON.stringify({ nm: nm.paths, git: dotgit.paths }));
+    check("★補完の対照: 生成木の除外は打ち切りとして数えない",
+      nm.truncated === false && dotgit.truncated === false,
+      JSON.stringify({ nm: nm.truncated, git: dotgit.truncated }));
+
+    // ★★両向き。**問いも木も同じで `limit` だけが違う**ので、差が出たなら
+    //   それは「上限で本当に切ったか」以外ではあり得ない(探索の検体と同じ形)。
+    const cut = await get(SID_PATHS, `?q=${encodeURIComponent("src/")}&limit=1`);
+    const all = await get(SID_PATHS, `?q=${encodeURIComponent("src/")}&limit=100`);
+    check("★補完: 上限に当たると `truncated:true` で正直に名乗る",
+      cut.truncated === true && cut.paths.length === 1, JSON.stringify(cut));
+    check("★補完: 上限に届かなければ `truncated:false`",
+      all.truncated === false && all.paths.length > 1, JSON.stringify(all));
+    check("★補完の対照: 同じ問いでも `limit` で `truncated` が変わる(定数を焼いていない)",
+      cut.truncated !== all.truncated,
+      JSON.stringify({ cut: cut.truncated, all: all.truncated }));
+
+    // ★問いを path として使っていない事。木の外を指しても 0 件で、断りにもならない。
+    const esc = await get(SID_PATHS, `?q=${encodeURIComponent("../../etc/passwd")}`);
+    check("★★補完: 木の外を指す問いは 0 件(問いを path に組み立てていない)",
+      esc.paths.length === 0 && esc.reason === null, JSON.stringify(esc));
+
+    // ★作業場所を名乗らない会話 = 200 + 空 + 語。404 や 500 にしない。
+    const noCwd = await fetch(`${B}/api/sessions/${SID_PATHS_NO}/paths`, { headers: H });
+    const noCwdJ = await noCwd.json();
+    check("★補完: cwd が無い会話は 200 + 空 + `no_cwd`(会話は使えるので断りで割らない)",
+      noCwd.status === 200 && noCwdJ.paths.length === 0
+      && noCwdJ.truncated === false && noCwdJ.reason === "no_cwd",
+      `status=${noCwd.status} ${JSON.stringify(noCwdJ)}`);
+
+    // ★陰性対照: 動詞表は catch-all ではない。1文字違えば 404。
+    const typo = await fetch(`${B}/api/sessions/${SID_PATHS}/pathz`, { headers: H });
+    check("★補完の対照: 動詞表に無い綴りは 404(表が何でも飲み込む形になっていない)",
+      typo.status === 404, String(typo.status));
+    // ★POST は **405**(404 ではない)。此の2つの差が、上の 404 と対になって
+    //   「道は表に在る / 読む方法しか受けない」を分けて言う —— 両方 404 だと、
+    //   登録漏れと方法違いが同じ顔になり、どちらの主張も立たなくなる。
+    const posted = await fetch(`${B}/api/sessions/${SID_PATHS}/paths`, { headers: H, method: "POST" });
+    check("★補完の対照: 読む口なので POST は 405(= 道は在るが方法が違う)",
+      posted.status === 405, String(posted.status));
+    const noKey = await fetch(`${B}/api/sessions/${SID_PATHS}/paths`);
+    check("★補完: 鍵無しでは答えない(cwd の中身の名前は認証の外へ出さない)",
+      noKey.status === 401, String(noKey.status));
   }
 
   // 4. account —— **電話が読む封筒**(`wire.mjs` の `accountBody`)が端から端まで組める事。
@@ -2495,6 +2628,21 @@ try {
   check("★poll の行が道として畳まれ、経路の欄も埋まっている(`(other)` に落ちていない)",
     reqLines.some((l) => /\/api\/sessions\/:id\/poll .*route=(tmux|worker) /.test(l)),
     reqLines.filter((l) => l.includes("/poll")).slice(-1)[0] || "(poll の行が無い)");
+  // ★補完の道も**畳まれている**事(2026-09-02)。`reqlog.mjs` の表は振り分けと共有なので、
+  //   届いている以上ここも埋まっている筈 —— だが「届く」と「記録に道として残る」は
+  //   `pathShape` を経由するかどうかで別々に壊れうるので、別に測る。
+  //   同時に、問いに打った path(`src/wi`)が1文字もログへ写っていない事も測る:
+  //   此の口は**外から来た任意の文字列**を受ける唯一の新しい道で、`?` 以降を捨てる規則が
+  //   効いていなければ、cwd の中身の名前が常設のログへ流れ込む。
+  check("★補完の行が道として畳まれている(`(other)` に落ちていない)",
+    reqLines.some((l) => /\/api\/sessions\/:id\/paths /.test(l)),
+    reqLines.filter((l) => l.includes("/paths")).slice(-1)[0] || "(補完の行が無い)");
+  check("★補完: 断った行が理由を名乗る(`no_cwd` が `reason=` に出る)",
+    reqLines.some((l) => /\/api\/sessions\/:id\/paths .*code=200 reason=no-cwd /.test(l)),
+    reqLines.filter((l) => l.includes("/paths")).slice(-1)[0] || "(補完の行が無い)");
+  check("★★補完: 打った問いがログに1文字も出ていない",
+    !svlog.includes("src/wi") && !svlog.includes("node_modules") && !/req .*q=/.test(svlog),
+    "補完の問い(= 利用者が打った文字列)がログに複製されている");
   // ★陰性対照は「`(other)` が1本も無い」ではない —— それは表が**何でも飲み込む**時にも
   //   通ってしまう(最初にそう書いて、無関係な 404 の行で落ちて気付いた)。表が道を
   //   見分けている事を言うには、知らない道が**ちゃんと `(other)` に落ちる**方を測る。
