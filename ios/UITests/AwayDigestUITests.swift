@@ -21,8 +21,13 @@ final class AwayDigestUITests: XCTestCase {
         //   鍵を一度も見ない」)。此処で落とすと「製品が壊れた」と「測る前提が無い」が同じ赤になる。
         //   実測: iPhone-dogfood を作り直した朝、此の 2 本が 5 件 赤になり、犯人探しに 3 走行 使った。
         //   机のログには sim からの要求が 0 件 = 一覧が出る前に止まっていた。
-        if app.descendants(matching: .any).matching(identifier: "keyEntry.baseURL").firstMatch
-            .waitForExistence(timeout: 3) {
+        //   ★未 provisioning の sim が最初に出す画面は `DisconnectedView`(`disconnected.manualEntry`)で、
+        //   `keyEntry.baseURL` は其処には無い。後者だけを待つと印は一度も発火せず、`list.row` 不在の
+        //   skip に落ちるまで 20 秒 前後 空待ちしていた(2026-09-02、@ path レーンの実測 23.3 秒 / 16.4 秒)。
+        if app.descendants(matching: .any).matching(identifier: "disconnected.manualEntry").firstMatch
+            .waitForExistence(timeout: 3)
+            || app.descendants(matching: .any).matching(identifier: "keyEntry.baseURL").firstMatch
+            .waitForExistence(timeout: 1) {
             throw XCTSkip("鍵入力画面 = 未 provisioning のシミュレータ(測っていない)")
         }
 
