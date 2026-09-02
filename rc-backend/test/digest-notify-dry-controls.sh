@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: rc-backend/tools/digest-notify.sh
+# controls-for: tools/digest-notify.sh
 #
 # `digest-notify.sh --dry-run` の**副作用**の対照。文面ではなく「何を書き換えたか」を測る。
 #

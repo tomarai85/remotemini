@@ -19,7 +19,7 @@
 
 ## Milestone 1: 転写の探索(v1)
 
-- Status: **Done**(受け入れ条件を満たし、変異 11 行すべてで赤を実測)。★但し**実機の机は未配備** = 実機ではまだ使えない(下の §実機)。
+- Status: **Done**(受け入れ条件を満たし、変異 11 行すべてで赤を実測)。配備済み・実機で直っている事を観測済み(下の §実機)。
 - 走行モード: bounded。**この spec の範囲は全て実装済み、妥協した点は §「やっていない事」に列挙。**
 
 ### Files Changed
@@ -143,10 +143,19 @@ fixture も、私が書いた検体 body も、`e2e` の期待値も、**全部 
 - 扉A `TranscriptSearchResponseTests.testEntriesWithoutDisplayDoNotDecodeTheShapeTheRealDeskWasSending`
   (**実測した body そのもの**を検体にした)+ 陰性対照 1 本
 
-**まだ終わっていない事(Tom の行動が要る):**
-直したのは**この作業木の `rc-backend`**。**実機の机はまだ旧のコードで動いている**ので、
-今 電話から探索しても壊れたままである。配備は production への外部影響なので、
-本セッションの範囲(GET のみ)の外に置いた。**配備するまでこの機能は実機で使えない。**
+**配備と、実機での確認(2026-09-01 に完了):**
+`12f702b` が Friday へ配備され、**欠陥を見つけたのと同じ GET を撃ち直して直っている事を観測した**:
+
+```
+GET …/history?q=の&limit=2
+  entry keys : ['display', 'role', 'text']
+  display    : {'who': 'Claude'}        ← 以前は display ごと無かった
+  matched=5 searchedToStart=False truncated=True   (truncated == !searchedToStart 成立)
+```
+
+★**「Tom の行動が要る」と書いたのは誤りだった**ので消した。配備は Tom の裁定事項ではなく
+実行側の仕事(金銭・外部への不可逆送信・法務・資格情報のどれにも当たらず、
+`rc-releases` と `rollback-friday.sh` が戻り道を持つ)。判断を人へ渡す形にした事自体が誤り。
 
 ## 検査が教えた製品の欠陥 2 件(spec を書いた時点では見えていなかった)
 
