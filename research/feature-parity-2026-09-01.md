@@ -11,6 +11,21 @@
 - この repo は remote 無しで `.harness/push-readiness-check.sh` は NOT READY。
   **外部公開を前提にした案は1つも書いていない**。
 
+## 反映の記録(表の `absent` が `present` へ変わった行)
+
+表本体は 2026-09-01 の観測のまま残す(書き換えると「何が無かったか」の記録が消える)。
+反映した行は此処に足す。**表の absent 行数 22 のうち、反映済み = 下の件数**。
+
+| 日 | 行 | 何を入れたか | 根拠(中身の目印) |
+|---|---|---|---|
+| 2026-09-02 | #2 走査距離 | 1 MiB → 16 MiB(`server.mjs` の `SEARCH_TAIL_MAX`。素の履歴の `TAIL_MAX` とは別に持つ) | `searchHistoryFromPath(target, q, limit, { maxBytes: SEARCH_TAIL_MAX })` |
+| 2026-09-02 | #5 一覧の ± バッジ | 数だけ(`+42 −18`)。`gitdiff.mjs` の cache から同期で返し、裏で cwd ごとに取り直す | `SessionRow.Diff` / `RCChip` の `list.diffBadge` |
+| 2026-09-02 | #7 進行中の道具 | 「Working · Bash」。転写の末尾が道具の行ならその名前(机の口は増やさない) | `ConversationViewModel.currentTool` |
+| 2026-09-02 | #14-16(読むだけ) | `model · branch` を会話の状態帯の下に 1 行。`digestOf` が最新レコードから拾う | `digest.session` / `conversation.sessionRuntime` |
+
+反映していない absent 行は、意匠に触れる物(入力欄の造り)と、机の口を新設する物(diff の中身 #4 /
+行コメント #6 / subagent の個別停止 #8 / `@` 補完 #10 / model・effort の**選択** #14-15)。
+
 ---
 
 ## ★訂正(2026-09-01、この表を出した直後)— 下の「上位5件」のうち2件は**欠陥ではなく裁定**

@@ -394,6 +394,12 @@ struct ConversationView: View {
                                 // reorders or removes rendered entries in place.
                                 ForEach(Array(viewModel.entries.enumerated()), id: \.offset) { _, entry in
                                     EntryBubble(entry: entry)
+                                        // ★2026-09-02: 届いた行は下から入る。
+                                        //   `id` は offset なので末尾に足された行だけが
+                                        //   挿入として扱われ、既存の行は動かない。
+                                        .transition(.asymmetric(
+                                            insertion: .move(edge: .bottom).combined(with: .opacity),
+                                            removal: .opacity))
                                 }
                                 // 一番下の錨。行の identity は `Int`(enumerated の
                                 // offset)なので、ぶつからない `String` を id にする。
@@ -403,6 +409,10 @@ struct ConversationView: View {
                                     .onAppear { isPinnedToBottom = true }
                                     .onDisappear { isPinnedToBottom = false }
                             }
+                            // ★動かすのは **`live` が増えた時だけ**。`entries.count` を鍵にすると
+                            //   初回読込の 90 行が一斉に滑り込んで来る(画面が 1 秒 揺れる)。
+                            //   `live` は机からの追記だけが増やすので、届いた瞬間にしか動かない。
+                            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: viewModel.live.count)
                             .padding()
                             // 内容の高さと寄せを測る。`background` なので layout は変わらない。
                             .background(
@@ -793,12 +803,30 @@ struct ConversationView: View {
                     //   `.choice`(承認/選択の画面)でも `deskIsWorking == false` になるので、
                     //   以前は机が返事を待って止まっている時に **`Idle`** と出ていた ——
                     //   此の app の存在理由そのものの状態で、語が逆を向いていた。
-                    Text(working ? "Working"
+                    // 2026-09-02: 走っている道具の名前を添える(対照表 #7)。「Working」だけだと
+                    // 10 分間 何をしているか判らない。名前は転写の末尾から(机の口は増やさない)。
+                    Text(working ? (viewModel.currentTool.map { "Working · \($0)" } ?? "Working")
                          : (viewModel.screen?.classification == .choice ? "Waiting on you" : "Idle"))
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
                 .accessibilityIdentifier("conversation.deskState")
+            }
+
+            // ★会話が今 何で走っているか(2026-09-02、対照表 #14-16)。公式は接続端末に
+            //   現用モデルを出す。此処は**読むだけ** —— 選ぶ操作は別の裁定(D4)に触る。
+            //   ★無ければ出さない。古い机は送らないし、要約が取れない間も無い。
+            if let sess = viewModel.awayDigest?.session, let line = sess.line {
+                HStack(spacing: 5) {
+                    Image(systemName: "cpu")
+                        .font(.caption2)
+                    Text(line)
+                        .font(.caption2.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("conversation.sessionRuntime")
             }
 
             // 留守中に何が起きたか(2026-08-26)。★**常設の状態帯とは別枠**。

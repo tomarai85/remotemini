@@ -21,12 +21,21 @@ final class AttachButtonUITests: XCTestCase {
 
     func testTheAttachButtonExistsAndOpensThePicker() throws {
         let app = launchReal()
+        // ★未 provisioning(鍵入力画面)なら**未測定**(2026-09-02)。新品のシミュレータには種が
+        //   無い —— sim ビルドは**意図して**鍵を持たない(build.sh 1b の註「単体も UI 検査も本物の
+        //   鍵を一度も見ない」)。此処で落とすと「製品が壊れた」と「測る前提が無い」が同じ赤になる。
+        //   実測: iPhone-dogfood を作り直した朝、此の 2 本が 5 件 赤になり、犯人探しに 3 走行 使った。
+        //   机のログには sim からの要求が 0 件 = 一覧が出る前に止まっていた。
+        if app.descendants(matching: .any).matching(identifier: "keyEntry.baseURL").firstMatch
+            .waitForExistence(timeout: 3) {
+            throw XCTSkip("鍵入力画面 = 未 provisioning のシミュレータ(測っていない)")
+        }
 
         // 一覧が埋まるのを待つ。本物の机に問い合わせるので、単体より長く見る。
         let firstRow = app.buttons.matching(identifier: "list.row").firstMatch
-        let anyRow = firstRow.waitForExistence(timeout: 20)
-            ? firstRow
-            : app.cells.firstMatch
+        // ★`cells.firstMatch` へ逃げない(2026-09-02)。新品の sim では初回起動画面の Form の
+        //   セルを掴んで「会話へ行けない」= 製品の赤に化けた。行が無ければ**未測定**。
+        let anyRow = firstRow
 
         guard anyRow.waitForExistence(timeout: 10) else {
             // 机に繋がっていない / 会話が1本も無い。**製品の欠陥ではない**ので落とさない。
@@ -72,12 +81,13 @@ extension AttachButtonUITests {
         app.launch()
 
         let row = app.buttons.matching(identifier: "list.row").firstMatch
-        guard row.waitForExistence(timeout: 20) || app.cells.firstMatch.waitForExistence(timeout: 10) else {
+        // ★`cells.firstMatch` へ逃げない(2026-09-02)。行(`list.row`)が無ければ未測定。
+        guard row.waitForExistence(timeout: 20) else {
             throw XCTSkip("一覧に会話が無い = 測っていない")
         }
         attachScreenshot(app, name: "01-sessions")
 
-        (row.exists ? row : app.cells.firstMatch).tap()
+        row.tap()
         let attach = app.buttons["conversation.attachButton"]
         XCTAssertTrue(attach.waitForExistence(timeout: 15))
         attachScreenshot(app, name: "02-conversation-with-attach-button")

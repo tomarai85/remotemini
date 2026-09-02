@@ -355,6 +355,16 @@ final class ConversationViewModel: ObservableObject {
     /// ★`nil` = **観測できていない**(まだ画面を読めていない / 読めない画面)。
     /// 「動いていない」と混ぜない —— 淡く描いてよいのは「止まっていると**判った**」時だけで、
     /// 判らない時に淡くすると、一番止めたい局面(机が見えない時)でボタンが引っ込んで見える。
+    /// 転写の末尾が道具の行なら、その名前 = **今 走っている道具**(対照表 #7、2026-09-02)。
+    /// ★机に新しい口は要らない。`live` に届く道具の行(`role == .tool`、text = 名前)が
+    ///   既に其れで、次の assistant の行が来るまでは其の道具が走っている。
+    /// ★末尾が道具でなければ nil。「最後に走った道具」を出すと、終わった後も名前が残る。
+    var currentTool: String? {
+        guard let last = entries.last, last.role == .tool else { return nil }
+        let t = last.text.trimmingCharacters(in: .whitespaces)
+        return t.isEmpty ? nil : t
+    }
+
     var deskIsWorking: Bool? {
         if let screen {
             switch screen.classification {

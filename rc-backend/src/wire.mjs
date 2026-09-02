@@ -25,10 +25,13 @@ import { attentionOf } from "./digest.mjs";
  *   毎回思い出す羽目になる。追加のみ = 既存の鍵は1つも動かさないので、
  *   `app.html` は無改修のまま(自分で view.mjs を呼び続ける)。
  */
-export function sessionRow(row, live, machine) {
+export function sessionRow(row, live, machine, diff = null) {
   return {
     ...row,
     live,
+    // 2026-09-02(対照表 #5): 作業木の未コミット差分の**数**。`{files, added, removed}`。
+    // ★null = 読めなかった / まだ読んでいない / git 管理外。0 件とは別の意味なので丸めない。
+    diff,
     // §9-2(2026-08-16): 「今どちらの機体に居るか」。無指定 = 机(edith)の仕事。
     // kind: "desk" | "checkout"。checkout は MBP から持ち出されて来ている仕事で、
     // returnRequestedAt が非 null なら「戻し待ち(MBP が開いた時に実行される)」。

@@ -144,6 +144,7 @@ const DIGEST_COMPLETE = {
   tools: [{ name: "Read", n: 1 }],
   fileTargets: ["/a/b.txt"], fileTargetsTotal: 1,
   lastAssistant: "done", lastAt: "2026-08-26T11:02:00.000Z",
+  session: { model: "claude-opus-5", gitBranch: "main", version: "2.1.240" },
 };
 const DIGEST_INCOMPLETE = {
   complete: false, incompleteReason: "scan-budget",
@@ -151,6 +152,7 @@ const DIGEST_INCOMPLETE = {
             toIso: "2026-08-26T12:00:00.000Z", minutes: 60 },
   counts: null, tools: null, fileTargets: null, fileTargetsTotal: null,
   lastAssistant: "done", lastAt: "2026-08-26T11:02:00.000Z",
+  session: { model: null, gitBranch: null, version: null },
 };
 
 // 使用量の検体(2026-08-29、friday の実 `cswap list --json` から写した形)。
@@ -216,9 +218,11 @@ const CASES = {
   buildListing: [[LISTING_ENTRIES], [[]]],
   registryOnlySessions: [[REGISTRY_ARGS], [{ ...REGISTRY_ARGS, panes: [] }]],
   unreadableRow: [[UNREADABLE_ARGS]],
-  sessionRow: ROWS.flatMap((r) => LIVES.map((l) => [r, l])),
+  // 2026-09-02: 4 つ目の引数 = 差分の数。null 可だが、null だと `at: "diff"` の鍵が
+  //   空になり「空の和」を一致と読む事になるので、側A の検体では値を入れて形を出す。
+  sessionRow: ROWS.flatMap((r) => LIVES.map((l) => [r, l, undefined, { files: 1, added: 2, removed: 3 }])),
   sessionsBody: [
-    [{ sessions: ROWS.map((r) => sessionRow(r, LIVES[0])), scan: SCAN, paneFault: null }],
+    [{ sessions: ROWS.map((r) => sessionRow(r, LIVES[0], undefined, { files: 1, added: 2, removed: 3 })), scan: SCAN, paneFault: null }],
     [{ sessions: [], scan: SCAN, paneFault: { reason: "tmux-unavailable", detail: "spawn tmux ENOENT" } }],
   ],
   // ★`seq` 有り/無しの**両方**を通す。`gapItem` は無い時に鍵ごと生やさないので、
@@ -554,6 +558,10 @@ const PAIRS = [
     mode: "phone-subset",
     serverOnly: ["requestedFromIso", "observedFromIso", "toIso"] },
   { swift: "DigestEnvelope.Digest.Counts", builders: ["digestBody"], at: "digest.counts" },
+  // 2026-09-02: 会話の実行環境(model / gitBranch / version)。`digestOf` が転写の最新
+  // レコードから拾う。★最初 電話側で外側(`DigestEnvelope.session`)に置いて此の検査に
+  // 捕まった —— 復号は通るので画面が黙って痩せるだけで、検査が無ければ気付けなかった。
+  { swift: "DigestEnvelope.Digest.Session", builders: ["digestBody"], at: "digest.session" },
   { swift: "DigestEnvelope.Action", builders: ["digestBody"], at: "action" },
   { swift: "ChoiceView", builders: ["choiceView"], at: "" },
   { swift: "ChoiceOption", builders: ["choiceView"], at: "options[]" },
@@ -582,6 +590,8 @@ const PAIRS = [
   // §9-2(2026-08-16): 機体の名乗り。組むのは `sessionRow`(checkout の枝は
   // `src/server.mjs` が値を埋めるが、鍵名を決めるのは `wire.mjs` の literal)。
   { swift: "SessionRow.Machine", builders: ["sessionRow"], at: "machine" },
+  // 2026-09-02: 作業木の差分の数(対照表 #5)。null 可なので検体では値を入れて形を出す。
+  { swift: "SessionRow.Diff", builders: ["sessionRow"], at: "diff" },
   { swift: "SessionsResponse.PaneFault", builders: ["sessionsBody"], at: "paneFault" },
   {
     // 行の生産者は3本(jsonl から / 登録簿だけ / 読めなかった)+ 居場所を足す `sessionRow`。

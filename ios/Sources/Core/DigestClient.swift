@@ -38,6 +38,20 @@ struct SessionDigest: Equatable {
     let action: ActionLevel
     /// ★サーバが作った 1 行。電話はこれを描くだけ。
     let line: String
+    /// 会話が**今 何で走っているか**(2026-09-02)。転写の最新レコードから机が拾う。
+    /// ★古い机は此の項目を送らないので optional。無い事は異常ではない。
+    var session: Session? = nil
+
+    struct Session: Equatable {
+        let model: String?
+        let gitBranch: String?
+        let version: String?
+        /// 画面に出す 1 行。**在る物だけ**を「·」で繋ぐ。全部無ければ nil(帯を出さない)。
+        var line: String? {
+            let parts = [model, gitBranch].compactMap { $0 }.filter { !$0.isEmpty }
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
+    }
 
     struct Counts: Equatable {
         let user: Int
@@ -91,6 +105,15 @@ private struct DigestEnvelope: Decodable {
         let fileTargets: [String]?
         let fileTargetsTotal: Int?
         let lastAssistant: String?
+        // ★`session` は **`digest` の中**(サーバ `digestOf` の戻りに在る)。
+        //   最初 外側に置いて `wire-key-agreement` に捕まった —— 復号は通るので
+        //   画面が黙って痩せるだけで、検査が無ければ気付けなかった。
+        let session: Session?
+        struct Session: Decodable {
+            let model: String?
+            let gitBranch: String?
+            let version: String?
+        }
     }
     struct Action: Decodable {
         let level: String?
@@ -130,7 +153,8 @@ enum DigestParser {
             lastAssistant: d.lastAssistant,
             attention: SessionDigest.Attention(rawValue: env.attention ?? "") ?? .unrecognized,
             action: SessionDigest.ActionLevel(rawValue: env.action?.level ?? "") ?? .unrecognized,
-            line: env.line ?? ""
+            line: env.line ?? "",
+            session: d.session.map { .init(model: $0.model, gitBranch: $0.gitBranch, version: $0.version) }
         )
     }
 }

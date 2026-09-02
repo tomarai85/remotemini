@@ -45,7 +45,7 @@ struct DigestFetchingFixture: DigestFetching {
         switch state {
         case .complete:
             return """
-            {"digest":{"complete":true,"incompleteReason":null,"window":{"requestedFromIso":"2026-08-26T11:00:00.000Z","observedFromIso":"2026-08-26T11:01:00.000Z","toIso":"2026-08-26T12:00:00.000Z","minutes":60},"counts":{"user":1,"assistant":1,"tool":1},"tools":[{"name":"Read","n":1}],"fileTargets":["/a/b.txt"],"fileTargetsTotal":1,"lastAssistant":"done","lastAt":"2026-08-26T11:02:00.000Z"},"attention":"none","action":{"level":"none","reason":"observed"},"line":"60m · 1 reply · 1 tool call · 1 file — still working."}
+            {"digest":{"complete":true,"incompleteReason":null,"window":{"requestedFromIso":"2026-08-26T11:00:00.000Z","observedFromIso":"2026-08-26T11:01:00.000Z","toIso":"2026-08-26T12:00:00.000Z","minutes":60},"counts":{"user":1,"assistant":1,"tool":1},"tools":[{"name":"Read","n":1}],"fileTargets":["/a/b.txt"],"fileTargetsTotal":1,"lastAssistant":"done","lastAt":"2026-08-26T11:02:00.000Z","session":{"model":"claude-opus-5","gitBranch":"main","version":"2.1.240"}},"attention":"none","action":{"level":"none","reason":"observed"},"line":"60m · 1 reply · 1 tool call · 1 file — still working."}
             """
         case .incomplete:
             return """

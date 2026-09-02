@@ -398,6 +398,33 @@ extension RCTheme {
     }
 }
 
+/// 押せる面の**押した感**。
+///
+/// ★2026-09-02 新設。理由は好みではなく**退行の修復**:
+///   行を `NavigationLink` から `Button` へ替えた回(`>` を消す為)に `.buttonStyle(.plain)`
+///   を付けた。`.plain` は装飾を全部降ろすので、**以前 `NavigationLink` が出していた
+///   押下のハイライトごと消えた** —— カードを押しても画面が何も返さない状態になっていた。
+///   実測: 画面全体でアニメーションの記述は 2 箇所だけ、押下の反応は 0 箇所。
+///
+/// ★寸法の根拠:
+///   ・縮みは 0.97。0.95 は「潰れた」に見え、0.99 は指の下に隠れて見えない。
+///   ・押す時は速く(0.12s 相当の硬い spring)、離す時は緩く。**指より先に画面が動く**と
+///     反応が良く感じ、指より遅れると重く感じる。人の触覚は押下側に厳しい。
+///   ・面も僅かに明るくする。縮みだけだと指の下で起きるので**見えない** ——
+///     カードは指が乗る面積が大きく、縮みの手掛かりが縁にしか出ない。
+struct RCPressable: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .brightness(configuration.isPressed ? 0.045 : 0)
+            .animation(
+                configuration.isPressed
+                    ? .spring(response: 0.18, dampingFraction: 0.7)
+                    : .spring(response: 0.36, dampingFraction: 0.8),
+                value: configuration.isPressed)
+    }
+}
+
 struct RCCard: ViewModifier {
     var emphasized = false
 

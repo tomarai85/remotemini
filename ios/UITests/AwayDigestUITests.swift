@@ -16,9 +16,19 @@ final class AwayDigestUITests: XCTestCase {
 
     func testTheAwayDigestLineAppearsWhenOpeningAConversation() throws {
         let app = launchReal()
+        // ★未 provisioning(鍵入力画面)なら**未測定**(2026-09-02)。新品のシミュレータには種が
+        //   無い —— sim ビルドは**意図して**鍵を持たない(build.sh 1b の註「単体も UI 検査も本物の
+        //   鍵を一度も見ない」)。此処で落とすと「製品が壊れた」と「測る前提が無い」が同じ赤になる。
+        //   実測: iPhone-dogfood を作り直した朝、此の 2 本が 5 件 赤になり、犯人探しに 3 走行 使った。
+        //   机のログには sim からの要求が 0 件 = 一覧が出る前に止まっていた。
+        if app.descendants(matching: .any).matching(identifier: "keyEntry.baseURL").firstMatch
+            .waitForExistence(timeout: 3) {
+            throw XCTSkip("鍵入力画面 = 未 provisioning のシミュレータ(測っていない)")
+        }
 
         let firstRow = app.buttons.matching(identifier: "list.row").firstMatch
-        let anyRow = firstRow.waitForExistence(timeout: 20) ? firstRow : app.cells.firstMatch
+        // ★`cells.firstMatch` へ逃げない(2026-09-02)。行が無ければ未測定。
+        let anyRow = firstRow
         guard anyRow.waitForExistence(timeout: 10) else {
             throw XCTSkip("一覧に会話が無い(机が落ちている / tailnet の外)= 測っていない")
         }
