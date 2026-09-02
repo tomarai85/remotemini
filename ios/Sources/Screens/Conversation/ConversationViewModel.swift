@@ -110,11 +110,11 @@ final class ConversationViewModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .initialLoading
-    @Published private(set) var history: [HistoryEntry] = []
+    @Published private(set) var history: [HistoryEntry] = [] { didSet { entriesRevision &+= 1 } }
     /// Populated by the poll loop as of Sprint 4 (brief §1-a items 1-3) -- previously
     /// always empty (Sprint 3 brief §2-d: no poll loop existed yet). Still never
     /// mutated directly by the View; only `applyReadablePoll(_:)` appends to it.
-    @Published private(set) var live: [HistoryEntry] = []
+    @Published private(set) var live: [HistoryEntry] = [] { didSet { entriesRevision &+= 1 } }
     @Published private(set) var truncated = false
     @Published private(set) var loadEarlierState: LoadEarlierState = .hidden
 
@@ -544,7 +544,31 @@ final class ConversationViewModel: ObservableObject {
     /// The render array every screen actually shows. Recomputed on every access
     /// rather than cached -- brief §2-d, this is the one call site `mergeHistory`
     /// needs this sprint.
-    var entries: [HistoryEntry] { MergeHistory.merge(history, live) }
+    /// 転写と追記を混ぜた**表示用の並び**。
+    ///
+    /// ★2026-09-01: 記憶するようにした。以前は素の computed で、**触る度に**
+    ///   `MergeHistory.merge` を回していた。`ConversationView` は 1 回の body 評価で
+    ///   `entries` を **3 回**読み、SwiftUI はスクロール中に body を何度も評価するので、
+    ///   長い会話(上限 500 件)ほど直接 重くなる。見た目は 1px も変わらない最適化。
+    ///
+    /// ★鍵に**件数を使わない**。件数は同じで中身が違う状態が実在する(追記が 1 件 届いて
+    ///   古い 1 件が落ちる、行の本文だけが変わる 等)。件数を鍵にすると
+    ///   **古い並びを新しい物として返す**ので、速さの為に正しさを捨てる事になる。
+    ///   代わりに `history` / `live` への**代入**そのものを数える(`didSet`)。
+    ///   ★代入されれば中身が同じでも版が進む = 安全側。取りこぼす方向には倒れない。
+    ///
+    /// ★此のクラスは `@MainActor` の class なので、getter の中で cache を書いてよい
+    ///   (値型なら書けないし、並行に触られる型なら競合する)。
+    var entries: [HistoryEntry] {
+        if let cached = entriesCache, cached.revision == entriesRevision { return cached.value }
+        let merged = MergeHistory.merge(history, live)
+        entriesCache = (entriesRevision, merged)
+        return merged
+    }
+
+    /// `history` / `live` への代入回数。`entries` の記憶が古いかどうかの唯一の鍵。
+    private var entriesRevision: UInt64 = 0
+    private var entriesCache: (revision: UInt64, value: [HistoryEntry])?
 
     /// From the List row that navigated here (brief §3-c: the title survives a
     /// failed fetch -- it is never re-derived from a `/history` response, which
