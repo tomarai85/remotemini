@@ -1036,6 +1036,55 @@ struct ConversationView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
+            // ★`@` のパス補完(2026-09-02、公式との対照表 #10)。
+            //
+            //   置き場も作りも **slash のチップと同じ**にする —— 入力欄の上に横1本、
+            //   押すと差すだけで**送らない**。写真の添付・slash と同じ規約で、
+            //   机を触る物を「1タップで実行」にしない一貫性を崩さない。
+            //
+            // ★出るのは `draft` の末尾が `@` + 文字列の時だけ(判定は `PathMention`)。
+            //   候補が 0 件なら帯ごと出さない —— 空の帯は「探したが無い」ではなく
+            //   「壊れている」に見える。
+            //
+            // ★★`truncated` の「…」を**隠さない**。机は上限に当たると途中で切るので、
+            //   切った事を言わないと、人は「此の3つが全部」と読んで探すのをやめる。
+            //   押せないただの印にしてあるのは、押して起きる事が何も無いから。
+            if viewModel.composerEnabled && !viewModel.pathSuggestions.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Array(viewModel.pathSuggestions.enumerated()), id: \.offset) { index, item in
+                            Button {
+                                viewModel.applyPathSuggestion(item)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: item.kind == .dir ? "folder" : "doc")
+                                        .font(.caption2)
+                                    Text(item.path)
+                                        .font(.caption.weight(.medium))
+                                        .lineLimit(1)
+                                }
+                                .foregroundStyle(RCTheme.accent)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .modifier(RCChip(tint: RCTheme.surfaceStroke))
+                            }
+                            .accessibilityIdentifier("conversation.pathSuggestion.\(index)")
+                            .accessibilityLabel(item.path)
+                        }
+                        if viewModel.pathSuggestionsTruncated {
+                            Text("…")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .modifier(RCChip(tint: RCTheme.surfaceStroke))
+                                .accessibilityIdentifier("conversation.pathSuggestionsTruncated")
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             HStack(alignment: .bottom, spacing: 8) {
                 // Left of the field, deliberately far from the send button: these two
                 // do opposite things and a mis-tap on a phone in one hand is the

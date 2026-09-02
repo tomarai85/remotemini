@@ -22,9 +22,13 @@
 | 2026-09-02 | #5 一覧の ± バッジ | 数だけ(`+42 −18`)。`gitdiff.mjs` の cache から同期で返し、裏で cwd ごとに取り直す | `SessionRow.Diff` / `RCChip` の `list.diffBadge` |
 | 2026-09-02 | #7 進行中の道具 | 「Working · Bash」。転写の末尾が道具の行ならその名前(机の口は増やさない) | `ConversationViewModel.currentTool` |
 | 2026-09-02 | #14-16(読むだけ) | `model · branch` を会話の状態帯の下に 1 行。`digestOf` が最新レコードから拾う | `digest.session` / `conversation.sessionRuntime` |
+| 2026-09-02 | #10 `@` 補完 | `GET /api/sessions/:id/paths?q=` で cwd の下を**読むだけ**歩く(前方一致・区切りを跨ぐ / 深さ・件数・時間に上限 / 生成木は除外 / 切ったら `truncated`)。電話は 250ms の debounce で撃ち、押しても**送らない** | `completePaths`(`paths.mjs`) / `PathCompletionClient` / `conversation.pathSuggestion` |
 
 反映していない absent 行は、意匠に触れる物(入力欄の造り)と、机の口を新設する物(diff の中身 #4 /
-行コメント #6 / subagent の個別停止 #8 / `@` 補完 #10 / model・effort の**選択** #14-15)。
+行コメント #6 / subagent の個別停止 #8 / model・effort の**選択** #14-15)。
+★#11(任意のディレクトリで新規)は #10 が入っても**自動では片付かない** —— 補完が歩けるのは
+既に在る会話の cwd の下だけで、場所を 0 から選ぶ口は机にまだ無い。「作らないと決めた」ではなく
+「まだ作っていない」である事を、`ListView.swift` / `NewSessionClient.swift` / `server.mjs` の註にも書いた。
 
 ---
 
@@ -49,6 +53,12 @@ Tom への Yes/No にはしない(一覧から消す要求は archive が満た�
 `TAIL_MAX` は定数を書き換えずとも**呼び出し側の `opts.maxBytes`** で上げられる /
 diff の口が `SESSION_ROUTE_RE` に無い / `@` 補完の不在が別機能を止めている。
 着手順は Tom の回答後に決まる。
+
+★**2026-09-02 の更新**: `@` 補完(#10)は出荷した。よって「不在が #11 を止めている」は
+もう成り立たない —— だが **#11 が自動で片付いた訳ではない**。補完が歩けるのは
+**既に在る会話の cwd の下**だけで、任意のディレクトリを 0 から選ぶには机側に別の口が要る
+(今の動詞表は会話に紐づく道しか持たない)。#11 の註を「作らないと決めた」に読み替えないよう、
+`ListView.swift` / `NewSessionClient.swift` / `server.mjs` の3箇所の註も同日に書き直してある。
 
 ## `research/remote-control-teardown.md`(2026-07-31)が既に決着させている事 — 繰り返さない
 

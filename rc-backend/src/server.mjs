@@ -16,7 +16,8 @@ import { spawn as nodeSpawn, execFileSync, execFile } from "node:child_process";
 import { makeDiffCache } from "./gitdiff.mjs";
 import { promisify } from "node:util";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords, searchHistoryFromPath } from "./sessions.mjs";
-import { accountBody, gapItem, healthzBody, historyBody, historySearchBody, messageItem, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
+import { accountBody, gapItem, healthzBody, historyBody, historySearchBody, messageItem, pathsBody, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
+import { completePaths, clampLimit as clampPathsLimit, PATHS_NO_CWD } from "./paths.mjs";
 import { publishedBuild } from "./ota-published.mjs";
 import { headerBuild } from "./reqlog.mjs";
 import { parseFleetAccount, selectionMessage, selectionProblem } from "./account.mjs";
@@ -1459,10 +1460,12 @@ const server = createServer(async (req, res) => {
     //   其の形をそのまま使う(既存ペインへ打ち込む案は、人が打ちかけた行を壊し得るので
     //   あちらで既に棄却されている)。
     //
-    // ★何処で始めるかは**既に在る会話の cwd**から採る。ディレクトリを選ぶ画面を
-    //   電話に作らない —— 電話で path を打たせるのは、調査の 7 位(`@` 補完)が
-    //   未着手である以上、盲打ちを強いる事になる。「この会話と同じ場所で、もう1本」
+    // ★何処で始めるかは**既に在る会話の cwd**から採る。「この会話と同じ場所で、もう1本」
     //   が電話から一番自然な始め方。
+    // ★★2026-09-02: 此の判断が元に持っていた理由(「`@` 補完が未着手なので盲打ちになる」)は
+    //   **消えた** —— 補完は下の `paths` の道として入った。だが其れが歩けるのは
+    //   **既に在る会話の cwd の下**で、任意のディレクトリを 0 から選ぶ道(対照表 #11)は
+    //   机に一覧の口が無い。今は「まだ作っていない」であって「作らないと決めた」ではない。
     //
     // ★window 名は**回復用の `phone` と分ける**。あちらは「1 枚だけ在る」を冪等の鍵に
     //   しているので、同じ名前で足すと 60 秒ごとの回復が此の window を自分の物と誤認する。
@@ -1546,6 +1549,34 @@ const server = createServer(async (req, res) => {
       }
       setArchived(KEY_DIR, sessionId, body.archived);
       return json(res, 200, { archived: body.archived });
+    }
+
+    // ── `@` のパス補完(2026-09-02、対照表 #10)────────────────────────────────
+    //
+    // ★**読むだけ**の口。dir を開いて名前を読むだけで、file の中身は1バイトも読まない。
+    //   走査の規則と上限は全部 `src/paths.mjs` に在る(此処は cwd を渡すだけ)。
+    //
+    // ★★此の分岐は `sessionCwd` の**宣言より後**に在る事(2026-08-31 の実害:
+    //   新しいルートを `const` の宣言より前に置いて全ルートを壊し、検査 1777 件が
+    //   緑のままだった)。守っているのは `test/e2e-local.mjs` の往復 —— 関数の扉では
+    //   宣言順の誤りは決して赤くならない。
+    //
+    // ★答えられない時も **200 + 空 + 語**。404 / 500 にしない理由は、電話にとって
+    //   次の一手が全部同じ(補完は出ない、会話は使える)だから。断りを status で
+    //   割ると、電話は「鍵が切れた」「会話が消えた」の判断と混ぜて読む事になる。
+    if (action === "paths" && req.method === "GET") {
+      const cwd = sessionCwd();
+      if (!cwd) {
+        return json(res, 200, pathsBody({ entries: [], truncated: false, reason: PATHS_NO_CWD }));
+      }
+      // 上限は `paths.mjs` が枠に収める(読めない値・空欄は既定へ)。此処で `Number()` を
+      // 挟むと、判断が2箇所に分かれて必ず片方が先に古くなる。
+      const r = completePaths(cwd, url.searchParams.get("q") || "", {
+        limit: clampPathsLimit(url.searchParams.get("limit")),
+      });
+      return json(res, 200, pathsBody({
+        entries: r.paths, truncated: r.truncated, reason: r.reason,
+      }));
     }
 
     /**

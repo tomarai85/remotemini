@@ -59,6 +59,13 @@ struct ConversationClients {
     ///   本当の HTTP は飛ばない。`live` では必ず本物を渡す。
     var digest: DigestFetching = NoDigest()
 
+    /// 2026-09-02。`@` のパス補完を取りに行く口。
+    ///
+    /// ★既定は `digest` と**同じ理由**で「何もしない物」。読む口なので渡し忘れの症状は
+    ///   「候補列が出ない」だけで済むが、既定を本物にすると UI 検査の面が黙って
+    ///   本番の机へ繋ぎに行く —— この file が塞いだ当の穴。`live` では必ず本物を渡す。
+    var paths: PathCompleting = NoPathCompletion()
+
     /// 本番。`ListView` の行から会話画面を作る経路だけが使う。
     ///
     /// `static let` ではなく計算プロパティなのは、束ねる前の既定値が
@@ -73,7 +80,8 @@ struct ConversationClients {
             choice: ChoiceClient(),
             clearQueue: ClearQueueClient(),
             attach: AttachClient(),
-            digest: DigestFetcher()
+            digest: DigestFetcher(),
+            paths: PathCompletionClient()
         )
     }
 }

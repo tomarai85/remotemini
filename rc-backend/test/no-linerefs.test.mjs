@@ -102,13 +102,29 @@ const NOT_SCANNED = {
  *   中にも無いから、どの木の直下の照合にも掛からない。**守りの範囲を、守る側の
  *   一覧から導いている限り、一覧の外は永久に見えない**という同じ形の3件目。
  */
+/**
+ * 免除の3つ目の欄 = **git が追跡していない** dir の印(2026-09-02)。
+ *
+ * ★何を直しに来たか。下の「実在しない dir の免除は畳む」は、追跡されている dir にしか
+ *   当てられない。`.claude` は追跡されていないので **本流の checkout にしか存在せず**、
+ *   `git worktree` で切った木には 1 つも複製されない —— 実測 2026-09-02:
+ *   本流直下に在り、`git ls-files --error-unmatch .claude` は非零、私の worktree 直下には無い。
+ *   其の儘だと **本流では緑・worktree でだけ赤**になり、`isolation: worktree` で走る
+ *   並列レーンが全部 此の 1 本で止まる(実際に止まった)。
+ *
+ * ★之は此の file の冒頭が警告している形そのもの ——「完全な木では緑、写しの中でだけ赤」。
+ *   だから免除を消すのではなく、**存在を要求してよい対象を追跡済みの物に限る**。
+ *   腐った免除を捕まえる力は追跡済みの 2 件(`.git` / `research`)に対して残る。
+ */
+const UNTRACKED = true;
+
 const NOT_A_TREE = [
   [".git", "版の記録。走査対象の拡張子 0 件(実測 2026-08-07: 拡張子を持つのは " +
     "hooks の見本 14 件の .sample だけ)"],
   ["research", "調査の記録。中身は md 3 件だけで走査対象の拡張子は 0 件(実測 2026-08-07)"],
   [".claude", "並列エージェントの worktree(`isolation: worktree` が作る)。中身は本流の写しで、" +
     "走査すると同じ file を二重に数える(実測 2026-09-02: `.claude/worktrees/agent-*/` が 2 本)。" +
-    "git には追跡されない"],
+    "git には追跡されない", UNTRACKED],
 ];
 /** 実在する木だけ走る。**居ない事は下の検査が必ず名指しで報告する**(黙って減らさない)。 */
 const present = (t) => existsSync(t.root) && statSync(t.root).isDirectory();
@@ -485,7 +501,10 @@ test(`★木の一覧が repo 直下を覆っている(根が本物: ${REPO_INTA
   );
   // 免除の側も腐る。実在しない dir の免除は畳む(完全な木でだけ判る)。
   assert.deepEqual(
-    NOT_A_TREE.map(([d]) => d).filter((d) => !existsSync(join(REPO, d))), [],
+    // ★追跡されていない dir は除く。あれは本流の checkout にしか存在しないので、
+    //   要求すると worktree でだけ赤くなる(`UNTRACKED` の註が実測)。
+    NOT_A_TREE.filter(([, , untracked]) => !untracked)
+      .map(([d]) => d).filter((d) => !existsSync(join(REPO, d))), [],
     "repo 直下に実在しない dir の免除が残っている",
   );
 });
