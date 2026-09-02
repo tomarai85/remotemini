@@ -151,7 +151,7 @@ voice 入力 / 下書き保存 / キーボードツールバー / 複数行の�
 
 | 順 | やる事 | 最初に触る file | なぜこれが先か |
 |---|---|---|---|
-| **1** | **slash チップを公式の一覧に合わせ、送信まで行かせる**(#13 / #14 / #15) | `ios/Sources/Screens/Conversation/ConversationView.swift の `ForEach(["/compact", "/context", "/model"])` の slash チップ` — 配列 `["/compact","/context","/model"]` | 費用が最小で効果が確実。**能力は既に机に在り、画面に出ていないだけ**だと同行の註が実測付きで明言している。机に一切触らない。`/effort` `/clear` `/context` `/usage` を足し、`/model` `/effort` は引数まで入れたチップにする |
+| **1** | ~~**slash チップを公式の一覧に合わせ、送信まで行かせる**(#13 / #14 / #15)~~ **★却下 — 上の「訂正」の表に在る裁定(3 つだけ / 押しても送らない)。此の行は訂正前の記述のまま残っていて、2026-09-02 に此処からレーンを 1 本 誤配した。着手するな** | `ios/Sources/Screens/Conversation/ConversationView.swift の `ForEach(["/compact", "/context", "/model"])` の slash チップ` — 配列 `["/compact","/context","/model"]` | 費用が最小で効果が確実。**能力は既に机に在り、画面に出ていないだけ**だと同行の註が実測付きで明言している。机に一切触らない。`/effort` `/clear` `/context` `/usage` を足し、`/model` `/effort` は引数まで入れたチップにする |
 | **2** | **permission mode を `status` に載せて帯に出す**(#16) | `rc-backend/src/server.mjs の `action === "status"` の分岐` — `action === "status"` の分岐 | 読むだけなので設計 D4(#17)の裁定に触れない。机が bypass で走っているかを電話から知る手段が今は無い。1 往復で入る |
 | **3** | **diff の口を机に開ける**(#4 → #5 → #6) | `rc-backend/src/reqlog.mjs の `export const SESSION_ROUTE_RE`(動詞表)` — `SESSION_ROUTE_RE` に `diff` を追加 | 一番大きい穴。**まず「ファイル名と ± の数」だけ**返す版で価値の大半が出る。cwd は登録簿が既に持っている(`rc-backend/src/listing.mjs`)。#5 のバッジはその副産物 |
 | **4** | **ntfy の購読が生きているか測る**(#31 / #32) | `ios/Sources/Core/DeepLink.swift の `handle(_:)`(外から来た URL を受ける唯一の口)` — `handle(_:)` が受ける側、机側は `Notification` hook | 実装ではなく**測定**。ここが死んでいると #1〜#3 が全部「開いた時だけ効く機能」に落ちる。鎖の最後の1段が Tom ゲート(iPhone で topic を購読)なので、生死を先に確定する |
