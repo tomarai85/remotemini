@@ -6,7 +6,7 @@
 //   ワーカー   = 開かれていない会話(-p --resume)
 //   blocked    = 同じ cwd に claude が複数で特定不能 → どちらにも送らない
 // 偽 tmux は send-keys を**全部ログに残す**ので「1文字も送っていない」を実測で言える。
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, chmodSync, existsSync, rmSync, utimesSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -70,6 +70,13 @@ const CWD_RACE   = "/Users/Shared/dev/race";
 const CWD_INTR_OK    = "/Users/Shared/dev/intr-ok";
 const CWD_INTR_STUCK = "/Users/Shared/dev/intr-stuck";
 const CWD_PERM       = "/Users/Shared/dev/perm";
+// ★diff(#4、2026-09-02、扉F)。`sessiondiff.mjs` の頭の註が「配線は `test/e2e-local.mjs` の
+//   扉F が実サーバへ HTTP を撃って測る」と書いていたが、其の扉は無かった —— 此処が其れ。
+//   git を本当に撃つので**実在する dir**が要る(単体は fake exec で git に触れていない)。
+const SID_DIFF          = "99999999-0000-0000-0000-00000000000e"; // 実 git repo・変更あり
+const SID_DIFF_NOTREPO  = "99999999-0000-0000-0000-00000000000f"; // 実在する dir だが git 管理外
+const CWD_DIFF         = join(SB, "diff-repo");
+const CWD_DIFF_NOTREPO = join(SB, "diff-notrepo");
 // 登録簿(session_id -> pane)の検証用。**全部同じ cwd に置く** — 登録が無ければ
 // 特定不能になる状況を作り、登録があれば1つに定まることを同じ場に並べて見せるため。
 const SID_REG_A    = "aaaaaaaa-0000-0000-0000-00000000000a"; // 登録あり -> %20
@@ -269,6 +276,34 @@ fixture(SID_CWD_GONE, CWD_GONE, "消えた場所");
 fixture(SID_DEATH_LATE, CWD_DEATH_LATE, "死の順序:孫が握る");
 fixture(SID_DEATH_PART, CWD_DEATH_PART, "死の順序:改行なし");
 fixture(SID_SLOW, CWD_SLOW, "応答が遅い:送信待ち");
+
+// ★diff(#4、扉F)。実 git repo を1本作る —— 単体(`sessiondiff.test.mjs`)は fake exec で
+//   git そのものには一度も触れていない。此処は実サーバが実 git を撃つ所まで届かせる為。
+mkdirSync(CWD_DIFF, { recursive: true });
+mkdirSync(CWD_DIFF_NOTREPO, { recursive: true }); // 実在するが git init しない(git 管理外)
+{
+  const git = (args) => execFileSync("git", args, { cwd: CWD_DIFF, encoding: "utf8" });
+  git(["init", "-q"]);
+  git(["config", "user.email", "rc-e2e@example.invalid"]);
+  git(["config", "user.name", "rc-e2e"]);
+  writeFileSync(join(CWD_DIFF, "app.js"), "const x = 1;\n");
+  git(["add", "app.js"]);
+  git(["commit", "-q", "-m", "init"]);
+  // 未 stage の変更(作業木)。
+  writeFileSync(join(CWD_DIFF, "app.js"), "const x = 1;\nconst y = 2;\n");
+  // stage 済みの変更(index)。
+  writeFileSync(join(CWD_DIFF, "new.txt"), "new file\n");
+  git(["add", "new.txt"]);
+}
+fixture(SID_DIFF, CWD_DIFF, "diff:実 git repo");
+fixture(SID_DIFF_NOTREPO, CWD_DIFF_NOTREPO, "diff:git 管理外");
+// cwd 欄そのものが無い会話(`fixture()` は必ず cwd を書くので、此処だけ手で書く —
+// SID1 の直書きと同じ形)。server.mjs の `!cwd` 早期リターンは、之が無いと一度も通らない。
+const SID_DIFF_NOCWD = "99999999-0000-0000-0000-000000000010";
+writeFileSync(join(PROJ, `${SID_DIFF_NOCWD}.jsonl`), [
+  JSON.stringify({ entrypoint: "cli", type: "user", message: { role: "user", content: "q" } }),
+  JSON.stringify({ type: "ai-title", aiTitle: "diff:cwd 欄なし" }),
+].join("\n"));
 
 // ★配信(feed)が登録簿を**毎 tick 読み直す**事を測る為だけの会話。
 //   登録先を %28 -> %29 に付け替えて、配信が追随するかを見る(13-Z)。
@@ -1056,6 +1091,48 @@ try {
     const noKey = await fetch(`${B}/api/sessions/${SID_PATHS}/paths`);
     check("★補完: 鍵無しでは答えない(cwd の中身の名前は認証の外へ出さない)",
       noKey.status === 401, String(noKey.status));
+  }
+
+  // 3-T. 差分(diff)を電話で読む(#4、2026-09-02)—— **扉F**。
+  //
+  // ★何故 此処に置くのが必須か。`sessiondiff.mjs` 自身の単体は fake exec で git に
+  //   一度も触れておらず、`SESSION_ROUTE_RE` に `diff` の口が本当に開いているかは
+  //   HTTP を実サーバへ撃つ検査でしか測れない(2026-08-31 の実例そのもの:
+  //   `server.mjs` の宣言順序で全ルートが死んだ時、関数の扉は全部緑のままだった)。
+  {
+    const dr = await fetch(`${B}/api/sessions/${SID_DIFF}/diff`, { headers: H });
+    const dj = await dr.json();
+    check("★diff: 実 git repo で 200、reason は null", dr.status === 200 && dj.reason === null,
+      `status=${dr.status} ${JSON.stringify(dj).slice(0, 300)}`);
+    check("diff: 切っていない(小さい変更なので truncated=false)", dj.truncated === false, JSON.stringify(dj.truncated));
+    check("diff: totalBytes は生の diff の量(0 ではない)", typeof dj.totalBytes === "number" && dj.totalBytes > 0,
+      JSON.stringify(dj.totalBytes));
+    const byPath = Object.fromEntries((dj.files || []).map((f) => [f.path, f]));
+    check("diff: 未 stage の変更が `staged:false` で乗る(path に `b/` が残っていない)",
+      byPath["app.js"]?.staged === false && byPath["app.js"]?.added === 1 && byPath["app.js"]?.removed === 0,
+      JSON.stringify(byPath["app.js"]));
+    check("diff: stage 済みの新規 file が `staged:true` で別行に乗る",
+      byPath["new.txt"]?.staged === true && byPath["new.txt"]?.added === 1,
+      JSON.stringify(byPath["new.txt"]));
+    check("★diff: 塊の中身(足した行の文面)まで届く(封筒が hunks を運べている)",
+      byPath["app.js"]?.hunks?.[0]?.lines?.some((l) => l.kind === "add" && l.text === "const y = 2;"),
+      JSON.stringify(byPath["app.js"]?.hunks));
+
+    // GET 以外は此の分岐に落ちない(読むだけの道 = 書く動詞を受け付けない)。
+    const drp = await fetch(`${B}/api/sessions/${SID_DIFF}/diff`, { method: "POST", headers: H });
+    check("diff: POST は通らない(読むだけの道)", drp.status !== 200, `status=${drp.status}`);
+
+    const nr = await fetch(`${B}/api/sessions/${SID_DIFF_NOTREPO}/diff`, { headers: H });
+    const nj = await nr.json();
+    check("★diff: git 管理外は 200 + `not_a_repo`(異常ではなく状態として返る)",
+      nr.status === 200 && nj.reason === "not_a_repo" && Array.isArray(nj.files) && nj.files.length === 0,
+      JSON.stringify(nj));
+
+    const cr = await fetch(`${B}/api/sessions/${SID_DIFF_NOCWD}/diff`, { headers: H });
+    const cj = await cr.json();
+    check("★diff: cwd 欄の無い会話は 200 + `no_cwd`(server.mjs の早期リターンが実際に通る)",
+      cr.status === 200 && cj.reason === "no_cwd" && cj.files.length === 0,
+      JSON.stringify(cj));
   }
 
   // 4. account —— **電話が読む封筒**(`wire.mjs` の `accountBody`)が端から端まで組める事。
