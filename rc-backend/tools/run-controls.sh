@@ -106,6 +106,13 @@ LOCAL_CTLS=(
     test/design-supersede-world-controls.sh   # ★2026-08-04 に此処へ入れた。世界の見分け
                                               # (designOrSkip)の対照。差し替え口だけ在って
                                               # 使う側が居らず、其処が実際に配備を止めた
+    test/wire-shape-capture-controls.sh       # ★2026-09-01。実応答の形の捕捉器のうち
+                                              # **必須鍵の抽出器**(Swift の静的解析)の対照。
+                                              # 本番にも tailnet にも触らない純関数の検査なので
+                                              # 手元で回る。書いた当日に 5 件の欠陥が出た内訳は
+                                              # 対照の頭に在る —— うち 2 件は赤ではなく
+                                              # **NULL(黙って測らない)**の顔で出ており、
+                                              # 対照を書くまで誰にも見えなかった。
     test/mutation-run-live-controls.sh
     test/mutation-target-controls.sh
     test/orphan-instrument-scan-controls.sh  # ★2026-08-07。「対照は在るのに撃つ者が居ない」

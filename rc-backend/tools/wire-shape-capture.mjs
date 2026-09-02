@@ -1,6 +1,9 @@
-// no-operator: 本番へ GET を撃つので tailnet と鍵が要り、門からは回せない。撃つのは 2 通り ——
-//   /loop の verifier(タスク live-desk-response-shapes… の検査)と、電話の Decodable か
-//   机の封筒を触った人が形を取り直したい時。隣の `wire-shape.mjs` と同じ立場。
+// 走らせる者: `test/wire-shape-capture-controls.sh`(此の file の**必須鍵の抽出器**を、
+//   検体の Swift を読ませて測る対照。`run-controls.sh` の LOCAL_CTLS に登録済み)。
+//   ★`no-operator:` の印は対照を足した時に外した —— 対照が出来た後も印が残ると、
+//     門が『腐った印』として止める(2026-09-01 に実際に止まった。`delivery-check.sh` に同じ前例)。
+//   ★捕捉の本体(`--check`)は本番へ GET を撃つので門からは回らない。其方は
+//     /loop の verifier と、電話の Decodable / 机の封筒を触った人が手で撃つ。
 // 電話が叩く経路の**実際の応答の形**を、走っているサーバから採って、
 // Swift の復号器が**必須として要求する鍵**と突き合わせる。
 //
@@ -39,7 +42,10 @@ import { execFileSync } from "node:child_process";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = join(ROOT, "..");
-const SWIFT = join(REPO, "ios", "Sources");
+// ★読む根を差し替えられる継ぎ目(`bar-is-composer-only.test.mjs` の `RC_VIEW_ROOT` と同じ形)。
+//   対照(`test/wire-shape-capture-controls.sh`)が検体の Swift を読ませる為に要る ——
+//   本物の木で測ると、抽出器の対照が「今の製品の形」に依存して腐る。既定は本物。
+const SWIFT = process.env.RC_SHAPE_SWIFT_ROOT || join(REPO, "ios", "Sources");
 const LIVE_BASE = process.env.RC_SHAPE_LIVE_BASE || "https://desk.tailnet.example:9443";
 
 // ── 側B: Swift の必須鍵を原文から採る ─────────────────────────────────────
@@ -56,7 +62,10 @@ const SWIFT_SRC = swiftFiles(SWIFT).map((f) => [f, readFileSync(f, "utf8")]);
 
 /** 宣言から中括弧の深さで本体を切り出す(`src` の中の1つ目)。 */
 function blockOf(src, name) {
-  const re = new RegExp(`(?:struct|final class|class|extension)\\s+${name}\\b[^{]*\\{`);
+  // ★`enum` と `actor` も入れる。Swift では `enum Foo { struct Wire … }` が名前空間の
+  //   常套句で、之が無いと修飾名 `Foo.Wire` が **NULL** になる = 其の経路を黙って
+  //   測らなくなる(2026-09-01、対照 `wire-shape-capture-controls.sh` が当日に捕まえた)。
+  const re = new RegExp(`(?:struct|final class|class|actor|enum|extension)\\s+${name}\\b[^{]*\\{`);
   const m = re.exec(src);
   if (!m) return null;
   let i = m.index + m[0].length, depth = 1;
@@ -120,6 +129,11 @@ function stripNested(body) {
   return out + inner.slice(i);
 }
 
+/** 註だけ落とす(文字列は残す)。`CodingKeys` の改名先は文字列なので此方で読む。 */
+function stripComments(s) {
+  return s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
 /** 註と文字列を落とす(註の中の `decode(` を鍵と読まない為)。 */
 function strip(s) {
   return s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "").replace(/"(?:[^"\\]|\\.)*"/g, '""');
@@ -130,7 +144,20 @@ export function requiredKeys(typeName) {
   if (!raw) return null;
   const full = strip(raw);
   // `CodingKeys` は入れ子の enum なので、落とす**前**に採る。
-  const ckBlock = /enum\s+CodingKeys[^{]*\{([\s\S]*?)\n\s*\}/.exec(full);
+  // ★釣り合いで採る。以前は閉じ括弧の前に**改行を要求**していたので、
+  //   `enum CodingKeys: String, CodingKey { case classification = "screen" }` の様な
+  //   1 行宣言を読み落とし、改名が効かず**電話側の property 名**を必須鍵として出していた
+  //   (= 机が吐く線の綴りと突き合わない = 偽の不一致)。
+  const ckBlock = (() => {
+    // ★`full` ではなく **註だけ落とした原文**から採る。`strip` は文字列リテラルを
+    //   空にするので、`case classification = "screen"` の**改名先が消えていた**
+    //   (2026-09-01、対照 ⑥ が捕まえた)。実コードの `ScreenBody` が正に此の形なので、
+    //   放置すれば電話側の property 名を必須鍵として出し、机の綴りと突き合わない。
+    const b = blockOf(stripComments(raw), "CodingKeys");
+    if (!b) return null;
+    const i = b.indexOf("{");
+    return [b, b.slice(i + 1, b.lastIndexOf("}"))];
+  })();
   // ★`;` を改行へ均す。`struct Wire: Decodable { let ok: Bool; let pid: Int; … }` の様な
   //   **1行宣言**を、改行を要求する下の走査が 1 件も拾えなかった(2026-09-01 実測:
   //   `HealthzClient.Wire` の必須鍵が 0 件と出た)。**必須鍵が空の型は照合が恒真になる**ので、
