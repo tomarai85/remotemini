@@ -44,7 +44,9 @@ PAT_MAIL='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
 # ここを「それらしい偽アドレス」まで広げると検査が意味を失うので、予約名だけに限る。
 # ★`.ts.net` をここから外すのは「メールではない」からで、「出して安全」だからではない。
 #   外した先は下の PAT_MACH が受ける。**除外しっ放しにしない**のがこの2段構えの理由。
-SAFE_MAIL='@(example\.(com|net|org)|[A-Za-z0-9.-]+\.(example|invalid|test|localhost)|[A-Za-z0-9.-]+\.ts\.net)$'
+# `anthropic.com` = commit trailer `Co-Authored-By: Claude <noreply@anthropic.com>`(組織の no-reply、個人ではない)。
+#   commit message を見る様になった 2026-09-03 に追加。伏字化の規則(.harness/redaction-rules.txt)も同じ除外を持つ。
+SAFE_MAIL='@(example\.(com|net|org)|[A-Za-z0-9.-]+\.(example|invalid|test|localhost)|[A-Za-z0-9.-]+\.ts\.net|anthropic\.com)$'
 
 # --- 種類2: 機械の入口の名前 ---
 # tailnet の IP は CGNAT 100.64/10 に限る。`100.` で始まる数字を何でも拾うと
@@ -195,6 +197,21 @@ if [ -n "$revs" ]; then
     echo "  commit 数が増えて引数が長すぎる可能性。走査を rev-list --objects 方式へ書き換える事。" >&2
     exit 2
   fi
+  # ★commit message も push が運ぶ(2026-09-03、公開写しの予行: blob を 0 件にした後も message に
+  #   17 件 — 家族・取引先・tailnet 名・IP — 残っていた)。`git grep` は blob しか見ない。
+  #   message は `git log` で取り、`<sha>:(commit message):<行>` に揃えて同じ hraw へ足す
+  #   (下の hist_of は `cut -d: -f1,2` で例を出すので、この形なら壊れない)。
+  mout=$(git log --all --format='%x01%H%n%B' 2>/dev/null); mrc=$?
+  if [ "$mrc" -ne 0 ]; then
+    echo "PII 検査: **判定不能** — commit message の取得に失敗した(git log exit=${mrc})。" >&2
+    exit 2
+  fi
+  mraw=$(printf '%s\n' "$mout" | awk 'substr($0,1,1)=="\001"{h=substr($0,2); next}{print h ":(commit message):" $0}' | grep -E "$PAT_ANY"); mgrc=$?
+  if [ "$mgrc" -gt 1 ]; then
+    echo "PII 検査: **判定不能** — commit message の走査に失敗した(grep exit=${mgrc})。" >&2
+    exit 2
+  fi
+  if [ -n "$mraw" ]; then hraw="${hraw:+$hraw$'\n'}$mraw"; fi
 fi
 
 # hist_of <抽出する正規表現> <除外する正規表現|-> -> "<一致の一覧>\t<箇所数>\t<例>" を1行で
@@ -232,6 +249,12 @@ if [ -n "$revs" ] && [ "$host_checked" -eq 1 ]; then
   if [ "$hhrc" -eq 0 ]; then
     hist_host=$(printf '%s\n' "$hhout" | grep -c . )
     hist_host_ex=$(printf '%s\n' "$hhout" | head -1)
+  fi
+  # 種類3 も commit message を見る(理由は上の mraw と同じ)。`mout` は上で取得済み。
+  mh=$(printf '%s\n' "$mout" | grep -icF -e "$HOST_SELF"); [ "$mh" -gt 0 ] 2>/dev/null || mh=0
+  if [ "$mh" -gt 0 ]; then
+    hist_host=$(( ${hist_host:-0} + mh ))
+    [ -n "$hist_host_ex" ] || hist_host_ex="(commit message)"
   fi
   # 履歴側の経路名。`git log --name-only` は**削除された経路も**出す = 一度 commit して
   # 後で改名した file を拾う。作業ツリーだけ見る検査がここを必ず見逃すのは種類1と同じ形。
