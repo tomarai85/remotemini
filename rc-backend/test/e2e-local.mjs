@@ -136,7 +136,9 @@ const H2_FORK_ID  = "cccccccc-0000-0000-0000-0000000000ff"; // 偽ワーカー�
 const MAX_WAITERS = 1;
 
 writeFileSync(join(PROJ, `${SID1}.jsonl`), [
-  JSON.stringify({ entrypoint: "cli", cwd: CWD_WORK, type: "user", message: { role: "user", content: "最初の質問" } }),
+  // ★`permissionMode` を足した(対照表 #16、2026-09-02)。行数は変えない —— :178 の註が
+  //   「SID1 は4行、1チャンクで足りる」を前提に読んでいる。
+  JSON.stringify({ entrypoint: "cli", cwd: CWD_WORK, type: "user", message: { role: "user", content: "最初の質問" }, permissionMode: "bypassPermissions" }),
   JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "最初の答え" }, { type: "tool_use", name: "Bash", input: {} }] } }),
   JSON.stringify({ type: "ai-title", aiTitle: "検証用の会話" }),
   JSON.stringify({ type: "last-prompt", lastPrompt: "最初の質問" }),
@@ -145,19 +147,24 @@ writeFileSync(join(PROJ, "22222222-2222-2222-2222-222222222222.jsonl"),
   JSON.stringify({ entrypoint: "sdk-cli", cwd: "/x", type: "user", message: { content: "noise" } }));
 
 const FIXTURED = new Set();
-function fixture(sid, cwd, title) {
+// ★`permissionMode` は既定で**省く**(第4引数を渡した呼び手だけが持つ)。全呼び手に
+//   焼くと、対照表 #16 の検体を1つ足す為だけに既存の全 fixture の形が変わってしまう。
+function fixture(sid, cwd, title, permissionMode) {
   // ★同じ id を二度書かない。黙って上書きすると、**先に書いた会話の設定が消えた事**が
   //   どこにも出ず、無関係な検査が落ちて原因が id の衝突だと分からなくなる(2026-08-03 に実演)。
   if (FIXTURED.has(sid)) throw new Error(`fixture の id が衝突している: ${sid}(${title})`);
   FIXTURED.add(sid);
   writeFileSync(join(PROJ, `${sid}.jsonl`), [
-    JSON.stringify({ entrypoint: "cli", cwd, type: "user", message: { role: "user", content: "q" } }),
+    JSON.stringify({
+      entrypoint: "cli", cwd, type: "user", message: { role: "user", content: "q" },
+      ...(permissionMode ? { permissionMode } : {}),
+    }),
     JSON.stringify({ type: "ai-title", aiTitle: title }),
   ].join("\n"));
 }
 fixture(SID_H2_NEW, CWD_WORK, "H2 頭なし");
 fixture(SID_H2_HEAD, CWD_WORK, "H2 頭あり");
-fixture(SID_READY, CWD_READY, "注入READY");
+fixture(SID_READY, CWD_READY, "注入READY", "plan"); // 対照表 #16: tmux 経路の permissionMode 検体
 fixture(SID_CHOICE, CWD_CHOICE, "注入CHOICE");
 fixture(SID_SHELL, CWD_SHELL, "シェルのみ");
 fixture(SID_AMBIG, CWD_AMBIG, "特定不能");
@@ -1240,6 +1247,10 @@ try {
     return j.state === "ready" ? j : false;
   }) || await (await fetch(`${B}/api/sessions/${SID1}/status`, { headers: H })).json();
   check("worker ready after result", st.worker === "running" && st.state === "ready", JSON.stringify(st));
+  // ★対照表 #16: ワーカー経路の `status` も同じ1鍵で permissionMode を運ぶ
+  //   (SID1 の fixture に `permissionMode: "bypassPermissions"` を焼いた)。
+  check("worker 経路の status にも permissionMode が乗る", st.route === "worker" && st.permissionMode === "bypassPermissions",
+    JSON.stringify(st));
 
   // 8. interrupt
   const intr = await (await fetch(`${B}/api/sessions/${SID1}/interrupt`, { method: "POST", headers: H })).json();
@@ -1317,6 +1328,14 @@ try {
     injected[1].at(-1) === "Enter", JSON.stringify(injected));
   check("★scrollback を読んでいない(capture-pane に -S を付けない)",
     !sentKeys().some((c) => c[0] === "capture-pane" && c.includes("-S")));
+
+  // 10-a-2. ★対照表 #16: tmux 経路の `status` は転写から permissionMode を拾う
+  //   (SID_READY の fixture に `permissionMode: "plan"` を焼いた)。
+  const stReadyRes = await fetch(`${B}/api/sessions/${SID_READY}/status`, { headers: H });
+  const stReady = await stReadyRes.json();
+  check("tmux 経路の status に permissionMode が乗る(transcript の値をそのまま)",
+    stReadyRes.status === 200 && stReady.route === "tmux" && stReady.permissionMode === "plan",
+    JSON.stringify(stReady));
 
   // 10-b. ★陽性対照: 選択待ち画面には 1 文字も送らない(Enter が課金選択になりうる)
   const beforeChoice = sentKeys().length;

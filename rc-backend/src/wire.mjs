@@ -227,6 +227,28 @@ export function pollBodyWorker({ items, queued, cursor, more }) {
 }
 
 /**
+ * `GET /api/sessions/<id>/status` の封筒(tmux 経路)。対照表 #16。
+ *
+ * ★以前は `src/server.mjs` に literal で書かれていて、突き合わせ表(S8-25/26 と同じ
+ *   理由)から測れなかった。ここへ切り出したのは `permissionMode` を足す為 —— 机が
+ *   bypass で走っているかを電話から知る手段が今まで無かった(D4/#17 の裁定には触れない
+ *   読むだけの1鍵)。`screen` は `screenOf(pane)` の戻りをそのまま展開する
+ *   (poll の `screenChanged ? f.screen.body : null` とは別経路 —— こちらは1回読みの
+ *   on-demand で、poll の変化差分とは意味が違う)。
+ */
+export function statusBodyTmux({ pane, screen, source, permissionMode }) {
+  return { route: "tmux", pane, ...screen, source, permissionMode };
+}
+
+/**
+ * 同・ワーカー経路。`manager.status()` の形をそのまま運び、`permissionMode` だけ足す
+ * (tmux 側との差はこの1鍵 + `pane`/`source` の有無)。
+ */
+export function statusBodyWorker({ worker, permissionMode }) {
+  return { route: "worker", ...worker, permissionMode };
+}
+
+/**
  * `GET /api/sessions/<id>/history` の封筒。発言に表示語を足すのも**ここ1箇所**にする。
  *
  * ★`truncated` = これより前がある。電話が「以前を読む」を出せるかがこの1鍵で決まる。

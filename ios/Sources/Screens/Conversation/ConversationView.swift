@@ -845,6 +845,29 @@ struct ConversationView: View {
                 .accessibilityIdentifier("conversation.sessionRuntime")
             }
 
+            // ★机が**今**の permission mode(2026-09-02、対照表 #16)。公式は接続端末に
+            //   現用の mode を出す。此処も**読むだけ** —— 電話から変える操作は作らない
+            //   (D4/#17 の裁定「自動化に安全確認を押させない」に触れる領域なので)。
+            //   ★静かなチップにする —— bypass でも警告色にしない。危険度を煽る役目は
+            //   choice 画面の hard-stop が既に持っている。此処は状態の名乗りであって
+            //   注意喚起ではない。
+            //   ★無ければ出さない。取れない事は異常ではないので、
+            //   「不明」と描いて帯を1本占有させない。
+            if let mode = viewModel.permissionMode {
+                HStack(spacing: 4) {
+                    Image(systemName: "lock")
+                        .font(.caption2)
+                    Text(mode)
+                        .font(.caption2.monospaced())
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .modifier(RCChip(tint: RCTheme.surfaceStroke))
+                .accessibilityIdentifier("conversation.permissionMode")
+            }
+
             // 留守中に何が起きたか(2026-08-26)。★**常設の状態帯とは別枠**。
             //   §9-4 の「常設の状態帯は同時に1枠だけ」は「今どうなっているか」を争う
             //   帯の話で、これは「留守の間に何が在ったか」= 一度読めば済む物。
