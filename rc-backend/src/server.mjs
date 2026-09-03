@@ -1596,7 +1596,9 @@ const server = createServer(async (req, res) => {
       //   会話の cwd を渡して委ねるだけ。cwd 無し → 200 no_cwd / close → 順番待ちから外れる /
       //   busy → 503 / aborted → 何も書かない、は其方の `test/diff-route-handler.test.mjs` が
       //   偽の req / res で**実際に**通す。
-      return handleDiffGet({ req, res, cwd: sessionCwd(), readWorkingDiff, json, diffBody });
+      // ★`await` を落とさない(Codex #6 の High)。返すだけだと reject が此の関数の外側の try/catch を
+      //   素通りし、`readWorkingDiff` が投げた時に 500 が返らず応答が無いまま終わる。
+      return await handleDiffGet({ req, res, cwd: sessionCwd(), readWorkingDiff, json, diffBody });
     }
 
     /**

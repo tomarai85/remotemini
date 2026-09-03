@@ -9,7 +9,10 @@ import Foundation
 /// ★`HistoryFetchingFixture` の 9 状態(会話の中身の網羅)ほどの投資はしていない --
 /// diff は 1 会話につき 1 回しか開かない読むだけの脇の画面で、UI が撃ち分ける枝は
 /// 「差分が有る」「無い」「読めない」の 3 つしかない。之で全部埋まる。
-struct DiffFetchingFixture: DiffFetching {
+/// ★`final class`(`PollFetchingFixture` と同じ形): `busyThenSample` の回数は**この instance の物**。
+///   static に置くと同じ process で Diff を閉じて開き直した 2 つ目の view model が 1 回目から
+///   sample を貰う(Codex #6 の Medium)。
+final class DiffFetchingFixture: DiffFetching {
     enum State: String {
         /// 未 stage / stage 済みの両方が乗る一番賑やかな面(スクリーンショット用)。
         case sample = "diff-sample"
@@ -27,8 +30,10 @@ struct DiffFetchingFixture: DiffFetching {
 
     let state: State
 
-    /// `busyThenSample` の回数。process ごとに 1 つ(fixture は 1 会話 1 画面なので之で足りる)。
-    nonisolated(unsafe) static var busyCalls = 0
+    init(state: State) { self.state = state }
+
+    /// `busyThenSample` の回数(この instance の物)。
+    private var busyCalls = 0
 
     func fetch(baseURL: URL, apiKey: String, sessionID: String) async -> Result<SessionDiffBody, SessionsFetchError> {
         switch state {
@@ -41,8 +46,8 @@ struct DiffFetchingFixture: DiffFetching {
         case .busy:
             return .success(Self.busyBody)
         case .busyThenSample:
-            Self.busyCalls += 1
-            return .success(Self.busyCalls == 1 ? Self.busyBody : Self.sample)
+            busyCalls += 1
+            return .success(busyCalls == 1 ? Self.busyBody : Self.sample)
         }
     }
 

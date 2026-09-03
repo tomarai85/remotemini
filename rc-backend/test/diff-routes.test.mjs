@@ -47,7 +47,8 @@ test("GET だけ(同じ action に POST / DELETE の道が無い)", () => {
 test("★道は `handleDiffGet`(src/diffroute.mjs)へ委ねるだけ(挙動は diff-route-handler.test.mjs が偽の req/res で通す)", () => {
   const i = real.indexOf(MARKER);
   const body = real.slice(i, i + 700);
-  assert.ok(/return handleDiffGet\(\{/.test(body), "委ねていない(口の本体が server.mjs に戻っている = 単体から挙動を測れない)");
+  assert.ok(/return await handleDiffGet\(\{/.test(body),
+    "★`return await` でない(Codex #6 の High: await が無いと reject が外側の try/catch を素通りし、500 が返らない)");
   assert.ok(/cwd: sessionCwd\(\)/.test(body), "会話の cwd を渡していない");
   for (const dep of ["readWorkingDiff", "json", "diffBody"]) {
     assert.ok(new RegExp(`\\b${dep}\\b`).test(body), `${dep} を渡していない`);
