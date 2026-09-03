@@ -15,8 +15,8 @@ import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync, execFile } from "node:child_process";
 import { makeDiffCache } from "./gitdiff.mjs";
 import { promisify } from "node:util";
-import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords, searchHistoryFromPath } from "./sessions.mjs";
-import { accountBody, diffBody, gapItem, healthzBody, historyBody, historySearchBody, messageItem, pathsBody, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody} from "./wire.mjs";
+import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords, searchHistoryFromPath, permissionModeOf } from "./sessions.mjs";
+import { accountBody, diffBody, gapItem, healthzBody, historyBody, historySearchBody, messageItem, pathsBody, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody, statusBodyTmux, statusBodyWorker } from "./wire.mjs";
 import { completePaths, clampLimit as clampPathsLimit, PATHS_NO_CWD } from "./paths.mjs";
 // 差分を読む(対照表 #4)。git を撃つのは此の module だけで、撃つ動詞は `diff` のみ。
 import { readWorkingDiff } from "./sessiondiff.mjs";
@@ -1618,6 +1618,17 @@ const server = createServer(async (req, res) => {
       return (headId && headId !== sessionId && findSessionFile(headId)) || file;
     };
 
+    /**
+     * 対照表 #16。`status` の付帯情報なので**読めない事を異常にしない** ——
+     * 画面(送信可否)は転写が読めなくても正しく返せる。permission mode だけが
+     * null に落ちる(電話は「無ければ出さない」)。
+     */
+    const currentPermissionMode = () => {
+      const target = transcriptTarget();
+      if (!target) return null;
+      try { return permissionModeOf(target); } catch { return null; }
+    };
+
     if (action === "history" && req.method === "GET") {
       const limit = Math.min(Number(url.searchParams.get("limit") || 50), 500);
       // ★§2.18-4b: fork の後、本文も返事も**枝の file** に書かれる。祖先を読むと電話には
@@ -1758,16 +1769,20 @@ const server = createServer(async (req, res) => {
     if (action === "status" && req.method === "GET") {
       const r = resolvePane();
       if (r.pane) {
-        // 机で開かれている会話。真実は画面から取る。
-        return json(res, 200, {
-          route: "tmux",
+        // 机で開かれている会話。画面(送信可否)の真実は画面から取る。permission mode
+        // だけは画面に出ないので転写から足す(対照表 #16)。
+        return json(res, 200, statusBodyTmux({
           pane: r.pane,
-          ...screenOf(r.pane),
+          screen: screenOf(r.pane),
           source: r.source,
-        });
+          permissionMode: currentPermissionMode(),
+        }));
       }
       if (UNDECIDABLE.has(r.reason)) return json(res, 200, blockedBody(r));
-      return json(res, 200, { route: "worker", ...manager.status(sessionId) });
+      return json(res, 200, statusBodyWorker({
+        worker: manager.status(sessionId),
+        permissionMode: currentPermissionMode(),
+      }));
     }
 
     if (action === "messages" && req.method === "POST") {

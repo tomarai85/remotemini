@@ -14,7 +14,7 @@
 // listing.mjs の readLinesBackward に任せる — 持ち越し・短い read・多バイト境界の
 // 扱いを2箇所に書かない為(2026-08-02)。
 import { closeSync, openSync } from "node:fs";
-import { nodeIo, readLinesBackward } from "./listing.mjs";
+import { nodeIo, readLinesBackward, TAIL_MAX } from "./listing.mjs";
 
 /**
  * jsonl の1ファイル分のテキストから一覧用メタデータを抜く。
@@ -365,4 +365,66 @@ function tsOf(ln) {
   if (!m) return null;
   const t = Date.parse(m[1]);
   return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * 転写から**今**の permission mode を読む(対照表 #16、`status` の分岐)。読むだけ ——
+ * D4(#17)の裁定(電話からは変えられない)には触れない。
+ *
+ * ★出所は2つ、優先順は**ファイルの並び**で決める(timestamp では決めない):
+ *   - `{"type":"permission-mode","permissionMode":"…"}` — トグルの瞬間に追記される
+ *     専用の行。**timestamp を持たない**(実転写で確認)。
+ *   - `{"type":"user", …, "permissionMode":"…"}` — 送信した user turn に埋め込まれた
+ *     同名の値のスナップショット。timestamp を持つが、**送信を挟まないトグルには
+ *     付いてこない**(実転写で確認: 843 行中 213 行の user 行だけが持つ)。
+ *   timestamp で揃えて後ろから拾うと、timestamp を持たない方が常に時刻 0 に落ちて
+ *   負ける — 送信の無いトグルが「無かった事」になる(`digest.mjs` の `sessionOf` が
+ *   model/gitBranch/version でやっている時刻ソートを、ここでは意図して**使わない**)。
+ *   jsonl は追記なので、**ファイルの並びのまま最後尾から**見れば、種類を問わず
+ *   本当に最後に起きた方が勝つ。
+ *
+ * @param {string} path
+ * @param {object} [opts] readMetaFromPath と同じ形({io, tailChunk, tailMax})
+ * @returns {string|null} 見つからなければ null(古い transcript には項目自体が無い/
+ *   予算の外まで遡らないと無い)。null は「読めなかった」であって「無い」の断定ではない。
+ */
+export function permissionModeOf(path, opts = {}) {
+  const fd = openSync(path, "r");
+  try {
+    return permissionModeFromFd(opts.io ?? nodeIo, fd, opts);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * `lines`(古い順)の末尾側から、`permissionMode` を持つ最初の行を探す。
+ * 高価な parse の前に安いフィルタ(このファイルの他の読み手と同じ流儀)。
+ */
+function scanPermissionMode(lines) {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.includes('"permissionMode"')) continue;
+    let obj;
+    try { obj = JSON.parse(line); } catch { continue; } // 書き込み途中の行など
+    if (typeof obj?.permissionMode === "string" && obj.permissionMode) return obj.permissionMode;
+  }
+  return null;
+}
+
+/**
+ * `permissionModeOf` の fd 版。テストが偽の io を差せる様に分けてある。
+ *
+ * ★`done` の中だけでなく、戻った後の `r.lines` にも同じ走査を掛ける
+ *   (`listing.mjs` の `readMetaFromFd` と同じ形)。1チャンクで足りる小さいファイルは
+ *   `pos === 0` に先に当たって `done` が一度も呼ばれずに抜ける(`readLinesBackward` の
+ *   ループ順)ので、`done` だけに探索を任せると小さい transcript で採り漏らす。
+ */
+export function permissionModeFromFd(io, fd, opts = {}) {
+  const r = readLinesBackward(io, fd, {
+    chunk: opts.tailChunk,
+    maxBytes: opts.tailMax ?? TAIL_MAX,
+    done: (lines) => scanPermissionMode(lines) !== null,
+  });
+  return scanPermissionMode(r.lines);
 }
