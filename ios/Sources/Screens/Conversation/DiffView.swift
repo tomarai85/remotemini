@@ -134,11 +134,20 @@ struct DiffView: View {
         //   「読める作業木」がそもそも無い -- 静かな空面で言う。ContentUnavailableView
         //   は ListView の "That session isn't in this list" と同じ語彙。
         if let reason = response.reason {
-            ContentUnavailableView(
-                Self.reasonTitle(reason),
-                systemImage: "folder.badge.questionmark",
-                description: Text(Self.reasonDetail(reason))
-            )
+            // ★`busy`(机が混んでいる、503)は**待てば直る**種類なので、撃ち直す導線を置く
+            //   (Codex #4: 503 を「読めた」状態に通した以上、再試行の口が無いと行き止まり)。
+            //   他の reason は撃ち直しても変わらない(repo が無い等)ので導線を出さない。
+            ContentUnavailableView {
+                Label(Self.reasonTitle(reason), systemImage: reason == "busy" ? "hourglass" : "folder.badge.questionmark")
+            } description: {
+                Text(Self.reasonDetail(reason))
+            } actions: {
+                if reason == "busy" {
+                    Button("Try again") { Task { await viewModel.load() } }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("diff.retry")
+                }
+            }
             .accessibilityIdentifier("diff.reason")
         } else if response.files.isEmpty {
             ContentUnavailableView(
@@ -205,7 +214,7 @@ struct DiffView: View {
         case "cwd_missing": return "That folder no longer exists on the desk."
         case "git_failed": return "The desk couldn't read git here."
         case "unsafe_repo": return "This folder's .git is a symlink, so the desk refused to run git in it."
-        case "busy": return "Too many diffs are being read at once. Pull to try again."
+        case "busy": return "Too many diffs are being read at once. Wait a moment and try again."
         default: return "The desk had nothing to show for this conversation."
         }
     }
