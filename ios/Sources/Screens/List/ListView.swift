@@ -52,6 +52,8 @@ struct ListView: View {
     /// roots の下から dir を選んで始める口(対照表 #11、2026-09-03)。工具帯の `+` が開く。
     private let rootsBrowser: RootsBrowsing
     @State private var showDirectoryPicker = false
+    /// 一覧の絞り込みの問い(対照表 #24、2026-09-03)。机には送らない。規則は `SessionFilter`。
+    @State private var searchQuery = ""
     private let returner: ReturnRequesting
     private let archivedLister: ArchivedListing
 
@@ -173,6 +175,12 @@ struct ListView: View {
                 await viewModel.refresh()
             }
         }
+        // ★絞り込み(対照表 #24、2026-09-03): 手元の行を題名と副題で絞る。机への往復は無い。
+        //   40 本を目で走査する代わりに、覚えている語を 1 つ打つ。規則は `SessionFilter`(純関数、検査済み)。
+        //   問いを消せば元の並びに戻る。絞った結果が 0 本の時は空の面(`list.search.empty`)を出し、
+        //   「机に会話が無い」の面(`list.empty`)とは分ける —— 同じ顔にすると、絞っている事を忘れた人が
+        //   「全部消えた」と読む。
+        .searchable(text: $searchQuery, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search sessions")
         .refreshable { await viewModel.refresh() } // pull-to-refresh (brief §3-d trigger #2)
         .task { await viewModel.refresh() } // initial display (brief §3-d trigger #1)
         // ── 外から来た「この会話を開け」の着地 ────────────────────────────────
@@ -351,7 +359,18 @@ struct ListView: View {
     }
 
     @ViewBuilder
-    private func rows(_ sessions: [SessionRow], grayedOut: Bool) -> some View {
+    private func rows(_ allSessions: [SessionRow], grayedOut: Bool) -> some View {
+        let sessions = SessionFilter.apply(allSessions, query: searchQuery)
+        if sessions.isEmpty && !allSessions.isEmpty {
+            // 絞った結果が 0 本(机に会話は在る)。`list.empty` とは別の顔。
+            List {
+                Text("No sessions match “\(SessionFilter.normalized(searchQuery))”")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("list.search.empty")
+            }
+            .scrollContentBackground(.hidden)
+        } else {
         List(sessions, id: \.id) { row in
             // Trailing-closure `NavigationLink(destination:label:)`: the destination
             // closure is only evaluated on actual navigation, so this does not
@@ -498,6 +517,7 @@ struct ListView: View {
         } message: {
             Text(returnNotice ?? "")
         }
+        } // else(絞った結果が 1 本以上、または机に会話が無い)
     }
 
     /// alert の「保存」/「名前を外す」から。成功 = 一覧を読み直す(名前はサーバの台帳が正本。
