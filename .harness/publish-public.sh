@@ -37,9 +37,29 @@ HOST_SELF="$(hostname -s 2>/dev/null || true)"
 if [ -n "$HOST_SELF" ] && [ "${#HOST_SELF}" -ge 6 ]; then
   printf 'regex:(?i)%s==>host-redacted\n' "$(printf '%s' "$HOST_SELF" | sed 's/[.[\*^$()+?{}|\\/]/\\&/g')" >> "$T/rules.txt"
 fi
+# ★author / committer の identity は replace-text でも replace-message でも書き換わらない(3 つ目の層)。
+#   2026-09-03 の予行 3 回目: blob 0・message 0 の後に author に個人アドレスが 12 commit 残っていた。
+#   値は**走行時に履歴から取る**(追跡 file に本物を書かない): GitHub の noreply でも example でもない
+#   identity を全部、履歴で最多の noreply identity へ mailmap で寄せる。
+#   同じ identity の **local part**(`@` の前)は message に素の handle として出るので、規則にも足す
+#   (8 文字未満の短い語は誤爆源になるので足さない)。
+NOREPLY_ID=$(git -C "$T/clone" log --all --format='%an <%ae>' | grep -E '@users\.noreply\.github\.com>$' | sort | uniq -c | sort -rn | head -1 | sed 's/^ *[0-9]* //')
+[ -n "$NOREPLY_ID" ] || { echo "★履歴に GitHub noreply の identity が無い = 寄せ先が無い"; exit 2; }
+: > "$T/mailmap"
+git -C "$T/clone" log --all --format='%an <%ae>%n%cn <%ce>' | sort -u | grep -vE '@users\.noreply\.github\.com>$|@example\.(com|net|org)>$' > "$T/idents.txt" || true
+while IFS= read -r id; do
+  [ -n "$id" ] || continue
+  printf '%s %s\n' "$NOREPLY_ID" "$id" >> "$T/mailmap"     # "Proper Name <proper@email> Commit Name <commit@email>"
+  lp="${id#*<}"; lp="${lp%%@*}"
+  if [ "${#lp}" -ge 8 ]; then
+    printf 'regex:(?i)%s==>account-redacted\n' "$(printf '%s' "$lp" | sed 's/[.[\*^$()+?{}|\\/]/\\&/g')" >> "$T/rules.txt"
+  fi
+done < "$T/idents.txt"
+echo "==> identities folded into noreply: $(grep -c . "$T/mailmap")"
 # ★`--replace-text` は blob だけ。commit message は `--replace-message`(同じ規則 file)で別に書き換える。
 #   2026-09-03 の予行: blob は 0 件になった後も message に 17 件(家族・取引先・tailnet 名・IP)残っていた。
-( cd "$T/clone" && git filter-repo --replace-text "$T/rules.txt" --replace-message "$T/rules.txt" --force --quiet ) || { echo "filter-repo failed"; exit 2; }
+( cd "$T/clone" && git filter-repo --replace-text "$T/rules.txt" --replace-message "$T/rules.txt" --mailmap "$T/mailmap" --force --quiet ) || { echo "filter-repo failed"; exit 2; }
+echo "==> identities after rewrite: $(git -C "$T/clone" log --all --format='%ae%n%ce' | sort -u | tr '\n' ' ')"
 echo "==> rewritten: $(git -C "$T/clone" rev-list --count HEAD) commits, HEAD $(git -C "$T/clone" rev-parse --short HEAD)"
 
 # 1. PII 検出器(作業木 + 履歴)。赤なら push しない

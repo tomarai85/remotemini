@@ -46,7 +46,8 @@ PAT_MAIL='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
 #   外した先は下の PAT_MACH が受ける。**除外しっ放しにしない**のがこの2段構えの理由。
 # `anthropic.com` = commit trailer `Co-Authored-By: Claude <noreply@anthropic.com>`(組織の no-reply、個人ではない)。
 #   commit message を見る様になった 2026-09-03 に追加。伏字化の規則(.harness/redaction-rules.txt)も同じ除外を持つ。
-SAFE_MAIL='@(example\.(com|net|org)|[A-Za-z0-9.-]+\.(example|invalid|test|localhost)|[A-Za-z0-9.-]+\.ts\.net|anthropic\.com)$'
+# `users.noreply.github.com` = GitHub が公開用に発行する identity(author/committer を見る様になって必要になった)。
+SAFE_MAIL='@(example\.(com|net|org)|[A-Za-z0-9.-]+\.(example|invalid|test|localhost)|[A-Za-z0-9.-]+\.ts\.net|anthropic\.com|users\.noreply\.github\.com)$'
 
 # --- 種類2: 機械の入口の名前 ---
 # tailnet の IP は CGNAT 100.64/10 に限る。`100.` で始まる数字を何でも拾うと
@@ -212,6 +213,19 @@ if [ -n "$revs" ]; then
     exit 2
   fi
   if [ -n "$mraw" ]; then hraw="${hraw:+$hraw$'\n'}$mraw"; fi
+  # ★author / committer の identity も push が運ぶ(同日、予行 3 回目: blob 0・message 0 の後に
+  #   author に個人アドレスが 12 commit)。blob でも message でもない 3 つ目の層。同じ hraw へ足す。
+  iout=$(git log --all --format='%H:(author):%an <%ae>%n%H:(committer):%cn <%ce>' 2>/dev/null); irc=$?
+  if [ "$irc" -ne 0 ]; then
+    echo "PII 検査: **判定不能** — author/committer の取得に失敗した(git log exit=${irc})。" >&2
+    exit 2
+  fi
+  iraw=$(printf '%s\n' "$iout" | grep -E "$PAT_ANY"); igrc=$?
+  if [ "$igrc" -gt 1 ]; then
+    echo "PII 検査: **判定不能** — author/committer の走査に失敗した(grep exit=${igrc})。" >&2
+    exit 2
+  fi
+  if [ -n "$iraw" ]; then hraw="${hraw:+$hraw$'\n'}$iraw"; fi
 fi
 
 # hist_of <抽出する正規表現> <除外する正規表現|-> -> "<一致の一覧>\t<箇所数>\t<例>" を1行で
