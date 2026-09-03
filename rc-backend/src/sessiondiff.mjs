@@ -341,7 +341,7 @@ function withSlot(fn, o = {}) {
 function abortError() { const e = new Error("diff request aborted while waiting"); e.code = "DIFF_ABORTED"; return e; }
 function busyError() { const e = new Error("too many diff requests waiting"); e.code = "DIFF_BUSY"; return e; }
 
-/** 検査用: 今 走っている本数と、順番待ちの本数。 */
+/** 検査用: 今 走っている本数と、順番待ちの本数、合流中の cwd。 */
 export function _inflight() {
   return { running, waiting: waiting.length, keys: [...inflight.keys()] };
 }
@@ -371,20 +371,49 @@ export async function readWorkingDiff(cwd, o = {}) {
 
   // ★同じ cwd への要求は合流する。鍵は cwd の文字列(正規化はしない —— 別の綴りは
   //   別の要求で良い。合流は最適化であって正しさの条件ではない)。
-  //   合流した要求には `signal` を効かせない —— 走っている 1 本は先客の物。
+  // ★合流と abort を**同じ Promise に結合しない**(2026-09-03、Codex #4 の High)。以前は先客の
+  //   signal を共有の走行に直結していたので、待機中の先客が居なくなると**合流者まで `aborted`**
+  //   になり git が走らなかった。今は: 要求ごとに自分の signal で `aborted` を返し(他の人は待ち
+  //   続ける)、共有の走行を待ち行列から外すのは**全員が居なくなった時だけ**。走り始めた後は
+  //   誰が居なくなっても走り切る(`withSlot` の註)。
   const key = cwd;
-  if (inflight.has(key)) return inflight.get(key);
-  const p = withSlot(() => readWorkingDiffOnce(cwd, o), { signal: o.signal, maxWaiting: o.maxWaiting })
-    .catch((e) => {
-      if (e?.code === "DIFF_BUSY") return empty("busy");
-      if (e?.code === "DIFF_ABORTED") return empty("aborted");
-      throw e;
-    })
-    .finally(() => {
-      if (inflight.get(key) === p) inflight.delete(key);
-    });
-  inflight.set(key, p);
-  return p;
+  let entry = inflight.get(key);
+  if (!entry || entry.ac.signal.aborted) {
+    // 無い、または全員が去って既に外した物 = 其れには合流させない(古い `aborted` を貰う事になる)
+    const ac = new AbortController();
+    entry = { ac, subscribers: 0, promise: null };
+    entry.promise = withSlot(() => readWorkingDiffOnce(cwd, o), { signal: ac.signal, maxWaiting: o.maxWaiting })
+      .catch((e) => {
+        if (e?.code === "DIFF_BUSY") return empty("busy");
+        if (e?.code === "DIFF_ABORTED") return empty("aborted");
+        throw e;
+      })
+      .finally(() => {
+        if (inflight.get(key) === entry) inflight.delete(key);
+      });
+    inflight.set(key, entry);
+  }
+  return subscribe(entry, o.signal, empty);
+}
+
+/** 共有の走行に 1 人 加わる。自分の signal が鳴れば自分だけ `aborted`。最後の 1 人が去れば共有を外す。 */
+function subscribe(entry, signal, empty) {
+  entry.subscribers += 1;
+  let settled = false;
+  const leave = () => {
+    if (settled) return;
+    settled = true;
+    entry.subscribers -= 1;
+    if (entry.subscribers <= 0) entry.ac.abort(); // 待機中なら行列から外れる。走行中なら無視される
+  };
+  if (!signal) return entry.promise.finally(() => { settled = true; entry.subscribers -= 1; });
+  if (signal.aborted) { leave(); return Promise.resolve(empty("aborted")); }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => { leave(); resolve(empty("aborted")); };
+    signal.addEventListener("abort", onAbort, { once: true });
+    const done = () => { signal.removeEventListener("abort", onAbort); if (!settled) { settled = true; entry.subscribers -= 1; } };
+    entry.promise.then((v) => { done(); resolve(v); }, (e) => { done(); reject(e); });
+  });
 }
 
 /**
