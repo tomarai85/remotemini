@@ -149,13 +149,23 @@ export function unreadableRow({ id, project, updatedAt, errorCode }) {
  */
 export function extractHistory(jsonlText, limit = 50) {
   if (typeof jsonlText !== "string") return [];
-  return entriesFromLines(jsonlText.split("\n")).slice(-limit);
+  // 錨(対照表 #3)は全読みでも同じ値になる様に、行の byte 位置を本文から積算する
+  // (有界読み `readHistoryFromPath` と同じ答え = test/history.test.mjs の突き合わせ)。
+  const lines = jsonlText.split("\n");
+  const offsets = [];
+  let pos = 0;
+  for (const l of lines) {
+    offsets.push(pos);
+    pos += Buffer.byteLength(l, "utf8") + 1;
+  }
+  return entriesFromLines(lines, offsets).slice(-limit);
 }
 
 /** 行の配列(古い順)を表示用の項目列にする。壊れた行は飛ばす。 */
-export function entriesFromLines(lines) {
+export function entriesFromLines(lines, offsets) {
   const out = [];
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (!line) continue;
     let obj;
     try {
@@ -163,7 +173,14 @@ export function entriesFromLines(lines) {
     } catch {
       continue;
     }
-    out.push(...entriesFromRecord(obj));
+    const entries = entriesFromRecord(obj);
+    // ★錨(2026-09-03、対照表 #3): 行の byte 位置 + 行内の何番目か。追記しか起きない jsonl では
+    //   一度付いた位置が変わらないので、探索の当たりと素の履歴で**同じ項目が同じ錨**を持つ =
+    //   電話が「其の項目へ跳ぶ」為の鍵。`offsets` が無い呼び手(要約など)には付けない。
+    if (Array.isArray(offsets) && Number.isInteger(offsets[i])) {
+      entries.forEach((e, k) => { e.anchor = `${offsets[i]}:${k}`; });
+    }
+    out.push(...entries);
   }
   return out;
 }
@@ -192,7 +209,7 @@ export function readHistoryFromPath(path, limit = 50, opts = {}) {
       // 行数で数えると足りない/読み過ぎのどちらにもなる。
       done: (lines) => entriesFromLines(lines).length >= limit,
     });
-    const all = entriesFromLines(r.lines);
+    const all = entriesFromLines(r.lines, r.offsets);
     return {
       history: all.slice(-limit),
       truncated: !r.reachedStart || all.length > limit,
@@ -243,7 +260,13 @@ export function searchHistoryFromPath(path, q, limit = 50, opts = {}) {
       // 項目で数えると、一致が疎な会話で走査が早く止まって取りこぼす。
       done: (lines) => entriesFromLines(lines).filter(hit).length >= limit,
     });
-    const all = entriesFromLines(r.lines).filter(hit);
+    // ★`fromEnd`(対照表 #3) = 其の項目が**末尾から何番目か**(最新 = 0)。走査は末尾から始まるので
+    //   読めた項目の並びの中の位置がそのまま file 全体での位置になる。電話は此の数で
+    //   `/history?limit=` を伸ばして其の項目まで読み込み、`anchor` で其の行へ scroll する。
+    const everything = entriesFromLines(r.lines, r.offsets);
+    const total = everything.length;
+    const all = [];
+    everything.forEach((e, i) => { if (hit(e)) all.push({ ...e, fromEnd: total - 1 - i }); });
     return {
       history: all.slice(-limit),
       matched: all.length,

@@ -113,11 +113,20 @@ struct HistoryEntry: Decodable, Equatable {
     /// (e.g. `"⚙ Bash"`, `sessions.mjs`'s `toolNames`), not prose -- brief §0-a-2.
     let text: String
     let display: EntryDisplay
+    /// 錨(対照表 #3、2026-09-03)= 机の転写での其の項目の位置(`<行の byte 位置>:<行内番号>`)。
+    /// 素の履歴と探索の当たりで**同じ項目は同じ錨**。ライブ(SSE)の項目には無い(nil)。
+    /// 電話は中身を解釈しない —— 一致だけを見る(机の並びの鍵で、意味は机の物)。
+    let anchor: String?
+    /// 探索の当たりにだけ載る「末尾から何番目か」(最新 = 0)。此の数 + 1 まで limit を伸ばして
+    /// 履歴を読めば其の項目が入る(机の `searchHistoryFromPath`)。素の履歴では nil。
+    let fromEnd: Int?
 
-    init(role: EntryRole, text: String, display: EntryDisplay) {
+    init(role: EntryRole, text: String, display: EntryDisplay, anchor: String? = nil, fromEnd: Int? = nil) {
         self.role = role
         self.text = text
         self.display = display
+        self.anchor = anchor
+        self.fromEnd = fromEnd
     }
 
     /// Brief §0-a-3: `who` is S-group -- computed server-side by `whoOf(role)` and
