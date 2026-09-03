@@ -85,6 +85,14 @@ export const DIFF_LIMITS = Object.freeze({
 /** 同時に走らせる git の上限(全 cwd 合計)。残りは順番待ち。 */
 export const MAX_CONCURRENT = 2;
 
+/**
+ * 順番待ちの上限(2026-09-03、Codex #1 の 4 の続き)。之を超えた要求は待たずに `busy` を返す
+ * (机の口は 503)。無制限に並べると、電話の連打や別の cwd の同時要求で待ち行列だけが伸び、
+ * 「いつか返る」が「返らない」と区別できなくなる。8 = 電話 1 台が現実に積める数より多く、
+ * git 1 本の上限(4 秒)× 4 巡 = 最悪 16 秒で捌ける数。
+ */
+export const MAX_WAITING = 8;
+
 /** 1 行の費用。text の bytes + 記号 1 byte。空行も 0 にならない。 */
 export function lineCost(text) {
   return Buffer.byteLength(String(text ?? ""), "utf8") + 1;
@@ -288,9 +296,29 @@ const inflight = new Map(); // cwd -> Promise(同じ cwd は合流)
 let running = 0;
 const waiting = []; // 順番待ち(FIFO)
 
-function withSlot(fn) {
+/**
+ * 席を 1 つ取って `fn` を走らせる。席が無ければ順番待ち。
+ *
+ * @param {Function} fn
+ * @param {{signal?: AbortSignal, maxWaiting?: number}} [o]
+ *   `signal` = 要求の側が居なくなった合図(HTTP の `close`)。**待っている間だけ**効く —— 待ち行列から
+ *   外れ、git は 1 本も起こさない。走り始めた後は効かない(同じ cwd の他の要求が其の結果を待って
+ *   いる事が在るので、途中で殺すと其方が巻き添えになる。git 1 本は `timeoutMs` で上から切れる)。
+ *   `maxWaiting` = 待ち行列の上限。超えていれば待たずに `BUSY` で reject。
+ */
+function withSlot(fn, o = {}) {
   return new Promise((resolve, reject) => {
+    const signal = o.signal;
+    const maxWaiting = Number.isFinite(o.maxWaiting) ? o.maxWaiting : MAX_WAITING;
+    if (signal?.aborted) { reject(abortError()); return; }
+    let entry = null;
+    const onAbort = () => {
+      const i = waiting.indexOf(entry);
+      if (i >= 0) waiting.splice(i, 1);   // 待っている間だけ外せる
+      reject(abortError());
+    };
     const go = () => {
+      signal?.removeEventListener("abort", onAbort);
       running += 1;
       Promise.resolve()
         .then(fn)
@@ -301,10 +329,16 @@ function withSlot(fn) {
           if (next) next();
         });
     };
-    if (running < MAX_CONCURRENT) go();
-    else waiting.push(go);
+    if (running < MAX_CONCURRENT) { go(); return; }
+    if (waiting.length >= maxWaiting) { reject(busyError()); return; }
+    entry = go;
+    waiting.push(entry);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
+
+function abortError() { const e = new Error("diff request aborted while waiting"); e.code = "DIFF_ABORTED"; return e; }
+function busyError() { const e = new Error("too many diff requests waiting"); e.code = "DIFF_BUSY"; return e; }
 
 /** 検査用: 今 走っている本数と、順番待ちの本数。 */
 export function _inflight() {
@@ -320,7 +354,12 @@ export function _inflight() {
  * @param {Function} [o.exists] dir の実在(同上)
  * @param {Function} [o.lstat]  `.git` の正体を見る(同上)。無ければ「無い」と同じ扱い
  * @param {object}   [o.limits]
+ * @param {AbortSignal} [o.signal]  要求の側が居なくなった合図。待っている間だけ効く(`withSlot` の註)
+ * @param {number}   [o.maxWaiting] 待ち行列の上限(検査で差し替える)
  * @returns {Promise<{files: Array, truncated: boolean, totalBytes: number, reason: string|null}>}
+ *   ★待ち行列が一杯なら `reason: "busy"`、待っている間に要求が消えたら `reason: "aborted"`
+ *     (どちらも git を 1 本も起こしていない。口(`server.mjs`)は `busy` を 503 にし、`aborted` は
+ *     相手が居ないので何も書かない)。
  */
 export async function readWorkingDiff(cwd, o = {}) {
   const exists = o.exists ?? existsSync;
@@ -331,11 +370,18 @@ export async function readWorkingDiff(cwd, o = {}) {
 
   // ★同じ cwd への要求は合流する。鍵は cwd の文字列(正規化はしない —— 別の綴りは
   //   別の要求で良い。合流は最適化であって正しさの条件ではない)。
+  //   合流した要求には `signal` を効かせない —— 走っている 1 本は先客の物。
   const key = cwd;
   if (inflight.has(key)) return inflight.get(key);
-  const p = withSlot(() => readWorkingDiffOnce(cwd, o)).finally(() => {
-    if (inflight.get(key) === p) inflight.delete(key);
-  });
+  const p = withSlot(() => readWorkingDiffOnce(cwd, o), { signal: o.signal, maxWaiting: o.maxWaiting })
+    .catch((e) => {
+      if (e?.code === "DIFF_BUSY") return empty("busy");
+      if (e?.code === "DIFF_ABORTED") return empty("aborted");
+      throw e;
+    })
+    .finally(() => {
+      if (inflight.get(key) === p) inflight.delete(key);
+    });
   inflight.set(key, p);
   return p;
 }

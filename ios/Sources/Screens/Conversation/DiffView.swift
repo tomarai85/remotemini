@@ -181,26 +181,37 @@ struct DiffView: View {
         }
     }
 
-    private static func reasonTitle(_ reason: String) -> String {
+    /// 机の `reason` → 見出し。★`reasonDetail` と**同じ語彙を同じ分岐で**持つ(2026-09-03、loop の
+    ///   discovery: 見出しだけ `git_failed` を欠いていて、机の git の失敗が「Nothing to show」=
+    ///   「差分が無い」の顔で出ていた)。両方を internal にして検査(`DiffViewReasonTests`)が
+    ///   「見出しと本文が同じ reason を知っている」事を測る。
+    static func reasonTitle(_ reason: String) -> String {
         switch reason {
         case "not_a_repo": return "Not a git repository"
         case "no_cwd", "cwd_missing": return "No working directory"
+        case "git_failed": return "Git couldn't be read"
         // 机が読まないと決めた repo(`.git` が symlink、2026-09-03 の固め)。壊れたのではなく断った。
         case "unsafe_repo": return "Not read on purpose"
+        // 机が混んでいて順番待ちも一杯(503 の本文の reason。再試行で直る種類)。
+        case "busy": return "The desk is busy"
         default: return "Nothing to show"
         }
     }
 
-    private static func reasonDetail(_ reason: String) -> String {
+    static func reasonDetail(_ reason: String) -> String {
         switch reason {
         case "not_a_repo": return "This conversation's folder isn't tracked by git."
         case "no_cwd": return "This conversation has no recorded working directory."
         case "cwd_missing": return "That folder no longer exists on the desk."
         case "git_failed": return "The desk couldn't read git here."
         case "unsafe_repo": return "This folder's .git is a symlink, so the desk refused to run git in it."
+        case "busy": return "Too many diffs are being read at once. Pull to try again."
         default: return "The desk had nothing to show for this conversation."
         }
     }
+
+    /// 見出しと本文が名指しで知っている reason の一覧(検査が「片方だけ知っている語」を見つける為)。
+    static let knownReasons: [String] = ["not_a_repo", "no_cwd", "cwd_missing", "git_failed", "unsafe_repo", "busy"]
 }
 
 /// 1 ファイルぶんのカード。`path` / `staged` チップ / `+added -removed` / 塊(hunks)。
