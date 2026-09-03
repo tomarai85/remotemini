@@ -196,6 +196,7 @@ const SERVER_ONLY = {
   ETIMEDOUT: "子プロセスの時間切れ errno。診断欄止まり",
   ENOBUFS: "diff(#4、2026-09-02)。子プロセスの出力が器を超えた時に載る errno の一つ。\n    線には出ない —— `sessiondiff.mjs` の `readWorkingDiff` が捕まえて `truncated: true` へ\n    言い換えてから返す(MUTEX_BUSY と同じ『言い換えてから線に出る』形)",
   ERR_CHILD_PROCESS_STDIO_MAXBUFFER: "diff(#4)。Node の `maxBuffer` 超過時に載る同じ意味の\n    errno(node のバージョン/環境で `ENOBUFS` と使い分かれる)。同じく `truncated` へ\n    言い換えて返すので、生の綴りは応答に一度も乗らない",
+  GIT_: "★語彙ではない。環境変数の接頭辞(`src/sessiondiff.mjs` の `gitEnv` が、机の `GIT_DIR` /\n    `GIT_WORK_TREE` / `GIT_EXTERNAL_DIFF` 等を子の git に渡さない為に見る。2026-09-03 Codex #1 の\n    所見 1・2)。線に一度も出ず、電話が分岐する材料でもない。`IEND` / `HEAD` と同じ理由で此処に居る",
   SIGKILL: "子プロセスの止め方。応答には載らない",
   SIGTERM: "同じく子プロセスの止め方。応答には載らない",
   // DELETE は 2026-08-14 に許可表から**降りた**: v2 のキュー取り消しで電話が

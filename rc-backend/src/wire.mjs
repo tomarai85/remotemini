@@ -486,6 +486,9 @@ export function attachBody(stored, injected, injectReason, swept) {
  *   其の判定が机と電話の 2 箇所に増える。
  * ★`truncated` と `totalBytes` は**対**で読む。切った事(真偽)と、切る前に
  *   どれだけ在ったか(数)。片方だけだと「全部出ているのか」に答えられない。
+ *   ★git の出力が器(`maxBuffer`)から溢れた時だけ、`totalBytes` は**読めた分** = 下限
+ *     (2026-09-03、Codex #1 の 6)。其の時も `added` / `removed` は `--numstat` で取り直した
+ *     正確な数(`sessiondiff.mjs` の註)。
  * ★`added` / `removed` は**切る前の全文から**数えた値(`capFiles` の註)。
  *   本文が途中で止まっても数は正しい = 電話は「+42 -18(表示は途中まで)」と言える。
  *
