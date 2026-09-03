@@ -28,7 +28,7 @@
 | 2026-09-02 | #16 permission mode | `status` の tmux/worker 両経路に `permissionMode` を足した(**読むだけ**、D4/#17 の裁定には触れない)。出所は転写 —— `type:"permission-mode"` イベント行(timestamp 無し)と `type:"user"` 行の埋め込み値(timestamp 有り)の**どちらが「今」に近いかはファイルの並びで決める**(timestamp でソートすると、timestamp の無い方が常に負ける)。電話は会話を開いた時に1回だけ取り、状態帯に静かなチップで出す(無ければ何も出さない)。★#14-16 の反映行(上、`digest.session`)は model/gitBranch/version だけで permission mode は含んでいなかった —— 之が実物 | `permissionModeOf`(`sessions.mjs`) / `statusBodyTmux` / `statusBodyWorker`(`wire.mjs`) / `StatusClient` / `conversation.permissionMode` |
 
 反映していない absent 行は、意匠に触れる物(入力欄の造り)と、机の口を新設する物(subagent の個別停止 #8 /
-model・effort の**選択** #14-15)。#6 は 9/3 に入った(上の行)。
+model・effort の**選択** #14-15)。#6 と #16 は build 135(a8ef5d3、9/3 09:31)で電話へ配った(上の 2 行)。
 ★#11(任意のディレクトリで新規)は #10 が入っても**自動では片付かない** —— 補完が歩けるのは
 既に在る会話の cwd の下だけで、場所を 0 から選ぶ口は机にまだ無い。「作らないと決めた」ではなく
 「まだ作っていない」である事を、`ListView.swift` / `NewSessionClient.swift` / `server.mjs` の註にも書いた。
