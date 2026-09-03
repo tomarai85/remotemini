@@ -208,6 +208,49 @@ final class ConversationViewModel: ObservableObject {
     /// shows up as one user-visible sentence is one nobody can count.
     @Published private(set) var lastContractViolation: ResponseContractViolation?
 
+    // MARK: - Diff line comments (対照表 #6、2026-09-02)
+
+    /// `DiffView`(#4)の行に付けた、まだ送っていないコメント。**此処に置く理由**:
+    /// 会話を離れず diff 画面を行き来しても残らないと使い物にならない一方、
+    /// `DiffViewModel` 自身は「此の画面は読むだけの脇の画面」(其の型の doc)であって
+    /// 画面をまたぐ状態を持たない設計。composer が既に持つ物(`draft`/`sendBanner`)と
+    /// 同じ寿命(此の会話を開いている間)なので、其れらと同じ場所に置く。
+    ///
+    /// ★in memory only。`Codable` を持たせない(`DiffComment` の doc) -- 机には
+    ///   一度も送らない下書きで、次のコミットは元より次回起動でも意味を失う。
+    @Published private(set) var diffComments: [DiffComment] = []
+
+    /// `nil` = 此の行にまだコメントが無い(新規)。非 nil = 編集(`DiffView` の alert が
+    /// 「Remove」を出す条件)。
+    func existingDiffComment(path: String, staged: Bool, line: Int, kind: DiffLineKind) -> DiffComment? {
+        diffComments.first { $0.path == path && $0.staged == staged && $0.line == line && $0.kind == kind }
+    }
+
+    /// 追加 or 上書き。空(空白のみ含む)を保存しようとしたら**消す** -- `DiffView` の
+    /// alert は「Save」1つで足りる形にする為で、利用者が文字を全部消してから Save を
+    /// 押した時に空のコメントが残る事故を防ぐ(明示の `removeDiffComment` はその手間を
+    /// 省く近道であって、此処が唯一の網)。
+    func upsertDiffComment(path: String, staged: Bool, line: Int, kind: DiffLineKind, quotedText: String, text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            removeDiffComment(path: path, staged: staged, line: line, kind: kind)
+            return
+        }
+        if let idx = diffComments.firstIndex(where: {
+            $0.path == path && $0.staged == staged && $0.line == line && $0.kind == kind
+        }) {
+            diffComments[idx].text = trimmed
+        } else {
+            diffComments.append(DiffComment(
+                path: path, staged: staged, line: line, kind: kind, quotedText: quotedText, text: trimmed
+            ))
+        }
+    }
+
+    func removeDiffComment(path: String, staged: Bool, line: Int, kind: DiffLineKind) {
+        diffComments.removeAll { $0.path == path && $0.staged == staged && $0.line == line && $0.kind == kind }
+    }
+
     // MARK: - Queue (v2, 2026-08-14 — spec §7 の表の1行目を実装)
 
     /// 送信待ちの数の生値。`nil` = 観測していない(tmux 経路 / 古いサーバ)。
@@ -492,6 +535,13 @@ final class ConversationViewModel: ObservableObject {
     /// The trim is only for THIS decision. `send()` transmits `draft` unmodified --
     /// the server trims, and a phone that also trimmed would be a second place
     /// deciding what the user's message is.
+    ///
+    /// ★2026-09-02(対照表 #6): `send()` は実際には `draft` の前へ保留中の diff
+    ///   コメントを足す事が在る(`DiffCommentFormatter.compose`)。上の一文は
+    ///   それでも真 -- 足すのは `draft` **そのもの**ではなく別の変数(`wireText`)で、
+    ///   `draft` の値は一切書き換えない。「送る前に机へ渡す本文」と「入力欄に見える
+    ///   本文」が別の物になった、という変化であって、上の一文が守っている事
+    ///   (電話が2箇所で trim を判断しない)には触れていない。
     var canSend: Bool {
         composerEnabled
             && !isSending
@@ -859,8 +909,16 @@ final class ConversationViewModel: ObservableObject {
 
     func send() async {
         guard canSend else { return }
-        let text = draft
-        let sendId = sendIdFor(text)
+        // ★★2026-09-02(対照表 #6): 机へ実際に打つ本文は `draft` そのままではない。
+        //   `DiffCommentFormatter.compose` が保留中の行コメント(在れば)を頭へ足す。
+        //   `draft` 自体には**触れない** -- composer の入力欄は今まで通り利用者が
+        //   打った文だけを見せる(コメントは diff 画面のマーカーと件数チップに出る、
+        //   入力欄には出ない)。`userText` と `wireText` を分けて持つのはその為で、
+        //   下の `sentText:` には引き続き `userText` を渡す(`clearSentText` は
+        //   `draft.hasPrefix(_:)` で判定するので、`wireText` を渡すと一致しなくなる)。
+        let userText = draft
+        let wireText = DiffCommentFormatter.compose(comments: diffComments, userText: userText)
+        let sendId = sendIdFor(wireText)
 
         // ★取るのは**送る前**。送信が飛んでいる間に poll が机からの追記を運んで来る
         // 事が在り、後で取ると「送る前から在った行」と「送った結果として出た行」が
@@ -877,14 +935,17 @@ final class ConversationViewModel: ObservableObject {
             baseURL: baseURL,
             apiKey: apiKey,
             sessionID: sessionID,
-            text: text,
+            text: wireText,
             sendId: sendId
         )
         // ★送れた時だけ忘れる。届かなかった時に忘れると、再送が別の送信になって
         //   重複の防ぎ方が丸ごと無効になる —— この機能の要はここ1行に在る。
         if case .display = outcome { clearSendId() }
-        if applySendOutcome(outcome, sentText: text) {
-            await verifySendByRereading(text: text, entriesBefore: entriesBeforeSend)
+        if applySendOutcome(outcome, sentText: userText) {
+            // ★`wireText` で取り直す(`userText` ではない)。机の pane に実際に打った
+            //   のは comment 込みの本文なので、転写に現れる行も其の全文 -- `userText`
+            //   だけで探すと `MergeHistory.landed` が一致せず「届いていない」の誤報になる。
+            await verifySendByRereading(text: wireText, entriesBefore: entriesBeforeSend)
         }
     }
 
@@ -973,6 +1034,21 @@ final class ConversationViewModel: ObservableObject {
             // `view.mjs` states as "読めない事は値ではない".
             if display.keepText == false {
                 clearSentText(sentText)
+            }
+            // ★★2026-09-02(対照表 #6):「送信が成功した」を此処でも `keepText`
+            //   フィールドで読む -- `kind == "ok"` を直書きしない理由は3行上の doc と
+            //   同じ(此の型は「値を読む、`kind` から推測しない」を1つ上の判断で
+            //   既に決めている)。今日は `keepText:false` は `kind:"ok"` の時にしか
+            //   起きないが、之は其の関係に**便乗**しているだけで、`kind` を見ていない。
+            //   保留中のコメントは「本文が入力欄から消えた(= 送れたと確認できた)」
+            //   時だけ消す -- `warn`(unverified)や `refused`/`error` では**残す**。
+            //   残す理由: 之等は draft 自身も残る枝で、利用者がそのまま再送すれば
+            //   `send()` は同じ保留コメントを其のまま組み直す。二重配達の危険は
+            //   `keepText:false` の文言(「resending may duplicate it」)が既に
+            //   利用者へ言っているので、コメント側だけ先に消して片方だけ整合を
+            //   崩す事はしない。
+            if display.keepText == false {
+                diffComments.removeAll()
             }
             return false
         }
