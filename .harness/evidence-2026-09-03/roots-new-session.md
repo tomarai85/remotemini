@@ -57,6 +57,16 @@ Ledger on friday is created before deploy and never overwritten (spec section "D
 Two e2e iterations were mine to fix: the fake tmux did not answer `new-window` (now it logs argv and returns ids), and
 the root label for a sandbox outside `$HOME` is the ledger line as written, which on macOS differs from its realpath.
 
+## Post-landing chain: one full-suite failure, bisected
+
+The chain's full simulator run (1019 tests) failed exactly one: the account bar's failure text was gone
+(`AccountUITests` "a backend failure is said out loud"). Isolated reruns failed twice; moving the `+` from trailing to
+leading did not help; the same test on the commit before #11 (a detached worktree of 1e08792) passed. Mechanism:
+toolbar items are measured at their ideal width, a one-line `Text` has ideal width equal to the whole sentence, and when
+the bar no longer has room SwiftUI drops the item instead of truncating it; any extra item on either side shrinks the
+room. Fix: the failure text gets `frame(maxWidth: 120)` so its ideal width always fits and the tail truncates; the full
+reason stays on the settings screen behind it. The `+` stays in the leading slot (the root screen has nothing there).
+
 ## Codex adversarial review
 
 Five findings (2 High, 2 Medium, 1 Low), dispositions in `codex-roots-review.md`. Fixed: file-as-cwd (tmux `$HOME`
