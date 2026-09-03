@@ -148,6 +148,25 @@ git -C "$d" add -A; git -C "$d" commit -qm c1
 printf 'host (伏せた)\n' > "$d/f.md"; git -C "$d" add -A; git -C "$d" commit -qm c2
 out=$(run "$d"); chk "C13 履歴だけに tailnet の名前 -> 赤" 1 $? "種類2" - "$out"
 
+# C13b regex の**エスケープ形**(検査コードが持つ `/host\.tail<id>\.ts\.net/`)。2026-09-03 に公開写しの
+#      予行で見つけた穴: `.` を素の文字として要求する regex は此の形を素通しし、伏字化した全履歴に
+#      507 箇所 残った(`health.test.mjs` の assert が同じ名前をエスケープ形で持っていた)。
+#      完成形は書かない(上と同じ理由)。backslash は bash の "" の中で `\\.` -> `\.` になる。
+MAGIC_ESC="zzhost\\.tail0ffff\\.ts\\.${_NET}"
+d=$(mk c13b); printf 'assert.match(msg, /%s/);\n' "$MAGIC_ESC" > "$d/t.mjs"
+git -C "$d" add -A; git -C "$d" commit -qm c
+out=$(run "$d"); chk "C13b regex エスケープ形の MagicDNS -> 赤・種類2" 1 $? "種類2" - "$out"
+
+# C13c ホスト部の無い wildcard 形 `*.tail<id>.ts.net`。`*` は英数でないので旧 regex はここも抜けた。
+d=$(mk c13c); printf 'allow *.tail0ffff.ts.%s\n' "$_NET" > "$d/f.md"
+git -C "$d" add -A; git -C "$d" commit -qm c
+out=$(run "$d"); chk "C13c wildcard 形 *.tail<id>.ts.net -> 赤・種類2" 1 $? "種類2" - "$out"
+
+# C13d 緑の対照: `tail` の付く普通の語を拾わない(拾うと常に赤 = 無視される検査になる)。
+d=$(mk c13d); printf 'tail -f app.log\ncocktail.tsx\nretail.ts\n' > "$d/f.md"
+git -C "$d" add -A; git -C "$d" commit -qm c
+out=$(run "$d"); chk "C13d tail の付く普通の語 -> 緑" 0 $? "なし" - "$out"
+
 # ---- 段ごとの生存確認 -----------------------------------------------------
 
 # C14 ★**作業ツリー段にしか捕まえられない**形。追跡ファイルを綺麗な状態で commit し、
