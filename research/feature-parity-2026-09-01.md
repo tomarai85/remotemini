@@ -25,9 +25,10 @@
 | 2026-09-02 | #10 `@` 補完 | `GET /api/sessions/:id/paths?q=` で cwd の下を**読むだけ**歩く(前方一致・区切りを跨ぐ / 深さ・件数・時間に上限 / 生成木は除外 / 切ったら `truncated`)。電話は 250ms の debounce で撃ち、押しても**送らない** | `completePaths`(`paths.mjs`) / `PathCompletionClient` / `conversation.pathSuggestion` |
 | 2026-09-02 | #4 差分の中身 | `GET /api/sessions/:id/diff` で作業木の未コミット差分を返す(`git diff` 2 本のみ、読むだけ。ファイル単位に畳み、天井 3 つ・切っても数は嘘を吐かない。読めない事は 200 + `reason` で返す)。電話は工具帯の ± から push で開く画面(ファイルごとのカード・`staged` チップ・色付き行・静かな空面) | `readWorkingDiff`(`sessiondiff.mjs`) / `DiffClient` / `SessionDiffBody` / `conversation.diff.open` |
 | 2026-09-03 | #6 差分への行コメント | diff の行を長押しでコメント。会話ごとにメモリで持ち、行に印と diff ボタンに件数。**送るのは人が次の文を送る時だけ**(裁定「押しても送らない」)。`<path>:<line> (<+|-|context> "<引用行>") — <本文>` の平文ブロックを本文の前に置く。机の口は増やさない | `DiffCommentFormatter.compose` / `ConversationViewModel.diffComments` / `conversation.diff.commentCount` |
+| 2026-09-02 | #16 permission mode | `status` の tmux/worker 両経路に `permissionMode` を足した(**読むだけ**、D4/#17 の裁定には触れない)。出所は転写 —— `type:"permission-mode"` イベント行(timestamp 無し)と `type:"user"` 行の埋め込み値(timestamp 有り)の**どちらが「今」に近いかはファイルの並びで決める**(timestamp でソートすると、timestamp の無い方が常に負ける)。電話は会話を開いた時に1回だけ取り、状態帯に静かなチップで出す(無ければ何も出さない)。★#14-16 の反映行(上、`digest.session`)は model/gitBranch/version だけで permission mode は含んでいなかった —— 之が実物 | `permissionModeOf`(`sessions.mjs`) / `statusBodyTmux` / `statusBodyWorker`(`wire.mjs`) / `StatusClient` / `conversation.permissionMode` |
 
-反映していない absent 行は、意匠に触れる物(入力欄の造り)と、机の口を新設する物(行コメント #6 /
-subagent の個別停止 #8 / model・effort の**選択** #14-15)。#4 が入ったので #6 の置き場は出来た(未着手)。
+反映していない absent 行は、意匠に触れる物(入力欄の造り)と、机の口を新設する物(subagent の個別停止 #8 /
+model・effort の**選択** #14-15)。#6 は 9/3 に入った(上の行)。
 ★#11(任意のディレクトリで新規)は #10 が入っても**自動では片付かない** —— 補完が歩けるのは
 既に在る会話の cwd の下だけで、場所を 0 から選ぶ口は机にまだ無い。「作らないと決めた」ではなく
 「まだ作っていない」である事を、`ListView.swift` / `NewSessionClient.swift` / `server.mjs` の註にも書いた。

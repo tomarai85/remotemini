@@ -251,6 +251,20 @@ const CASES = {
     [{ items: [], screen: null, cursor: "tmux:1:2:3", more: true }],
   ],
   pollBodyWorker: [[{ items: [], queued: 2, cursor: "worker:1:2", more: false }]],
+  // `status`(対照表 #16、2026-09-02)。★**tmux/worker 両経路 × permissionMode の有無**を
+  //   通す -- どちらか片方だけだと、route 固有の鍵(`pane`/`choice` 対 `worker`/`state`)か
+  //   `permissionMode` そのものが「誰も吐かない鍵」として測り漏れる。
+  statusBodyTmux: [
+    [{ pane: "%12", screen: { screen: "SENDABLE", activity: "observed", limited: false },
+       source: "registry", permissionMode: "bypassPermissions" }],
+    [{ pane: "%12", screen: CHOICE_SCREEN, source: "pane-scan", permissionMode: null }],
+  ],
+  statusBodyWorker: [
+    [{ worker: { worker: "running", state: "busy", queued: 1, errored: false, limited: false },
+       permissionMode: "plan" }],
+    [{ worker: { worker: "none", state: "idle", queued: 0, errored: false, limited: false },
+       permissionMode: null }],
+  ],
   historyBody: [
     [{ entries: ENTRIES, truncated: true }],
     [{ entries: [], truncated: false }],
@@ -352,6 +366,8 @@ const MODULE_OF = {
   messageItem: ["wire", "src/wire.mjs", "export function messageItem({ entries, event, seq }) {"],
   pollBodyTmux: ["wire", "src/wire.mjs", "export function pollBodyTmux({ items, screen, cursor, more }) {"],
   pollBodyWorker: ["wire", "src/wire.mjs", "export function pollBodyWorker({ items, queued, cursor, more }) {"],
+  statusBodyTmux: ["wire", "src/wire.mjs", "export function statusBodyTmux({ pane, screen, source, permissionMode }) {"],
+  statusBodyWorker: ["wire", "src/wire.mjs", "export function statusBodyWorker({ worker, permissionMode }) {"],
   historyBody: ["wire", "src/wire.mjs", "export function historyBody({ entries, truncated }) {"],
   historySearchBody: ["wire", "src/wire.mjs", "export function historySearchBody({ entries, matched, reachedStart }) {"],
   // 分解するので目印を明示(既定だと**引数の分解**を本文と読んで鍵が0件になる)。
@@ -661,6 +677,21 @@ const PAIRS = [
     serverOnly: ["route"],
   },
   { swift: "PollDisplay", builders: ["pollBodyTmux"], at: "display" },
+  // ---- 現用 permission mode(2026-09-02、対照表 #16)。`status` の1回読みで電話へ運ぶ。
+  {
+    // **経路2本の和**(poll と同じ理由): tmux だけだと `worker`/`state`/`queued`/`errored`
+    // が、worker だけだと `pane`/`screen`/`activity`/`limited`/`choice` が
+    // 「誰も吐かない鍵」として測り漏れる。
+    swift: "StatusEnvelope", builders: ["statusBodyTmux", "statusBodyWorker"], at: "",
+    mode: "phone-subset",
+    // 電話が読むのは `permissionMode` の1鍵だけ。残りは既に別の型/経路が読んでいる
+    // (`route`/`screen`/`activity`/`limited`/`choice` は poll の `ScreenBody` 系が読む、
+    // `pane`/`source` はどの画面にも出さない診断値、`worker`/`state`/`queued`/`errored` は
+    // `manager.status()` の生の形でまだ何も読んでいない)。此処でもう1本読むと、
+    // 同じ事実の2本目の写しを作る事になる。
+    serverOnly: ["route", "pane", "screen", "activity", "limited", "choice", "source",
+      "worker", "state", "queued", "errored"],
+  },
   {
     // tmux は `entries`、ワーカーは `event`。**片方ずつしか出ない鍵**なので和が要る。
     swift: "MessageItem", builders: ["messageItem"], at: "",
@@ -1005,8 +1036,16 @@ test("`phone-subset` の宣言が、緩める言い訳になっていない", ()
   //   `truncated` は探索応答では `!searchedToStart` の写しでしかなく、電話が
   //   2 本読むと必ず片方が先に古くなる。且つ机からは消せない ——
   //   出荷済みの電話が素の履歴の語彙として読む。
+  // ★ 2026-09-02 に `StatusEnvelope` が 1 つ増えた(対照表 #16)。理由: `status` は
+  //   tmux/worker 両経路の生の状態(`route`/`pane`/`screen`/`activity`/`limited`/`choice`/
+  //   `source`/`worker`/`state`/`queued`/`errored`)を返すが、電話が此処で読みたいのは
+  //   `permissionMode` の1鍵だけ。`screen` 系は poll の `ScreenBody` が別に読んでいる、
+  //   `pane`/`source` はどの画面にも出さない診断値、`worker`/`state`/`queued`/`errored` は
+  //   `manager.status()` の生の形でまだ何処も読んでいない —— 此処でもう1本読むと、
+  //   同じ事実の2本目の写しを作る事になる。
   assert.deepEqual(PAIRS.filter((p) => p.mode === "phone-subset").map((p) => p.swift),
     ["DigestEnvelope.Digest", "DigestEnvelope.Digest.Window",
      "AttachClient.Envelope", "SessionsResponse", "SessionRow", "PollResponse",
+     "StatusEnvelope",
      "MessageItem", "GapItem", "TranscriptSearchResponse", "AccountClient.Wire"]);
 });

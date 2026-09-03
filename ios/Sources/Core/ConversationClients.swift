@@ -38,6 +38,13 @@ struct NoDigest: DigestFetching {
         -> Result<SessionDigest, SessionsFetchError> { .failure(.unreachable) }
 }
 
+/// `NoDigest` と同じ理由・同じ形。渡し忘れたら「チップが1つ出ない」だけで済む —— 読む口
+/// なので、既定を本物にした時の害(渡し忘れが黙って production の机へ繋ぎに行く)の方が大きい。
+struct NoPermissionMode: PermissionModeFetching {
+    func fetch(baseURL: URL, apiKey: String, sessionID: String) async
+        -> Result<String?, SessionsFetchError> { .failure(.unreachable) }
+}
+
 struct ConversationClients {
     let history: HistoryFetching
     let poll: PollFetching
@@ -58,6 +65,13 @@ struct ConversationClients {
     ///   だから既定は **何もしない物**にする —— 渡し忘れたら帯が出ないだけで、
     ///   本当の HTTP は飛ばない。`live` では必ず本物を渡す。
     var digest: DigestFetching = NoDigest()
+
+    /// 2026-09-02(対照表 #16)。今の permission mode(`GET .../status`)を取りに行く口。
+    ///
+    /// ★既定は `digest` と**同じ理由**で「何もしない物」。読む口なので渡し忘れの症状は
+    ///   「チップが出ない」だけで済むが、既定を本物にすると UI 検査の面が黙って
+    ///   本番の机へ繋ぎに行く。`live` では必ず本物を渡す。
+    var status: PermissionModeFetching = NoPermissionMode()
 
     /// 2026-09-02。`@` のパス補完を取りに行く口。
     ///
@@ -81,6 +95,7 @@ struct ConversationClients {
             clearQueue: ClearQueueClient(),
             attach: AttachClient(),
             digest: DigestFetcher(),
+            status: StatusClient(),
             paths: PathCompletionClient()
         )
     }
@@ -106,7 +121,8 @@ extension ConversationClients {
             interrupt: InterruptingFixture(),
             choice: ChoiceSendingFixture(),
             clearQueue: QueueClearingFixture(),
-            digest: DigestFetchingFixture()
+            digest: DigestFetchingFixture(),
+            status: PermissionModeFetchingFixture(mode: StatusFactory.fixtureMode)
         )
     }
 }
