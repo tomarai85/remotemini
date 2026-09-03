@@ -20,6 +20,7 @@ import { accountBody, diffBody, gapItem, healthzBody, historyBody, historySearch
 import { completePaths, clampLimit as clampPathsLimit, PATHS_NO_CWD } from "./paths.mjs";
 // 差分を読む(対照表 #4)。git を撃つのは此の module だけで、撃つ動詞は `diff` のみ。
 import { readWorkingDiff } from "./sessiondiff.mjs";
+import { handleDiffGet } from "./diffroute.mjs";
 import { publishedBuild } from "./ota-published.mjs";
 import { headerBuild } from "./reqlog.mjs";
 import { parseFleetAccount, selectionMessage, selectionProblem } from "./account.mjs";
@@ -1591,29 +1592,11 @@ const server = createServer(async (req, res) => {
     //   cwd が無い会話は珍しくないし、git 管理外の dir で作業する事も在る ——
     //   其れを 4xx/5xx にすると、電話は「壊れた」と読んで再試行を勧める。
     if (action === "diff" && req.method === "GET") {
-      const cwd = sessionCwd();
-      if (!cwd) {
-        return json(res, 200, diffBody({ files: [], truncated: false, totalBytes: 0, reason: "no_cwd" }));
-      }
-      // ★`await` する = 事象ループを止めない。一覧の ± バッジ(#5)は同期の cache を
-      //   選んだのと同じ理由(41 本の会話 × git 1 本で一覧が固まる)だが、
-      //   此方は「1 本の会話を人が開いた時だけ」なので、cache は持たずに素で読む。
-      // ★要求の側が居なくなったら(電話が画面を閉じた・回線が切れた)、順番待ちから外れる
-      //   (2026-09-03、Codex #1 の 4)。走り始めた git は止めない —— 同じ cwd の他の要求が合流して
-      //   いる事が在り、上限は `timeoutMs` で掛かっている。待ち行列が一杯なら **503** で返す
-      //   (「読めない状態」の 200 とは別: 之は机の混雑で、電話は少し待って撃ち直せば良い)。
-      const ac = new AbortController();
-      const onClose = () => ac.abort();
-      req.on("close", onClose);
-      let r;
-      try {
-        r = await readWorkingDiff(cwd, { signal: ac.signal });
-      } finally {
-        req.off("close", onClose);
-      }
-      if (r.reason === "aborted") return; // 相手が居ない。書く先が無い
-      if (r.reason === "busy") return json(res, 503, diffBody(r));
-      return json(res, 200, diffBody(r));
+      // ★口の挙動は `src/diffroute.mjs` に切り出した(2026-09-03、Codex #4 の 4)。此処は
+      //   会話の cwd を渡して委ねるだけ。cwd 無し → 200 no_cwd / close → 順番待ちから外れる /
+      //   busy → 503 / aborted → 何も書かない、は其方の `test/diff-route-handler.test.mjs` が
+      //   偽の req / res で**実際に**通す。
+      return handleDiffGet({ req, res, cwd: sessionCwd(), readWorkingDiff, json, diffBody });
     }
 
     /**

@@ -44,25 +44,32 @@ test("GET だけ(同じ action に POST / DELETE の道が無い)", () => {
   assert.ok(!/action === "diff" && req\.method === "(POST|PUT|DELETE)"/.test(real));
 });
 
-test("cwd が無い会話は 200 + reason:\"no_cwd\"(4xx/5xx にしない)", () => {
+test("★道は `handleDiffGet`(src/diffroute.mjs)へ委ねるだけ(挙動は diff-route-handler.test.mjs が偽の req/res で通す)", () => {
   const i = real.indexOf(MARKER);
-  const body = real.slice(i, i + 1400);
-  const noCwd = body.indexOf('reason: "no_cwd"');
-  assert.ok(noCwd !== -1, "no_cwd の分岐が道に無い");
-  const status = body.slice(body.lastIndexOf("json(res,", noCwd), noCwd);
-  assert.ok(/json\(res,\s*200\b/.test(status), `no_cwd を 200 以外で返している: ${status.trim().slice(0, 60)}`);
+  const body = real.slice(i, i + 700);
+  assert.ok(/return handleDiffGet\(\{/.test(body), "委ねていない(口の本体が server.mjs に戻っている = 単体から挙動を測れない)");
+  assert.ok(/cwd: sessionCwd\(\)/.test(body), "会話の cwd を渡していない");
+  for (const dep of ["readWorkingDiff", "json", "diffBody"]) {
+    assert.ok(new RegExp(`\\b${dep}\\b`).test(body), `${dep} を渡していない`);
+  }
+  assert.ok(/import \{ handleDiffGet \} from "\.\/diffroute\.mjs"/.test(real), "diffroute.mjs を import していない");
+  // 錨: 封筒の鍵名(hunks 等)を server.mjs が自前で書いていない
+  assert.ok(!/hunks:\s*\[/.test(body), "server.mjs が封筒の鍵名を自前で書いている");
 });
 
-test("中身は readWorkingDiff、封筒は diffBody だけ(鍵名を server.mjs に書かない)", () => {
-  const i = real.indexOf(MARKER);
-  const body = real.slice(i, i + 1400);
-  const read = body.indexOf("readWorkingDiff(");
-  const wrap = body.indexOf("diffBody(r)");
-  assert.ok(read !== -1 && wrap !== -1, "読み手か封筒が道に無い");
-  assert.ok(read < wrap, "封筒が読みより前に居る");
-  assert.ok(/await readWorkingDiff\(/.test(body), "★同期で待つ実装を落とす(事象ループを止める)");
-  // 成功側の封筒は diffBody を通る = server.mjs が files/hunks の鍵名を直接書いていない
-  assert.ok(!/hunks:\s*\[/.test(body), "server.mjs が封筒の鍵名を自前で書いている");
+test("口の本体(diffroute.mjs): cwd 無しは 200 + no_cwd、読み手は await、封筒は diffBody だけ", () => {
+  const file = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "diffroute.mjs"), "utf8");
+  // ★頭の註にも同じ語が在るので、関数の本体から探す(註を拾うと「200 以外」に見える)
+  const fnStart = file.indexOf("export async function handleDiffGet(");
+  assert.ok(fnStart !== -1, "handleDiffGet が無い");
+  const route = file.slice(fnStart);
+  const noCwd = route.indexOf('reason: "no_cwd"');
+  assert.ok(noCwd !== -1, "no_cwd の分岐が無い");
+  const status = route.slice(route.lastIndexOf("json(res,", noCwd), noCwd);
+  assert.ok(/json\(res,\s*200\b/.test(status), `no_cwd を 200 以外で返している: ${status.trim().slice(0, 60)}`);
+  assert.ok(/await readWorkingDiff\(/.test(route), "★同期で待つ実装を落とす(事象ループを止める)");
+  assert.ok(route.indexOf("readWorkingDiff(") < route.indexOf("diffBody(r)"), "封筒が読みより前に居る");
+  assert.ok(!/hunks:\s*\[/.test(route), "封筒の鍵名を自前で書いている");
 });
 
 test("diffBody: reason は成功時も null で載り、truncated と totalBytes は対で載る", () => {
