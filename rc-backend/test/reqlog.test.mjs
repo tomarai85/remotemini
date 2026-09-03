@@ -464,3 +464,18 @@ test("★細工したヘッダは `-` に落ちる(ヘッダは誰でも書け�
   }
   assert.match(lineOf({ "x-app-build": "nope" }), / build=- /, "読めない物が番号を名乗った");
 });
+
+// ---- roots の道(2026-09-03、対照表 #11)----------------------------------------------------------
+import { ROOTS_ROUTE_RE as _ROOTS_RE } from "../src/reqlog.mjs";
+import { readFileSync as _rf } from "node:fs";
+test("★roots の道の正規表現は 1 本しか無い(server.mjs は写しを持たない)", () => {
+  const server = _rf(new URL("../src/server.mjs", import.meta.url), "utf8");
+  assert.equal((server.match(/\/\^\\\/api\\\/roots/g) || []).length, 0, "server.mjs が roots の regex を自前で持っている");
+  assert.match(server, /ROOTS_ROUTE_RE\.exec\(path\)/, "server.mjs は reqlog の写しを使う");
+  assert.deepEqual(_ROOTS_RE.exec("/api/roots/7/new").slice(1), ["7", "new"]);
+  assert.equal(pathShape("/api/roots/7/new", KNOWN), "/api/roots/:i/new");
+  assert.equal(pathShape("/api/roots/7/paths", KNOWN), "/api/roots/:i/paths");
+  assert.equal(pathShape("/api/roots/7/nope", KNOWN), "(other)");
+  assert.equal(pathShape("/api/roots", KNOWN), "(other)", "固定 path は LOG_PATHS 側で覚える(此の KNOWN には無い)");
+  assert.equal(pathShape("/api/roots", new Set(["/api/roots"])), "/api/roots");
+});

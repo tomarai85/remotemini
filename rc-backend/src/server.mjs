@@ -59,7 +59,11 @@ import {
   sendResult, interruptResult, choiceResult, clearQueueResult,
 } from "./view.mjs";
 import { redact } from "./redact.mjs";
-import { attachRequestLog, markResult, noteBody, SESSION_ROUTE_RE } from "./reqlog.mjs";
+import { attachRequestLog, markResult, noteBody, SESSION_ROUTE_RE, ROOTS_ROUTE_RE } from "./reqlog.mjs";
+// roots の口(2026-09-03、対照表 #11)。台帳の読みと包含判定は roots.mjs、口の挙動は rootsroute.mjs。
+import { loadRoots, resolveUnderRoots } from "./roots.mjs";
+import { handleRootsList, handleRootsPaths, handleRootsNew, resolveRequestedCwd } from "./rootsroute.mjs";
+import { rootsBody } from "./wire.mjs";
 import { digestOf, digestLine, actionRequired, attentionOf, digestBody } from "./digest.mjs";
 import { storeImage, pathOf, sweepOld, ATTACH_MAX_BYTES } from "./attach.mjs";
 import { loadRules, checkDeny, denyMessage } from "./deny.mjs";
@@ -1431,6 +1435,33 @@ const server = createServer(async (req, res) => {
 
     // ★道の一覧は `reqlog.mjs` の1本だけ(写しを持たない)。振り分けとログが別々に持つと、
     //   道を1本足した時に片方だけが古くなり、ログは新しい道を `(other)` と書き続ける。
+    // ★roots の口(2026-09-03、対照表 #11)。会話に**紐づかない** 3 本 = 会話が 0 本の机でも
+    //   電話から新しい会話を始められる唯一の道。中身は `src/rootsroute.mjs`(偽 req/res で検査)。
+    //   `/api/roots` は字面で書く(`LOG_PATHS` の両向き検査と対)。`/api/roots/<i>/…` は
+    //   `ROOTS_ROUTE_RE`(reqlog.mjs が唯一の写し)。会話の道の 404 より**前**に居る事が要点
+    //   (後ろだと `SESSION_ROUTE_RE` に当たらない道は全部 404 で、handler が在っても届かない)。
+    if (path === "/api/roots" && req.method === "GET") {
+      return handleRootsList({ res, json, loadRoots, rootsBody });
+    }
+    const rm = ROOTS_ROUTE_RE.exec(path);
+    if (rm) {
+      const [, rootIndex, rootAction] = rm;
+      if (rootAction === "paths" && req.method === "GET") {
+        return handleRootsPaths({
+          res, index: rootIndex, q: url.searchParams.get("q") || "",
+          limit: clampPathsLimit(url.searchParams.get("limit")),
+          json, loadRoots, completePaths, pathsBody,
+        });
+      }
+      if (rootAction === "new" && req.method === "POST") {
+        return await handleRootsNew({
+          req, res, index: rootIndex, json, loadRoots, resolveUnderRoots,
+          readBody, tooLarge, BodyTooLarge, startWindow: startPhoneWindow,
+        });
+      }
+      return json(res, 404, NO_SUCH_ROUTE);
+    }
+
     const m = SESSION_ROUTE_RE.exec(path);
     if (!m) return json(res, 404, NO_SUCH_ROUTE);
     const [, sessionId, action] = m;
@@ -1476,26 +1507,36 @@ const server = createServer(async (req, res) => {
     //   **復旧語彙専用**で、電話は其の鍵で画面を移す。別の意味を同じ名前で流すと
     //   遷移の判断が壊れる。此処の分類は `reason` へ寄せる。
     if (action === "new" && req.method === "POST") {
-      const cwd = cwdOfSessionFile(file);
-      if (!cwd) return json(res, 409, { error: "cwd_unknown", reason: "no_cwd" });
-      // ★実在を**同期に**確かめてから作る(spawn 側と同じ理由 —— 検査と実行の間に
-      //   dir が消える競合。作った後で気付くと「始めた」と答えた後に死ぬ)。
-      try { realpathSync(cwd); }
-      catch { return json(res, 409, { error: "cwd_gone", reason: "no_cwd" }); }
-
-      const name = `phone-new-${Date.now().toString(36)}`;
-      const out = tmuxRunner.run([
-        "new-window", "-d", "-P", "-F", "#{window_id} #{pane_id}",
-        "-t", TMUX_SESSION, "-n", name, "-c", cwd, `exec ${CLAUDE_LAUNCHER}`,
-      ]);
-      const ids = String(out || "").trim().split(/\s+/);
-      if (ids.length < 2 || !ids[0].startsWith("@")) {
-        return json(res, 502, { error: "new_window_failed", reason: "tmux_failed" });
+      // ★本文(2026-09-03、対照表 #11): `{ "cwd": "<絶対 or ~/…>" }` が在れば **roots の下だけ**で其処に
+      //   始める。無ければ今までどおり会話の cwd。本文の解釈は `/api/account/select` と同じ形で
+      //   台本(tmux)の前に済ませる —— 読めない本文で tmux を一度も呼ばない。
+      let body;
+      try {
+        body = JSON.parse((await readBody(req)) || "{}");
+      } catch (e) {
+        if (e instanceof BodyTooLarge) return tooLarge(req, res, e);
+        return json(res, 400, { error: `Request body unreadable: ${e.message}`, reason: "bad_body" });
       }
+      const wanted = resolveRequestedCwd({ body, loadRoots, resolveUnderRoots });
+      if (wanted.status) return json(res, wanted.status, wanted.body);
+
+      let cwd = wanted.cwd;
+      if (cwd === null) {
+        cwd = cwdOfSessionFile(file);
+        if (!cwd) return json(res, 409, { error: "cwd_unknown", reason: "no_cwd" });
+        // ★実在を**同期に**確かめてから作る(spawn 側と同じ理由 —— 検査と実行の間に
+        //   dir が消える競合。作った後で気付くと「始めた」と答えた後に死ぬ)。
+        try { realpathSync(cwd); }
+        catch { return json(res, 409, { error: "cwd_gone", reason: "no_cwd" }); }
+      }
+
+      const started = startPhoneWindow(cwd);
+      if (!started) return json(res, 502, { error: "new_window_failed", reason: "tmux_failed" });
       // ★202。会話の id は**まだ無い** —— Claude Code が jsonl を書き、登録簿が拾って
       //   初めて一覧に出る。此処で id を作って返すと、存在しない物を電話に持たせる事になる。
       //   電話は一覧を引き直して新しい行を見つける。
-      return json(res, 202, { started: true, window: ids[0], pane: ids[1], cwd });
+      // ★`cwd` は返さない(Codex 2026-09-03 #4): 電話は読まない鍵で、絶対 path を線に出す理由が無い。
+      return json(res, 202, { started: true, window: started.window, pane: started.pane });
     }
 
     if (action === "title" && req.method === "POST") {
@@ -2491,7 +2532,27 @@ const LOG_PATHS = new Set([
   "/api/account",
   "/api/account/select",
   "/api/account/next",
+  "/api/roots",
 ]);
+
+/**
+ * 電話から新しい会話を始める(tmux の window を 1 枚起こして `rc-claude` を exec)。
+ * `POST /api/sessions/<id>/new` と `POST /api/roots/<i>/new` の 2 口が共有する(2026-09-03)。
+ * @returns {{window: string, pane: string} | null}  作れなければ null(呼び手が 502 `tmux_failed`)
+ *
+ * ★window 名は**回復用の `phone` と分ける**。あちらは「1 枚だけ在る」を冪等の鍵に
+ *   しているので、同じ名前で足すと 60 秒ごとの回復が此の window を自分の物と誤認する。
+ */
+function startPhoneWindow(cwd) {
+  const name = `phone-new-${Date.now().toString(36)}`;
+  const out = tmuxRunner.run([
+    "new-window", "-d", "-P", "-F", "#{window_id} #{pane_id}",
+    "-t", TMUX_SESSION, "-n", name, "-c", cwd, `exec ${CLAUDE_LAUNCHER}`,
+  ]);
+  const ids = String(out || "").trim().split(/\s+/);
+  if (ids.length < 2 || !ids[0].startsWith("@")) return null;
+  return { window: ids[0], pane: ids[1] };
+}
 
 // ★起動に失敗した時に**読める行**を残す(2026-08-02)。
 // これが無いと listen の失敗は `uncaughtException` に落ち、`fatal: Error: listen

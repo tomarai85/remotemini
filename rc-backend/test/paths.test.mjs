@@ -320,3 +320,22 @@ test("★★補完の道が `sessionCwd` の**宣言より後ろ**に居る(2026
   assert.ok(decl < route,
     "`const` の宣言より前で使っている = 実行時に TDZ で落ち、**この道より下の全ルートが死ぬ**");
 });
+
+// ---- dirsOnly(2026-09-03、roots の口)------------------------------------------------------------
+test("dirsOnly: file を落としても limit と truncated が嘘にならない", () => {
+  const root = tree();
+  const all = completePaths(root, "");
+  assert.ok(all.paths.some((p) => p.kind === "file") && all.paths.some((p) => p.kind === "dir"), "前提: 直下に file と dir が両方在る");
+  const dirs = completePaths(root, "", { dirsOnly: true });
+  assert.deepEqual(dirs.paths.map((p) => p.kind), dirs.paths.map(() => "dir"), "file が混じった");
+  assert.deepEqual(paths(dirs), paths(all).filter((p) => all.paths.find((x) => x.path === p).kind === "dir"), "dir の集合は同じで、順も同じ");
+  assert.equal(dirs.truncated, false, "落とした file を打ち切りと数えた");
+  // limit は **dir の数**に効く: dir が 2 つ以上在る木で limit 1 → 1 件 + truncated
+  const one = completePaths(root, "", { dirsOnly: true, limit: 1 });
+  assert.equal(one.paths.length, 1); assert.equal(one.truncated, true);
+  // 既定は false = 会話側の `@` 補完は変わらない
+  assert.deepEqual(paths(completePaths(root, "")), paths(completePaths(root, "", { dirsOnly: false })));
+  // 深い所も dir だけ: `src/deep` は出て、`src/deep/wonder.txt` は出ない
+  const deep = completePaths(root, "src/de", { dirsOnly: true });
+  assert.deepEqual(paths(deep), ["src/deep"]);
+});

@@ -9,7 +9,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, chmodSync, existsSync, rmSync, utimesSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSseParser, decodeEvent } from "../src/frames.mjs";
 import { PANE_SEP } from "../src/inject.mjs";
@@ -24,6 +24,9 @@ import {
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SB = mkdtempSync(join(tmpdir(), "rc-e2e-"));
+// roots の台帳(対照表 #11)。root = sandbox 自身(会話の cwd も此の下に在る)。
+const ROOTS_LEDGER = join(SB, "roots-ledger");
+writeFileSync(ROOTS_LEDGER, `# e2e roots\n${SB}\n`);
 const PROJ = join(SB, "projects", "-rc-e2e-work");
 mkdirSync(PROJ, { recursive: true });
 // ★§3-V: ワーカー経路は「会話の居場所が Claude Code に信頼済みか」を見る(src/trust.mjs)。
@@ -473,6 +476,13 @@ elif args and args[0] == "capture-pane":
     pane = args[args.index("-t") + 1] if "-t" in args else ""
     p = os.path.join(SB, "screen-" + pane.replace("%", "") + ".txt")
     sys.stdout.write(open(p).read() if os.path.exists(p) else "")
+elif args and args[0] == "new-window":
+    # ★新しい会話を始める口(2026-09-03)。実物は -P -F で window id と pane id を 1 行返す。
+    #   引数を全部残す = e2e は -c の値(= 机が受けた cwd)を読んで allowlist を**実測**する。
+    #   (此の python は JS のテンプレート文字列の中に居るので、バッククォートを書かない)
+    with open(os.path.join(SB, "tmux-new.log"), "a") as f:
+        f.write(json.dumps(args, ensure_ascii=False) + "\\n")
+    sys.stdout.write("@9 %9\\n")
 elif args and args[0] == "send-keys":
     with open(os.path.join(SB, "tmux-sent.log"), "a") as f:
         f.write(json.dumps(args, ensure_ascii=False) + "\\n")
@@ -726,6 +736,9 @@ const sv = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
     RC_E2E_ARGV_LOG: ARGV_LOG,
     RC_E2E_CWD_LOG: CWD_LOG,
     RC_PHONE_TRUST_FILE: TRUST_FILE,
+    // ★roots の台帳(2026-09-03、対照表 #11)。sandbox 自身を root に 1 行。台帳は要求ごとに読まれるので、
+    //   検査は file を消して `no_roots` を測り、書き戻して 202 を測る(再起動を挟まない)。
+    RC_ROOTS_FILE: ROOTS_LEDGER,
     // ★echo 待ちの予算を広げる栓(server.mjs 側に理由を書いた)。11-g2 が測る
     //   「鍵が満杯」の窓がこの値ぶんしか続かないので、既定 1500ms だと検査側の
     //   遅れで窓を跨ぐ。6000ms にすると跨げなくなる(下の 12並列で実測)。
@@ -1124,6 +1137,91 @@ try {
     const noKey = await fetch(`${B}/api/sessions/${SID_PATHS}/paths`);
     check("★補完: 鍵無しでは答えない(cwd の中身の名前は認証の外へ出さない)",
       noKey.status === 401, String(noKey.status));
+
+    // ★roots の口(2026-09-03、対照表 #11)。会話 id 無しで一覧 → 相対 path で起動 → allowlist の外は 400 →
+    //   台帳を消すと 400 no_roots(fail closed が既定側)→ 書き戻すと 202。tmux は偽物(RC_TMUX_BIN)なので
+    //   202 は「window を作れと言った」の観測で、実の claude は起きない。
+    {
+      const jh = { ...H, "content-type": "application/json" };
+      const rl = await fetch(`${B}/api/roots`, { headers: H });
+      const rj = await rl.json();
+      // 札 = home の下なら `~/…`、其れ以外は台帳に書かれた path のまま(root は人が書いた場所で、隠す物ではない)。
+      //   此の sandbox は home の外なので札は絶対 path。**其れ以外の**絶対 path が線に出ない事を下の paths で見る。
+      const SB_REAL = realpathSync(SB);
+      check("★roots: 会話 id 無しで一覧が引ける(index と札だけ、鍵は 2 つ)",
+        rl.status === 200 && Array.isArray(rj.roots) && rj.roots.length === 1 && rj.reason === null
+        && Object.keys(rj.roots[0]).sort().join(",") === "index,label" && rj.roots[0].index === 0
+        // 札は台帳に**書かれた通り**(`labelOf` は書かれた path を使う)。macOS では SB(`/var/…`)と其の realpath
+        //   (`/private/var/…`)が違うので両方を許す。
+        //   ★Codex 2026-09-03 #4 の後: home の外の root は `…/<basename>` だけ = 絶対 path は線に出ない。
+        && (rj.roots[0].label === "…/" + basename(SB) || rj.roots[0].label.startsWith("~"))
+        && !JSON.stringify(rj).includes(SB_REAL),
+        `status=${rl.status} ${JSON.stringify(rj).slice(0, 200)}`);
+      const tmuxNew = () => { try { return readFileSync(join(SB, "tmux-new.log"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
+      const cwdOf = (argv) => argv[argv.indexOf("-c") + 1];
+      const rp = await fetch(`${B}/api/roots/0/paths?q=`, { headers: H });
+      const pj = await rp.json();
+      check("roots: root の直下を dir だけで歩ける(pathsBody の 3 鍵、kind は全部 dir、絶対 path は無い)",
+        rp.status === 200 && Array.isArray(pj.paths) && pj.paths.length > 0 && pj.paths.every((p) => p.kind === "dir" && !p.path.startsWith("/"))
+        && Object.keys(pj).sort().join(",") === "paths,reason,truncated",
+        `status=${rp.status} ${JSON.stringify(pj).slice(0, 200)}`);
+      const before = tmuxNew().length;
+      const inside = await fetch(`${B}/api/roots/0/new`, { method: "POST", headers: jh, body: JSON.stringify({ path: "projects" }) });
+      const ij = await inside.json();
+      const after = tmuxNew();
+      check("★roots: root の下の相対 path で始まる = 202(cwd は返さない)、tmux が受けた -c は root の下の実体",
+        inside.status === 202 && ij.started === true && !("cwd" in ij) && after.length === before + 1
+        && cwdOf(after[after.length - 1]) === join(SB_REAL, "projects"),
+        `status=${inside.status} ${JSON.stringify(ij)} tmux=${JSON.stringify(after[after.length - 1] || null)}`);
+      const outside = await fetch(`${B}/api/roots/0/new`, { method: "POST", headers: jh, body: JSON.stringify({ path: "../" }) });
+      const oj = await outside.json();
+      check("★★roots: root の外を指す相対 path = 400 outside_roots(allowlist が本当に効いている)",
+        outside.status === 400 && oj.reason === "outside_roots", `status=${outside.status} ${JSON.stringify(oj)}`);
+      const sessOut = await fetch(`${B}/api/sessions/${SID_PATHS}/new`, { method: "POST", headers: jh, body: JSON.stringify({ cwd: tmpdir() }) });
+      const soj = await sessOut.json();
+      check("★roots: 会話の道の cwd 付きも roots の外なら 400 outside_roots",
+        sessOut.status === 400 && soj.reason === "outside_roots", `status=${sessOut.status} ${JSON.stringify(soj)}`);
+      const n0 = tmuxNew().length;
+      const sessIn = await fetch(`${B}/api/sessions/${SID_PATHS}/new`, { method: "POST", headers: jh, body: JSON.stringify({ cwd: join(SB_REAL, "projects") }) });
+      const sij = await sessIn.json();
+      const n1 = tmuxNew();
+      check("★roots: 会話の道の cwd 付きで roots の下 = 202、tmux の -c は其の dir",
+        sessIn.status === 202 && sij.started === true && n1.length === n0 + 1 && cwdOf(n1[n1.length - 1]) === join(SB_REAL, "projects"),
+        `status=${sessIn.status} ${JSON.stringify(sij)}`);
+      // ★既存の道の回帰(2026-09-03 に発覚: `new` が動詞表に無く、電話の「New session here」は 404 だった)。
+      //   本文なし = 会話の cwd で始まる。此の 1 本が無かった 3 日間、handler は在っても届いていなかった。
+      const sessPlain = await fetch(`${B}/api/sessions/${SID_PATHS}/new`, { method: "POST", headers: H });
+      const spj = await sessPlain.json();
+      const n2 = tmuxNew();
+      check("★★新規(本文なし): 動詞表に `new` が居て 202、tmux の -c は会話の cwd(2026-08-31〜09-03 は 404 だった)、cwd は返さない",
+        sessPlain.status === 202 && spj.started === true && !("cwd" in spj) && n2.length === n1.length + 1
+        && cwdOf(n2[n2.length - 1]) === CWD_PATHS,
+        `status=${sessPlain.status} ${JSON.stringify(spj)}`);
+      // ★file を cwd にしない(Codex #1): 台帳 file 自身は root の下に在る regular file
+      const asFile = await fetch(`${B}/api/roots/0/new`, { method: "POST", headers: jh, body: JSON.stringify({ path: "roots-ledger" }) });
+      const afj = await asFile.json();
+      const nFile = tmuxNew();
+      check("★roots: file を指す path = 409 cwd_gone、tmux は撃たない(chdir 失敗時の $HOME fallback を踏ませない)",
+        asFile.status === 409 && afj.reason === "cwd_gone" && nFile.length === n2.length,
+        `status=${asFile.status} ${JSON.stringify(afj)}`);
+      const badBody = await fetch(`${B}/api/roots/0/new`, { method: "POST", headers: jh, body: JSON.stringify({ path: ["projects"] }) });
+      check("roots: path が非文字列 = 400 bad_body(root 自身で起動しない)",
+        badBody.status === 400 && (await badBody.json()).reason === "bad_body" && tmuxNew().length === n2.length, String(badBody.status));
+      const ledger = readFileSync(ROOTS_LEDGER, "utf8");
+      rmSync(ROOTS_LEDGER);
+      const none = await fetch(`${B}/api/roots/0/new`, { method: "POST", headers: jh, body: JSON.stringify({ path: "projects" }) });
+      const nj = await none.json();
+      const noneList = await (await fetch(`${B}/api/roots`, { headers: H })).json();
+      writeFileSync(ROOTS_LEDGER, ledger);
+      const back = await fetch(`${B}/api/roots/0/new`, { method: "POST", headers: jh, body: JSON.stringify({ path: "projects" }) });
+      check("★roots: 台帳を消すと 400 no_roots、一覧は 200 + 空 + no_roots、書き戻すと 202(fail closed が既定側)",
+        none.status === 400 && nj.reason === "no_roots" && noneList.roots.length === 0 && noneList.reason === "no_roots" && back.status === 202,
+        `none=${none.status} ${JSON.stringify(nj)} list=${JSON.stringify(noneList)} back=${back.status}`);
+      const far = await fetch(`${B}/api/roots/9/new`, { method: "POST", headers: jh, body: "{}" });
+      check("roots の対照: /api/roots/9/new は 404(index が catch-all になっていない)", far.status === 404, String(far.status));
+      const noKeyRoots = await fetch(`${B}/api/roots`);
+      check("roots: 鍵無しでは答えない", noKeyRoots.status === 401, String(noKeyRoots.status));
+    }
   }
 
   // 3-T. 差分(diff)を電話で読む(#4、2026-09-02)—— **扉F**。

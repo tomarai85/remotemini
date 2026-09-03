@@ -336,6 +336,26 @@ export function pathsBody({ entries, truncated, reason }) {
 }
 
 /**
+ * `GET /api/roots` の封筒(2026-09-03、対照表 #11)。**`path` を載せない**のが此の関数の全部。
+ *
+ * ★root は index + 札(`~/Infra`)だけで線に出る。絶対 path を載せると机の地図が認証の外へ
+ *   運ばれる(`pathItem` が 2 鍵しか載せないのと同じ判断)。index は台帳の行順で、電話は其れで
+ *   `/api/roots/<i>/paths` と `/api/roots/<i>/new` を指す。
+ * ★`reason` は `pathsBody` と同じく**成功時も `null` で載せる**(台帳が無い時は `no_roots`)。
+ */
+export function rootsBody({ roots, reason }) {
+  return {
+    roots: roots.map(rootItem),
+    reason: reason ?? null,
+  };
+}
+
+/** root 1 件 = `index` と札の 2 鍵だけ(`pathItem` と同じ判断。`path` は線に出さない)。 */
+export function rootItem(r, i) {
+  return { index: i, label: r.label };
+}
+
+/**
  * `GET /healthz` の封筒(DESIGN §7-P)。**認証の外に出る唯一の応答**。
  *
  * ★引数を分解して受ける = 時計も pid もここでは読まない。読むとハンドラが渡した値と

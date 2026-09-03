@@ -49,6 +49,9 @@ struct ListView: View {
     ///   此処は既存の init が既に長く、1 本 足す度に両方を書き換えると
     ///   **fixture 側だけ古い口が残る**(2026-08-08 に 3 sprint 続けて起きた形)。
     private let newSessionStarter: NewSessionStarting
+    /// roots の下から dir を選んで始める口(対照表 #11、2026-09-03)。工具帯の `+` が開く。
+    private let rootsBrowser: RootsBrowsing
+    @State private var showDirectoryPicker = false
     private let returner: ReturnRequesting
     private let archivedLister: ArchivedListing
 
@@ -78,6 +81,9 @@ struct ListView: View {
         renamer: SessionRenaming,
         archiver: SessionArchiving,
         newSessionStarter: NewSessionStarting = NewSessionClient(),
+        // ★既定値を持たせるのは `newSessionStarter` と同じ理由(呼び出し 2 箇所を触らずに済ませ、
+        //   fixture 側だけ古い口が残る形を避ける)。fixture の面は RootView が明示的に差し替える。
+        rootsBrowser: RootsBrowsing = RootsClient(),
         returner: ReturnRequesting,
         archivedLister: ArchivedListing,
         onUnauthorized: @escaping () -> Void,
@@ -90,6 +96,7 @@ struct ListView: View {
         self.renamer = renamer
         self.archiver = archiver
         self.newSessionStarter = newSessionStarter
+        self.rootsBrowser = rootsBrowser
         self.returner = returner
         self.archivedLister = archivedLister
         self.onUnauthorized = onUnauthorized
@@ -137,10 +144,30 @@ struct ListView: View {
         //   (候補4本 + 各行の断り理由 + 退避路)は設定画面へ移した ——
         //   工具帯の1マスに入る量ではなく、押し込めば此処もまた「1画面に全部」になる。
         .toolbar {
+            // ★`+` = 机の roots の下から場所を選んで新しい会話を始める(対照表 #11、2026-09-03)。
+            //   行の長押しの「New session here」は残す(場所が既に決まっている道は最短のまま)。
+            //   此のマスは会話が 0 本の机でも押せる = 此の機能が埋める穴そのもの。
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showDirectoryPicker = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("New session")
+                .accessibilityIdentifier("list.newSession")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 AccountBar(viewModel: accountViewModel, baseURL: baseURL, listViewModel: viewModel,
                            archiveDeps: .init(apiKey: apiKey, lister: archivedLister, archiver: archiver),
                            onReseed: onReseed)
+            }
+        }
+        .sheet(isPresented: $showDirectoryPicker) {
+            DirectoryPickerView(browser: rootsBrowser, baseURL: baseURL, apiKey: apiKey) {
+                // 少し置いてから引き直す(`New session here` と同じ理由: 机が Claude Code を起こし、
+                // 登録簿が拾うまで間が在る。即座に引くと必ず空振りする)。
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                await viewModel.refresh()
             }
         }
         .refreshable { await viewModel.refresh() } // pull-to-refresh (brief §3-d trigger #2)
