@@ -65,5 +65,41 @@ final class SlashArgumentTests: XCTestCase {
         for name in SlashArgument.modelNames {
             XCTAssertFalse(SlashArgument.replacing("/model", with: name).contains("\n"))
         }
+        for level in SlashArgument.effortLevels {
+            XCTAssertFalse(SlashArgument.replacing("/effort", with: level).contains("\n"))
+        }
+    }
+
+    // MARK: - `/effort`(対照表 #15、Tom 裁定 2026-09-03: チップにしない、打った時だけ 2 段目)
+
+    func test_effortを打つと3段が出る() {
+        XCTAssertEqual(SlashArgument.candidates(for: "/effort"), SlashArgument.effortLevels)
+        XCTAssertEqual(SlashArgument.candidates(for: "/effort "), ["low", "medium", "high"])
+        XCTAssertEqual(SlashArgument.candidates(for: "/effort h"), ["high"])
+        XCTAssertEqual(SlashArgument.candidates(for: "/effort medium"), ["medium"], "打ち終えた段も、空白が無ければ 1 件出す")
+    }
+
+    func test_effortの書き終え_別語_途中では出ない() {
+        XCTAssertEqual(SlashArgument.candidates(for: "/effort high "), [])
+        XCTAssertEqual(SlashArgument.candidates(for: "/efforts"), [], "`/efforts` を `/effort` と読まない")
+        XCTAssertEqual(SlashArgument.candidates(for: "/effort max"), [], "無い段は出さない")
+        XCTAssertEqual(SlashArgument.candidates(for: "文の途中で /effort"), [])
+    }
+
+    func test_effortを選ぶと差さり_帯が消える() {
+        let after = SlashArgument.replacing("/effort lo", with: "low")
+        XCTAssertEqual(after, "/effort low ")
+        XCTAssertEqual(SlashArgument.candidates(for: after), [])
+        XCTAssertEqual(SlashArgument.replacing("/effort", with: "high"), "/effort high ")
+    }
+
+    /// command は混ざらない: `/model` の帯に effort の段が出ない、其の逆も無い。
+    func test_commandごとに候補が分かれる() {
+        XCTAssertFalse(SlashArgument.candidates(for: "/model").contains("low"))
+        XCTAssertFalse(SlashArgument.candidates(for: "/effort").contains("opus"))
+        XCTAssertEqual(SlashArgument.command(in: "/model so"), "/model")
+        XCTAssertEqual(SlashArgument.command(in: "  /effort"), "/effort")
+        XCTAssertNil(SlashArgument.command(in: "/compact "))
+        XCTAssertEqual(SlashArgument.key(of: "/effort"), "effort")
     }
 }

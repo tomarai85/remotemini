@@ -1100,12 +1100,17 @@ struct ConversationView: View {
             //   ★slash のチップは増やさない(裁定: 3 つだけ)。此処は `/model` を選んだ人にしか
             //     出ない 2 段目で、判定は `SlashArgument.candidates`(純関数、検査済み)。
             //   ★候補が 0 件なら帯ごと出さない(`@` 補完と同じ: 空の帯は壊れて見える)。
-            if viewModel.composerEnabled {
-                let modelArgs = SlashArgument.candidates(for: viewModel.draft)
-                if !modelArgs.isEmpty {
+            //   ★2026-09-03 Tom 裁定: `/effort` は 4 つ目のチップに**しない**。代わりに `/effort` と
+            //     **打った時だけ**同じ 2 段目に `low / medium / high` を出す(brief #15 の案 2)。
+            //     どの command の帯かは `SlashArgument.command(in:)` が決め、識別子は其の名で分かれる
+            //     (`conversation.slash.model.args` / `conversation.slash.effort.args`)。
+            if viewModel.composerEnabled, let slashCommand = SlashArgument.command(in: viewModel.draft) {
+                let slashArgs = SlashArgument.candidates(for: viewModel.draft)
+                let slashKey = SlashArgument.key(of: slashCommand)
+                if !slashArgs.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
-                            ForEach(modelArgs, id: \.self) { name in
+                            ForEach(slashArgs, id: \.self) { name in
                                 Button {
                                     viewModel.draft = SlashArgument.replacing(viewModel.draft, with: name)
                                 } label: {
@@ -1116,12 +1121,12 @@ struct ConversationView: View {
                                         .padding(.vertical, 5)
                                         .modifier(RCChip(tint: RCTheme.surfaceStroke))
                                 }
-                                .accessibilityIdentifier("conversation.slash.model.arg.\(name)")
+                                .accessibilityIdentifier("conversation.slash.\(slashKey).arg.\(name)")
                             }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("conversation.slash.model.args")
+                    .accessibilityIdentifier("conversation.slash.\(slashKey).args")
                 }
             }
 
