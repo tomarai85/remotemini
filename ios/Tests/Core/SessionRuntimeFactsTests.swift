@@ -77,4 +77,33 @@ final class SessionRuntimeFactsTests: XCTestCase {
         let s = try XCTUnwrap(parse(#"{"model":"m","gitBranch":"b","version":null,"contextTokens":38717}"#))
         XCTAssertFalse(try XCTUnwrap(s.line).contains("38717"))
     }
+
+    // MARK: - 壊れた値(Codex #3 の 4)
+
+    func test_負の値は帯に出さない() throws {
+        let s = try XCTUnwrap(parse(#"{"model":"m","gitBranch":"b","version":null,"contextTokens":-1}"#))
+        XCTAssertEqual(s.contextTokens, -1, "受けた値は其のまま持つ")
+        XCTAssertNil(s.displayableContextTokens)
+        XCTAssertEqual(s.line, "m · b", "「-1 ctx」を描いている")
+    }
+
+    func test_天井を超える値は帯に出さず_丸めも落ちない() throws {
+        let s = try XCTUnwrap(parse(#"{"model":"m","gitBranch":"b","version":null,"contextTokens":9223372036854775807}"#))
+        XCTAssertEqual(s.contextTokens, Int.max)
+        XCTAssertNil(s.displayableContextTokens)
+        XCTAssertEqual(s.line, "m · b")
+        // 直に丸めても trap しない(`n + 50` の overflow)
+        XCTAssertEqual(SessionDigest.Session.compact(Int.max), "1000000k")
+        XCTAssertEqual(SessionDigest.Session.compact(-5), "0")
+    }
+
+    func test_Intに入らない数や型違いは其の1項だけnilで_要約全体は読める() throws {
+        // 1e308 は JSON として正当だが Int に入らない。以前は digest 丸ごと復号に失敗した
+        let big = try XCTUnwrap(parse(#"{"model":"claude-opus-5","gitBranch":"main","version":null,"contextTokens":1e308}"#))
+        XCTAssertNil(big.contextTokens)
+        XCTAssertEqual(big.line, "claude-opus-5 · main")
+        let str = try XCTUnwrap(parse(#"{"model":"claude-opus-5","gitBranch":"main","version":null,"contextTokens":"38717"}"#))
+        XCTAssertNil(str.contextTokens)
+        XCTAssertEqual(str.model, "claude-opus-5", "他の欄は今まで通り読める")
+    }
 }

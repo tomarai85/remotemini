@@ -46,18 +46,30 @@ struct SessionDigest: Equatable {
         let model: String?
         let gitBranch: String?
         let version: String?
-        /// 直近の応答が抱えていた文脈の大きさ(token)。机が `message.usage` の入力 3 種を
-        /// 足した物(2026-09-03、対照表 #14-16 の残り)。★古い机は送らないので optional。
+        /// 直近の要求が抱えていた文脈の大きさ(token)。机が `message.usage` の入力 3 種を
+        /// 足した物、compaction の直後は其の境界の `postTokens`(2026-09-03、対照表 #14-16 の残り)。
+        /// ★古い机は送らないので optional。
         var contextTokens: Int? = nil
+        /// 帯に出してよい値の天井。之を超える数は机の誤り(か細工)であって文脈ではない
+        /// (Codex #3 の 4: `Int.max` が丸めの `+ 50` で trap した)。
+        static let maxContextTokens = 1_000_000_000
+        /// 帯に出す値。負・天井超えは**無い物**として扱う(「-1 ctx」を描かない)。
+        var displayableContextTokens: Int? {
+            guard let n = contextTokens, n >= 0, n <= Self.maxContextTokens else { return nil }
+            return n
+        }
         /// 画面に出す 1 行。**在る物だけ**を「·」で繋ぐ。全部無ければ nil(帯を出さない)。
         var line: String? {
-            let parts = [model, gitBranch, contextTokens.map { "\(Self.compact($0)) ctx" }]
+            let parts = [model, gitBranch, displayableContextTokens.map { "\(Self.compact($0)) ctx" }]
                 .compactMap { $0 }.filter { !$0.isEmpty }
             return parts.isEmpty ? nil : parts.joined(separator: " · ")
         }
         /// 帯に載る短い数。1,000 未満は其のまま、10 万未満は小数 1 桁の k、其れ以上は整数の k。
         /// ★丸めは四捨五入(切り捨てだと 99,950 が「99.9k」で、100k の帯に見えない)。
         static func compact(_ n: Int) -> String {
+            // ★負は "0"、天井超えは天井に畳む(足し算で trap しない形。表示は `displayableContextTokens`
+            //   が先に nil にするので、此処に来るのは検査か将来の呼び手だけ)。
+            let n = min(max(n, 0), maxContextTokens)
             if n < 1_000 { return "\(n)" }
             let tenths = (n + 50) / 100                      // 38,717 -> 387 -> "38.7k"
             if tenths < 1_000 { return "\(tenths / 10).\(tenths % 10)k" }
@@ -126,6 +138,19 @@ private struct DigestEnvelope: Decodable {
             let gitBranch: String?
             let version: String?
             let contextTokens: Int?
+
+            private enum Keys: String, CodingKey { case model, gitBranch, version, contextTokens }
+
+            /// ★`contextTokens` は**寛容に**読む(Codex #3 の 4)。`Int` に入らない数(`1e308` 等)や
+            ///   型違いが来た時、既定の合成 init は **digest 全体**の復号を落とす —— 帯の 1 項の為に
+            ///   要約丸ごとを失う。此処では其の 1 項だけを nil にする。他の 3 項は今まで通り。
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: Keys.self)
+                model = try c.decodeIfPresent(String.self, forKey: .model)
+                gitBranch = try c.decodeIfPresent(String.self, forKey: .gitBranch)
+                version = try c.decodeIfPresent(String.self, forKey: .version)
+                contextTokens = (try? c.decodeIfPresent(Int.self, forKey: .contextTokens)) ?? nil
+            }
         }
     }
     struct Action: Decodable {
