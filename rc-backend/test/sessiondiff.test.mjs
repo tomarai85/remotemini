@@ -209,6 +209,7 @@ function fakeGit(plan) {
     calls,
     exec: async (bin, args, opts) => {
       calls.push({ bin, args, opts });
+      if (args.includes("config")) return { stdout: plan.config ?? "", stderr: "" }; // driver の名前読み(実行なし)
       const cached = args.includes("--cached");
       const r = cached ? plan.staged : plan.unstaged;
       if (r instanceof Error) throw r;
@@ -217,10 +218,13 @@ function fakeGit(plan) {
   };
 }
 const always = () => true;
+/** 偽の fs: `<cwd>/.git` は普通の dir、cwd の realpath は其のまま(git を撃たずに repo を決める為の材料)。 */
+const dirStat = { isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false };
+const pinned = { realpath: (p) => p, lstat: (p) => (p.endsWith("/.git") ? dirStat : null) };
 
 test("★readWorkingDiff: 作業木と index の両方を読み、`staged` で見分けられる", async () => {
   const g = fakeGit({ unstaged: UNSTAGED, staged: STAGED });
-  const r = await readWorkingDiff("/w", { exec: g.exec, exists: always });
+  const r = await readWorkingDiff("/w", { exec: g.exec, exists: always, ...pinned });
   assert.equal(r.reason, null);
   assert.deepEqual(
     r.files.map((f) => [f.path, f.staged]),
@@ -230,9 +234,14 @@ test("★readWorkingDiff: 作業木と index の両方を読み、`staged` で�
 
 test("★readWorkingDiff: 撃つ git は `diff` の 2 本だけ(書く動詞が 1 つも無い)", async () => {
   const g = fakeGit({ unstaged: "", staged: "" });
-  await readWorkingDiff("/w", { exec: g.exec, exists: always });
-  assert.equal(g.calls.length, 2);
-  for (const c of g.calls) {
+  await readWorkingDiff("/w", { exec: g.exec, exists: always, ...pinned });
+  assert.equal(g.calls.length, 3, "config の名前読み 1 本 + diff 2 本");
+  const diffs = g.calls.filter((c) => c.args.includes("diff"));
+  assert.equal(diffs.length, 2);
+  const cfg = g.calls.filter((c) => c.args.includes("config"));
+  assert.equal(cfg.length, 1);
+  assert.ok(cfg[0].args.includes("--list") && cfg[0].args.includes("--name-only"), "config は名前の一覧だけ(値も書き込みも無し)");
+  for (const c of diffs) {
     assert.equal(c.bin, "git");
     // `-c k=v` は subcommand の前に居る。subcommand は `--no-pager` の直後。
     assert.equal(c.args[c.args.indexOf("--no-pager") + 1], "diff");
@@ -242,14 +251,14 @@ test("★readWorkingDiff: 撃つ git は `diff` の 2 本だけ(書く動詞が 
       assert.equal(c.args.includes(verb), false, `書く動詞が混じった: ${verb} / ${c.args.join(" ")}`);
     }
   }
-  assert.equal(g.calls[0].args.includes("--cached"), false);
-  assert.equal(g.calls[1].args.includes("--cached"), true);
+  assert.equal(diffs[0].args.includes("--cached"), false);
+  assert.equal(diffs[1].args.includes("--cached"), true);
 });
 
 test("★readWorkingDiff: repo の設定で外部プログラムを走らせない(`--no-ext-diff` / `--no-textconv`)", async () => {
   const g = fakeGit({ unstaged: "", staged: "" });
-  await readWorkingDiff("/w", { exec: g.exec, exists: always });
-  for (const c of g.calls) {
+  await readWorkingDiff("/w", { exec: g.exec, exists: always, ...pinned });
+  for (const c of g.calls.filter((x) => x.args.includes("diff"))) {
     assert.ok(c.args.includes("--no-ext-diff"), c.args.join(" "));
     assert.ok(c.args.includes("--no-textconv"), c.args.join(" "));
   }
@@ -257,7 +266,7 @@ test("★readWorkingDiff: repo の設定で外部プログラムを走らせな�
 
 test("★readWorkingDiff: index の錠を取らない(覗いただけで机の git を失敗させない)", async () => {
   const g = fakeGit({ unstaged: "", staged: "" });
-  await readWorkingDiff("/w", { exec: g.exec, exists: always });
+  await readWorkingDiff("/w", { exec: g.exec, exists: always, ...pinned });
   assert.equal(g.calls[0].opts.env.GIT_OPTIONAL_LOCKS, "0");
   // 言語を固定する(下の `notARepo` が git の一文を読む為)。
   assert.equal(g.calls[0].opts.env.LC_ALL, "C");
@@ -267,7 +276,7 @@ test("★readWorkingDiff: index の錠を取らない(覗いただけで机の g
 
 test("readWorkingDiff: 差分が無い会話は 0 件で `reason` は null(「無い」と「読めない」は別)", async () => {
   const g = fakeGit({ unstaged: "", staged: "" });
-  const r = await readWorkingDiff("/w", { exec: g.exec, exists: always });
+  const r = await readWorkingDiff("/w", { exec: g.exec, exists: always, ...pinned });
   assert.deepEqual(r.files, []);
   assert.equal(r.reason, null);
   assert.equal(r.truncated, false);
@@ -276,7 +285,7 @@ test("readWorkingDiff: 差分が無い会話は 0 件で `reason` は null(「�
 
 test("readWorkingDiff: `totalBytes` は読んだ生 diff の bytes(切る前の量)", async () => {
   const g = fakeGit({ unstaged: UNSTAGED, staged: STAGED });
-  const r = await readWorkingDiff("/w", { exec: g.exec, exists: always });
+  const r = await readWorkingDiff("/w", { exec: g.exec, exists: always, ...pinned });
   assert.equal(
     r.totalBytes,
     Buffer.byteLength(UNSTAGED, "utf8") + Buffer.byteLength(STAGED, "utf8"),
@@ -285,7 +294,7 @@ test("readWorkingDiff: `totalBytes` は読んだ生 diff の bytes(切る前の�
 
 test("readWorkingDiff: cwd が無い会話は `no_cwd`(git を 1 本も撃たない)", async () => {
   const g = fakeGit({ unstaged: "", staged: "" });
-  const r = await readWorkingDiff("", { exec: g.exec, exists: always });
+  const r = await readWorkingDiff("", { exec: g.exec, exists: always, ...pinned });
   assert.equal(r.reason, "no_cwd");
   assert.equal(g.calls.length, 0);
 });
@@ -300,7 +309,7 @@ test("readWorkingDiff: dir が消えていれば `cwd_missing`(git に訊く前�
 test("readWorkingDiff: git 管理外は `not_a_repo`(異常ではなく状態)", async () => {
   const e = new Error("fatal");
   e.stderr = "fatal: not a git repository (or any of the parent directories): .git";
-  const r = await readWorkingDiff("/w", { exec: fakeGit({ unstaged: e, staged: "" }).exec, exists: always });
+  const r = await readWorkingDiff("/w", { exec: fakeGit({ unstaged: e, staged: "" }).exec, exists: always, ...pinned });
   assert.equal(r.reason, "not_a_repo");
   assert.deepEqual(r.files, []);
 });
@@ -308,7 +317,7 @@ test("readWorkingDiff: git 管理外は `not_a_repo`(異常ではなく状態)",
 test("readWorkingDiff: 判らない失敗は `git_failed`(repo 無しに丸めない)", async () => {
   const e = new Error("boom");
   e.stderr = "fatal: bad object";
-  const r = await readWorkingDiff("/w", { exec: fakeGit({ unstaged: e, staged: "" }).exec, exists: always });
+  const r = await readWorkingDiff("/w", { exec: fakeGit({ unstaged: e, staged: "" }).exec, exists: always, ...pinned });
   assert.equal(r.reason, "git_failed");
 });
 
@@ -317,7 +326,7 @@ test("★readWorkingDiff: 器から溢れたら**部分を出して切ったと�
   e.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
   e.stdout = UNSTAGED;
   const r = await readWorkingDiff("/w", {
-    exec: fakeGit({ unstaged: e, staged: "" }).exec, exists: always,
+    exec: fakeGit({ unstaged: e, staged: "" }).exec, exists: always, ...pinned,
   });
   assert.equal(r.reason, null);
   assert.equal(r.truncated, true);
@@ -327,7 +336,7 @@ test("★readWorkingDiff: 器から溢れたら**部分を出して切ったと�
 test("★readWorkingDiff: index の側だけ落ちても作業木の側は捨てない(切ったとは言う)", async () => {
   const e = new Error("boom");
   const r = await readWorkingDiff("/w", {
-    exec: fakeGit({ unstaged: UNSTAGED, staged: e }).exec, exists: always,
+    exec: fakeGit({ unstaged: UNSTAGED, staged: e }).exec, exists: always, ...pinned,
   });
   assert.equal(r.reason, null);
   assert.equal(r.files.length, 3);
@@ -339,12 +348,12 @@ test("★readWorkingDiff: index の側だけ落ちても作業木の側は捨て
 test("★readWorkingDiff: index の側だけ落ちて**何も読めなかった**時は reason を名乗る(切れた成功に化けない = 所見 5)", async () => {
   const e = new Error("boom");
   e.stderr = "fatal: bad object";
-  const r = await readWorkingDiff("/w5", { exec: fakeGit({ unstaged: "", staged: e }).exec, exists: always });
+  const r = await readWorkingDiff("/w5", { exec: fakeGit({ unstaged: "", staged: e }).exec, exists: always, ...pinned });
   assert.equal(r.reason, "git_failed");
   assert.deepEqual(r.files, []);
   assert.equal(r.truncated, false);
   // 錨: 「差分が無い」(両側とも空・成功)は今も reason null(上の検査と対になる)
-  const ok = await readWorkingDiff("/w5b", { exec: fakeGit({ unstaged: "", staged: "" }).exec, exists: always });
+  const ok = await readWorkingDiff("/w5b", { exec: fakeGit({ unstaged: "", staged: "" }).exec, exists: always, ...pinned });
   assert.equal(ok.reason, null);
 });
 
@@ -352,7 +361,7 @@ test("★readWorkingDiff: 溢れたのが stderr の側なら失敗(stdout の�
   const e = new Error("stderr maxBuffer length exceeded");
   e.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
   e.stdout = UNSTAGED;
-  const r = await readWorkingDiff("/w6", { exec: fakeGit({ unstaged: e, staged: "" }).exec, exists: always });
+  const r = await readWorkingDiff("/w6", { exec: fakeGit({ unstaged: e, staged: "" }).exec, exists: always, ...pinned });
   assert.equal(r.reason, "git_failed");
   assert.deepEqual(r.files, []);
 });
@@ -364,6 +373,7 @@ function fakeGitByArgs(table) {
     calls,
     exec: async (bin, args, opts) => {
       calls.push({ bin, args, opts });
+      if (args.includes("config")) return { stdout: table.config ?? "", stderr: "" };
       const k = `${args.includes("--numstat") ? "numstat" : "diff"}:${args.includes("--cached") ? "staged" : "unstaged"}`;
       const r = table[k];
       if (r instanceof Error) throw r;
@@ -383,7 +393,7 @@ test("★★readWorkingDiff: 器から溢れたら `--numstat` で数を取り�
     "diff:staged": "",
     "numstat:unstaged": "2\t1\tsrc/app.js\n0\t2\tnotes.txt\n-\t-\tlogo.png\n",
   });
-  const r = await readWorkingDiff("/w6b", { exec: g.exec, exists: always });
+  const r = await readWorkingDiff("/w6b", { exec: g.exec, exists: always, ...pinned });
   assert.equal(r.truncated, true);
   assert.equal(r.reason, null);
   const app = r.files.find((f) => f.path === "src/app.js");
@@ -394,8 +404,8 @@ test("★★readWorkingDiff: 器から溢れたら `--numstat` で数を取り�
   assert.ok(!g.calls.find((c) => c.args.includes("--numstat")).args.includes("--cached"));
   // 錨: 溢れていなければ numstat は撃たない
   const g2 = fakeGitByArgs({ "diff:unstaged": UNSTAGED, "diff:staged": STAGED });
-  await readWorkingDiff("/w6c", { exec: g2.exec, exists: always });
-  assert.equal(g2.calls.length, 2);
+  await readWorkingDiff("/w6c", { exec: g2.exec, exists: always, ...pinned });
+  assert.equal(g2.calls.filter((c) => c.args.includes("diff")).length, 2);
 });
 
 test("parseNumstat: `added\\tremoved\\tpath`、2 進は `-` = null、壊れた行は捨てる", () => {
@@ -418,8 +428,8 @@ test("★parseDiff: 持つ本文は file ごとに天井まで、数は全部(8 
 
 test("★readWorkingDiff: `-c core.fsmonitor=false` と `--ignore-submodules=all` を撃つ(所見 1)", async () => {
   const g = fakeGit({ unstaged: "", staged: "" });
-  await readWorkingDiff("/w1", { exec: g.exec, exists: always });
-  for (const c of g.calls) {
+  await readWorkingDiff("/w1", { exec: g.exec, exists: always, ...pinned });
+  for (const c of g.calls.filter((x) => x.args.includes("diff"))) {
     const i = c.args.indexOf("-c");
     assert.ok(i >= 0 && c.args[i + 1] === "core.fsmonitor=false", c.args.join(" "));
     assert.ok(c.args.includes("--ignore-submodules=all"), c.args.join(" "));
@@ -431,7 +441,7 @@ test("★readWorkingDiff: 机の `GIT_*` 環境変数を git に渡さない(所
   const saved = process.env.GIT_DIR;
   process.env.GIT_DIR = "/somewhere/else/.git";
   try {
-    await readWorkingDiff("/w2", { exec: g.exec, exists: always });
+    await readWorkingDiff("/w2", { exec: g.exec, exists: always, ...pinned });
   } finally {
     if (saved === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = saved;
   }
@@ -444,14 +454,16 @@ test("★readWorkingDiff: 机の `GIT_*` 環境変数を git に渡さない(所
 test("★readWorkingDiff: `.git` が symlink なら読まない(`unsafe_repo`、git を撃たない = 所見 2)", async () => {
   const g = fakeGit({ unstaged: UNSTAGED, staged: "" });
   const link = { isSymbolicLink: () => true };
-  const r = await readWorkingDiff("/w2b", { exec: g.exec, exists: always, lstat: () => link });
+  const r = await readWorkingDiff("/w2b", { exec: g.exec, exists: always, ...pinned, lstat: () => link });
   assert.equal(r.reason, "unsafe_repo");
   assert.equal(g.calls.length, 0);
   // 錨: 普通の `.git`(dir)/ 無い(null)は読む
-  const ok = await readWorkingDiff("/w2c", { exec: g.exec, exists: always, lstat: () => ({ isSymbolicLink: () => false }) });
+  const ok = await readWorkingDiff("/w2c", { exec: g.exec, exists: always, ...pinned, lstat: () => dirStat });
   assert.equal(ok.reason, null);
-  const none = await readWorkingDiff("/w2d", { exec: g.exec, exists: always, lstat: () => null });
-  assert.equal(none.reason, null);
+  const before = g.calls.length;
+  const none = await readWorkingDiff("/w2d", { exec: g.exec, exists: always, ...pinned, lstat: () => null });
+  assert.equal(none.reason, "not_a_repo", "祖先まで `.git` が無い = git 管理外(git を撃たずに判る)");
+  assert.equal(g.calls.length, before, "repo が無いのに git を撃った");
 });
 
 test("★readWorkingDiff: 同じ cwd への同時要求は 1 本に合流する(所見 4)", async () => {
@@ -459,12 +471,12 @@ test("★readWorkingDiff: 同じ cwd への同時要求は 1 本に合流する(
   const gate = new Promise((res) => { release = res; });
   const calls = [];
   const exec = async (bin, args) => { calls.push(args); await gate; return { stdout: "", stderr: "" }; };
-  const a = readWorkingDiff("/w4-same", { exec, exists: always });
-  const b = readWorkingDiff("/w4-same", { exec, exists: always });
+  const a = readWorkingDiff("/w4-same", { exec, exists: always, ...pinned });
+  const b = readWorkingDiff("/w4-same", { exec, exists: always, ...pinned });
   assert.deepEqual(_inflight().keys, ["/w4-same"]);
   release();
   const [ra, rb] = await Promise.all([a, b]);
-  assert.equal(calls.length, 2, "2 要求で git が 4 本 走った(合流していない)");
+  assert.equal(calls.filter((a) => a.includes("diff")).length, 2, "2 要求で git が 4 本 走った(合流していない)");
   assert.deepEqual(ra, rb);
   assert.deepEqual(_inflight().keys, []);
 });
@@ -478,7 +490,7 @@ test("★readWorkingDiff: 全体で同時に走る git は MAX_CONCURRENT 本ま
     return { stdout: "", stderr: "" };
   };
   const all = [];
-  for (let i = 0; i < 6; i += 1) all.push(readWorkingDiff(`/w4-${i}`, { exec, exists: always }));
+  for (let i = 0; i < 6; i += 1) all.push(readWorkingDiff(`/w4-${i}`, { exec, exists: always, ...pinned }));
   const snap = _inflight();
   assert.ok(snap.running <= MAX_CONCURRENT && snap.waiting >= 1, JSON.stringify(snap));
   await Promise.all(all);
