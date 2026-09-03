@@ -28,8 +28,10 @@
 | 2026-09-03 | #6 差分への行コメント | diff の行を長押しでコメント。会話ごとにメモリで持ち、行に印と diff ボタンに件数。**送るのは人が次の文を送る時だけ**(裁定「押しても送らない」)。`<path>:<line> (<+|-|context> "<引用行>") — <本文>` の平文ブロックを本文の前に置く。机の口は増やさない | `DiffCommentFormatter.compose` / `ConversationViewModel.diffComments` / `conversation.diff.commentCount` |
 | 2026-09-02 | #16 permission mode | `status` の tmux/worker 両経路に `permissionMode` を足した(**読むだけ**、D4/#17 の裁定には触れない)。出所は転写 —— `type:"permission-mode"` イベント行(timestamp 無し)と `type:"user"` 行の埋め込み値(timestamp 有り)の**どちらが「今」に近いかはファイルの並びで決める**(timestamp でソートすると、timestamp の無い方が常に負ける)。電話は会話を開いた時に1回だけ取り、状態帯に静かなチップで出す(無ければ何も出さない)。★#14-16 の反映行(上、`digest.session`)は model/gitBranch/version だけで permission mode は含んでいなかった —— 之が実物 | `permissionModeOf`(`sessions.mjs`) / `statusBodyTmux` / `statusBodyWorker`(`wire.mjs`) / `StatusClient` / `conversation.permissionMode` |
 
+| 2026-09-03 | #14 model の**選択** | `/model` チップを押した後(= 入力欄が `/model` で始まる間)だけ 2 段目に `opus / sonnet / haiku / default` を出し、押すと `/model sonnet ` まで**差すだけ**(送らない)。机に口は作らない —— model を変える動詞は机の `/model` そのもの。slash のチップは増やさない(裁定: 3 つだけ)。`/effort` は 4 つ目のチップになるので別の裁定 | `SlashArgument.candidates` / `conversation.slash.model.args` / `SlashArgumentTests` |
+
 反映していない absent 行は、意匠に触れる物(入力欄の造り)と、机の口を新設する物(subagent の個別停止 #8 /
-model・effort の**選択** #14-15)。#6 と #16 は build 135(a8ef5d3、9/3 09:31)で電話へ配った(上の 2 行)。
+effort の**選択** #15 = 裁定「チップは 3 つだけ」に触れる)。#14 は 9/3 に机の口なしで入った(上の行)。#6 と #16 は build 135(a8ef5d3、9/3 09:31)で電話へ配った(上の 2 行)。
 ★#11(任意のディレクトリで新規)は #10 が入っても**自動では片付かない** —— 補完が歩けるのは
 既に在る会話の cwd の下だけで、場所を 0 から選ぶ口は机にまだ無い。「作らないと決めた」ではなく
 「まだ作っていない」である事を、`ListView.swift` / `NewSessionClient.swift` / `server.mjs` の註にも書いた。

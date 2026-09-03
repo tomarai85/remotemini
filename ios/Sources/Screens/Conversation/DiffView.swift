@@ -185,6 +185,8 @@ struct DiffView: View {
         switch reason {
         case "not_a_repo": return "Not a git repository"
         case "no_cwd", "cwd_missing": return "No working directory"
+        // 机が読まないと決めた repo(`.git` が symlink、2026-09-03 の固め)。壊れたのではなく断った。
+        case "unsafe_repo": return "Not read on purpose"
         default: return "Nothing to show"
         }
     }
@@ -195,6 +197,7 @@ struct DiffView: View {
         case "no_cwd": return "This conversation has no recorded working directory."
         case "cwd_missing": return "That folder no longer exists on the desk."
         case "git_failed": return "The desk couldn't read git here."
+        case "unsafe_repo": return "This folder's .git is a symlink, so the desk refused to run git in it."
         default: return "The desk had nothing to show for this conversation."
         }
     }
