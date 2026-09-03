@@ -46,10 +46,22 @@ struct SessionDigest: Equatable {
         let model: String?
         let gitBranch: String?
         let version: String?
+        /// 直近の応答が抱えていた文脈の大きさ(token)。机が `message.usage` の入力 3 種を
+        /// 足した物(2026-09-03、対照表 #14-16 の残り)。★古い机は送らないので optional。
+        var contextTokens: Int? = nil
         /// 画面に出す 1 行。**在る物だけ**を「·」で繋ぐ。全部無ければ nil(帯を出さない)。
         var line: String? {
-            let parts = [model, gitBranch].compactMap { $0 }.filter { !$0.isEmpty }
+            let parts = [model, gitBranch, contextTokens.map { "\(Self.compact($0)) ctx" }]
+                .compactMap { $0 }.filter { !$0.isEmpty }
             return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
+        /// 帯に載る短い数。1,000 未満は其のまま、10 万未満は小数 1 桁の k、其れ以上は整数の k。
+        /// ★丸めは四捨五入(切り捨てだと 99,950 が「99.9k」で、100k の帯に見えない)。
+        static func compact(_ n: Int) -> String {
+            if n < 1_000 { return "\(n)" }
+            let tenths = (n + 50) / 100                      // 38,717 -> 387 -> "38.7k"
+            if tenths < 1_000 { return "\(tenths / 10).\(tenths % 10)k" }
+            return "\((n + 500) / 1_000)k"                   // 99,950 -> "100k"(「100.0k」を出さない)
         }
     }
 
@@ -113,6 +125,7 @@ private struct DigestEnvelope: Decodable {
             let model: String?
             let gitBranch: String?
             let version: String?
+            let contextTokens: Int?
         }
     }
     struct Action: Decodable {
@@ -154,7 +167,9 @@ enum DigestParser {
             attention: SessionDigest.Attention(rawValue: env.attention ?? "") ?? .unrecognized,
             action: SessionDigest.ActionLevel(rawValue: env.action?.level ?? "") ?? .unrecognized,
             line: env.line ?? "",
-            session: d.session.map { .init(model: $0.model, gitBranch: $0.gitBranch, version: $0.version) }
+            session: d.session.map {
+                .init(model: $0.model, gitBranch: $0.gitBranch, version: $0.version, contextTokens: $0.contextTokens)
+            }
         )
     }
 }

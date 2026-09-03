@@ -147,7 +147,7 @@ const DIGEST_COMPLETE = {
   tools: [{ name: "Read", n: 1 }],
   fileTargets: ["/a/b.txt"], fileTargetsTotal: 1,
   lastAssistant: "done", lastAt: "2026-08-26T11:02:00.000Z",
-  session: { model: "claude-opus-5", gitBranch: "main", version: "2.1.240" },
+  session: { model: "claude-opus-5", gitBranch: "main", version: "2.1.240", contextTokens: 38717 },
 };
 const DIGEST_INCOMPLETE = {
   complete: false, incompleteReason: "scan-budget",
@@ -155,7 +155,7 @@ const DIGEST_INCOMPLETE = {
             toIso: "2026-08-26T12:00:00.000Z", minutes: 60 },
   counts: null, tools: null, fileTargets: null, fileTargetsTotal: null,
   lastAssistant: "done", lastAt: "2026-08-26T11:02:00.000Z",
-  session: { model: null, gitBranch: null, version: null },
+  session: { model: null, gitBranch: null, version: null, contextTokens: null },
 };
 
 // 使用量の検体(2026-08-29、friday の実 `cswap list --json` から写した形)。

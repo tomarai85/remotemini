@@ -176,16 +176,34 @@ export function digestOf(records, o) {
 /// 転写の最新レコードから、会話の実行環境を拾う。**後ろから前へ**見て、初めて値を持つ
 /// レコードの物を採る(最後の 1 件がメタ行で持たない事が普通に在る)。
 function sessionOf(sorted) {
-  let model = null, gitBranch = null, version = null;
+  let model = null, gitBranch = null, version = null, contextTokens = null;
   for (let i = sorted.length - 1; i >= 0; i -= 1) {
     const r = sorted[i];
     if (!r || typeof r !== "object") continue;
     if (model === null && typeof r?.message?.model === "string") model = r.message.model;
     if (gitBranch === null && typeof r.gitBranch === "string") gitBranch = r.gitBranch;
     if (version === null && typeof r.version === "string") version = r.version;
-    if (model !== null && gitBranch !== null && version !== null) break;
+    if (contextTokens === null) contextTokens = contextTokensOf(r?.message?.usage);
+    if (model !== null && gitBranch !== null && version !== null && contextTokens !== null) break;
   }
-  return { model, gitBranch, version };
+  return { model, gitBranch, version, contextTokens };
+}
+
+/// 直近の応答が**どれだけの文脈を抱えて**返されたか(2026-09-03、対照表 #14-16 の残り)。
+/// 転写の assistant レコードは `message.usage` に `input_tokens` / `cache_creation_input_tokens` /
+/// `cache_read_input_tokens` を持つ(friday の実転写で確認)。其の 3 つの和 = 其の応答の
+/// **プロンプト全体の大きさ** = Claude Code の `/context` が出す「今の文脈」に相当する。
+/// ★`output_tokens` は足さない —— 出力は文脈ではない(次の turn で文脈に**なる**が、其れは
+///   次の usage が数える)。★累計はしない —— 電話が知りたいのは「今どれだけ重いか」で、
+///   compact で減った事も其のまま出るべき(累計は減らない)。
+/// ★数が 1 つも無ければ null(`usage` 自体が無い古い版や、usage を持たない行)。
+function contextTokensOf(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const parts = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
+    .map((k) => usage[k])
+    .filter((v) => typeof v === "number" && Number.isFinite(v) && v >= 0);
+  if (parts.length === 0) return null;
+  return parts.reduce((a, b) => a + b, 0);
 }
 
 /** 窓の中で最後に喋った内容。**不完全でも返す**(後方走査なので末尾は読めている)。 */
