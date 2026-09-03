@@ -218,6 +218,32 @@ const SEARCH_NEEDLE = "しっぽの目印";
   writeFileSync(join(PROJ, `${SID_SEARCH}.jsonl`), lines.join("\n"));
 }
 
+// ★会話の実行環境(2026-09-03、対照表 #14-16)。`/digest` の `session` が**生きた机**から
+//   model / gitBranch / contextTokens を運ぶか。単体(`digest-session.test.mjs`)は `digestOf` の
+//   扉だけを測る —— 此処で測るのは、転写 → `readRawRecords` → `digestOf` → `digestBody` →
+//   HTTP の**配線**。鍵名は `wire-key-agreement` が電話と縛るが、値が実際に線へ出るかは
+//   此の 1 本しか見ない。
+//   検体は friday の実転写の形(usage の 4 欄、model は message の中、gitBranch は行の上)。
+const SID_RUNTIME = "aaaaaaaa-0000-0000-0000-000000000062";
+{
+  if (FIXTURED.has(SID_RUNTIME)) throw new Error(`fixture の id が衝突している: ${SID_RUNTIME}(実行環境)`);
+  FIXTURED.add(SID_RUNTIME);
+  const now = Date.now();
+  const iso = (msAgo) => new Date(now - msAgo).toISOString();
+  writeFileSync(join(PROJ, `${SID_RUNTIME}.jsonl`), [
+    JSON.stringify({ entrypoint: "cli", cwd: CWD_WORK, type: "user", timestamp: iso(120_000), gitBranch: "main", version: "2.1.240",
+      message: { role: "user", content: "q" } }),
+    // 頭の応答: 別の model・大きい文脈。**尾が勝つ**事を測る為に、尾より大きい値を置く。
+    JSON.stringify({ type: "assistant", timestamp: iso(90_000), gitBranch: "main", version: "2.1.240",
+      message: { role: "assistant", model: "claude-sonnet-4-6", content: [{ type: "text", text: "old" }],
+        usage: { input_tokens: 1, cache_creation_input_tokens: 90_000, cache_read_input_tokens: 0, output_tokens: 50 } } }),
+    JSON.stringify({ type: "assistant", timestamp: iso(30_000), gitBranch: "main", version: "2.1.240",
+      message: { role: "assistant", model: "claude-opus-5", content: [{ type: "text", text: "new" }],
+        usage: { input_tokens: 2, cache_creation_input_tokens: 27_124, cache_read_input_tokens: 11_591, output_tokens: 2_624 } } }),
+    JSON.stringify({ type: "ai-title", aiTitle: "実行環境の検体" }),
+  ].join("\n"));
+}
+
 // ★`@` のパス補完(2026-09-02、扉E)。**実在する木**を砂場に建てて、其処を cwd に持つ
 //   会話を1本と、cwd を**名乗らない**会話を1本置く。
 //
@@ -1251,6 +1277,18 @@ try {
   //   (SID1 の fixture に `permissionMode: "bypassPermissions"` を焼いた)。
   check("worker 経路の status にも permissionMode が乗る", st.route === "worker" && st.permissionMode === "bypassPermissions",
     JSON.stringify(st));
+
+  // ★対照表 #14-16(2026-09-03): `/digest` の `session` が生きた机から運ぶ。
+  //   検体 SID_RUNTIME(上の fixture)は頭が sonnet / 90k、尾が opus / 38,717。
+  //   尾が勝つ事・output_tokens(2,624)を足さない事・累計しない事を、値で 1 度に測る。
+  const rRt = await fetch(`${B}/api/sessions/${SID_RUNTIME}/digest?minutes=60`, { headers: H });
+  const jRt = await rRt.json();
+  const sess = jRt.digest?.session;
+  check("★digest.session が model / gitBranch を尾の値で運ぶ(頭の sonnet ではない)",
+    rRt.status === 200 && sess?.model === "claude-opus-5" && sess?.gitBranch === "main" && sess?.version === "2.1.240",
+    JSON.stringify(sess));
+  check("★digest.session.contextTokens = 尾の usage の入力 3 種の和(output を足さず、累計もしない)",
+    sess?.contextTokens === 2 + 27_124 + 11_591, JSON.stringify(sess));
 
   // 8. interrupt
   const intr = await (await fetch(`${B}/api/sessions/${SID1}/interrupt`, { method: "POST", headers: H })).json();
