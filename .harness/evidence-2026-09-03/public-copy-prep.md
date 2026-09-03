@@ -67,6 +67,29 @@ Controls: C23 author with a real-looking address on a clean tree -> red and name
 Layers a public push carries, and which tool covers each: blobs (replace-text, git grep), commit messages
 (replace-message, git log), identities (mailmap, git log). A gate that reads one layer says nothing about the others.
 
+## Fourth pass: a broader personal-data sweep of the clean clone
+
+The PII checker is shape-based (addresses, tailnet names, this machine's hostname). Names are not shapes, so the
+clone was also grepped across all history for: the family member's given name, the family mail handles, Japanese and
+US phone-number shapes, the city and state, immigration terms, birth-date terms, third-party names from the client.
+Everything was 0 except the family member's given name (501 across history, 3 files at HEAD). One literal rule folds it
+into the same family placeholder. The tracked rules file rewrites itself in the copy, so the literal exists only in the
+private history. Tom's own name stays: it is on the license.
+
+## Published (observed 2026-09-03, GitHub API + fresh clone)
+
+| Repo | Visibility | main | Content |
+|---|---|---|---|
+| github.com/tomarai85/remotemini-private | private | 95e621f | raw history, pushed from this repo over the `private` remote |
+| github.com/tomarai85/remotemini | public | 80d2d66 | derived copy, 562 commits, 891 files, pushed only by the publish script's sandbox clone |
+
+A fresh `git clone` of the public repo, checked independently: PII checker exit 0, secret sweep exit 0,
+0 hits for every identifier shape above across blobs, commit messages and identities (only the GitHub noreply
+identity remains), README and LICENSE present at the root.
+
+Republish after new commits: `bash .harness/publish-public.sh --push mail-redacted@example.invalid:tomarai85/remotemini.git`
+(fast-forward as long as the rules are unchanged; a rules change needs `--force` and rewrites the public history).
+
 ## Publish pipeline
 
 `.harness/publish-public.sh`: sandbox clone -> `git filter-repo --replace-text` (rules + this machine's hostname added at run time) ->
