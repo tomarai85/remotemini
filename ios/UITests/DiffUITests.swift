@@ -80,16 +80,8 @@ final class DiffUITests: XCTestCase {
         attachScreenshot(app, name: "diff-busy-retried")
     }
 
-    /// 陰性対照: 撃ち直しても混んだままなら、Try again は残り、行き止まりにならない(空面は壊れて見えない)。
-    func testDiffBusyStaysBusyKeepsTheRetryButton() throws {
-        let app = launch(conversation: "conversation-3roles", diff: "diff-busy")
-        _ = try openDiff(app)
-        let retry = element(app, "diff.retry")
-        XCTAssertTrue(retry.waitForExistence(timeout: 10))
-        retry.tap()
-        XCTAssertTrue(element(app, "diff.retry").waitForExistence(timeout: 5), "混んだままなのに Try again が消えた")
-        XCTAssertTrue(element(app, "diff.reason").exists)
-    }
+    // (2026-09-03: 「押しても混んだまま」の検査は削った —— 押した後の主張が押す前から見える物だけで、
+    //  ボタンの動作を空にしても緑だった(Codex #6 の Low)。動作は上の busy → sample が守る。)
 
     func testDiffSampleShowsStagedAndUnstagedFiles() throws {
         let app = launch(conversation: "conversation-3roles", diff: "diff-sample")
