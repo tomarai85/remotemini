@@ -164,6 +164,12 @@ final class ConversationViewModel: ObservableObject {
     ///   済む物。同じ枠を争わせると、届かない/読めない/送信待ちのどれかを押し出す。
     @Published private(set) var awayDigest: SessionDigest?
 
+    /// 机が**今**走っている permission mode(bypassPermissions / plan / default /
+    /// acceptEdits)。2026-09-02、対照表 #16。`awayDigest` と**同じ理由**で開いた時に
+    /// 1回だけ取る(`GET .../status`)。★読むだけ —— 選ぶ操作は D4(#17)の裁定に触れる
+    /// ので作らない。取れなければ `nil` のまま(チップが1つ出ないだけ)。
+    @Published private(set) var permissionMode: String?
+
     @Published private(set) var unreadableStage: UnreadableMeter.Stage = .normal
     /// `nil` only before polling has ever started. Seeded to "now" the moment
     /// `startPolling()` runs (brief §3-b's banner always shows a clock time, never a
@@ -601,6 +607,7 @@ final class ConversationViewModel: ObservableObject {
     private let choiceClient: ChoiceSending
     private let clearQueueClient: QueueClearing
     private let digestClient: DigestFetching
+    private let statusClient: PermissionModeFetching
     private let pathsClient: PathCompleting
     private let pathDebounce: TimeInterval
     /// 打ちかけの置き場(DESIGN §2.53)。**既定値を持たせていない** —— 既定を本物に
@@ -718,6 +725,7 @@ final class ConversationViewModel: ObservableObject {
         self.choiceClient = clients.choice
         self.clearQueueClient = clients.clearQueue
         self.digestClient = clients.digest
+        self.statusClient = clients.status
         self.pathsClient = clients.paths
         self.pathDebounce = pathCompletionDebounce
         self.draftStore = draftStore
@@ -737,7 +745,12 @@ final class ConversationViewModel: ObservableObject {
     func load() async {
         let result = await client.fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: currentLimit)
         applyInitial(result)
-        await loadAwayDigest()
+        // ★履歴の後、**並行に**撃つ。どちらも「開いた時に読めれば十分」な付帯情報で、
+        //   直列にすると往復が積み上がる一方、順序を争う関係も無い(片方の結果が
+        //   他方の入力にならない)。
+        async let digestTask: Void = loadAwayDigest()
+        async let modeTask: Void = loadPermissionMode()
+        _ = await (digestTask, modeTask)
     }
 
     /// 留守中の要約を**1回だけ**取る(2026-08-26)。
@@ -757,6 +770,22 @@ final class ConversationViewModel: ObservableObject {
             onUnauthorized()
         case .failure:
             awayDigest = nil
+        }
+    }
+
+    /// 今の permission mode を**1回だけ**取る(2026-09-02、対照表 #16)。
+    ///
+    /// ★`loadAwayDigest()` と同じ規約: 失敗しても画面を壊さない(`permissionMode` は
+    ///   nil のままでチップが1本出ないだけ)。401 だけは会話全体が使えない状態なので
+    ///   同じ扱いに合流させる。
+    func loadPermissionMode() async {
+        switch await statusClient.fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID) {
+        case .success(let mode):
+            permissionMode = mode
+        case .failure(.unauthorized):
+            onUnauthorized()
+        case .failure:
+            permissionMode = nil
         }
     }
 

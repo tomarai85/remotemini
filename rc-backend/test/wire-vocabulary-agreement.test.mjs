@@ -135,6 +135,10 @@ const PHONE_ONLY = {
   //   (会話の fixture 名を diff 側が解決できず、本物の `DiffClient` へ落ちた)。
   //   `AccountFixture.fromEnvironment()` と同じく名前空間を分けて直した。
   RC_UI_DIFF_FIXTURE: "電話の環境変数名(diff の相を会話の相と独立に振る為)。線には出ない",
+  // ★同じ形の3件目(permission mode、対照表 #16、2026-09-02)。`RC_UI_DIFF_FIXTURE` と
+  //   同じ理由で名前空間を分けた —— `RC_UI_FIXTURE` に相乗りさせると、複数の fixture が
+  //   同じ1つの綴りを取り合い、片方が変えたら他方も黙って変わる。
+  RC_UI_STATUS_FIXTURE: "電話の環境変数名(permission mode の相を会話の相と独立に振る為)。線には出ない",
   RC_THEME_VARIANT: "電話の環境変数名(DEBUG 限定で意匠の variant を切替、既定は glassfull = 2026-08-29 昇格)。線には出ない",
   // ★2026-08-27。`WaitEscalation` の閾値(既定10秒 = Nielsen の注意限界)を検査から縮める口。
   //   線に出ないのは、待ちの長さが**電話の側だけの体験**だから —— サーバは自分の応答が
