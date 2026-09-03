@@ -1092,6 +1092,39 @@ struct ConversationView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
+            // ★`/model` の**引数**の候補(2026-09-03、対照表 #14「model の選択」)。
+            //
+            //   公式は `/model sonnet` を引数インラインで打たせる。チップで `/model ` を差した後、
+            //   移動中に model の綴りを打つのは重い —— 2 段目に名前を並べ、押すと `/model sonnet `
+            //   まで**差すだけ**。送るのは人が送信を押す時(上の slash と同じ規約)。
+            //   ★slash のチップは増やさない(裁定: 3 つだけ)。此処は `/model` を選んだ人にしか
+            //     出ない 2 段目で、判定は `SlashArgument.candidates`(純関数、検査済み)。
+            //   ★候補が 0 件なら帯ごと出さない(`@` 補完と同じ: 空の帯は壊れて見える)。
+            if viewModel.composerEnabled {
+                let modelArgs = SlashArgument.candidates(for: viewModel.draft)
+                if !modelArgs.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(modelArgs, id: \.self) { name in
+                                Button {
+                                    viewModel.draft = SlashArgument.replacing(viewModel.draft, with: name)
+                                } label: {
+                                    Text(name)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(RCTheme.accent)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .modifier(RCChip(tint: RCTheme.surfaceStroke))
+                                }
+                                .accessibilityIdentifier("conversation.slash.model.arg.\(name)")
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.slash.model.args")
+                }
+            }
+
             // ★`@` のパス補完(2026-09-02、公式との対照表 #10)。
             //
             //   置き場も作りも **slash のチップと同じ**にする —— 入力欄の上に横1本、
