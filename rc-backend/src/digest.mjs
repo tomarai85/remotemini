@@ -95,9 +95,15 @@ export function digestOf(records, o) {
   // 数は伏せても**最後の発言だけは出す** —— それが一番知りたい1行だから(Codex #2)。
   const tail = lastAssistantOf(list, sinceMs, nowMs);
 
-  if (!Number.isFinite(sinceMs) || !Number.isFinite(nowMs)) return incomplete(win, "bad-window", tail);
-  if (o?.reachedStart === false) return incomplete(win, "scan-budget", tail);
-  if (list.length > DIGEST_MAX_RECORDS) return incomplete(win, "too-many-records", tail);
+  // ★実行環境(model / branch / 文脈)は**不完全でも出す**(2026-09-03、Codex #3 の 2)。
+  //   後方走査なので末尾は読めている = 最新のレコードの値は取れている。以前は早期 return の
+  //   後ろで拾っていたので、**重い会話ほど**(scan-budget に当たるほど)帯が消えていた。
+  const sorted = list.slice().sort((a, b) => (isoOf(a) ?? 0) - (isoOf(b) ?? 0));
+  const session = sessionOf(sorted);
+
+  if (!Number.isFinite(sinceMs) || !Number.isFinite(nowMs)) return incomplete(win, "bad-window", tail, session);
+  if (o?.reachedStart === false) return incomplete(win, "scan-budget", tail, session);
+  if (list.length > DIGEST_MAX_RECORDS) return incomplete(win, "too-many-records", tail, session);
 
   const counts = { user: 0, assistant: 0, tool: 0 };
   const toolN = new Map();
@@ -106,7 +112,6 @@ export function digestOf(records, o) {
   let sawUndated = false;
   let firstAt = null;
 
-  const sorted = list.slice().sort((a, b) => (isoOf(a) ?? 0) - (isoOf(b) ?? 0));
   for (const rec of sorted) {
     if (!rec || typeof rec !== "object") continue;
     const at = isoOf(rec);
@@ -169,9 +174,12 @@ export function digestOf(records, o) {
     //   今まで何も出ていなかった。**最新のレコードの値**を採る —— 途中で `/model` を
     //   切り替えた会話では古い行が別のモデルを名乗るので、頭の値では嘘になる。
     //   ★無い物は無いと言う(`null`)。0 件の窓や古い版の転写には項目自体が無い。
-    session: sessionOf(sorted),
+    session,
   };
 }
+
+/** 帯に出す文脈の天井。之を超える数は転写の誤り(か細工)であって文脈ではない。 */
+export const MAX_CONTEXT_TOKENS = 1_000_000_000;
 
 /// 転写の最新レコードから、会話の実行環境を拾う。**後ろから前へ**見て、初めて値を持つ
 /// レコードの物を採る(最後の 1 件がメタ行で持たない事が普通に在る)。
@@ -183,27 +191,57 @@ function sessionOf(sorted) {
     if (model === null && typeof r?.message?.model === "string") model = r.message.model;
     if (gitBranch === null && typeof r.gitBranch === "string") gitBranch = r.gitBranch;
     if (version === null && typeof r.version === "string") version = r.version;
-    if (contextTokens === null) contextTokens = contextTokensOf(r?.message?.usage);
+    if (contextTokens === null) contextTokens = contextTokensOfRecord(r);
     if (model !== null && gitBranch !== null && version !== null && contextTokens !== null) break;
   }
   return { model, gitBranch, version, contextTokens };
 }
 
-/// 直近の応答が**どれだけの文脈を抱えて**返されたか(2026-09-03、対照表 #14-16 の残り)。
-/// 転写の assistant レコードは `message.usage` に `input_tokens` / `cache_creation_input_tokens` /
-/// `cache_read_input_tokens` を持つ(friday の実転写で確認)。其の 3 つの和 = 其の応答の
-/// **プロンプト全体の大きさ** = Claude Code の `/context` が出す「今の文脈」に相当する。
-/// ★`output_tokens` は足さない —— 出力は文脈ではない(次の turn で文脈に**なる**が、其れは
-///   次の usage が数える)。★累計はしない —— 電話が知りたいのは「今どれだけ重いか」で、
-///   compact で減った事も其のまま出るべき(累計は減らない)。
-/// ★数が 1 つも無ければ null(`usage` 自体が無い古い版や、usage を持たない行)。
-function contextTokensOf(usage) {
+/// 直近の要求が**どれだけの文脈を抱えて**送られたか(2026-09-03、対照表 #14-16 の残り)。
+///
+/// 出所は 2 種(後ろから見て先に当たった方):
+///   - assistant レコードの `message.usage` の `input_tokens` / `cache_creation_input_tokens` /
+///     `cache_read_input_tokens` の和 = **其の応答を作った要求のプロンプト全体**。
+///   - `type:"system"` / `subtype:"compact_boundary"` の `compactMetadata.postTokens` =
+///     **compaction 直後の文脈**。之が無いと、compact の後 次の応答が来るまで pre-compact の
+///     巨大な値(実転写で 100 万)を名乗り続ける(Codex #3 の 1)。
+///
+/// ★意味は「直近の要求の入力の大きさ」で、`/context` の現在値とは **1 turn 遅れ**
+///   (最終応答の出力と其の後の tool result は次の要求で数えられる)。帯の目的は「今どれだけ
+///   重いか」の目安なので其れで足りる。綴り(`ctx`)を変えるかは表示語の裁定。
+/// ★`output_tokens` は足さない。★累計はしない(compact で減った事が其のまま出るべき)。
+/// ★usage の検証は fail-closed(Codex #3 の 3): assistant 以外の行の usage は読まない、
+///   3 項は在れば非負の safe integer でなければ其の usage ごと無効、全ゼロも無効(実転写に
+///   全ゼロ行と重複行が在り、有効な 0 として走査を止めると古い正しい値に届かない)、
+///   和は `MAX_CONTEXT_TOKENS` 以下。無効なら null = 走査は前へ続く。
+function contextTokensOfRecord(r) {
+  if (r.type === "system" && r.subtype === "compact_boundary") {
+    const post = r?.compactMetadata?.postTokens;
+    return validTokens(post) && post > 0 ? post : null;
+  }
+  const isAssistant = r.type === "assistant" || r?.message?.role === "assistant";
+  if (!isAssistant) return null;
+  return contextTokensOf(r?.message?.usage);
+}
+
+function validTokens(v) {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 && v <= MAX_CONTEXT_TOKENS;
+}
+
+/** usage の入力 3 種の和。1 つでも不正なら null(部分和を出さない)。全ゼロも null。 */
+export function contextTokensOf(usage) {
   if (!usage || typeof usage !== "object") return null;
-  const parts = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
-    .map((k) => usage[k])
-    .filter((v) => typeof v === "number" && Number.isFinite(v) && v >= 0);
-  if (parts.length === 0) return null;
-  return parts.reduce((a, b) => a + b, 0);
+  const keys = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"];
+  if (!validTokens(usage.input_tokens)) return null; // 入力 token の欄が無い usage は usage ではない
+  let sum = 0;
+  for (const k of keys) {
+    const v = usage[k];
+    if (v === undefined) continue;            // cache の欄は古い版に無い事が在る = 0 として扱う
+    if (!validTokens(v)) return null;         // 在るのに不正 = 其の usage ごと信じない
+    sum += v;
+  }
+  if (sum === 0 || sum > MAX_CONTEXT_TOKENS) return null;
+  return sum;
 }
 
 /** 窓の中で最後に喋った内容。**不完全でも返す**(後方走査なので末尾は読めている)。 */
@@ -225,7 +263,7 @@ function lastAssistantOf(list, sinceMs, nowMs) {
 // ★`session` は不完全な時も**項目として在る**(既定は全部 null)。電話の復号は
 //   「項目が無い」と「値が null」を同じに扱うが、線の形が読めた/読めないで変わると
 //   `wire-shape-capture` が別形として数える。形は 1 つに保つ。
-function incomplete(win, reason, tail, session = { model: null, gitBranch: null, version: null }) {
+function incomplete(win, reason, tail, session = { model: null, gitBranch: null, version: null, contextTokens: null }) {
   return {
     session,
     complete: false,

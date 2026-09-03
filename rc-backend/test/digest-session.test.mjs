@@ -100,10 +100,82 @@ test("★usage の無い最後の行を跨いで、その前の usage を拾う(
   assert.equal(d.session.contextTokens, 303);
 });
 
-test("★usage が無ければ null / 欄が一部欠けても在る物だけ足す / 数でない物は無視", () => {
-  assert.equal(digestOf([rec(5), rec(3)], { nowMs: NOW, sinceMs: NOW - 60 * 60_000 }).session.contextTokens, null);
+test("★usage が無ければ null / cache の欄が無いのは 0 扱い / 在るのに不正なら其の usage ごと null(部分和を出さない)", () => {
+  const W = { nowMs: NOW, sinceMs: NOW - 60 * 60_000 };
+  assert.equal(digestOf([rec(5), rec(3)], W).session.contextTokens, null);
   const partial = [rec(3, { message: { usage: { input_tokens: 7, cache_read_input_tokens: 5 } } })];
-  assert.equal(digestOf(partial, { nowMs: NOW, sinceMs: NOW - 60 * 60_000 }).session.contextTokens, 12);
-  const junk = [rec(3, { message: { usage: { input_tokens: "7", cache_read_input_tokens: -1, cache_creation_input_tokens: NaN } } })];
-  assert.equal(digestOf(junk, { nowMs: NOW, sinceMs: NOW - 60 * 60_000 }).session.contextTokens, null);
+  assert.equal(digestOf(partial, W).session.contextTokens, 12, "cache_creation が無い古い版の usage");
+  // ★Codex #3 の 3: `{input_tokens:-1, cache_read:100}` を 100 と出していた(負を捨てて残りを足す)
+  const negative = [rec(3, { message: { usage: { input_tokens: -1, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 } } })];
+  assert.equal(digestOf(negative, W).session.contextTokens, null, "負の欄を捨てて部分和を出している");
+  // ★cache 側が負の時も同じ(input_tokens の門だけで守ったつもりになる実装を落とす。変異 M5 が
+  //   之の無い版をすり抜けた、2026-09-03)
+  const cacheNegative = [rec(3, { message: { usage: { input_tokens: 5, cache_read_input_tokens: -1, cache_creation_input_tokens: 10 } } })];
+  assert.equal(digestOf(cacheNegative, W).session.contextTokens, null, "cache の負の欄を捨てて 15 を出している");
+  const junk = [rec(3, { message: { usage: { input_tokens: "7", cache_read_input_tokens: 1 } } })];
+  assert.equal(digestOf(junk, W).session.contextTokens, null, "input_tokens が文字列");
+  const noInput = [rec(3, { message: { usage: { cache_read_input_tokens: 100 } } })];
+  assert.equal(digestOf(noInput, W).session.contextTokens, null, "input_tokens の欄が無い物は usage ではない");
+  const huge = [rec(3, { message: { usage: { input_tokens: 1e308, cache_read_input_tokens: 1 } } })];
+  assert.equal(digestOf(huge, W).session.contextTokens, null, "1e308 が通ると Infinity になる");
+  const unsafe = [rec(3, { message: { usage: { input_tokens: Number.MAX_SAFE_INTEGER, cache_read_input_tokens: 1 } } })];
+  assert.equal(digestOf(unsafe, W).session.contextTokens, null, "safe integer の外");
+});
+
+test("★全ゼロの usage は無効 = 走査を止めず、其の前の正しい値を採る(実転写に全ゼロ行と重複行が在る)", () => {
+  const W = { nowMs: NOW, sinceMs: NOW - 60 * 60_000 };
+  const list = [
+    rec(30, { message: { usage: usage(2, 27_124, 11_591) } }),
+    rec(10, { message: { usage: usage(0, 0, 0, 0) } }),
+  ];
+  assert.equal(digestOf(list, W).session.contextTokens, 38_717);
+  // 錨: 全ゼロしか無ければ null(0 を「軽い」と描かない)
+  assert.equal(digestOf([rec(10, { message: { usage: usage(0, 0, 0, 0) } })], W).session.contextTokens, null);
+});
+
+test("★assistant 以外の行の usage は読まない(後発の任意レコードに勝たせない)", () => {
+  const W = { nowMs: NOW, sinceMs: NOW - 60 * 60_000 };
+  const list = [
+    rec(30, { message: { usage: usage(2, 27_124, 11_591) } }),
+    { type: "user", timestamp: at(10), message: { role: "user", content: "q", usage: usage(9, 9, 9) } },
+    { type: "queue-operation", timestamp: at(5), message: { usage: usage(1, 1, 1) } },
+  ];
+  assert.equal(digestOf(list, W).session.contextTokens, 38_717);
+});
+
+test("★★compaction の境界(`compact_boundary` の postTokens)が最新なら其れを採る(pre-compact の巨大値を名乗り続けない)", () => {
+  const W = { nowMs: NOW, sinceMs: NOW - 60 * 60_000 };
+  // 実転写の形: {"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"auto","preTokens":1000296,"postTokens":29023,...}}
+  const boundary = (minAgo, post) => ({
+    type: "system", subtype: "compact_boundary", timestamp: at(minAgo), content: "Conversation compacted", level: "info",
+    compactMetadata: { trigger: "auto", preTokens: 1_000_296, postTokens: post, cumulativeDroppedTokens: 971_273 },
+  });
+  const list = [
+    rec(30, { message: { usage: usage(296, 900_000, 100_000) } }), // compact 前の巨大な要求
+    boundary(10, 29_023),
+  ];
+  assert.equal(digestOf(list, W).session.contextTokens, 29_023);
+  // 境界の後に新しい応答が来れば、其の usage が勝つ(境界は「其の時点」の値)
+  const after = [...list, rec(5, { message: { usage: usage(3, 20_000, 12_000) } })];
+  assert.equal(digestOf(after, W).session.contextTokens, 32_003);
+  // 境界の postTokens が壊れていれば(0 / 負 / 文字列)、境界は跨いで前の値を採る
+  for (const bad of [0, -1, "29023"]) {
+    assert.equal(digestOf([rec(30, { message: { usage: usage(1, 1, 1) } }), boundary(10, bad)], W).session.contextTokens, 3, `postTokens=${bad}`);
+  }
+});
+
+test("★不完全な digest(scan-budget / too-many-records)でも session facts は出て、`contextTokens` の鍵が在る(Codex #3 の 2)", () => {
+  const W = { nowMs: NOW, sinceMs: NOW - 60 * 60_000 };
+  const list = [rec(10, { message: { model: "claude-opus-5", usage: usage(2, 27_124, 11_591) }, top: { gitBranch: "main" } })];
+  const budget = digestOf(list, { ...W, reachedStart: false });
+  assert.equal(budget.complete, false);
+  assert.equal(budget.incompleteReason, "scan-budget");
+  assert.equal(budget.session.model, "claude-opus-5");
+  assert.equal(budget.session.gitBranch, "main");
+  assert.equal(budget.session.contextTokens, 38_717, "★末尾は読めているのに facts を捨てている");
+  // 鍵の形は完全な時と同じ(電話の Decodable と `wire-key-agreement` が同じ鍵を見る)
+  const complete = digestOf(list, W);
+  assert.deepEqual(Object.keys(budget.session).sort(), Object.keys(complete.session).sort());
+  assert.ok("contextTokens" in digestOf([], { ...W, reachedStart: false }).session, "既定の session に鍵が無い");
+  assert.ok("contextTokens" in digestOf([], { nowMs: NaN, sinceMs: NaN }).session, "bad-window の既定にも鍵");
 });
