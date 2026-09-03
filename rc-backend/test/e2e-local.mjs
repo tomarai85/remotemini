@@ -1154,6 +1154,11 @@ try {
     // GET 以外は此の分岐に落ちない(読むだけの道 = 書く動詞を受け付けない)。
     const drp = await fetch(`${B}/api/sessions/${SID_DIFF}/diff`, { method: "POST", headers: H });
     check("diff: POST は通らない(読むだけの道)", drp.status !== 200, `status=${drp.status}`);
+    // ★同じ会話への連射は合流して全部 200(2026-09-03、順番待ちの上限を足しても同じ cwd は
+    //   合流するので busy にならない)。之が 503 になる実装 = 合流が壊れている。
+    const burst = await Promise.all(Array.from({ length: 12 }, () => fetch(`${B}/api/sessions/${SID_DIFF}/diff`, { headers: H })));
+    check("★diff: 同じ会話への 12 連射は合流して全部 200", burst.every((x) => x.status === 200),
+      burst.map((x) => x.status).join(","));
 
     const nr = await fetch(`${B}/api/sessions/${SID_DIFF_NOTREPO}/diff`, { headers: H });
     const nj = await nr.json();

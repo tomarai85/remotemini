@@ -55,6 +55,15 @@ struct DiffClient: DiffFetching {
                 return .failure(.contractViolation(ResponseContractViolation(status: 404, code: code)))
             }
             return .failure(.notFound)
+        case 503:
+            // ★机が混んでいる(順番待ちが一杯、2026-09-03)。本文は普段の封筒に `reason: "busy"` を
+            //   載せた物なので、**読めない状態**として画面に出す(見出し「The desk is busy」+ 引いて
+            //   撃ち直す)。`unreachable` に丸めると「机が落ちた」の顔になり、人は再起動を疑う。
+            //   本文が封筒の形でなければ、それは此処で想定した 503 ではない = 従来通り unreachable。
+            if let busy = try? JSONDecoder().decode(SessionDiffBody.self, from: data), busy.reason == "busy" {
+                return .success(busy)
+            }
+            return .failure(.unreachable)
         default:
             return .failure(.unreachable)
         }
