@@ -184,6 +184,17 @@ d=$(mk c22c); printf 'clean\n' > "$d/f.md"
 git -C "$d" add -A; git -C "$d" commit -qm "fixture uses rc-fixture-usr@example.com"
 out=$(run "$d"); chk "C22c commit message に伏字だけ -> 緑" 0 $? "なし" - "$out"
 
+# C23 **author の identity** に本物のアドレス。blob でも message でもない 3 つ目の層(予行 3 回目で発見:
+#     blob 0・message 0 の後に author に個人アドレスが 12 commit)。木も message も綺麗にしておく。
+d=$(mk c23); printf 'clean\n' > "$d/f.md"
+git -C "$d" add -A; git -C "$d" -c user.email="$REAL_MAIL" -c user.name="real person" commit -qm c
+out=$(run "$d"); chk "C23 author にだけ本物のアドレス -> 赤・名指し" 1 $? "$REAL_MAIL" - "$out"
+
+# C23b 緑の対照: GitHub の noreply identity(公開用に発行される物)は拾わない。
+d=$(mk c23b); printf 'clean\n' > "$d/f.md"
+git -C "$d" add -A; git -C "$d" -c user.email="zz@users.noreply.github.com" -c user.name=zz commit -qm c
+out=$(run "$d"); chk "C23b author が GitHub noreply -> 緑" 0 $? "なし" - "$out"
+
 # ---- 段ごとの生存確認 -----------------------------------------------------
 
 # C14 ★**作業ツリー段にしか捕まえられない**形。追跡ファイルを綺麗な状態で commit し、

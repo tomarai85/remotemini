@@ -49,6 +49,24 @@ A control-writing mistake on the way: my first draft reused the fixture director
 old repo inherited my commit and its "working tree only" case turned red for a reason unrelated to the checker.
 Renumbered to C22; the existing C14 is unchanged.
 
+## Third hole: author and committer identities
+
+Rehearsal three: blobs 0, messages 0, but 12 commits were authored with the personal address. Neither `--replace-text`
+nor `--replace-message` touches identities, and the checker had not looked at them either.
+
+Fix, both layers:
+- `.harness/publish-public.sh` builds a mailmap at run time from the clone's own history (every identity that is neither
+  a GitHub noreply nor an example address is folded into the most frequent noreply identity) and passes it to
+  `--mailmap`. The same identities' local parts (8+ characters) become run-time redaction rules, because the bare handle
+  also appeared once in a commit message. No real value enters a tracked file.
+- `rc-backend/tools/check-no-pii.sh` feeds author and committer identities into the history scan; GitHub noreply
+  addresses are excluded in both the checker and the mail rule.
+
+Controls: C23 author with a real-looking address on a clean tree -> red and named; C23b GitHub noreply author -> green.
+
+Layers a public push carries, and which tool covers each: blobs (replace-text, git grep), commit messages
+(replace-message, git log), identities (mailmap, git log). A gate that reads one layer says nothing about the others.
+
 ## Publish pipeline
 
 `.harness/publish-public.sh`: sandbox clone -> `git filter-repo --replace-text` (rules + this machine's hostname added at run time) ->
