@@ -99,7 +99,10 @@ test("履歴: user/assistant のテキスト + tool_use は要約1行、tail か
   }));
   lines.push(L({ type: "user", message: { content: [{ type: "text", text: "質問2" }] } }));
   const h = extractHistory(lines.join("\n"), 10);
-  assert.deepEqual(h, [
+  // 錨(対照表 #3)= `<行の byte 位置>:<行内の番号>`。全読みでも付く(有界読みと同じ答えになる為)。
+  assert.deepEqual(h.map((e) => e.anchor), ["0:0", `${Buffer.byteLength(lines[0]) + 1}:0`, `${Buffer.byteLength(lines[0]) + 1}:1`,
+    `${Buffer.byteLength(lines[0]) + Buffer.byteLength(lines[1]) + 2}:0`]);
+  assert.deepEqual(h.map(({ anchor, ...e }) => e), [
     { role: "user", text: "質問1" },
     { role: "assistant", text: "回答1" },
     { role: "tool", text: "⚙ Bash" },

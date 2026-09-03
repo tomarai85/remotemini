@@ -959,7 +959,12 @@ try {
   //   正しいのに検査だけが赤い形。落とす対象を `display` に限るのは、迷子の欄が他に生えたら
   //   ここで捕まえ続ける為。`display` の中身は 13-D が**引数まで**測るので、此処で一緒に
   //   書き写すと同じ期待値が2箇所に増えて、片方が必ず古くなる。
-  const histShape = (hist.history || []).map(({ display, ...rest }) => rest);
+  // ★`anchor`(2026-09-03、対照表 #3)も落とす —— 値は行の byte 位置で fixture の本文長に依存する。
+  //   欄そのものは直下で別に測る(全項目に在り、形が `位置:番号`)。
+  const histShape = (hist.history || []).map(({ display, anchor, ...rest }) => rest);
+  check("history entries carry an anchor (position:index) — parity #3",
+    (hist.history || []).length > 0 && (hist.history || []).every((e) => /^\d+:\d+$/.test(String(e.anchor))),
+    JSON.stringify((hist.history || []).map((e) => e.anchor)));
   check("history has user+assistant+tool", JSON.stringify(histShape) ===
     JSON.stringify([
       { role: "user", text: "最初の質問" },
@@ -986,6 +991,31 @@ try {
       sr.status === 200 && Array.isArray(sj.history), `status=${sr.status} ${JSON.stringify(sj).slice(0, 200)}`);
     // 綴りを**その字**で見る。電話の `TranscriptSearchResponse` が必須鍵にしているので、
     // どちらかが改名されれば電話は 200 を `.malformedBody` と読む(= 画面が壊れる)。
+    // ★錨(2026-09-03、対照表 #3): 探索の当たりは `anchor` と `fromEnd` を持ち、同じ錨が素の履歴に在る。
+    //   電話は `fromEnd + 1` まで limit を伸ばして其の項目を読み込み、`anchor` で其の行へ scroll する。
+    {
+      const hits = Array.isArray(sj.history) ? sj.history : [];
+      const okShape = hits.length > 0 && hits.every((h) => /^\d+:\d+$/.test(String(h.anchor)) && Number.isInteger(h.fromEnd) && h.fromEnd >= 0);
+      check("★錨: 探索の当たりは anchor(位置:番号)と fromEnd(末尾から何番目)を持つ", okShape,
+        JSON.stringify(hits.slice(0, 2)));
+      const deepest = hits.reduce((a, h) => (h.fromEnd > (a?.fromEnd ?? -1) ? h : a), null);
+      if (deepest) {
+        const hr = await fetch(`${B}/api/sessions/${SID1}/history?limit=${deepest.fromEnd + 1}`, { headers: H });
+        const hj = await hr.json();
+        const found = (hj.history || []).find((e) => e.anchor === deepest.anchor);
+        check("★錨: limit = fromEnd + 1 の履歴に同じ錨の項目が在り、本文が一致する",
+          hr.status === 200 && !!found && found.text === deepest.text && !("fromEnd" in found),
+          `fromEnd=${deepest.fromEnd} anchor=${deepest.anchor} found=${JSON.stringify(found || null).slice(0, 120)}`);
+        const anchors = (hj.history || []).map((e) => e.anchor);
+        check("錨: 履歴の錨は全項目に在り一意", anchors.length > 0 && anchors.every((a) => /^\d+:\d+$/.test(String(a))) && new Set(anchors).size === anchors.length,
+          `n=${anchors.length}`);
+        if (deepest.fromEnd > 0) {
+          const short = await (await fetch(`${B}/api/sessions/${SID1}/history?limit=${deepest.fromEnd}`, { headers: H })).json();
+          check("錨の対照: limit = fromEnd では其の項目は入らない(fromEnd が 1 ずれていない)",
+            !(short.history || []).some((e) => e.anchor === deepest.anchor), "");
+        }
+      }
+    }
     check("★探索: body が `matched` / `searchedToStart` を**その綴りで**持つ",
       typeof sj.matched === "number" && typeof sj.searchedToStart === "boolean",
       JSON.stringify(sj).slice(0, 200));

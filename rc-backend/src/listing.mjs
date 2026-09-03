@@ -62,6 +62,34 @@ export function tailLines(buf, atFileStart) {
 }
 
 /**
+ * `tailLines` と同じ切り方で、各行の **file 内の byte 位置** も返す(2026-09-03、対照表 #3)。
+ * `base` = `buf[0]` が file の何 byte 目か。位置は行の先頭 byte で、追記しか起きない jsonl では
+ * 一度付いた位置が変わらない = 電話が「其の行へ跳ぶ」為の錨に使える。
+ * 空行は `tailLines` と同じく飛ばす(位置も付けない)。
+ */
+export function tailLinesWithOffsets(buf, atFileStart, base) {
+  let start = 0;
+  if (!atFileStart) {
+    const nl = buf.indexOf(0x0a);
+    if (nl < 0) return { lines: [], offsets: [], carry: buf };
+    start = nl + 1;
+  }
+  const lines = [];
+  const offsets = [];
+  let i = start;
+  while (i < buf.length) {
+    let j = buf.indexOf(0x0a, i);
+    if (j < 0) j = buf.length;
+    if (j > i) {
+      lines.push(buf.subarray(i, j).toString("utf8"));
+      offsets.push(base + i);
+    }
+    i = j + 1;
+  }
+  return { lines, offsets, carry: buf.subarray(0, start) };
+}
+
+/**
  * 末尾側の行から一覧用の4項目を採る。**後ろから見て最初に当たった物が答え**
  * (jsonl は追記なので、後の行が新しい = 勝つ)。
  *
@@ -181,6 +209,7 @@ export function readLinesBackward(io, fd, o = {}) {
   // 各チャンクの先頭断片は捨てず、次(より手前)のチャンクの末尾に繋ぐ
   // — 境界を跨いだレコードを取りこぼさない為。
   let lines = [];
+  let offsets = []; // lines[i] の file 内 byte 位置(対照表 #3 の錨。`lines` と同じ並び)
   let scanned = 0;
   let reachedStart = false;
   let carry = Buffer.alloc(0);
@@ -195,9 +224,11 @@ export function readLinesBackward(io, fd, o = {}) {
     // 読めた量が足りない = 読んでいる最中に切り詰められた。持ち越しは pos+step から
     // 始まる物なので、ここで繋ぐと**存在しない並び**を作る。繋がず捨てる方が正しい。
     const buf = carry.length > 0 && raw.length === step ? Buffer.concat([raw, carry]) : raw;
-    const got = tailLines(buf, pos === 0);
+    // `buf` の先頭は file の `pos` byte 目(持ち越しは raw の**後ろ**に繋がるので base は変わらない)
+    const got = tailLinesWithOffsets(buf, pos === 0, pos);
     carry = got.carry;
     lines = got.lines.concat(lines); // 手前のチャンクほど前に積む = 古い順を保つ
+    offsets = got.offsets.concat(offsets);
     scanned += step;
     if (pos === 0) {
       reachedStart = true;
@@ -205,7 +236,7 @@ export function readLinesBackward(io, fd, o = {}) {
     }
     if (done(lines)) break;
   }
-  return { lines, reachedStart, scanned, size };
+  return { lines, offsets, reachedStart, scanned, size };
 }
 
 /** 本物の fs。test で偽物に差し替えられる様に、ここ以外に `readSync` を書かない。 */

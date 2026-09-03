@@ -140,6 +140,35 @@ final class ConversationViewModel: ObservableObject {
     /// -- 上端に置くと、既に読んだ行を見せて「押しても何も出ない」ように見える。
     @Published private(set) var earlierRevealToken = 0
 
+    /// 探索の当たりへ**跳ぶ**(対照表 #3、2026-09-03)。`earlierRevealToken` と同じ形: 札が進んだら View は
+    /// `jumpRevealIndex` の行を画面の**中央**へ置く。行の識別は既存の index のまま(`ForEach` の offset)。
+    @Published private(set) var jumpRevealToken = 0
+    @Published private(set) var jumpRevealIndex: Int?
+
+    enum JumpOutcome: Equatable {
+        /// 行は手元に在る(読み足した後を含む)。View が scroll する。
+        case revealed
+        /// 机が 1 回で返せる上限(500 項目)より奥。読み足しでは届かない。
+        case tooFar
+        /// 錨が無い当たり(古い机)か、読み足しても其の錨が来なかった。
+        case notFound
+        case failed(String)
+
+        var text: String {
+            switch self {
+            case .revealed:  return ""
+            case .tooFar:    return "That match is further back than the phone can load."
+            case .notFound:  return "Couldn't find that line in the transcript."
+            case .failed(let t): return t
+            }
+        }
+    }
+
+    /// 机が 1 回の `/history` で返す上限(`server.mjs` の `Math.min(limit, 500)`)。
+    static let deskHistoryLimitCeiling = 500
+    /// 跳んだ行の**手前**にも文脈が要る = 読み足す時の余白(項目数)。
+    static let jumpContextMargin = 20
+
     /// `earlierRevealToken` と対で書かれる。足す前に一番古かった行の、足した後の位置。
     ///
     /// `entries` は `MergeHistory.merge` の性質上つねに `history` を前置きにする
@@ -1523,6 +1552,45 @@ final class ConversationViewModel: ObservableObject {
     /// inside this (`@MainActor`) method, so a second call arriving before the first
     /// suspends sees it and returns immediately -- same guard shape as
     /// `ListViewModel.isRefreshing`.
+    /// 探索の当たりへ跳ぶ(対照表 #3)。
+    ///
+    /// 1. 錨が手元の項目に在る → 其の index を札で知らせる(読み足し無し)。
+    /// 2. 無ければ `fromEnd + 1 + 余白` まで limit を伸ばして履歴を読み直す(「以前を読む」と同じ道 =
+    ///    転写の窓は「末尾から N 件」のまま。別の窓の型を作らない = ライブの合流を壊さない)。
+    /// 3. 机の上限(500)より奥は `.tooFar`(正直に言う。黙って一番上を見せない)。
+    func jump(to hit: HistoryEntry) async -> JumpOutcome {
+        guard let anchor = hit.anchor else { return .notFound }
+        if let i = entries.firstIndex(where: { $0.anchor == anchor }) {
+            reveal(i)
+            return .revealed
+        }
+        guard let fromEnd = hit.fromEnd else { return .notFound }
+        let needed = fromEnd + 1 + Self.jumpContextMargin
+        guard fromEnd + 1 <= Self.deskHistoryLimitCeiling else { return .tooFar }
+        let limit = min(Self.deskHistoryLimitCeiling, max(currentLimit, needed))
+        let result = await client.fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: limit)
+        switch result {
+        case .success(let response):
+            currentLimit = limit
+            history = response.history
+            truncated = response.truncated
+            loadEarlierState = Self.resolveLoadEarlierState(truncated: truncated, currentLimit: currentLimit, advanced: true)
+            guard let i = entries.firstIndex(where: { $0.anchor == anchor }) else { return .notFound }
+            reveal(i)
+            return .revealed
+        case .failure(.unauthorized):
+            onUnauthorized()
+            return .failed(NewSessionOutcome.unauthorized.text)
+        case .failure:
+            return .failed(NewSessionOutcome.unreachable.text)
+        }
+    }
+
+    private func reveal(_ index: Int) {
+        jumpRevealIndex = index
+        jumpRevealToken += 1
+    }
+
     func loadEarlier() async {
         guard !isFetchingEarlier else { return }
         guard loadEarlierState == .available || loadEarlierState == .stalledRetry else { return }

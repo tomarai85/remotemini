@@ -75,7 +75,10 @@ test("★止める条件は行数でなく項目数(項目を生まない行が�
 test("★1レコードが複数項目でも数え違えない(本文 + 道具2つ = 3項目)", () => {
   withFile(user("お願い") + asstTool("やります", "Read", "Bash"), (p) => {
     const r = readHistoryFromPath(p, 3, { chunk: 64 });
-    assert.deepEqual(r.history, [
+    // 錨(対照表 #3)は行の位置 + 行内の番号。3 項目とも同じ行(1 レコード)なので位置が同じで番号が違う。
+    assert.ok(r.history.every((e) => /^\d+:\d+$/.test(e.anchor)), JSON.stringify(r.history));
+    assert.equal(new Set(r.history.map((e) => e.anchor.split(":")[0])).size, 1, "同じ 1 行の項目は同じ位置");
+    assert.deepEqual(r.history.map(({ anchor, ...e }) => e), [
       { role: "user", text: "お願い" },
       { role: "assistant", text: "やります" },
       { role: "tool", text: "⚙ Read" },

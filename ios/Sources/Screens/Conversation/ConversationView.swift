@@ -239,6 +239,19 @@ struct ConversationView: View {
     ///   文字だけ消えて面が残る / 文字を全部消しただけで面が畳まれる、の 2 通りが
     ///   同じ式から出てしまう。畳むのは利用者が畳んだ時だけ。
     @State private var isSearchPresented = false
+    /// 探索の当たりへ跳べなかった時の一文(対照表 #3)。跳べた時は面を閉じるので出ない。
+    @State private var jumpNotice: String?
+
+    /// 探索の当たりへ跳ぶ。跳べたら探索の面を閉じる(転写の其の行が中央に来る)。
+    private func jump(to entry: HistoryEntry) async {
+        let outcome = await viewModel.jump(to: entry)
+        if outcome == .revealed {
+            jumpNotice = nil
+            isSearchPresented = false
+        } else {
+            jumpNotice = outcome.text
+        }
+    }
 
     var body: some View {
         content
@@ -582,6 +595,13 @@ struct ConversationView: View {
                             guard let index = viewModel.earlierRevealIndex else { return }
                             proxy.scrollTo(index, anchor: .bottom)
                         }
+                        .onChange(of: viewModel.jumpRevealToken) { _, _ in
+                            // 探索の当たりへ跳ぶ(対照表 #3)。行を画面の**中央**に置く = 前後の文脈が
+                            // 両方見える。着地の補正はここでも終える(下端へ引き戻さない)。
+                            initialLandingPending = false
+                            guard let index = viewModel.jumpRevealIndex else { return }
+                            withAnimation { proxy.scrollTo(index, anchor: .center) }
+                        }
                     }
                 }
                 // ★探索が有効な間は**描かない**(→ spec §2-d)。
@@ -758,25 +778,41 @@ struct ConversationView: View {
         if case .results(let r) = viewModel.searchState {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    // ★行は**押せない**(→ spec §5)。押せる見た目も出さない。
-                    //   机は一致の位置を返しておらず(`scanned` も offset も線に無い)、
-                    //   `HistoryEntry` は id も時刻も持たない。本文で転写を引く手は
-                    //   在るが、当たるのは読み込み済みの窓の中だけ = **探索が要る場面
-                    //   ほど当たらない**上、同じ本文が複数在れば最初の 1 件に当たる。
-                    //   跳び先が間違っている事の在る UI は、跳べない UI より悪い。
+                    // ★行は**押せる**様になった(2026-09-03、対照表 #3)。spec §5 の「押せない」は
+                    //   机が一致の位置を返さなかった時の判断で、机は今 `anchor`(行の byte 位置)と
+                    //   `fromEnd`(末尾から何番目か)を返す。本文で転写を引くのではなく錨で引くので、
+                    //   同じ本文が複数在っても其の行に当たる。錨の無い当たり(古い机)は押せない —— 跳び先が
+                    //   間違っている事の在る UI は、跳べない UI より悪い、は今も変わらない。
                     //   ★**行を短く切らない**(`lineLimit` を付けない)。付けると
                     //     一致箇所が見えている範囲の外に在る行が「誤検出」に見える。
                     ForEach(Array(r.rows.enumerated()), id: \.offset) { i, entry in
                         // ★当たり語を渡す(対照表 #42)。`accessibilityValue` は検査の為の印: 塗られた行は
                         //   "highlighted"、当たり語を含まない行(机の規則と食い違った時だけ起きる)は "plain"。
+                        // ★`Button` で包まない: 包むと本文の `Text` が Button の label に畳まれ、
+                        //   `staticTexts["line 155"]` の様な既存の錨(ConversationSearchUITests)が
+                        //   木から消える。`onTapGesture` なら木は前のまま = 泡の中の文字は文字のまま。
                         EntryBubble(entry: entry, highlight: r.query)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                guard entry.anchor != nil else { return }
+                                Task { await jump(to: entry) }
+                            }
                             .accessibilityElement(children: .contain)
+                            .accessibilityAddTraits(entry.anchor != nil ? .isButton : [])
                             .accessibilityIdentifier("conversation.search.hit.\(i)")
-                            .accessibilityValue(SearchHighlight.count(in: entry.text, of: r.query) > 0 ? "highlighted" : "plain")
+                        .accessibilityValue(SearchHighlight.count(in: entry.text, of: r.query) > 0 ? "highlighted" : "plain")
                     }
-                    // 出さない機能の理由を黙らない。
-                    Text("Results can't jump into the transcript yet — "
-                         + "the desk doesn't say where each match sits.")
+                    if let jumpNotice {
+                        Text(jumpNotice)
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .padding(.top, 4)
+                            .accessibilityIdentifier("conversation.search.jumpNotice")
+                    }
+                    // 出さない機能の理由を黙らない(錨の無い机の時)。錨が在れば使い方を 1 行。
+                    Text(r.rows.contains { $0.anchor != nil }
+                         ? "Tap a result to jump to that line."
+                         : "This desk doesn't say where each match sits, so results can't jump yet.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .padding(.top, 4)

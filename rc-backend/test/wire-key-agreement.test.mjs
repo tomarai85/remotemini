@@ -241,7 +241,11 @@ const CASES = {
   gapItem: [
     ["ring-overflow"], ["tail-attached"], ["cursor-too-long", 12], ["epoch-mismatch"],
   ],
-  withWho: [[ENTRIES[0]], [ENTRIES[1]], [{ role: "tool", text: "⚙ Bash" }], [null]],
+  // ★錨(2026-09-03、対照表 #3): 履歴の項目は `anchor`(行の byte 位置:行内番号)を持ち、探索の当たりは
+  //   更に `fromEnd`(末尾から何番目か)を持つ。**両方の枝**を通す(無い項目 = ライブ / 要約、在る項目 = 履歴 / 探索)。
+  withWho: [[ENTRIES[0]], [ENTRIES[1]], [{ role: "tool", text: "⚙ Bash" }], [null],
+    [{ role: "user", text: "with anchor", anchor: "5137:0" }],
+    [{ role: "assistant", text: "search hit", anchor: "5195:1", fromEnd: 12 }]],
   messageItem: [
     [{ entries: ENTRIES.map((e) => wire.withWho(e)), seq: 7 }],
     [{ event: { type: "assistant", text: "a" }, seq: 8 }],

@@ -143,7 +143,13 @@ struct HistoryFetchingFixture: HistoryFetching {
             let step = min(scanChunk, min(cursor, scanWindow - scanned))
             if step <= 0 { break }
             let lower = cursor - step
-            matches = all[lower..<cursor].filter { $0.text.lowercased().contains(needle) } + matches
+            // 当たりには `fromEnd`(末尾から何番目か、最新 = 0)を付ける = 机の `searchHistoryFromPath` と同じ。
+            let slice = all[lower..<cursor].enumerated().compactMap { (i, e) -> HistoryEntry? in
+                guard e.text.lowercased().contains(needle) else { return nil }
+                return HistoryEntry(role: e.role, text: e.text, display: e.display, anchor: e.anchor,
+                                    fromEnd: all.count - 1 - (lower + i))
+            }
+            matches = slice + matches
             cursor = lower
             scanned += step
             if cursor == 0 { reachedStart = true; break }
@@ -173,7 +179,9 @@ struct HistoryFetchingFixture: HistoryFetching {
         return HistoryEntry(
             role: role,
             text: String(format: "line %03d", n),
-            display: .init(who: role == .user ? "Tom" : "Claude")
+            display: .init(who: role == .user ? "Tom" : "Claude"),
+            // 錨(対照表 #3): 机なら行の byte 位置。作り物では行番号 × 100 = 一意で単調(机と同じ性質)。
+            anchor: "\(n * 100):0"
         )
     }
 
