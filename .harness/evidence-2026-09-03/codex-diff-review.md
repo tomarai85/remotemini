@@ -43,4 +43,6 @@ Clean(Codex の言): `core.pager` / `diff.external` / textconv は正しく無�
 | 2 | `.git` symlink → `unsafe_repo`(git を撃たない) | 偽 lstat + 本物の symlink repo。`--work-tree` 明示と cwd 正規化は未(註) |
 | 7 | 上の全部 | 変異 5 種 全部 赤 |
 
-未着手: 4 の `AbortSignal`(切断で子を止める)と 503、2 の `--git-dir` / `--work-tree` 明示、`.gitattributes` の filter。
+同日 午後(loop の REPLAN で起票): 4 の残り = 待機中の abort(切断で順番待ちから外れる。走り始めた git は
+`timeoutMs` に任せる)と待ち行列の上限 8 → 503 `busy` を入れた。未着手: 2 の `--git-dir` / `--work-tree`
+明示、`.gitattributes` の filter(queue のタスク `diff-git-pins-its-own-repo-paths`)。
