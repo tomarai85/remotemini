@@ -30,6 +30,25 @@ Negative control, same file against the previous checker: C13b and C13c go NG, C
 
 The other residual my first grep reported (539 hits of `100.128.0.1`) is outside CGNAT 100.64/10 and is a deliberate negative fixture, not a leak.
 
+## Second hole: commit messages
+
+After the blobs came out clean (0 residual for every identifier across 559 commits), 17 commit messages still carried
+the family reference, the client name, tailnet names and tailnet IPs. `git filter-repo --replace-text` rewrites blobs only,
+and the PII checker used `git grep`, which also reads blobs only. So neither layer had ever looked at messages.
+
+Fix, both layers:
+- `.harness/publish-public.sh` passes the same rules file to `--replace-message`.
+- `rc-backend/tools/check-no-pii.sh` reads every commit message (`git log --all`), prefixes each line with
+  `<sha>:(commit message):`, and feeds it into the same history scan; the hostname (type 3) scan reads messages too.
+  The Co-Authored-By trailer's organisation no-reply address is excluded in both the checker and the rule.
+
+Controls: C22 address only in a commit message -> red and named, C22b MagicDNS only in a message -> red type 2,
+C22c only a placeholder address in a message -> green. Negative control against the previous checker: C22 and C22b go NG.
+
+A control-writing mistake on the way: my first draft reused the fixture directory name of an existing control, so the
+old repo inherited my commit and its "working tree only" case turned red for a reason unrelated to the checker.
+Renumbered to C22; the existing C14 is unchanged.
+
 ## Publish pipeline
 
 `.harness/publish-public.sh`: sandbox clone -> `git filter-repo --replace-text` (rules + this machine's hostname added at run time) ->

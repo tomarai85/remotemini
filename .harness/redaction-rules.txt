@@ -1,4 +1,4 @@
-regex:[A-Za-z0-9._%+-]+@(?!example\.(com|net|org)\b)(?![A-Za-z0-9.-]+\.(example|invalid|test|localhost)\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}==>mail-redacted@example.invalid
+regex:[A-Za-z0-9._%+-]+@(?!example\.(com|net|org)\b)(?!anthropic\.com\b)(?![A-Za-z0-9.-]+\.(example|invalid|test|localhost)\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}==>mail-redacted@example.invalid
 regex:[A-Za-z0-9-]+\.tail[0-9a-z]+\.ts\.net==>desk.tailnet.example
 regex:100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}==>10.0.0.0
 client-a==>client-a

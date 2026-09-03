@@ -37,7 +37,9 @@ HOST_SELF="$(hostname -s 2>/dev/null || true)"
 if [ -n "$HOST_SELF" ] && [ "${#HOST_SELF}" -ge 6 ]; then
   printf 'regex:(?i)%s==>host-redacted\n' "$(printf '%s' "$HOST_SELF" | sed 's/[.[\*^$()+?{}|\\/]/\\&/g')" >> "$T/rules.txt"
 fi
-( cd "$T/clone" && git filter-repo --replace-text "$T/rules.txt" --force --quiet ) || { echo "filter-repo failed"; exit 2; }
+# ★`--replace-text` は blob だけ。commit message は `--replace-message`(同じ規則 file)で別に書き換える。
+#   2026-09-03 の予行: blob は 0 件になった後も message に 17 件(家族・取引先・tailnet 名・IP)残っていた。
+( cd "$T/clone" && git filter-repo --replace-text "$T/rules.txt" --replace-message "$T/rules.txt" --force --quiet ) || { echo "filter-repo failed"; exit 2; }
 echo "==> rewritten: $(git -C "$T/clone" rev-list --count HEAD) commits, HEAD $(git -C "$T/clone" rev-parse --short HEAD)"
 
 # 1. PII 検出器(作業木 + 履歴)。赤なら push しない

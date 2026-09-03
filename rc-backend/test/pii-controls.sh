@@ -167,6 +167,23 @@ d=$(mk c13d); printf 'tail -f app.log\ncocktail.tsx\nretail.ts\n' > "$d/f.md"
 git -C "$d" add -A; git -C "$d" commit -qm c
 out=$(run "$d"); chk "C13d tail の付く普通の語 -> 緑" 0 $? "なし" - "$out"
 
+# C22 **commit message** にだけ在るアドレス。push が運ぶのは blob だけでなく message も。
+#     2026-09-03 の公開写しの予行: blob を全部伏せた後も message に 17 件 残っていて、
+#     `git grep` しか使わない此の検査は其れを見ていなかった。木は綺麗な物だけ置く。
+d=$(mk c22); printf 'clean\n' > "$d/f.md"
+git -C "$d" add -A; git -C "$d" commit -qm "contact $REAL_MAIL for access"
+out=$(run "$d"); chk "C22 commit message にだけメール -> 赤・名指し" 1 $? "$REAL_MAIL" - "$out"
+
+# C22b 同じく message にだけ tailnet の名前。
+d=$(mk c22b); printf 'clean\n' > "$d/f.md"
+git -C "$d" add -A; git -C "$d" commit -qm "point the desk at $MAGIC"
+out=$(run "$d"); chk "C22b commit message にだけ MagicDNS -> 赤・種類2" 1 $? "種類2" - "$out"
+
+# C22c 緑の対照: message に伏字のアドレスだけ(example.com)-> 緑。message 走査が何でも拾わない事。
+d=$(mk c22c); printf 'clean\n' > "$d/f.md"
+git -C "$d" add -A; git -C "$d" commit -qm "fixture uses rc-fixture-usr@example.com"
+out=$(run "$d"); chk "C22c commit message に伏字だけ -> 緑" 0 $? "なし" - "$out"
+
 # ---- 段ごとの生存確認 -----------------------------------------------------
 
 # C14 ★**作業ツリー段にしか捕まえられない**形。追跡ファイルを綺麗な状態で commit し、
