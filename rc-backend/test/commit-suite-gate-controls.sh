@@ -110,5 +110,25 @@ out=$(run_live live_unknown); chk "G14 ★走行の有無を判定できない -
 mkfake live_no 1 'true'
 out=$(run_live live_no); chk "G15 陰性対照: 走行なし(丁度 1)なら一式まで進む" 0 $? "536/536 緑" "" "$out"
 
+# ── G16〜G17 ★★一式は `GIT_*` を剥いだ環境で走る ──────────────────────────
+#     2026-09-03 に踏んだ形。この門は pre-commit の中で走り、git が `GIT_DIR` /
+#     `GIT_INDEX_FILE` / `GIT_PREFIX` を子へ export している。一式の中の「本物の git」検査が
+#     其れを継いで `git init` を撃ち、temp repo のつもりで**本物の `.git/config`** を
+#     `bare = true` に書き換えた(主 worktree の `git status` が死んだ)。
+#     一式の子が `GIT_DIR` を見ない事を、fake の一式に「見えた値」を書かせて測る。
+mkfake envprobe 0 "printf '%s\n' \"\${GIT_DIR:-unset}\" > $SB/seen-git-dir; $GREEN"
+out=$(GIT_DIR=/nowhere/.git GIT_INDEX_FILE=/nowhere/index GIT_PREFIX= run_gate envprobe)
+chk "G16 ★hook の GIT_DIR が在っても一式は通る" 0 $? "536/536 緑" "" "$out"
+seen="$(cat "$SB/seen-git-dir" 2>/dev/null)"
+if [ "$seen" = "unset" ]; then echo "OK  G16b ★一式の子は GIT_DIR を見ない(剥いである)"; pass=$((pass+1));
+else echo "NG  G16b ★一式の子に GIT_DIR が漏れた: $seen"; fail=$((fail+1)); fi
+# ★陰性対照: 剥ぐのは `GIT_*` だけ。他の環境(PATH 等)は残る —— 之が無いと「環境を全部
+#   空にした」実装も G16b を通る(其れは npm も node も見付からない一式になる)。
+mkfake envprobe2 0 "printf '%s\n' \"\${RC_SUITE_PROBE:-unset}\" > $SB/seen-probe; $GREEN"
+out=$(RC_SUITE_PROBE=alive run_gate envprobe2)
+seen="$(cat "$SB/seen-probe" 2>/dev/null)"
+if [ "$seen" = "alive" ]; then echo "OK  G17 陰性対照: GIT_* 以外の環境は一式へ届く"; pass=$((pass+1));
+else echo "NG  G17 陰性対照: GIT_* 以外まで剥いでいる(見えた値: $seen)"; fail=$((fail+1)); fi
+
 echo "--- 合計: PASS $pass / FAIL $fail ---"
 [ "$fail" = 0 ]

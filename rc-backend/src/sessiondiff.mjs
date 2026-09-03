@@ -4,12 +4,23 @@
 // **何が変わったか**を返す —— ファイル単位に構造化した、読む為の形。
 //
 // ── 設計 ─────────────────────────────────────────────────────────────────
-// ★**読むだけ**。撃つ git は `diff` の 2 本だけで、書く動詞は 1 つも無い。
-//   さらに:
+// ★**読むだけ**。撃つ git は `diff` だけで(通常 2 本、器から溢れた時だけ `--numstat` が
+//   足される)、書く動詞は 1 つも無い。さらに:
 //     `--no-ext-diff` / `--no-textconv`
 //         repo の設定(`diff.external` / `textconv` フィルタ)は**任意のプログラムを
 //         走らせる口**。差分を読む為に、その repo が指定した実行ファイルを此の机で
 //         起動する道を残さない。読むだけ = 他人の設定で他人のコードを走らせない。
+//     `-c core.fsmonitor=false` / `--ignore-submodules=all`(2026-09-03、Codex #1)
+//         `core.fsmonitor=<path>` は `git diff` の index refresh で**実行される**(Codex が
+//         子プロセスで再現)。`-c` は repo 設定より強いので、其の口を閉じる。submodule の
+//         差分機構も同じ理由で切る(読みたいのは此の木だけ)。
+//     `GIT_*` の環境変数を渡さない(同日)
+//         `GIT_DIR` / `GIT_WORK_TREE` / `GIT_EXTERNAL_DIFF` / `GIT_CONFIG_*` が机の環境に
+//         居れば、cwd と違う木を読む・外部プログラムを走らせる。渡すのは此処で決めた
+//         2 つ(`LC_ALL` と `GIT_OPTIONAL_LOCKS`)だけ。
+//     `.git` が symlink なら読まない(同日、`unsafe_repo`)
+//         `.git` の行き先を差し替えると**別の dir を diff する**。worktree の `.git` は
+//         file(gitfile)であって symlink ではないので、Tom の木は之で止まらない。
 //     `GIT_OPTIONAL_LOCKS=0`
 //         `git diff` は既定で index を更新して書き戻す(= `.git/index.lock` を取る)。
 //         同じ作業木では Claude Code 本人と Tom の手が同時に git を叩いている。
@@ -17,6 +28,11 @@
 //     `LC_ALL=C`
 //         下の `notARepo()` が git の一文を読むので、言語を固定する。読まない形
 //         (`rev-parse` を先に撃つ)も在るが、それは往復が 1 本増える。
+//   ★残る口(塞いでいない、註として残す): `.gitattributes` の clean/process filter は
+//     作業木の diff で走る。`core.worktree` / config の include / alternates で木の外へ
+//     出る道も在る。cwd は Tom 自身の会話の cwd で、其処に敵対的な設定が在る =
+//     其の会話の agent が既に乗っ取られている状態なので、此処では defense-in-depth の
+//     安い所だけを入れた。
 //
 // ★**生の diff 文字列を丸ごと返さない**。電話は「ファイルの一覧 → その中の塊」で
 //   読むので、其の形に机で畳む。文字列のまま渡すと、色分けと横スクロールの為に
@@ -26,12 +42,25 @@
 //   どれに当たっても `truncated: true` を立てる。★数(`added` / `removed`)は
 //   **切る前の全文から**数える —— 本文を途中で止めても「幾ら変わったか」は嘘を
 //   吐かない。此の非対称は意図的で、電話は「+42 -18(表示は途中まで)」と言える。
+//   ★行の費用は **text の bytes + 1**(記号と改行の分)。空の追加行が 0 byte で
+//     天井をすり抜けない為(Codex #1 が 1 byte 上限で空行 10,000 本を通して見せた)。
+//   ★器から溢れた時(maxBuffer)は部分の stdout しか無いので、parse した数は下限に
+//     なる。其の時だけ `--numstat` を 1 本 足して数を**正確に**取り直す(出力は小さい)。
+//     `totalBytes` は読めた分の bytes = 溢れた時は下限(封筒の註に書いた)。
 //
 // ★読めない事は**異常ではなく状態**。cwd が無い / dir が消えた / git 管理外 /
-//   git が落ちた、の 4 つは `reason` を名乗って 200 で返す(一覧の実装と同じ判断)。
-//   例外を上へ投げると、電話は「会話が壊れた」と読む —— 実際には repo が無いだけ。
+//   git が落ちた / `.git` が symlink、は `reason` を名乗って 200 で返す(一覧の実装と
+//   同じ判断)。例外を上へ投げると、電話は「会話が壊れた」と読む —— 実際には repo が
+//   無いだけ。★index の側だけ落ちて**何も読めなかった**時も `reason` を名乗る
+//   (2026-09-03。以前は `files:[] reason:null truncated:true` で、切れた成功と見分けが
+//   付かなかった = Codex #1 の 5)。作業木の側が読めていれば其れは出し、切ったと言う。
+//
+// ★同時実行(2026-09-03、Codex #1 の 4)。同じ cwd への要求は**1 本に合流**し、
+//   全体で同時に走る git は `MAX_CONCURRENT` 本まで(残りは順番待ち)。電話が画面を
+//   連打しても、机で git が要求の数だけ増えない。
 import { execFile as nodeExecFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(nodeExecFile);
@@ -41,7 +70,7 @@ const execFileAsync = promisify(nodeExecFile);
  * 実在するので、行数で切ると天井が天井にならない。
  */
 export const DIFF_LIMITS = Object.freeze({
-  /** 1 ファイルの本文(hunk の行の text の合計)。之を超えたら其の file だけ切る。 */
+  /** 1 ファイルの本文(hunk の行の費用の合計)。之を超えたら其の file だけ切る。 */
   maxFileBytes: 64 * 1024,
   /** 全体の本文。之を超えたら以後の file は本文なしで並べる。 */
   maxTotalBytes: 256 * 1024,
@@ -52,6 +81,14 @@ export const DIFF_LIMITS = Object.freeze({
   /** git の出力を受ける器。之を超えたら部分の stdout を読んで `truncated` を立てる。 */
   maxBuffer: 8 * 1024 * 1024,
 });
+
+/** 同時に走らせる git の上限(全 cwd 合計)。残りは順番待ち。 */
+export const MAX_CONCURRENT = 2;
+
+/** 1 行の費用。text の bytes + 記号 1 byte。空行も 0 にならない。 */
+export function lineCost(text) {
+  return Buffer.byteLength(String(text ?? ""), "utf8") + 1;
+}
 
 /** `--- a/x` / `+++ b/x` から path を取る。`/dev/null` は null(新規 / 削除の側)。 */
 function pathFromMarker(line) {
@@ -80,19 +117,27 @@ function pathFromGitHeader(line) {
 /**
  * `git diff` の出力 1 本を、ファイル単位の構造へ畳む。**純関数**。
  *
+ * ★保持する本文は file ごとに `limits.maxFileBytes` まで(其れを超えた行は数えるだけで
+ *   持たない)。8 MiB の出力を丸ごと object にしてから切る形(Codex #1 の 3)を止める為。
+ *   数(`added` / `removed` / `bytes`)は**全部**数える。
+ *
  * @param {string} text  git の標準出力
  * @param {boolean} staged  index の側か(`--cached` で撃った物か)
+ * @param {object} [limits]  `maxFileBytes` だけ読む
  * @returns {Array<{path,staged,binary,added,removed,hunks,bytes}>}
  */
-export function parseDiff(text, staged) {
+export function parseDiff(text, staged, limits = DIFF_LIMITS) {
+  const keep = Number.isFinite(limits?.maxFileBytes) ? limits.maxFileBytes : DIFF_LIMITS.maxFileBytes;
   const files = [];
   let cur = null;
   let hunk = null;
+  let retained = 0; // 今の file で持っている本文の費用
 
   const closeFile = () => {
     if (cur) files.push(cur);
     cur = null;
     hunk = null;
+    retained = 0;
   };
 
   for (const line of String(text ?? "").split("\n")) {
@@ -135,27 +180,31 @@ export function parseDiff(text, staged) {
       continue;
     }
     if (!hunk) continue; // `index …` / `new file mode …` 等の頭書き
+    let entry = null;
     if (line.startsWith("+")) {
       cur.added += 1;
-      hunk.lines.push({ kind: "add", text: line.slice(1) });
+      entry = { kind: "add", text: line.slice(1) };
     } else if (line.startsWith("-")) {
       cur.removed += 1;
-      hunk.lines.push({ kind: "del", text: line.slice(1) });
+      entry = { kind: "del", text: line.slice(1) };
     } else if (line.startsWith(" ")) {
-      hunk.lines.push({ kind: "ctx", text: line.slice(1) });
+      entry = { kind: "ctx", text: line.slice(1) };
     } else if (line.startsWith("\\")) {
       // `\ No newline at end of file`。数には入れない(足しても引いてもいない)が、
       // 落とすと「最後の行に改行が無い」が電話から消える。文脈として運ぶ。
-      hunk.lines.push({ kind: "ctx", text: line });
-    } else if (line === "") {
-      // 出力の末尾。hunk の中の空行は git が必ず ` ` を頭に付けるので、
-      // 素の空行は本文ではない。
-      continue;
+      entry = { kind: "ctx", text: line };
     } else {
+      // 出力の末尾の素の空行など。hunk の中の空行は git が必ず ` ` を頭に付ける。
       continue;
     }
-    const last = hunk.lines[hunk.lines.length - 1];
-    cur.bytes += Buffer.byteLength(last.text, "utf8");
+    const cost = lineCost(entry.text);
+    cur.bytes += cost;
+    // ★持つのは天井まで。超えた行は数だけ(上で足した)。`capFiles` が f.bytes > 天井を
+    //   見て truncated を立てるので、此処で印は要らない。
+    if (retained + cost <= keep) {
+      retained += cost;
+      hunk.lines.push(entry);
+    }
   }
   closeFile();
   return files;
@@ -188,7 +237,7 @@ export function capFiles(files, limits = DIFF_LIMITS) {
       if (stop) break;
       const lines = [];
       for (const l of h.lines) {
-        const b = Buffer.byteLength(l.text, "utf8");
+        const b = lineCost(l.text);
         if (used + b > room) { stop = true; break; }
         used += b;
         lines.push(l);
@@ -207,23 +256,101 @@ export function notARepo(stderr) {
 }
 
 /**
+ * `git diff --numstat` の出力を `path -> {added, removed}` に畳む。**純関数**。
+ * 行の形は `<added>\t<removed>\t<path>`、2 進は `-\t-\t<path>`(数は持たない = null)。
+ * rename の `{a => b}` 形は `--numstat` では出ない(`-M` を渡していない)。
+ */
+export function parseNumstat(text) {
+  const out = new Map();
+  for (const line of String(text ?? "").split("\n")) {
+    const m = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
+    if (!m) continue;
+    const num = (s) => (s === "-" ? null : Number(s));
+    out.set(m[3], { added: num(m[1]), removed: num(m[2]) });
+  }
+  return out;
+}
+
+/** 机の環境から `GIT_*` を落とし、此処で決めた物だけ足す。 */
+function gitEnv(base = process.env) {
+  const env = {};
+  for (const [k, v] of Object.entries(base)) {
+    if (k.startsWith("GIT_")) continue;
+    env[k] = v;
+  }
+  env.LC_ALL = "C";
+  env.GIT_OPTIONAL_LOCKS = "0";
+  return env;
+}
+
+// ── 同時実行の抑え ────────────────────────────────────────────────────────
+const inflight = new Map(); // cwd -> Promise(同じ cwd は合流)
+let running = 0;
+const waiting = []; // 順番待ち(FIFO)
+
+function withSlot(fn) {
+  return new Promise((resolve, reject) => {
+    const go = () => {
+      running += 1;
+      Promise.resolve()
+        .then(fn)
+        .then(resolve, reject)
+        .finally(() => {
+          running -= 1;
+          const next = waiting.shift();
+          if (next) next();
+        });
+    };
+    if (running < MAX_CONCURRENT) go();
+    else waiting.push(go);
+  });
+}
+
+/** 検査用: 今 走っている本数と、順番待ちの本数。 */
+export function _inflight() {
+  return { running, waiting: waiting.length, keys: [...inflight.keys()] };
+}
+
+/**
  * 作業木の未コミットの差分を読む。**書く動詞を撃たない**。
  *
  * @param {string} cwd
  * @param {object} [o]
  * @param {Function} [o.exec]   `execFile` の promise 版(検査で差し替える)
  * @param {Function} [o.exists] dir の実在(同上)
+ * @param {Function} [o.lstat]  `.git` の正体を見る(同上)。無ければ「無い」と同じ扱い
  * @param {object}   [o.limits]
  * @returns {Promise<{files: Array, truncated: boolean, totalBytes: number, reason: string|null}>}
  */
 export async function readWorkingDiff(cwd, o = {}) {
-  const exec = o.exec ?? execFileAsync;
   const exists = o.exists ?? existsSync;
-  const limits = o.limits ?? DIFF_LIMITS;
   const empty = (reason) => ({ files: [], truncated: false, totalBytes: 0, reason });
 
   if (typeof cwd !== "string" || !cwd) return empty("no_cwd");
   if (!exists(cwd)) return empty("cwd_missing");
+
+  // ★同じ cwd への要求は合流する。鍵は cwd の文字列(正規化はしない —— 別の綴りは
+  //   別の要求で良い。合流は最適化であって正しさの条件ではない)。
+  const key = cwd;
+  if (inflight.has(key)) return inflight.get(key);
+  const p = withSlot(() => readWorkingDiffOnce(cwd, o)).finally(() => {
+    if (inflight.get(key) === p) inflight.delete(key);
+  });
+  inflight.set(key, p);
+  return p;
+}
+
+async function readWorkingDiffOnce(cwd, o) {
+  const exec = o.exec ?? execFileAsync;
+  const lstat = o.lstat ?? ((p) => { try { return lstatSync(p); } catch { return null; } });
+  const limits = o.limits ?? DIFF_LIMITS;
+  const empty = (reason) => ({ files: [], truncated: false, totalBytes: 0, reason });
+
+  // `.git` が symlink = 行き先を差し替えれば別の dir を diff させられる。読まない。
+  const dotGit = lstat(join(cwd, ".git"));
+  if (dotGit && typeof dotGit.isSymbolicLink === "function" && dotGit.isSymbolicLink()) {
+    return empty("unsafe_repo");
+  }
 
   const opts = {
     cwd,
@@ -231,13 +358,17 @@ export async function readWorkingDiff(cwd, o = {}) {
     timeout: limits.timeoutMs,
     maxBuffer: limits.maxBuffer,
     killSignal: "SIGKILL",
-    env: { ...process.env, LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0" },
+    env: gitEnv(),
   };
   // ★`-C cwd` ではなく `cwd:` で渡す。`-C` は「其の dir へ移ってから」で同じだが、
   //   dir が消えていた時の失敗が git の中で起きる(= 上の `cwd_missing` と
   //   区別が付かない一文になる)。此方なら spawn が ENOENT で落ちるので、
   //   境目が机の側に残る。
-  const base = ["--no-pager", "diff", "--no-color", "--no-ext-diff", "--no-textconv"];
+  // ★`-c` は subcommand より前。`core.fsmonitor=false` は repo 設定の値より強い。
+  const base = [
+    "-c", "core.fsmonitor=false",
+    "--no-pager", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all",
+  ];
 
   /** 1 本撃つ。切れた stdout も拾う(上限に当たった時に部分を捨てない為)。 */
   const run = async (args) => {
@@ -246,8 +377,11 @@ export async function readWorkingDiff(cwd, o = {}) {
       return { stdout: stdout ?? "", cut: false, reason: null };
     } catch (e) {
       const stdout = typeof e?.stdout === "string" ? e.stdout : "";
-      // 器から溢れた = 「読めなかった」ではなく「**多すぎた**」。部分を出して切ったと言う。
       if (String(e?.code) === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" || e?.code === "ENOBUFS") {
+        // 器から溢れた = 「読めなかった」ではなく「**多すぎた**」。部分を出して切ったと言う。
+        // ★溢れたのが stderr の側なら、それは git が大量に文句を言った = 失敗(stdout の
+        //   部分を差分として読まない)。
+        if (/stderr/i.test(String(e?.message ?? ""))) return { stdout: "", cut: false, reason: "git_failed" };
         return { stdout, cut: true, reason: null };
       }
       if (notARepo(e?.stderr)) return { stdout: "", cut: false, reason: "not_a_repo" };
@@ -262,13 +396,32 @@ export async function readWorkingDiff(cwd, o = {}) {
   const unstaged = await run(base);
   if (unstaged.reason) return empty(unstaged.reason);
   const staged = await run([...base, "--cached"]);
-  // 2 本目だけが落ちた時に 1 本目を捨てない。読めた側は出し、切った事を名乗る。
   const totalBytes =
     Buffer.byteLength(unstaged.stdout, "utf8") + Buffer.byteLength(staged.stdout, "utf8");
   const parsed = [
-    ...parseDiff(unstaged.stdout, false),
-    ...parseDiff(staged.stdout, true),
+    ...parseDiff(unstaged.stdout, false, limits),
+    ...parseDiff(staged.stdout, true, limits),
   ];
+  // ★index の側だけ落ちて、作業木の側にも何も無かった = 読めた物が 0。其れは「差分が無い」
+  //   ではなく「読めなかった」なので reason を名乗る(切れた成功と同じ形にしない)。
+  if (staged.reason && parsed.length === 0) return { ...empty(staged.reason), totalBytes };
+
+  // ★器から溢れた側は parse した数が下限でしかない。`--numstat` で数だけ取り直す
+  //   (出力は 1 file 1 行なので溢れない)。取れなければ parse の数のまま(下限)。
+  for (const side of [{ r: unstaged, cached: false }, { r: staged, cached: true }]) {
+    if (!side.r.cut) continue;
+    const ns = await run([...base, "--numstat", ...(side.cached ? ["--cached"] : [])]);
+    if (ns.reason || ns.cut) continue;
+    const counts = parseNumstat(ns.stdout);
+    for (const f of parsed) {
+      if (f.staged !== side.cached) continue;
+      const c = counts.get(f.path);
+      if (!c) continue;
+      if (c.added !== null) f.added = c.added;
+      if (c.removed !== null) f.removed = c.removed;
+    }
+  }
+
   const capped = capFiles(parsed, limits);
   return {
     files: capped.files,
