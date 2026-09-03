@@ -436,25 +436,45 @@ export function locateRepo(cwd, o = {}) {
   const realpath = o.realpath ?? ((p) => realpathSync(p));
   const lstat = o.lstat ?? ((p) => { try { return lstatSync(p); } catch { return null; } });
   const readFile = o.readFile ?? ((p) => readFileSync(p, "utf8"));
+  const isDir = (st) => Boolean(st && typeof st.isDirectory === "function" && st.isDirectory());
+  const isFile = (st) => Boolean(st && typeof st.isFile === "function" && st.isFile());
+  const isLink = (st) => Boolean(st && typeof st.isSymbolicLink === "function" && st.isSymbolicLink());
+  /** `dir` 自身が git の管理 dir か(bare repo / `.git` の中)。中から上へ遡って外側の repo を読まない。 */
+  const looksLikeGitDir = (d) => isFile(lstat(join(d, "HEAD"))) && isDir(lstat(join(d, "objects"))) && isDir(lstat(join(d, "refs")));
+
   let real;
   try { real = realpath(cwd); } catch { return { reason: "cwd_missing" }; }
   let dir = real;
-  for (let depth = 0; depth < 64; depth += 1) {
+  // root まで遡る(`dirname(dir) === dir` で必ず止まる。段数の上限は付けない = 深い repo を断らない)
+  for (;;) {
+    // ★cwd が bare repo や `.git/objects` の中なら、其れは作業木ではない。上へ遡ると**外側の repo** を
+    //   読む事になる(Codex #5 の 4)。読まない。
+    if (looksLikeGitDir(dir)) return { reason: "unsafe_repo" };
     const dotGit = join(dir, ".git");
     const st = lstat(dotGit);
     if (st) {
-      if (typeof st.isSymbolicLink === "function" && st.isSymbolicLink()) return { reason: "unsafe_repo" };
-      if (typeof st.isDirectory === "function" && st.isDirectory()) return { root: dir, gitDir: dotGit };
-      if (typeof st.isFile === "function" && st.isFile()) {
+      if (isLink(st)) return { reason: "unsafe_repo" };
+      if (isDir(st)) return { root: dir, gitDir: dotGit };
+      if (isFile(st)) {
+        // ★gitfile は git と同じ厳しさで読む(Codex #5 の 3): 1 MiB まで、`gitdir: <path>` の 1 行きっかり
+        //   (先頭にゴミが在る物は git も通さない)。行き先は「此の `.git` を指し返す worktree」だけ受ける
+        //   = `<gitdir>/gitdir` の中身が此の gitfile の path。任意の repo を指す gitfile(`gitdir: /victim/.git`)
+        //   は被害者の index / staged を差分として晒すので `unsafe_repo`。submodule の gitfile は逆リンクを
+        //   持たないので当面 `unsafe_repo`(Tom の木に submodule は無い)。
+        if (typeof st.size === "number" && st.size > 1024 * 1024) return { reason: "unsafe_repo" };
         let text;
         try { text = String(readFile(dotGit)); } catch { return { reason: "unsafe_repo" }; }
-        const m = /^gitdir:\s*(.+?)\s*$/m.exec(text);
+        const m = /^gitdir: ([^\n\r]+)\r?\n?$/.exec(text);
         if (!m) return { reason: "unsafe_repo" };
         const target = m[1].startsWith("/") ? m[1] : join(dir, m[1]);
         let gitDir;
         try { gitDir = realpath(target); } catch { return { reason: "unsafe_repo" }; }
-        const gs = lstat(gitDir);
-        if (!gs || typeof gs.isDirectory !== "function" || !gs.isDirectory()) return { reason: "unsafe_repo" };
+        if (!isDir(lstat(gitDir))) return { reason: "unsafe_repo" };
+        let back;
+        try { back = String(readFile(join(gitDir, "gitdir"))).trim(); } catch { return { reason: "unsafe_repo" }; }
+        let backReal;
+        try { backReal = realpath(back); } catch { return { reason: "unsafe_repo" }; }
+        if (backReal !== dotGit) return { reason: "unsafe_repo" };
         return { root: dir, gitDir };
       }
       return { reason: "unsafe_repo" }; // socket・device 等
@@ -480,15 +500,26 @@ export function locateRepo(cwd, o = {}) {
 export function filterOverrides(text) {
   const names = new Set();
   for (const line of String(text ?? "").split("\n")) {
-    const m = /^filter\.(.+)\.(clean|smudge|process|required)$/.exec(line.trim());
+    // `(.*)` = 空の名前(`filter..clean`)も拾う。拾わないと其の driver だけ上書きを逃れる(Codex #5 の 1)
+    const m = /^filter\.(.*)\.(clean|smudge|process|required)$/.exec(line.trim());
     if (m) names.add(m[1]);
   }
+  // ★`-c filter.<name>.clean=cat` は git が最初の `=` で鍵と値を割るので、名前に `=` が在ると
+  //   上書きが効かない。空の名前は `-c filter..clean=cat` が通らない。どちらも普通の repo には無い
+  //   = 敵対的な設定なので **fail-closed**(読まない)。driver の数にも上限(上書きの引数が膨らむ)。
+  for (const n of names) {
+    if (n === "" || /[=\s]/.test(n)) { const e = new Error(`unsafe filter driver name: ${JSON.stringify(n)}`); e.code = "unsafe_filter"; throw e; }
+  }
+  if (names.size > MAX_FILTER_DRIVERS) { const e = new Error(`too many filter drivers: ${names.size}`); e.code = "unsafe_filter"; throw e; }
   const out = [];
   for (const n of [...names].sort()) {
     out.push("-c", `filter.${n}.clean=cat`, "-c", `filter.${n}.smudge=cat`, "-c", `filter.${n}.process=`, "-c", `filter.${n}.required=false`);
   }
   return out;
 }
+
+/** 設定に在って良い filter driver の数。普通の repo は 0〜2(lfs 等)。之を超えるのは細工。 */
+export const MAX_FILTER_DRIVERS = 32;
 
 async function readWorkingDiffOnce(cwd, o) {
   const exec = o.exec ?? execFileAsync;
@@ -512,14 +543,18 @@ async function readWorkingDiffOnce(cwd, o) {
   // ★`-c` は subcommand より前。`core.fsmonitor=false` は repo 設定の値より強い。
   const pin = [`--git-dir=${loc.gitDir}`, `--work-tree=${loc.root}`];
 
-  // 設定に在る filter driver を読む(名前だけ。実行なし)。読めなければ driver 無しとして進む
-  // —— 之は fail-open ではない: driver が無ければ filter は走らないし、在るのに読めない事は
-  // `git diff` 自体も読めない事を意味する(其方が `git_failed` で止まる)。
+  // 設定に在る filter driver を読む(名前だけ。実行なし)。★読めなければ**進まない**(`git_failed`)。
+  //   以前は「読めなければ driver 無し」で進めていたが、列挙が落ちる(出力が 8 MiB を超える等)のと
+  //   `git diff` が其の設定を読めないのは別の事で、diff は其の設定で filter を走らせる(Codex #5 の 2)。
+  //   名前が敵対的(空 / `=`)か多すぎれば `unsafe_repo`。
   let overrides = [];
   try {
     const { stdout } = await exec("git", [...pin, "config", "--list", "--name-only"], opts);
     overrides = filterOverrides(stdout);
-  } catch { overrides = []; }
+  } catch (e) {
+    if (e?.code === "unsafe_filter") return empty("unsafe_repo");
+    return empty("git_failed");
+  }
 
   const base = [
     ...pin,
