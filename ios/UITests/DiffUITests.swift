@@ -59,6 +59,38 @@ final class DiffUITests: XCTestCase {
         attachScreenshot(app, name: "diff-default-fallback-sample")
     }
 
+    /// 机が混んでいる(503 + `reason:"busy"`)時の空面と、Try again が**本当に撃ち直す**事
+    /// (2026-09-03、Codex #4 の 2)。fixture `diff-busy-then-sample` は 1 回目だけ busy を返すので、
+    /// 押した後に sample の中身が出れば「押した」ではなく「効いた」を測っている。
+    func testDiffBusyShowsTryAgainAndTappingItReloads() throws {
+        let app = launch(conversation: "conversation-3roles", diff: "diff-busy-then-sample")
+        _ = try openDiff(app)
+        let reason = element(app, "diff.reason")
+        XCTAssertTrue(reason.waitForExistence(timeout: 10), "busy の空面が出ない")
+        XCTAssertTrue(app.staticTexts["The desk is busy"].exists, "busy の見出しが無い")
+        // ★`ContentUnavailableView` の中の要素は型(`.buttons`)では捕まらない(此の file の頭の註と
+        //   同じ実測、2026-09-03: `app.buttons["diff.retry"]` は 5 秒待っても空だった)。`.any` で降りる。
+        let retry = element(app, "diff.retry")
+        XCTAssertTrue(retry.waitForExistence(timeout: 5), "Try again のボタンが無い(行き止まり)")
+        attachScreenshot(app, name: "diff-busy")
+        retry.tap()
+        let path = app.staticTexts["ios/Sources/Screens/Conversation/DiffView.swift"]
+        XCTAssertTrue(path.waitForExistence(timeout: 10), "★Try again を押しても撃ち直していない(sample が出ない)")
+        XCTAssertFalse(element(app, "diff.reason").exists, "撃ち直した後も busy の面が残っている")
+        attachScreenshot(app, name: "diff-busy-retried")
+    }
+
+    /// 陰性対照: 撃ち直しても混んだままなら、Try again は残り、行き止まりにならない(空面は壊れて見えない)。
+    func testDiffBusyStaysBusyKeepsTheRetryButton() throws {
+        let app = launch(conversation: "conversation-3roles", diff: "diff-busy")
+        _ = try openDiff(app)
+        let retry = element(app, "diff.retry")
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        retry.tap()
+        XCTAssertTrue(element(app, "diff.retry").waitForExistence(timeout: 5), "混んだままなのに Try again が消えた")
+        XCTAssertTrue(element(app, "diff.reason").exists)
+    }
+
     func testDiffSampleShowsStagedAndUnstagedFiles() throws {
         let app = launch(conversation: "conversation-3roles", diff: "diff-sample")
         _ = try openDiff(app)
@@ -88,6 +120,8 @@ final class DiffUITests: XCTestCase {
         // ★異常ではなく状態 -- エラーの帯(`diff.failed`)には絶対に落ちない。
         XCTAssertFalse(element(app, "diff.failed").exists,
                         "`not_a_repo` がエラー帯として描かれている(状態と異常を混同)")
+        // 陰性対照(2026-09-03): 撃ち直しても変わらない reason には Try again を出さない(busy だけ)
+        XCTAssertFalse(element(app, "diff.retry").exists, "not_a_repo に Try again が出ている")
         attachScreenshot(app, name: "diff-not-a-repo")
     }
 }

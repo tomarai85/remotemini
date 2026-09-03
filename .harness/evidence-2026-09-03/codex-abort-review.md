@@ -21,9 +21,9 @@ Clean(Codex の言): FIFO の順序、`running` の増減、待機 listener の�
 | # | 直し | 検査 |
 |---|---|---|
 | 1 | `inflight` の entry を `{ac, subscribers, promise}` にし、要求ごとに `subscribe`: 自分の signal が鳴れば自分だけ `aborted`、共有の走行を行列から外すのは**最後の 1 人が去った時だけ**。既に全員去った entry(`ac.signal.aborted`)には合流させず新しく走る | 合流者が abort → 本人だけ aborted・先客成功 / 待機中の先客が abort → 合流者は待ち続けて成功 / 全員去れば git 0 本・後から来た要求は古い aborted を貰わない |
-| 2 | `busy` の空面に「Try again」ボタン(`diff.retry`、`viewModel.load()`)。文言を「Wait a moment and try again」に | 手動(fixture の UI 検査は次) |
+| 2 | `busy` の空面に「Try again」ボタン(`diff.retry`、`viewModel.load()`)。文言を「Wait a moment and try again」に | fixture `diff-busy` / `diff-busy-then-sample` + `DiffUITests` 2 本(押すと sample が出る = 効いた) |
 | 3 | 上の 3 検査に置き換え(旧「合流者は signal を無視」は削除) | — |
-| 4 | 未着手: 口の挙動検査は handler の切り出しが要る(静的検査のまま) | — |
+| 4 | 口の本体を `src/diffroute.mjs` の `handleDiffGet` に切り出し、`server.mjs` は委ねるだけ | `diff-route-handler.test.mjs` 7 本(偽の req/res で実際に通す)、変異 4 種 赤 |
 | 5 | `Promise.all` を `within()` で包んだ | — |
 | 6 | override なしで 8 件待ち、9 件目が busy の動作検査 | — |
 

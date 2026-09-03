@@ -17,9 +17,18 @@ struct DiffFetchingFixture: DiffFetching {
         case empty = "diff-empty"
         /// git 管理外(対照表 #4 の `reason:"not_a_repo"` の一文)。
         case notARepo = "diff-not-a-repo"
+        /// 机が混んでいる(503 + `reason:"busy"`、2026-09-03)。何度撃ち直しても混んだまま(空面と
+        /// Try again の**見た目**を撮る為)。
+        case busy = "diff-busy"
+        /// 1 回目は混んでいて、2 回目から読める。Try again が**本当に撃ち直している**事を
+        /// 測る為(押しても同じ面なら「押した」と「効いた」が区別できない)。
+        case busyThenSample = "diff-busy-then-sample"
     }
 
     let state: State
+
+    /// `busyThenSample` の回数。process ごとに 1 つ(fixture は 1 会話 1 画面なので之で足りる)。
+    nonisolated(unsafe) static var busyCalls = 0
 
     func fetch(baseURL: URL, apiKey: String, sessionID: String) async -> Result<SessionDiffBody, SessionsFetchError> {
         switch state {
@@ -29,8 +38,16 @@ struct DiffFetchingFixture: DiffFetching {
             return .success(SessionDiffBody(files: [], truncated: false, totalBytes: 0, reason: nil))
         case .notARepo:
             return .success(SessionDiffBody(files: [], truncated: false, totalBytes: 0, reason: "not_a_repo"))
+        case .busy:
+            return .success(Self.busyBody)
+        case .busyThenSample:
+            Self.busyCalls += 1
+            return .success(Self.busyCalls == 1 ? Self.busyBody : Self.sample)
         }
     }
+
+    /// 机が 503 で返す本文と同じ形(`DiffClient` が `reason:"busy"` の 503 を success に通す)。
+    private static let busyBody = SessionDiffBody(files: [], truncated: false, totalBytes: 0, reason: "busy")
 
     private static let sample = SessionDiffBody(
         files: [
