@@ -766,8 +766,13 @@ struct ConversationView: View {
                     //   跳び先が間違っている事の在る UI は、跳べない UI より悪い。
                     //   ★**行を短く切らない**(`lineLimit` を付けない)。付けると
                     //     一致箇所が見えている範囲の外に在る行が「誤検出」に見える。
-                    ForEach(Array(r.rows.enumerated()), id: \.offset) { _, entry in
-                        EntryBubble(entry: entry)
+                    ForEach(Array(r.rows.enumerated()), id: \.offset) { i, entry in
+                        // ★当たり語を渡す(対照表 #42)。`accessibilityValue` は検査の為の印: 塗られた行は
+                        //   "highlighted"、当たり語を含まない行(机の規則と食い違った時だけ起きる)は "plain"。
+                        EntryBubble(entry: entry, highlight: r.query)
+                            .accessibilityElement(children: .contain)
+                            .accessibilityIdentifier("conversation.search.hit.\(i)")
+                            .accessibilityValue(SearchHighlight.count(in: entry.text, of: r.query) > 0 ? "highlighted" : "plain")
                     }
                     // 出さない機能の理由を黙らない。
                     Text("Results can't jump into the transcript yet — "
@@ -1811,6 +1816,16 @@ struct ConversationView: View {
 /// exactly like `.assistant` -- never dropped, never a blank row.
 private struct EntryBubble: View {
     let entry: HistoryEntry
+    /// 検索の結果の面でだけ渡る当たり語(対照表 #42、2026-09-03)。nil = 素の本文。
+    var highlight: String? = nil
+
+    /// 本文。当たり語が渡っていれば其処だけ色 + 太字(規則は `SearchHighlight`、机の一致規則と同じ)。
+    private var highlightedText: Text {
+        if let q = highlight, SearchHighlight.count(in: entry.text, of: q) > 0 {
+            return Text(SearchHighlight.attributed(entry.text, query: q, color: RCTheme.accent))
+        }
+        return Text(entry.text)
+    }
 
     /// ★**文字の左端**を 3 branch で 1 本に揃える為の内側 inset(2026-08-31)。
     ///
@@ -1838,7 +1853,7 @@ private struct EntryBubble: View {
                 Text(entry.display.who)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text(entry.text)
+                highlightedText
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -1861,7 +1876,7 @@ private struct EntryBubble: View {
             HStack {
                 Spacer(minLength: 48)
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(entry.text)
+                    highlightedText
                         .font(.body)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, Self.textInset)
@@ -1882,7 +1897,7 @@ private struct EntryBubble: View {
                 Text(entry.display.who)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text(entry.text)
+                highlightedText
                     .font(.body)
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
