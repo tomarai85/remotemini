@@ -52,7 +52,16 @@ fi
 OUT="$(/usr/bin/mktemp -t commitsuite)" || exit 2
 trap '/bin/rm -f "$OUT" 2>/dev/null' EXIT INT TERM HUP
 
-eval "$SUITE_CMD" > "$OUT" 2>&1
+# ★一式は **`GIT_*` を剥いだ環境**で回す(2026-09-03、実害あり)。この門は pre-commit の中で
+#   走り、其処では git 自身が `GIT_DIR` / `GIT_INDEX_FILE` / `GIT_PREFIX` を子へ export している。
+#   検査がそれを継承したまま git を撃つと、temp repo のつもりが**本物の repo**に効く ——
+#   `test/sessiondiff.test.mjs` の実 git 検査が `.git/config` を `bare = true` に書き換え、
+#   主 worktree の `git status` が死んだ。検査側も剥ぐが、次に書く人が知らなくて済む様に
+#   門の側でも剥ぐ。剥ぐのは一式の子だけで、門の他の段(staged の読み取り)は触らない。
+(
+    for v in $(/usr/bin/env | /usr/bin/grep -oE '^GIT_[A-Za-z_]+'); do unset "$v"; done
+    eval "$SUITE_CMD"
+) > "$OUT" 2>&1
 suite_rc=$?
 
 tests_line="$(/usr/bin/grep -E '^# tests [0-9]+$' "$OUT" | /usr/bin/tail -1)"
