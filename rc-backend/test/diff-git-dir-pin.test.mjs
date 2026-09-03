@@ -176,15 +176,108 @@ test("filterOverrides / locateRepo の単体: 名前の抽出、gitfile の相�
   assert.deepEqual(filterOverrides("filter.a.clean\nfilter.a.clean\nnot.a.filter\nfilter.b.required\n"),
     ["-c", "filter.a.clean=cat", "-c", "filter.a.smudge=cat", "-c", "filter.a.process=", "-c", "filter.a.required=false",
      "-c", "filter.b.clean=cat", "-c", "filter.b.smudge=cat", "-c", "filter.b.process=", "-c", "filter.b.required=false"]);
-  const fileStat = { isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true };
-  const loc = locateRepo("/wt", {
+  const fileStat = { isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true, size: 60 };
+  // worktree の形: `/wt/.git` = gitfile、行き先 `/main/.git/worktrees/wt` は dir で、其の `gitdir` が此の gitfile を指し返す
+  const fs = {
     realpath: (p) => p,
     lstat: (p) => (p === "/wt/.git" ? fileStat : p === "/main/.git/worktrees/wt" ? dirStat : null),
-    readFile: () => "gitdir: ../main/.git/worktrees/wt\n",
-  });
-  assert.deepEqual(loc, { root: "/wt", gitDir: "/main/.git/worktrees/wt" });
+    readFile: (p) => (p === "/wt/.git" ? "gitdir: ../main/.git/worktrees/wt\n" : p === "/main/.git/worktrees/wt/gitdir" ? "/wt/.git\n" : (() => { throw new Error("ENOENT"); })()),
+  };
+  assert.deepEqual(locateRepo("/wt", fs), { root: "/wt", gitDir: "/main/.git/worktrees/wt" });
+  // ★逆リンクが別の gitfile を指す(= 任意の repo を指す gitfile)は断る(Codex #5 の 3)
+  const foreign = { ...fs, readFile: (p) => (p === "/wt/.git" ? "gitdir: ../main/.git/worktrees/wt\n" : "/other/.git\n") };
+  assert.deepEqual(locateRepo("/wt", foreign), { reason: "unsafe_repo" });
+  // ★逆リンクの file が無い(submodule の形)も当面 断る
+  const noBack = { ...fs, readFile: (p) => (p === "/wt/.git" ? "gitdir: ../main/.git/worktrees/wt\n" : (() => { throw new Error("ENOENT"); })()) };
+  assert.deepEqual(locateRepo("/wt", noBack), { reason: "unsafe_repo" });
+  // ★先頭にゴミが在る gitfile は git も通さない
+  const garbage = { ...fs, readFile: (p) => (p === "/wt/.git" ? "garbage\ngitdir: ../main/.git/worktrees/wt\n" : "/wt/.git\n") };
+  assert.deepEqual(locateRepo("/wt", garbage), { reason: "unsafe_repo" });
+  // ★1 MiB を超える gitfile は読まない
+  const huge = { ...fs, lstat: (p) => (p === "/wt/.git" ? { ...fileStat, size: 2 * 1024 * 1024 } : fs.lstat(p)) };
+  assert.deepEqual(locateRepo("/wt", huge), { reason: "unsafe_repo" });
   const sym = locateRepo("/s", { realpath: (p) => p, lstat: (p) => (p === "/s/.git" ? { isSymbolicLink: () => true } : null) });
   assert.deepEqual(sym, { reason: "unsafe_repo" });
   const badFile = locateRepo("/b", { realpath: (p) => p, lstat: (p) => (p === "/b/.git" ? fileStat : null), readFile: () => "garbage" });
   assert.deepEqual(badFile, { reason: "unsafe_repo" });
+});
+
+test("★filterOverrides: 空の名前・`=` を含む名前は fail-closed、driver が多すぎても断る(Codex #5 の 1)", () => {
+  for (const bad of ["filter..clean\n", "filter.x=y.clean\n", "filter.a b.clean\n"]) {
+    assert.throws(() => filterOverrides(bad), (e) => e.code === "unsafe_filter", bad);
+  }
+  const many = Array.from({ length: 40 }, (_, i) => `filter.d${i}.clean`).join("\n");
+  assert.throws(() => filterOverrides(many), (e) => e.code === "unsafe_filter");
+  // 錨: 普通の名前は今まで通り
+  assert.equal(filterOverrides("filter.lfs.clean\n").length, 8);
+});
+
+test("★設定の列挙が落ちたら `git_failed` で止まり、diff は撃たない(fail-open にしない = Codex #5 の 2)", async () => {
+  const calls = [];
+  const exec = async (bin, args) => {
+    calls.push(args);
+    if (args.includes("config")) { const e = new Error("stdout maxBuffer length exceeded"); e.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"; throw e; }
+    return { stdout: "", stderr: "" };
+  };
+  const r = await readWorkingDiff("/w", { exec, exists: () => true, ...pinned });
+  assert.equal(r.reason, "git_failed");
+  assert.equal(calls.filter((a) => a.includes("diff")).length, 0, "★列挙が落ちたのに diff を撃った(其の設定で filter が走る)");
+  // 敵対的な driver 名は unsafe_repo
+  const exec2 = async (bin, args) => ({ stdout: args.includes("config") ? "filter.x=y.clean\n" : "", stderr: "" });
+  const r2 = await readWorkingDiff("/w2", { exec: exec2, exists: () => true, ...pinned });
+  assert.equal(r2.reason, "unsafe_repo");
+});
+
+test("★本物の git: 空の名前 / `=` を含む名前の filter driver は読まない(unsafe_repo、marker も出来ない)", async () => {
+  const repo = realRepo();
+  try {
+    const marker = join(repo.d, "MARKER");
+    const hook = join(repo.d, "clean.sh");
+    writeFileSync(hook, `#!/bin/sh\ntouch "${marker}"\ncat\n`, { mode: 0o755 });
+    repo.git(["config", "filter..clean", hook]);          // 空の名前(git は受ける)
+    writeFileSync(join(repo.d, ".gitattributes"), "f.txt filter=\n");
+    const r = await readWorkingDiff(repo.d);
+    assert.equal(r.reason, "unsafe_repo");
+    assert.equal(existsSync(marker), false, "★空の名前の driver が走った");
+    repo.git(["config", "--unset", "filter..clean"]);
+    repo.git(["config", "filter.x=y.clean", hook]);       // `=` を含む名前
+    writeFileSync(join(repo.d, ".gitattributes"), "f.txt filter=x=y\n");
+    const r2 = await readWorkingDiff(repo.d);
+    assert.equal(r2.reason, "unsafe_repo");
+    assert.equal(existsSync(marker), false, "★`=` を含む名前の driver が走った");
+  } finally {
+    repo.drop();
+  }
+});
+
+test("★本物の git: 任意の repo を指す gitfile は断る / bare repo・`.git/objects` の中から外側を読まない(Codex #5 の 3・4)", async () => {
+  const victim = realRepo();
+  const shell = realpathSync(mkdtempSync(join(tmpdir(), "rc-gitpin-foreign-")));
+  const bare = realpathSync(mkdtempSync(join(tmpdir(), "rc-gitpin-bare-")));
+  try {
+    writeFileSync(join(shell, ".git"), `gitdir: ${join(victim.d, ".git")}\n`);
+    writeFileSync(join(shell, "f.txt"), "z\n");
+    const r = await readWorkingDiff(shell);
+    assert.equal(r.reason, "unsafe_repo", "★被害者の repo を指す gitfile を受けた");
+    // `.git/objects` の中を cwd にしても外側の repo を読まない
+    const inside = await readWorkingDiff(join(victim.d, ".git", "objects"));
+    assert.equal(inside.reason, "unsafe_repo");
+    // bare repo の dir も同じ
+    execFileSync("git", ["init", "-q", "--bare", bare], { encoding: "utf8", env: hermeticGitEnv() });
+    const b = await readWorkingDiff(bare);
+    assert.equal(b.reason, "unsafe_repo");
+    // 錨: 本物は今まで通り読める
+    const ok = await readWorkingDiff(victim.d);
+    assert.equal(ok.reason, null);
+  } finally {
+    rmSync(shell, { recursive: true, force: true });
+    rmSync(bare, { recursive: true, force: true });
+    victim.drop();
+  }
+});
+
+test("深い cwd(70 段)でも root まで遡って repo を見つける(Codex #5 の 5)", () => {
+  const deep = "/r" + "/d".repeat(70);
+  const loc = locateRepo(deep, { realpath: (p) => p, lstat: (p) => (p === "/r/.git" ? dirStat : null) });
+  assert.deepEqual(loc, { root: "/r", gitDir: "/r/.git" });
 });
