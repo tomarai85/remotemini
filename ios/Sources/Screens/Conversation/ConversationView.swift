@@ -278,12 +278,29 @@ struct ConversationView: View {
             //   (#5、± バッジ)には依存しない -- 一覧に載る数と、此処が開く中身は別の型
             //   (`SessionDiffBody`、main 側 `gitdiff.mjs`/`SessionRow.diff` と衝突しない
             //   名前を付けてある)。
+            //
+            // ★2026-09-02(#6): `comments: viewModel` を渡す -- 保留中の行コメントは
+            //   `ConversationViewModel` が持つ(其の型の doc)ので、diff 画面を開く度に
+            //   同じ会話の同じ束を見せる。件数のバッジは其の場で読める `viewModel
+            //   .diffComments.count` から出す(往復無し)。
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink {
-                        DiffView(viewModel: makeDiffViewModel())
+                        DiffView(viewModel: makeDiffViewModel(), comments: viewModel)
                     } label: {
                         Image(systemName: "plusminus")
+                            .overlay(alignment: .topTrailing) {
+                                if viewModel.diffComments.count > 0 {
+                                    Text("\(viewModel.diffComments.count)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .padding(3)
+                                        .frame(minWidth: 15, minHeight: 15)
+                                        .background(Circle().fill(RCTheme.accent))
+                                        .offset(x: 9, y: -7)
+                                        .accessibilityIdentifier("conversation.diff.commentCount")
+                                }
+                            }
                     }
                     .accessibilityIdentifier("conversation.diff.open")
                 }

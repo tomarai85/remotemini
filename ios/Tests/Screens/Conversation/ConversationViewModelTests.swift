@@ -1261,6 +1261,153 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertEqual(sender.sentTexts, ["  改行あり\n  "], "the trim exists only to decide canSend; the server trims for real")
     }
 
+    // MARK: - Diff line comments (対照表 #6、2026-09-02)
+
+    func testUpsertDiffCommentAddsANewComment() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        XCTAssertTrue(vm.diffComments.isEmpty)
+
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 3, kind: .add, quotedText: "x", text: "why?")
+
+        XCTAssertEqual(vm.diffComments.count, 1)
+        XCTAssertEqual(vm.diffComments[0].text, "why?")
+        XCTAssertNotNil(vm.existingDiffComment(path: "a.txt", staged: false, line: 3, kind: .add))
+    }
+
+    func testUpsertDiffCommentOnTheSameLineEditsInPlaceRatherThanDuplicating() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 3, kind: .add, quotedText: "x", text: "first")
+
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 3, kind: .add, quotedText: "x", text: "second")
+
+        XCTAssertEqual(vm.diffComments.count, 1, "same (path,staged,line,kind) = edit, not a duplicate")
+        XCTAssertEqual(vm.diffComments[0].text, "second")
+    }
+
+    /// alert の「Save」1つで消せる事の要 -- 空にした文を保存しようとしたら消える。
+    func testUpsertDiffCommentWithBlankTextRemovesItInstead() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 3, kind: .add, quotedText: "x", text: "first")
+
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 3, kind: .add, quotedText: "x", text: "   ")
+
+        XCTAssertTrue(vm.diffComments.isEmpty)
+    }
+
+    /// ★同じ数字が旧側(`del`)と新側(`add`/`ctx`)の両方に立ち得る
+    ///   (`DiffLineLocatorTests.testDelAndAddCanShareTheSameNumericLineOnDifferentSides`)。
+    ///   `kind` を宛先から落とすと、片方に付けたコメントがもう片方を上書きしてしまう。
+    func testCommentsOnTheSameNumericLineButDifferentKindDoNotCollideNegativeControl() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 11, kind: .del, quotedText: "old", text: "removed")
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 11, kind: .add, quotedText: "new", text: "added")
+
+        XCTAssertEqual(vm.diffComments.count, 2, "kind を宛先から落とすと片方がもう片方を上書きし、此処が1に落ちる")
+        XCTAssertEqual(vm.existingDiffComment(path: "a.txt", staged: false, line: 11, kind: .del)?.text, "removed")
+        XCTAssertEqual(vm.existingDiffComment(path: "a.txt", staged: false, line: 11, kind: .add)?.text, "added")
+    }
+
+    func testRemoveDiffCommentRemovesOnlyTheMatchingLine() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 1, kind: .add, quotedText: "x", text: "keep me")
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 2, kind: .add, quotedText: "y", text: "remove me")
+
+        vm.removeDiffComment(path: "a.txt", staged: false, line: 2, kind: .add)
+
+        XCTAssertEqual(vm.diffComments.map(\.text), ["keep me"])
+    }
+
+    func testExistingDiffCommentIsNilForALineThatHasNoneNegativeControl() async throws {
+        let vm = try await loadedViewModel(screen: "SENDABLE")
+        XCTAssertNil(vm.existingDiffComment(path: "a.txt", staged: false, line: 1, kind: .add))
+    }
+
+    // MARK: - #6 と送信の合流
+
+    func testSendComposesPendingCommentsAheadOfTheDraft() async throws {
+        let sender = RecordingSendClient()
+        sender.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "sent", keepText: false))]
+        let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sender)
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 3, kind: .add, quotedText: "x", text: "why?")
+        vm.draft = "please look"
+
+        await vm.send()
+
+        XCTAssertEqual(sender.sentTexts, ["a.txt:3 (+ \"x\") — why?\n\nplease look"])
+        XCTAssertEqual(vm.draft, "", "keepText:false clears the composer field, unchanged behaviour")
+    }
+
+    func testSendClearsPendingCommentsOnAConfirmedSend() async throws {
+        let sender = RecordingSendClient()
+        sender.outcomeQueue = [.display(ResultDisplay(kind: "ok", text: "sent", keepText: false))]
+        let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sender)
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 3, kind: .add, quotedText: "x", text: "why?")
+        vm.draft = "please look"
+
+        await vm.send()
+
+        XCTAssertTrue(vm.diffComments.isEmpty, "keepText:false = the desk confirmed delivery, so the comments were used")
+    }
+
+    func testSendKeepsPendingCommentsWhenTheDeskRefuses() async throws {
+        let sender = RecordingSendClient()
+        sender.outcomeQueue = [.display(ResultDisplay(kind: "refused", text: "not now", keepText: true))]
+        let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sender)
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 3, kind: .add, quotedText: "x", text: "why?")
+        vm.draft = "please look"
+
+        await vm.send()
+
+        XCTAssertEqual(vm.diffComments.count, 1, "a refusal never used the comments -- keep them for the retry")
+    }
+
+    /// `warn`(202 だが `delivered:"unverified"`)は draft を残すのと同じ理由でコメントも
+    /// 残す -- 二重配達の危険は `keepText:false` の文言側が既に利用者へ言っている。
+    func testSendKeepsPendingCommentsWhenDeliveryIsUnverified() async throws {
+        let sender = RecordingSendClient()
+        sender.outcomeQueue = [.display(ResultDisplay(kind: "warn", text: "sent, unverified", keepText: true))]
+        let vm = try await loadedViewModel(screen: "SENDABLE", sendClient: sender)
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 3, kind: .add, quotedText: "x", text: "why?")
+        vm.draft = "please look"
+
+        await vm.send()
+
+        XCTAssertEqual(vm.diffComments.count, 1)
+    }
+
+    func testSendKeepsPendingCommentsWhenTheDeskIsUnreachable() async throws {
+        let (vm, sender) = try await sendUnknownViewModel(
+            thenHistory: [.success(HistoryResponse(history: [], truncated: false))]
+        )
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 3, kind: .add, quotedText: "x", text: "why?")
+        vm.draft = "please look"
+
+        await vm.send()
+
+        XCTAssertEqual(vm.diffComments.count, 1)
+        XCTAssertFalse(sender.sentTexts.isEmpty, "precondition: the request really went out")
+    }
+
+    /// ★之が本当の要点: 机の pane に実際に打ったのは comment 込みの全文なので、
+    ///   転写に現れる行も其の全文。`userText` だけで探すと `MergeHistory.landed` が
+    ///   一致せず、届いていたのに「見当たりません」の誤報になる。
+    func testUnknownSendWithPendingCommentsIsVerifiedAgainstTheComposedTextNotJustTheDraft() async throws {
+        let composed = "a.txt:3 (+ \"x\") — why?\n\nplease look"
+        let (vm, sender) = try await sendUnknownViewModel(
+            thenHistory: [.success(HistoryResponse(history: [e(.user, composed)], truncated: false))]
+        )
+        vm.upsertDiffComment(path: "a.txt", staged: false, line: 3, kind: .add, quotedText: "x", text: "why?")
+        vm.draft = "please look"
+
+        await vm.send()
+
+        XCTAssertEqual(sender.sentTexts, [composed])
+        XCTAssertEqual(
+            vm.sendBanner?.text, ConversationViewModel.sendLandedText,
+            "verifying against draft alone (without the comment block) would false-negative here"
+        )
+    }
+
     /// A new send clears the previous banner before its own outcome arrives. Otherwise
     /// "送った" from the last attempt sits under an in-flight send and reads as this
     /// send's result.

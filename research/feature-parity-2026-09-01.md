@@ -24,6 +24,7 @@
 | 2026-09-02 | #14-16(読むだけ) | `model · branch` を会話の状態帯の下に 1 行。`digestOf` が最新レコードから拾う | `digest.session` / `conversation.sessionRuntime` |
 | 2026-09-02 | #10 `@` 補完 | `GET /api/sessions/:id/paths?q=` で cwd の下を**読むだけ**歩く(前方一致・区切りを跨ぐ / 深さ・件数・時間に上限 / 生成木は除外 / 切ったら `truncated`)。電話は 250ms の debounce で撃ち、押しても**送らない** | `completePaths`(`paths.mjs`) / `PathCompletionClient` / `conversation.pathSuggestion` |
 | 2026-09-02 | #4 差分の中身 | `GET /api/sessions/:id/diff` で作業木の未コミット差分を返す(`git diff` 2 本のみ、読むだけ。ファイル単位に畳み、天井 3 つ・切っても数は嘘を吐かない。読めない事は 200 + `reason` で返す)。電話は工具帯の ± から push で開く画面(ファイルごとのカード・`staged` チップ・色付き行・静かな空面) | `readWorkingDiff`(`sessiondiff.mjs`) / `DiffClient` / `SessionDiffBody` / `conversation.diff.open` |
+| 2026-09-03 | #6 差分への行コメント | diff の行を長押しでコメント。会話ごとにメモリで持ち、行に印と diff ボタンに件数。**送るのは人が次の文を送る時だけ**(裁定「押しても送らない」)。`<path>:<line> (<+|-|context> "<引用行>") — <本文>` の平文ブロックを本文の前に置く。机の口は増やさない | `DiffCommentFormatter.compose` / `ConversationViewModel.diffComments` / `conversation.diff.commentCount` |
 
 反映していない absent 行は、意匠に触れる物(入力欄の造り)と、机の口を新設する物(行コメント #6 /
 subagent の個別停止 #8 / model・effort の**選択** #14-15)。#4 が入ったので #6 の置き場は出来た(未着手)。
