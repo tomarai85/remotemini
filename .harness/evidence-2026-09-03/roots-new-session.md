@@ -67,6 +67,20 @@ the bar no longer has room SwiftUI drops the item instead of truncating it; any 
 room. Fix: the failure text gets `frame(maxWidth: 120)` so its ideal width always fits and the tail truncates; the full
 reason stays on the settings screen behind it. The `+` stays in the leading slot (the root screen has nothing there).
 
+## Deployed and observed (2026-09-03 17:35)
+
+Post-landing chain on b24dc97: seeded simulator rebuilt, full simulator run 1019 tests / 0 failures, desk deployed to
+friday (`healthz` version `b24dc97`), OTA build 145 baked and approved.
+Live doors on friday, read with the desk key from Jervis over the tailnet:
+
+| Request | Observed |
+|---|---|
+| `GET /api/roots` | 200 `{"roots":[{"index":0,"label":"~/Infra"},{"index":1,"label":"~/Personal"}],"reason":null}` (the ledger's `~/client-a` line is dropped because the directory does not exist) |
+| `GET /api/roots/0/paths?q=` | 200, 1 directory, relative path, `truncated:false`, `reason:null` |
+| `GET /api/roots/9/paths?q=` | 404 |
+| `GET /api/roots` without a key | 401 |
+| OTA page | 200, build 145 |
+
 ## Codex adversarial review
 
 Five findings (2 High, 2 Medium, 1 Low), dispositions in `codex-roots-review.md`. Fixed: file-as-cwd (tmux `$HOME`
