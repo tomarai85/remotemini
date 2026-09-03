@@ -288,6 +288,13 @@ const CASES = {
   ],
   // 候補1件。file と dir の**両方**を通す(`kind` は此の2値しか出ない)。
   pathItem: [[PATH_ITEMS[0]], [PATH_ITEMS[1]]],
+  // roots(2026-09-03、対照表 #11)。`pathsBody` と同じ理由で**両枝**: 台帳が在る(`reason: null`)と
+  //   無い(`roots: []` + `no_roots`)。root の実体は `path` を持つが `rootItem` が落とす = 線には出ない。
+  rootsBody: [
+    [{ roots: [{ label: "~/Infra", path: "/Users/x/Infra" }, { label: "/opt/w", path: "/opt/w" }], reason: null }],
+    [{ roots: [], reason: "no_roots" }],
+  ],
+  rootItem: [[{ label: "~/Infra", path: "/Users/x/Infra" }, 0]],
   // diff(#4、2026-09-02)。★**両枝**を通す: 読めた側(files/hunks/lines が3段とも
   //   非空 = 入れ子の鍵を実行で出す唯一の道)と、読めない側(`reason` が値を持つ)。
   //   片方だけだと下の入れ子3本(files[] / hunks[] / lines[])のどれかが0件のまま
@@ -374,6 +381,8 @@ const MODULE_OF = {
   pathsBody: ["wire", "src/wire.mjs", "export function pathsBody({ entries, truncated, reason }) {"],
   // `pathItem(p)` は分解しないので既定の目印で本文に届く。
   pathItem: ["wire", "src/wire.mjs"],
+  rootsBody: ["wire", "src/wire.mjs", "export function rootsBody({ roots, reason }) {"],
+  rootItem: ["wire", "src/wire.mjs"],
   diffBody: ["wire", "src/wire.mjs", "export function diffBody({ files, truncated, totalBytes, reason }) {"],
   healthzBody: ["wire", "src/wire.mjs", "export function healthzBody({ pid, uptime, version }) {"],
   // 第2引数を分解するので目印を明示する(既定の目印だと `{ raw = "" }` = **引数の分解**を
@@ -727,6 +736,9 @@ const PAIRS = [
   // 1つも無いので、増えたら赤、が此処では正しい既定(`HealthzClient.Wire` と同じ判断)。
   { swift: "PathCompletionResponse", builders: ["pathsBody"], at: "" },
   { swift: "PathSuggestion", builders: ["pathItem"], at: "" },
+  // ---- roots(2026-09-03、対照表 #11)。封筒 2 鍵 + root 1 件 2 鍵、電話は全部読む(完全一致)。
+  { swift: "RootsResponse", builders: ["rootsBody"], at: "" },
+  { swift: "DeskRoot", builders: ["rootItem"], at: "" },
   // ---- 差分(2026-09-02、対照表 #4)。電話が持つ4つの型を`diffBody`の4段
   // (封筒 / files[] / files[].hunks[] / files[].hunks[].lines[])とそれぞれ組む。
   // #5(一覧の ± バッジ、`SessionRow.Diff`)は `sessionRow` builder の側で別途登録済み
@@ -798,6 +810,11 @@ const UNPAIRED = {
     "断りの形。組むのは `attachBody` ではなく各ルートの `json(res, 400, …)` で、"
     + "同じ2鍵(`reason` / `code`)を複数のルートが別々に出す。1つの builder に"
     + "紐付けると、紐付けなかった側の断りが 測り漏れる",
+  "RootsClient.Wire": "roots で始める応答(`202 {started, window, pane}` / 400・409 の `{error, reason}` / "
+    + "404 `{error}`)。`src/rootsroute.mjs` の `handleRootsNew` が直に書く(builder ではない)。"
+    + "★電話が読むのは `reason` **1 本だけ**(`NewSessionClient.Wire` と同じ形・同じ理由)。"
+    + "★測る対 = `ios/Tests/Core/RootsClientTests.swift`(request の全次元 + 答えの読み分け)と "
+    + "`test/roots-routes.test.mjs`(机側の 4 通りの status と語)",
   "NewSessionClient.Wire": "新規会話の応答(`202 {started}` / 409 `{error, reason}` / "
     + "502 `{error, reason}`)。`src/server.mjs` の new 分岐が直に書く(builder ではない)。"
     + "★電話が読むのは `reason` **1 本だけ** —— 会話の id は 202 の時点でまだ存在せず"

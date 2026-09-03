@@ -38,6 +38,9 @@ struct RootView: View {
                         apiKey: "ui-fixture-key",
                         renamer: RenameFixture(),
                         archiver: ArchiveFixture(),
+                        // ★roots の口も fixture(対照表 #11)。`RC_UI_ROOTS_FIXTURE` が名乗らなければ
+                        //   sample に落とす —— 本物の `RootsClient` には落とさない(上と同じ規約)。
+                        rootsBrowser: RootsBrowsingFixture.fromEnvironment() ?? RootsBrowsingFixture(state: .sample),
                         returner: ReturnRequestFixture(),
                         archivedLister: ArchivedListingFixture(),
                         onUnauthorized: {}

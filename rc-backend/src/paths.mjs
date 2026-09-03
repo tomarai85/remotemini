@@ -158,6 +158,7 @@ export function completePaths(root, rawQuery, opts = {}) {
   const now = opts.now ?? (() => Date.now());
   const readdir = opts.readdir ?? ((p) => readdirSync(p, { withFileTypes: true }));
   const stat = opts.stat ?? ((p) => statSync(p));
+  const dirsOnly = opts.dirsOnly === true; // 既定 false = 会話側の `@` 補完は 1 バイトも変わらない
 
   const startedAt = now();
   const paths = [];
@@ -207,6 +208,10 @@ export function completePaths(root, rawQuery, opts = {}) {
       if (kind === "dir" && SKIP_DIRS.has(e.name)) continue;
 
       if (matches(rel, q)) {
+        // ★`dirsOnly`(2026-09-03、roots の口)は**此処で**落とす。route 側で「多めに取って後で削る」と
+        //   `limit` と `truncated` が嘘になる(削った分だけ少なく返し、打ち切りの印は立たない)。
+        //   降りる判断(下の queue.push)は変えない = file を落としても dir の中は歩く。
+        if (dirsOnly && kind !== "dir") continue;
         if (paths.length >= limit) {
           truncated = true;
           break walk;

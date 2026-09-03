@@ -139,6 +139,8 @@ const PHONE_ONLY = {
   //   同じ理由で名前空間を分けた —— `RC_UI_FIXTURE` に相乗りさせると、複数の fixture が
   //   同じ1つの綴りを取り合い、片方が変えたら他方も黙って変わる。
   RC_UI_STATUS_FIXTURE: "電話の環境変数名(permission mode の相を会話の相と独立に振る為)。線には出ない",
+  // ★同じ形の4件目(roots の picker、対照表 #11、2026-09-03)。名前空間を分ける理由は上の 3 件と同じ。
+  RC_UI_ROOTS_FIXTURE: "電話の環境変数名(roots の相を一覧の相と独立に振る為)。線には出ない",
   RC_THEME_VARIANT: "電話の環境変数名(DEBUG 限定で意匠の variant を切替、既定は glassfull = 2026-08-29 昇格)。線には出ない",
   // ★2026-08-27。`WaitEscalation` の閾値(既定10秒 = Nielsen の注意限界)を検査から縮める口。
   //   線に出ないのは、待ちの長さが**電話の側だけの体験**だから —— サーバは自分の応答が
