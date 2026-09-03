@@ -230,19 +230,19 @@ test("既定の上限は 8(電話 1 台が積める数より多く、4 秒 × 4 
   assert.deepEqual(_inflight(), { running: 0, waiting: 0, keys: [] });
 });
 
-// ── 口(server.mjs)の配線 ───────────────────────────────────────────────────
-const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "server.mjs");
+// ── 口(src/diffroute.mjs)の配線。挙動そのものは diff-route-handler.test.mjs が偽の req/res で通す ──
+const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "diffroute.mjs");
 const real = readFileSync(SRC, "utf8");
-const MARKER = 'if (action === "diff" && req.method === "GET")';
+const MARKER = "export async function handleDiffGet(";
 
-test("★口: 要求の close を AbortController に繋ぎ、busy は 503、aborted には書かない", () => {
+test("★口: 要求の close を AbortController に繋ぎ、busy は 503、aborted には書かない(形の錨)", () => {
   const i = real.indexOf(MARKER);
-  assert.ok(i !== -1);
+  assert.ok(i !== -1, "handleDiffGet が diffroute.mjs に無い");
   const body = real.slice(i, i + 2200);
   assert.ok(/new AbortController\(\)/.test(body), "AbortController が無い");
   assert.ok(/req\.on\("close",/.test(body), "close を聞いていない");
   assert.ok(/readWorkingDiff\(cwd,\s*\{\s*signal:/.test(body), "signal を渡していない");
-  assert.ok(/reason === "aborted"\) return;/.test(body), "aborted に応答を書こうとしている");
+  assert.ok(/reason === "aborted"\) return/.test(body), "aborted に応答を書こうとしている");
   assert.ok(/reason === "busy"\) return json\(res, 503/.test(body), "busy が 503 ではない");
   // 錨: 成功の道は今も 200
   assert.ok(/return json\(res, 200, diffBody\(r\)\)/.test(body));

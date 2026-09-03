@@ -137,18 +137,22 @@ struct DiffView: View {
             // ★`busy`(机が混んでいる、503)は**待てば直る**種類なので、撃ち直す導線を置く
             //   (Codex #4: 503 を「読めた」状態に通した以上、再試行の口が無いと行き止まり)。
             //   他の reason は撃ち直しても変わらない(repo が無い等)ので導線を出さない。
-            ContentUnavailableView {
-                Label(Self.reasonTitle(reason), systemImage: reason == "busy" ? "hourglass" : "folder.badge.questionmark")
-            } description: {
-                Text(Self.reasonDetail(reason))
-            } actions: {
+            // ★ボタンは `ContentUnavailableView` の `actions:` に入れない —— 其処に置くと accessibility の
+            //   木に個別の要素として出ず、UI 検査(`diff.retry`)が `.any` で降りても捕まらなかった
+            //   (2026-09-03 実測、写真では描けている)。外の VStack に普通の Button として置く。
+            VStack(spacing: 16) {
+                ContentUnavailableView {
+                    Label(Self.reasonTitle(reason), systemImage: reason == "busy" ? "hourglass" : "folder.badge.questionmark")
+                } description: {
+                    Text(Self.reasonDetail(reason))
+                }
+                .accessibilityIdentifier("diff.reason")
                 if reason == "busy" {
                     Button("Try again") { Task { await viewModel.load() } }
                         .buttonStyle(.borderedProminent)
                         .accessibilityIdentifier("diff.retry")
                 }
             }
-            .accessibilityIdentifier("diff.reason")
         } else if response.files.isEmpty {
             ContentUnavailableView(
                 "No changes",
