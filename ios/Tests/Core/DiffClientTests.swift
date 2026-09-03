@@ -212,4 +212,31 @@ final class DiffClientTests: XCTestCase {
 
         XCTAssertNotEqual(notFound, unreachable)
     }
+
+    // MARK: - 503 = 机が混んでいる(2026-09-03、順番待ちの上限)
+
+    private static let busyBody = #"{"files":[],"truncated":false,"totalBytes":0,"reason":"busy"}"#
+
+    /// 机が `reason: "busy"` を 503 で返した時は**読めない状態**として画面へ通す(机が落ちた顔にしない)。
+    func testStatus503WithBusyBodyIsAReadableStateNotUnreachable() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 503, body: Data(Self.busyBody.utf8))]
+        let result = await DiffClient(session: MockURLProtocol.makeSession())
+            .fetch(baseURL: baseURL, apiKey: "x", sessionID: "s")
+        guard case .success(let body) = result else { return XCTFail("503+busy を失敗に丸めた: \(result)") }
+        XCTAssertEqual(body.reason, "busy")
+        XCTAssertTrue(body.files.isEmpty)
+    }
+
+    /// 錨: 封筒の形をしていない 503(proxy の HTML 等)は今まで通り unreachable。
+    func testStatus503WithoutTheEnvelopeStaysUnreachableNegativeControl() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 503, body: Data("<html>Service Unavailable</html>".utf8))]
+        let result = await DiffClient(session: MockURLProtocol.makeSession())
+            .fetch(baseURL: baseURL, apiKey: "x", sessionID: "s")
+        XCTAssertEqual(result, .failure(.unreachable))
+        // 封筒の形でも reason が busy でなければ、想定した 503 ではない
+        MockURLProtocol.stubQueue = [.init(statusCode: 503, body: Data(#"{"files":[],"truncated":false,"totalBytes":0,"reason":null}"#.utf8))]
+        let other = await DiffClient(session: MockURLProtocol.makeSession())
+            .fetch(baseURL: baseURL, apiKey: "x", sessionID: "s")
+        XCTAssertEqual(other, .failure(.unreachable))
+    }
 }
