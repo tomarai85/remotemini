@@ -44,5 +44,8 @@ Clean(Codex の言): `core.pager` / `diff.external` / textconv は正しく無�
 | 7 | 上の全部 | 変異 5 種 全部 赤 |
 
 同日 午後(loop の REPLAN で起票): 4 の残り = 待機中の abort(切断で順番待ちから外れる。走り始めた git は
-`timeoutMs` に任せる)と待ち行列の上限 8 → 503 `busy` を入れた。未着手: 2 の `--git-dir` / `--work-tree`
-明示、`.gitattributes` の filter(queue のタスク `diff-git-pins-its-own-repo-paths`)。
+`timeoutMs` に任せる)と待ち行列の上限 8 → 503 `busy` を入れた。同日 続けて 2 の残り = `locateRepo` で
+cwd を realpath し `.git` を自分で探して `--git-dir` / `--work-tree` を明示(実測: `core.worktree=/victim`
+の repo で素の git は victim を読んだ)、設定の filter driver を `cat` に上書き(実測: 素の git は clean
+filter を実行した)。残るのは config の include / alternates で**読む**範囲が木の外へ出る道だけ(実行は
+伴わない)。7 所見のうち実装で塞いだ物 = 全部。

@@ -28,11 +28,12 @@
 //     `LC_ALL=C`
 //         下の `notARepo()` が git の一文を読むので、言語を固定する。読まない形
 //         (`rev-parse` を先に撃つ)も在るが、それは往復が 1 本増える。
-//   ★残る口(塞いでいない、註として残す): `.gitattributes` の clean/process filter は
-//     作業木の diff で走る。`core.worktree` / config の include / alternates で木の外へ
-//     出る道も在る。cwd は Tom 自身の会話の cwd で、其処に敵対的な設定が在る =
-//     其の会話の agent が既に乗っ取られている状態なので、此処では defense-in-depth の
-//     安い所だけを入れた。
+//     `--git-dir` / `--work-tree` の明示 + 設定の filter driver の上書き(同日、`locateRepo` の註)
+//         repo の設定(`core.worktree`)や `.git` の差し替えで別の木を読む道と、`.gitattributes` の
+//         `filter=<driver>` で clean filter が走る道を閉じる(どちらも本物の git で再現してから)。
+//   ★残る口(塞いでいない、註として残す): config の include / alternates で**読む**範囲が木の
+//     外へ出る道(実行は伴わない)。cwd は Tom 自身の会話の cwd で、其処に敵対的な設定が在る =
+//     其の会話の agent が既に乗っ取られている状態なので、此処は defense-in-depth。
 //
 // ★**生の diff 文字列を丸ごと返さない**。電話は「ファイルの一覧 → その中の塊」で
 //   読むので、其の形に机で畳む。文字列のまま渡すと、色分けと横スクロールの為に
@@ -59,8 +60,8 @@
 //   全体で同時に走る git は `MAX_CONCURRENT` 本まで(残りは順番待ち)。電話が画面を
 //   連打しても、机で git が要求の数だけ増えない。
 import { execFile as nodeExecFile } from "node:child_process";
-import { existsSync, lstatSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(nodeExecFile);
@@ -386,33 +387,115 @@ export async function readWorkingDiff(cwd, o = {}) {
   return p;
 }
 
+/**
+ * cwd から repo の場所を**自分で**決める(2026-09-03、Codex #1 の 2 の残り)。
+ *
+ * git の自動発見に任せると、repo の設定(`core.worktree`)や `.git` の差し替えで**別の dir を
+ * diff する**(実測: `core.worktree=/victim` の repo で素の `git diff` は victim の木を読んだ)。
+ * 此処で決めた `--git-dir` / `--work-tree` を明示すれば、設定より CLI が勝つ。
+ *
+ * 規則(全部「読まない側に倒す」向き):
+ *   - cwd を realpath する(symlink 越しの綴りを本物の場所に直す)
+ *   - `.git` を cwd から祖先へ探す。symlink なら `unsafe_repo`。dir なら其れが git-dir。
+ *     file(gitfile、worktree の形 `gitdir: <path>`)なら其の行き先を realpath し、dir で無ければ
+ *     `unsafe_repo`。見つからなければ `not_a_repo`(git を撃たない)。
+ *   - work-tree は `.git` を持つ祖先。cwd が repo の中の子 dir でも、diff は repo の根から。
+ *
+ * @returns {{root: string, gitDir: string} | {reason: string}}
+ */
+export function locateRepo(cwd, o = {}) {
+  const realpath = o.realpath ?? ((p) => realpathSync(p));
+  const lstat = o.lstat ?? ((p) => { try { return lstatSync(p); } catch { return null; } });
+  const readFile = o.readFile ?? ((p) => readFileSync(p, "utf8"));
+  let real;
+  try { real = realpath(cwd); } catch { return { reason: "cwd_missing" }; }
+  let dir = real;
+  for (let depth = 0; depth < 64; depth += 1) {
+    const dotGit = join(dir, ".git");
+    const st = lstat(dotGit);
+    if (st) {
+      if (typeof st.isSymbolicLink === "function" && st.isSymbolicLink()) return { reason: "unsafe_repo" };
+      if (typeof st.isDirectory === "function" && st.isDirectory()) return { root: dir, gitDir: dotGit };
+      if (typeof st.isFile === "function" && st.isFile()) {
+        let text;
+        try { text = String(readFile(dotGit)); } catch { return { reason: "unsafe_repo" }; }
+        const m = /^gitdir:\s*(.+?)\s*$/m.exec(text);
+        if (!m) return { reason: "unsafe_repo" };
+        const target = m[1].startsWith("/") ? m[1] : join(dir, m[1]);
+        let gitDir;
+        try { gitDir = realpath(target); } catch { return { reason: "unsafe_repo" }; }
+        const gs = lstat(gitDir);
+        if (!gs || typeof gs.isDirectory !== "function" || !gs.isDirectory()) return { reason: "unsafe_repo" };
+        return { root: dir, gitDir };
+      }
+      return { reason: "unsafe_repo" }; // socket・device 等
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return { reason: "not_a_repo" };
+}
+
+/**
+ * 設定に定義された filter driver を全部 `cat` に上書きする `-c` の列(同日、所見 2 の続き)。
+ *
+ * `.gitattributes` の `filter=<name>` は**設定に driver が在って初めて**走る。`git diff` は作業木の
+ * file を index と比べる為に clean filter を通す = repo の設定で任意のプログラムが走る口。
+ * driver 名は事前に判らないので、設定の名前だけを読み(`git config --list --name-only`、実行なし)、
+ * 見つかった driver の clean / smudge を `cat`、process を空(= 無し)、required を false にする。
+ *
+ * @param {string} text  `git config --list --name-only` の出力
+ * @returns {string[]}  `-c k=v` の列(flat)
+ */
+export function filterOverrides(text) {
+  const names = new Set();
+  for (const line of String(text ?? "").split("\n")) {
+    const m = /^filter\.(.+)\.(clean|smudge|process|required)$/.exec(line.trim());
+    if (m) names.add(m[1]);
+  }
+  const out = [];
+  for (const n of [...names].sort()) {
+    out.push("-c", `filter.${n}.clean=cat`, "-c", `filter.${n}.smudge=cat`, "-c", `filter.${n}.process=`, "-c", `filter.${n}.required=false`);
+  }
+  return out;
+}
+
 async function readWorkingDiffOnce(cwd, o) {
   const exec = o.exec ?? execFileAsync;
-  const lstat = o.lstat ?? ((p) => { try { return lstatSync(p); } catch { return null; } });
   const limits = o.limits ?? DIFF_LIMITS;
   const empty = (reason) => ({ files: [], truncated: false, totalBytes: 0, reason });
 
-  // `.git` が symlink = 行き先を差し替えれば別の dir を diff させられる。読まない。
-  const dotGit = lstat(join(cwd, ".git"));
-  if (dotGit && typeof dotGit.isSymbolicLink === "function" && dotGit.isSymbolicLink()) {
-    return empty("unsafe_repo");
-  }
+  // repo の場所は自分で決める(git の自動発見に任せない)。読めない理由は状態として返す。
+  const loc = locateRepo(cwd, o);
+  if (loc.reason) return empty(loc.reason);
 
   const opts = {
-    cwd,
+    cwd: loc.root,
     encoding: "utf8",
     timeout: limits.timeoutMs,
     maxBuffer: limits.maxBuffer,
     killSignal: "SIGKILL",
     env: gitEnv(),
   };
-  // ★`-C cwd` ではなく `cwd:` で渡す。`-C` は「其の dir へ移ってから」で同じだが、
-  //   dir が消えていた時の失敗が git の中で起きる(= 上の `cwd_missing` と
-  //   区別が付かない一文になる)。此方なら spawn が ENOENT で落ちるので、
-  //   境目が机の側に残る。
+  // ★`--git-dir` / `--work-tree` を明示 = repo の設定(`core.worktree`)や `.git` の差し替えより
+  //   CLI が勝つ。`cwd:` も root にする(dir が消えていた時の失敗は上の locateRepo で先に判る)。
   // ★`-c` は subcommand より前。`core.fsmonitor=false` は repo 設定の値より強い。
+  const pin = [`--git-dir=${loc.gitDir}`, `--work-tree=${loc.root}`];
+
+  // 設定に在る filter driver を読む(名前だけ。実行なし)。読めなければ driver 無しとして進む
+  // —— 之は fail-open ではない: driver が無ければ filter は走らないし、在るのに読めない事は
+  // `git diff` 自体も読めない事を意味する(其方が `git_failed` で止まる)。
+  let overrides = [];
+  try {
+    const { stdout } = await exec("git", [...pin, "config", "--list", "--name-only"], opts);
+    overrides = filterOverrides(stdout);
+  } catch { overrides = []; }
+
   const base = [
+    ...pin,
     "-c", "core.fsmonitor=false",
+    ...overrides,
     "--no-pager", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all",
   ];
 
