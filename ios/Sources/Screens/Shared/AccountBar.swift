@@ -109,6 +109,12 @@ struct AccountBar: View {
                 .foregroundStyle(.orange)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                // ★幅の上限(2026-09-03): 工具帯の項目は**理想幅**で測られ、1 行の長い文はそのまま
+                //   理想幅 = 文の全長になる。帯に別のマス(`+`、対照表 #11)が増えて残り幅を超えた時、
+                //   SwiftUI は truncate ではなく**項目ごと落とす** —— `account.failed` が画面から消え、
+                //   「机が失敗したのに黙っている」形(AccountUITests が赤)になった。上限を切れば
+                //   理想幅が収まり、余った分は tail で切れる。全文は設定画面(押した先)に在る。
+                .frame(maxWidth: 120, alignment: .trailing)
                 .accessibilityIdentifier("account.failed")
         }
     }

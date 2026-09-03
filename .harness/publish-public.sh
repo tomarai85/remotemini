@@ -72,7 +72,9 @@ echo "==> check-no-pii: exit $pii_rc"; [ "$pii_rc" = 0 ] || { printf '%s\n' "$pi
 [ -f "$HOME/bin/secret-sweep.py" ] || { echo "★secret-sweep.py が無い = 秘密を測れていない"; exit 2; }
 sec_out="$(cd "$T/clone" && python3 "$HOME/bin/secret-sweep.py" . 2>&1)"; sec_rc=$?
 echo "==> secret-sweep(tree): exit $sec_rc"; [ "$sec_rc" = 0 ] || { printf '%s\n' "$sec_out" | tail -12; echo "PUBLISH BLOCKED (secret)"; exit 1; }
-SECRET_PAT='(AKIA[0-9A-Z]{16}|sk-(proj-|ant-)?[A-Za-z0-9_-]{20,}|gh[pos]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY|hooks\.slack\.com/services/T[A-Za-z0-9]+/B|discord(app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ya29\.[A-Za-z0-9_-]{30,}|eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,})'
+# ★左境界 `(^|[^A-Za-z0-9])`(2026-09-03): `desk-write-design-brief` の `sk-write-…` を鍵と読んだ偽陽性。鍵は語の
+#   途中に現れないので、境界は緩めではなく形の正確化。BSD grep -E は `\b` が効かないので文字クラスで書く。
+SECRET_PAT='(^|[^A-Za-z0-9])(AKIA[0-9A-Z]{16}|sk-(proj-|ant-)?[A-Za-z0-9_-]{20,}|gh[pos]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY|hooks\.slack\.com/services/T[A-Za-z0-9]+/B|discord(app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|ya29\.[A-Za-z0-9_-]{30,}|eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,})'
 hist_hits="$(cd "$T/clone" && git grep -ohIE "$SECRET_PAT" $(git rev-list --all) 2>/dev/null | grep -vE 'AAAAAAAA|0000-0000|1111-2222' | sort -u)"
 if [ -n "$hist_hits" ]; then
   echo "==> secret(history): 本物の形をした物が在る"; printf '%s\n' "$hist_hits" | head -8 | cut -c1-60; echo "PUBLISH BLOCKED (secret in history)"; exit 1

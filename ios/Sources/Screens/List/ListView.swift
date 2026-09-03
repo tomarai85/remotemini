@@ -147,7 +147,10 @@ struct ListView: View {
             // ★`+` = 机の roots の下から場所を選んで新しい会話を始める(対照表 #11、2026-09-03)。
             //   行の長押しの「New session here」は残す(場所が既に決まっている道は最短のまま)。
             //   此のマスは会話が 0 本の机でも押せる = 此の機能が埋める穴そのもの。
-            ToolbarItem(placement: .topBarTrailing) {
+            //   ★置き場は **leading**。trailing に置いた版は口座帯と幅を取り合い、机の失敗文
+            //     (`account.failed`、長い 1 行)が帯ごと消えて `AccountUITests` が赤になった
+            //     (単独 2 回とも同じ 1 本 = 揺れではなく配置)。此の画面は根なので leading は空いている。
+            ToolbarItem(placement: .topBarLeading) {
                 Button {
                     showDirectoryPicker = true
                 } label: {
