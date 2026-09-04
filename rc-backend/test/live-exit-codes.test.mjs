@@ -67,6 +67,9 @@ const MJS_INSTRUMENTS = [
   // ★2026-09-04: 本番の机で一度も叩かれていなかった読むだけの 3 口(status/diff/paths)。
   //   8 日分のログを数えて見つけた —— 検査も e2e も緑だが、通っていたのは偽 tmux と作り物の机だけ。
   "tools/live-cold-routes-check.mjs",
+  // ★2026-09-04: 書き込む口(title / archive)を**使い捨ての会話**にだけ撃つ。
+  //   `disposable-session.mjs` が `rc-e2e-` の形しか作らないので実会話に触る道が無い。
+  "tools/live-write-routes-check.mjs",
 ];
 const SH_INSTRUMENTS = [
   "../ios/tools/live-send-check.sh",

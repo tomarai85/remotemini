@@ -64,10 +64,48 @@ Two census findings against my own instrument, both fixed: the exit-3 path was h
 constant where the static census could not see it (a value folded into a constant is invisible to the detector
 that greps for it), and the header's exit-code explanation had split the "3 = limit" meaning across two lines.
 
+
+## The write half, on a disposable session
+
+The six write routes could not go into the read-only instrument, so they got their own:
+`rc-backend/tools/live-write-routes-check.mjs`. Its safety rests entirely on
+`tools/disposable-session.mjs`, whose own header records that it creates only tmux sessions named
+`rc-e2e-<digits>` and therefore **has no path to touch a real conversation**. The instrument deliberately takes
+no session-id argument — accepting one would create exactly that path.
+
+Measured, three consecutive runs, all green: `title` (set, read back in the listing, clear back to null) and
+`archive` (set, appears under `scope=archived`, unset). Both had never executed against the real desk.
+
+Not measured, on purpose: `choice` sends a key to a menu screen and could press an approval, so it never runs
+against a live desk; `attach-file` is safe on a disposable session but belongs in its own tier rather than
+mixed with reversible writes; `queue` returns 409 `queue-not-ours` for a disposable pane, which is the desk
+correctly refusing, not a defect — putting a structurally-refused route in an instrument makes a permanent red.
+
+### Four mistakes worth keeping, all mine
+
+1. **I left four disposable sessions on the desk.** `reap` only sweeps sessions older than 60 minutes by
+   default, so freshly built ones are never its target. Teardown needs `down <tmux-name> <session-id>`.
+2. **I then reported those four as "0".** Non-interactive ssh has a short PATH without `/opt/homebrew/bin`, so
+   `tmux ls | grep -c` printed 0 because the command was not found. **A missing command and an empty result are
+   indistinguishable through a counter.** The instrument now resolves `node` and `tmux` up front and exits 2
+   rather than reading a 0.
+3. **I briefly believed I had killed Tom's real session**, because the same PATH problem made every pane look
+   dead. It had not; `work` was untouched throughout.
+4. **The teardown result was nondeterministic** across runs. The cause was ordering: `limited` was being asked
+   *after* the session was torn down, so it queried a dead pane and its non-zero ssh polluted the measurement.
+   Asking before the teardown fixed it — **observe before you destroy, or the observation reports on the
+   destruction.**
+
+Controls (`rc-backend/test/live-write-routes-controls.sh`): 13 / 13, each field failed individually. The
+`torn_down` case is called out as heavier than the others: missing that red leaves sessions piling up on the
+desk, which is what happened the day it was written.
+
 ## Observed
 
 | what | result |
 |---|---|
 | live run against the production desk | `rc=0`, all six conditions green |
-| controls | 14 / 14 |
-| `live-exit-codes.test.mjs` (the census that now includes it) | 41 / 41 |
+| read-only controls | 14 / 14 |
+| write controls | 13 / 13 |
+| write instrument, live | rc=0 three runs, 0 leftovers |
+| `live-exit-codes.test.mjs` (the census, now with both instruments) | 44 / 44 |
