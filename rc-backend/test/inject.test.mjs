@@ -26,6 +26,7 @@ import {
   composerText,
   composerBox,
   composerIsEmpty,
+  COMPOSER_PLACEHOLDER,
   parsePaneList,
   parsePaneListStrict,
   PANE_SEP,
@@ -330,6 +331,205 @@ test("viewport だけを撮る(-S を付けない = 過去の行を今の状態�
   const cap = t.calls.find((c) => c[0] === "capture-pane");
   assert.deepEqual(cap, ["capture-pane", "-t", "%1", "-p"]);
   assert.ok(!cap.includes("-S"), "scrollback を読んではいけない");
+});
+
+// ★★2026-09-04、Codex の敵対レビューが出した Critical の**再現**。
+//
+//   机の入力欄に人の下書きが残っている時、電話からの送信は其れを消さず**追記して Enter**を押す。
+//   `#sendExclusive` が見ているのは `SENDABLE` だけで、**空かどうかを見ていない**。
+//   結果、Mac に `deploy production` が残った状態で電話から `run tests` を送ると、
+//   Claude Code が受け取るのは `deploy productionrun tests` —— **誰も書いていない命令**。
+//
+//   しかも送信後の確認は「差した印が現れ、入力欄が空になった」を見るので、電話には成功が返る。
+//   確認しているのは**足した分**であって、送られた全文ではない。
+//
+//   ★書いた順序: **先に欠陥を固定する検査を書き、赤くなるのを見てから直した**(2026-09-04)。
+//     逆にすると「直った」を機械の言葉で誰も見ていない事になる。下は直した後の契約。
+test("★人の下書きが在る入力欄へは送らない(合成された命令を作らない)", async () => {
+  const held = screen("composer-holds-text");
+  assert.equal(classifyScreen(held).state, "SENDABLE", "前提: この画面は送信可能と読まれる");
+  assert.equal(composerIsEmpty(held), false, "前提: 入力欄には既に人の下書きが在る");
+  const t = fakeTmux([held, withComposerBody(held, "run tests"), screen("idle-boot")]);
+  const r = await new TmuxInjector({ tmux: t }).send("%1", "run tests");
+  assert.equal(r.sent, false, "人の下書きに追記して送ってはいけない");
+  assert.equal(r.reason, "composer-busy");
+  assert.equal(r.state, "SENDABLE", "画面は送信可能。断る理由は画面ではなく中身");
+  assert.equal(sends(t).length, 0, "★1 文字も打たない(打てば人の下書きと混ざる)");
+});
+
+test("★机が置いた添付は通す(断るだけでは添付が死ぬ)", async () => {
+  const base = screen("idle-boot");
+  const ABS = "/Users/x/attachments/abc.pdf";
+  const held = withComposerBody(base, ABS);
+  const t = fakeTmux([held, withComposerBody(base, ABS + "まとめて"), base]);
+  const inj = new TmuxInjector({ tmux: t });
+  inj.typeLiteral("%1", ABS);              // 添付の経路が置いた物として記憶される
+  const r = await inj.send("%1", "まとめて");
+  assert.equal(r.sent, true, "机が置いた物の上には送れる");
+});
+
+test("★机の記憶に無い文字が混ざれば断る(添付 + 人の打鍵の合成を作らない)", async () => {
+  const base = screen("idle-boot");
+  const ABS = "/Users/x/attachments/abc.pdf";
+  // 机は path を置いたが、其の後**人が続けて打った**状態。
+  const held = withComposerBody(base, ABS + " ついでに消して");
+  const t = fakeTmux([held]);
+  const inj = new TmuxInjector({ tmux: t });
+  inj.typeLiteral("%1", ABS);
+  const before = sends(t).length;   // ★`typeLiteral` の 1 打鍵は既に入っている
+  const r = await inj.send("%1", "まとめて");
+  assert.equal(r.sent, false, "机が置いた物と完全一致でなければ断る");
+  assert.equal(r.reason, "composer-busy");
+  assert.equal(sends(t).length, before, "★送信側は 1 文字も足さない(添付の打鍵と混ぜて数えない)");
+});
+
+test("★記憶が無い状態(机の再起動後)は断る側へ倒れる", async () => {
+  const base = screen("idle-boot");
+  const held = withComposerBody(base, "/Users/x/attachments/abc.pdf");
+  const t = fakeTmux([held]);
+  // `typeLiteral` を呼んでいない = 記憶が無い。同じ画面でも通してはいけない。
+  const r = await new TmuxInjector({ tmux: t }).send("%1", "まとめて");
+  assert.equal(r.sent, false, "記憶が消えた時は安全側(断る)へ倒れる");
+  assert.equal(r.reason, "composer-busy");
+});
+
+test("★添付の打鍵は pane の鍵を取らない(送信と同じ pane へ並行して打てる)", () => {
+  // `typeLiteral` は `mutex.run` を通らず `tmux.run` を直に呼ぶ。送信は鍵の中で走るので、
+  // 添付と送信が**同時に同じ入力欄へ打鍵し得る**。之は「起こり得る」ではなく、
+  // 今の同期の境界がそう出来ている、という構造の話。
+  const t = fakeTmux(screen("idle-boot"));
+  const inj = new TmuxInjector({ tmux: t });
+  const r = inj.typeLiteral("%1", "/Users/x/attachments/abc.pdf");
+  assert.equal(r.typed, 28);
+  assert.deepEqual(sends(t)[0], ["send-keys", "-t", "%1", "-l", "--", "/Users/x/attachments/abc.pdf"]);
+  assert.equal(sends(t).length, 1, "Enter は押さない(此処は守れている)");
+});
+
+// ★★2026-09-04、上の直しに対する Codex の**再**レビュー(F1/F4/F5/F7)。
+//   1 回目の直しは「送る前に入力欄の持ち主を見る」だったが、見た後に人が打つ窓が残っていた。
+//   下の 4 本は其の窓と、記憶が現物からずれる道を固定する。
+
+test("★F1 撮ってから Enter までの間に机で打たれたら、Enter を押さない", async () => {
+  // 撮った時は空。打った後の画面には**人の文字が先に**入っている = 撮影後に机で打たれた。
+  // 旧実装は「印(本文の末尾)が入力欄に現れたか」しか見ないので、之を合格と読んで Enter を押した。
+  const base = screen("idle-boot");
+  const t = fakeTmux([
+    base,                                                // 撮影: 空
+    withComposerBody(base, "deploy production" + "run tests"), // echo: 人の文字が先に在る
+    base,
+  ]);
+  const inj = new TmuxInjector({ tmux: t });
+  const r = await inj.send("%1", "run tests");
+  assert.equal(r.sent, false, "全文が机の認めた物でない時に Enter を押してはいけない");
+  assert.equal(r.reason, "composer-raced");
+  assert.equal(sends(t).filter((c) => c[c.length - 1] === "Enter").length, 0, "★Enter が 0 回");
+});
+
+test("★F1 長文で先頭が画面から消えても通す(末尾条件であって等号ではない)", async () => {
+  // 入力欄は内部で巻き上がり、長文では**先頭が画面から消える**(2026-08-01 実測)。
+  // 等号で見ると此の型が全部断られる —— 直しが長文の送信を殺していない事を固定する。
+  const base = screen("idle-boot");
+  const long = "あ".repeat(400) + "最後に一言";
+  const t = fakeTmux([base, withComposerBody(base, long.slice(200)), base]);
+  const r = await new TmuxInjector({ tmux: t }).send("%1", long);
+  assert.equal(r.sent, true, "画面に出ているのが末尾だけでも送れる");
+});
+
+test("★F4 人が送った後の古い記憶で、以後の添付が死なない", async () => {
+  // 机が A を置く → **人が Enter を押す**(入力欄は空、机の記憶は A のまま)→ B を置く。
+  // 記憶を現物に合わせないと記憶は A+B、入力欄は B で永久に一致せず、
+  // 以後**全ての添付が composer-busy**になる(= 電話から添付が二度と使えない)。
+  const base = screen("idle-boot");
+  const A = "/Users/x/attachments/a.pdf";
+  const B = "/Users/x/attachments/b.pdf";
+  // ★撮影は `typeLiteralExclusive` と `send` だけが行う(素の `typeLiteral` は撮らない)。
+  //   だから 1 枚目は「人が Enter を押した後 = 空」で、之が記憶を捨てる引き金になる。
+  const t = fakeTmux([
+    base,                      // 添付 B の前。人が Enter を押した後なので空
+    withComposerBody(base, B), // 送信の撮影
+    withComposerBody(base, B + "これ見て"),
+    base,
+  ]);
+  const inj = new TmuxInjector({ tmux: t });
+  inj.typeLiteral("%1", A);                 // 1 回目(記憶 = A)
+  const p = await inj.typeLiteralExclusive("%1", B); // 2 回目。空を見て記憶を捨ててから置く
+  assert.equal(p.typed, B.length, "空の入力欄への添付は通る");
+  assert.equal(inj.placedIn("%1"), B, "★記憶は現物(B)。A+B に伸びていない");
+  const r = await inj.send("%1", "これ見て");
+  assert.equal(r.sent, true, "2 回目の添付の上からも送れる");
+});
+
+test("★F4 人の下書きの上には添付を足さない(相手の文を書き換えない)", async () => {
+  const held = screen("composer-holds-text");
+  const t = fakeTmux([held]);
+  const inj = new TmuxInjector({ tmux: t });
+  const before = sends(t).length;
+  const r = await inj.typeLiteralExclusive("%1", "/Users/x/attachments/a.pdf");
+  assert.equal(r.typed, 0, "人の下書きへ path を追記してはいけない");
+  assert.equal(r.reason, "composer-busy");
+  assert.equal(sends(t).length, before, "★1 文字も打たない");
+});
+
+test("★F4 選択待ちの画面には添付も打たない(path の中の数字が選択肢の鍵になり得る)", async () => {
+  // 送信は CHOICE を弾いていたが、**添付は画面を一度も見ていなかった**。
+  const t = fakeTmux(screen("choice-model-menu"));
+  const inj = new TmuxInjector({ tmux: t });
+  const r = await inj.typeLiteralExclusive("%1", "/Users/x/attachments/1.pdf");
+  assert.equal(r.typed, 0);
+  assert.equal(r.reason, "choice");
+  assert.equal(sends(t).length, 0, "★1 文字も打たない");
+});
+
+test("★F5 断りは `typed` で見分けられる(鍵が取れなかった時も含む)", async () => {
+  // 呼び手(server.mjs の添付 2 経路)は `typed > 0` の 1 本で成否を見る。
+  // 鍵の断りは `#refusedByLock` の形で `typed` を持たないので、同じ 1 本で偽になる事を固定する。
+  const t = fakeTmux(screen("idle-boot"));
+  const busy = { run: () => { const e = new Error("busy"); e.code = "MUTEX_BUSY"; throw e; } };
+  const inj = new TmuxInjector({ tmux: t, mutex: busy });
+  const r = await inj.typeLiteralExclusive("%1", "/Users/x/attachments/a.pdf");
+  assert.ok(!(r.typed > 0), "鍵が取れなければ「置けた」と名乗らない");
+  assert.equal(r.reason, "pane-busy");
+  assert.equal(sends(t).length, 0, "★1 文字も打たない");
+});
+
+// ── Codex 再レビューのうち、**直さないと決めた 2 件**。判断は検査で固定する。
+//    「直さない」を注釈だけで置くと、次に読んだ人が見落としか手抜きか判別できない。
+
+test("★F3 入力欄が TUI の定型文なら空と読む(= 生成中でも送れる)", async () => {
+  // Codex F3 の提案は「定型文を空と読むのを止め、安全側に倒す」。**採らない**。
+  //   其れをすると、TUI が本文をキューへ取り込んで定型文を出している間 —— つまり
+  //   **Claude が生成している最中の送信が全部断られる**。此のアプリの主用途が消える。
+  //   残る穴は「人が其の 32 文字を一字違わず打って送らずに置く」場合だけで、
+  //   画面からは本物の定型文と見分けが付かない(実物 = fixtures/screens/queued-during-generation.txt、
+  //   `❯ ` の後ろに同じ形で出る)。判別の材料は他に `activity` しか無いが、
+  //   あれは被覆 61-82% で「観測できない = 待機」ではないと測ってある(M3)ので、
+  //   判定に使うと今度は生成中の送信を 2 割前後取りこぼす。**穴の大きさより代償が大きい**。
+  const q = screen("queued-during-generation");
+  assert.ok(composerText(q).includes(COMPOSER_PLACEHOLDER), "前提: 此の画面は定型文を出している");
+  assert.equal(composerIsEmpty(q), true, "定型文は空と読む");
+  const t = fakeTmux([q, withComposerBody(screen("idle-boot"), "次の指示"), screen("idle-boot")]);
+  const r = await new TmuxInjector({ tmux: t }).send("%1", "次の指示");
+  assert.equal(r.sent, true, "★生成中(キュー中)でも送れる —— 之を守る為に F3 を採らない");
+});
+
+test("★F2 空白だけの違いは見分けない(見分けると長文が送れなくなる)", async () => {
+  // Codex F2 の提案は「本物の改行と折り返しを分け、空白を保存して比べる」。**採らない**。
+  //   1. 画面上で折り返しと改行は**区別できない**(`composerText` の注釈、実測由来)。
+  //   2. 空白を保存して比べると、端末が**空白の位置で折り返した**長文が偽の不一致になる。
+  //      断られるのは人の普通の長文で、防げるのは「机が置いた path に空白が挿さる」だけ。
+  //   3. 其の穴で新しい命令は作れない —— 増えるのは空白であって語ではない。本文は
+  //      shell ではなく Claude Code への文なので、空白の混入は綴りが崩れた path で終わる。
+  const base = screen("idle-boot");
+  const ABS = "/Users/x/attachments/abc.pdf";
+  const t = fakeTmux([
+    withComposerBody(base, "/Users/x/attachments/ abc.pdf"), // 人が空白を 1 つ挿した
+    withComposerBody(base, "/Users/x/attachments/ abc.pdfまとめて"),
+    base,
+  ]);
+  const inj = new TmuxInjector({ tmux: t });
+  inj.typeLiteral("%1", ABS);
+  const r = await inj.send("%1", "まとめて");
+  assert.equal(r.sent, true, "★空白だけの差は通る = 既知の残り穴。塞ぐ代償の方が大きい");
 });
 
 test("★CHOICE 画面には絶対に送らない(本文も Enter も)", async () => {

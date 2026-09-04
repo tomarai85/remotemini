@@ -769,6 +769,11 @@ export const PRE_FRAMES = 24;
 const QUIET_FRAMES = 40;
 
 export class TmuxInjector {
+  /** ペイン -> **机が置いた文字列**(2026-09-04)。人の下書きと机の添付を区別する為だけに持つ。
+   *  ★process の記憶なので、机を再起動すると消える。消えた側に倒れると「机が置いた物」を
+   *    人の下書きと読んで**断る** = 安全側。逆(通す側)に倒す実装にはしない。 */
+  #placed = new Map();
+
   /**
    * @param {object} opts
    * @param {{run:(args:string[])=>string, runStrict:(args:string[])=>string}} opts.tmux
@@ -943,8 +948,68 @@ export class TmuxInjector {
     // 改行が混ざれば「Enter を送らない」という約束が破れる。ここで断る。
     if (/[\r\n]/.test(text)) throw new Error("newline-in-literal");
     this.tmux.run(["send-keys", "-t", pane, "-l", "--", text]);
+    // ★**机が置いた物を覚える**(2026-09-04、Codex の Critical)。送信側は「入力欄が空か」だけでは
+    //   判断できない —— 添付の直後は必ず非空で、其れは机自身が置いた物だから通してよい。
+    //   人の下書きと机の添付を区別する唯一の材料が此の記憶で、無いと
+    //   「断ると添付が死ぬ / 通すと人の下書きごと送る」の二択になる。
+    this.#placed.set(pane, (this.#placed.get(pane) ?? "") + text);
     return { typed: text.length };
   }
+
+  /**
+   * `typeLiteral` を**ペインの鍵の中で**行う(2026-09-04、Codex の Critical)。
+   *
+   * ★素の `typeLiteral` は鍵を取らない。添付の経路が其れを直に呼んでいたので、
+   *   送信(鍵の中)と添付(鍵の外)が**同じ入力欄へ同時に打鍵し得た**。写真を上げている
+   *   最中に送信ボタンを押せば起きる —— 「起こり得る」ではなく、同期の境界がそう出来ていた。
+   *   呼び手はこちらを使う。素の `typeLiteral` は鍵を既に持っている内側からだけ。
+   */
+  async typeLiteralExclusive(pane, text, { signal } = {}) {
+    try {
+      return await this.mutex.run(pane, () => this.#typeLiteralGuarded(pane, text), { signal });
+    } catch (e) {
+      const refused = TmuxInjector.#refusedByLock(e);
+      if (refused) return refused;
+      throw e;
+    }
+  }
+
+  /**
+   * 鍵の中でだけ走る添付の本体。**打つ前に入力欄の持ち主を確かめる**
+   * (2026-09-04、Codex 再レビュー F3/F4)。3 つの事をする:
+   *
+   * 1. **画面を見る**。選択待ち(承認・信頼・課金)の画面に絶対パスを打つと、
+   *    その中の数字が選択肢の鍵として読まれ得る。添付は今まで画面を一度も見ていなかった。
+   * 2. **記憶を現物と突き合わせる**。入力欄が空なら、机が置いた物は既に人が送ったか
+   *    消したかで、記憶は古い。捨てる。捨てないと記憶は `A+B` に伸び、入力欄は `B` の
+   *    ままで永久に一致せず、**以後の添付が全部断られる**(F4 の失敗列)。
+   * 3. **人の下書きには足さない**。記憶と違う文字が在る = 人の物。パスを追記すると
+   *    其の人の文を書き換える事になるので、打たずに断る。
+   *
+   * 返す形は成功が `{typed:n}`、断りが `{typed:0, reason}`。鍵が取れなかった時の
+   * `#refusedByLock` も `typed` を持たないので、呼び手は `typed > 0` の 1 本で見分けられる。
+   */
+  #typeLiteralGuarded(pane, text) {
+    const before = this.capture(pane);
+    const s = classifyScreen(before);
+    if (s.state !== "SENDABLE") {
+      return { typed: 0, reason: s.state === "CHOICE" ? "choice" : "unknown" };
+    }
+    const body = composerText(before);
+    if (body === null || composerIsEmpty(before)) {
+      // 入力欄が空 = 机が置いた物はもう無い。記憶を現物に合わせる。
+      this.forgetPlaced(pane);
+    } else if (norm(body) !== norm(this.placedIn(pane))) {
+      return { typed: 0, reason: "composer-busy" };
+    }
+    return this.typeLiteral(pane, text);
+  }
+
+  /** 机が此のペインへ置いた文字列の記憶を捨てる。送信が済んだ時と、置き直す前に呼ぶ。 */
+  forgetPlaced(pane) { this.#placed.delete(pane); }
+
+  /** 机が置いた物(検査と、送信側の判定が読む)。 */
+  placedIn(pane) { return this.#placed.get(pane) ?? ""; }
 
   async send(pane, text, { signal } = {}) {
     try {
@@ -962,6 +1027,28 @@ export class TmuxInjector {
     const s0 = classifyScreen(before);
     if (s0.state !== "SENDABLE") {
       return { sent: false, state: s0.state, delivered: null, reason: s0.state.toLowerCase() };
+    }
+
+    // ★★2026-09-04(Codex の Critical)。**入力欄に誰の文字が在るか**を送る前に決める。
+    //
+    //   直す前は `SENDABLE` だけを見て、既存の文字列に**追記して Enter**を押していた。
+    //   Mac の入力欄に `deploy production` が残った状態で電話から `run tests` を送ると、
+    //   Claude Code が受け取るのは `deploy productionrun tests` —— **誰も書いていない命令**。
+    //   送信後の確認は「印が現れ、入力欄が空になった」を見るので、電話には成功が返り得た。
+    //   確認していたのは**足した分**であって、送られた全文ではない。
+    //
+    //   ★断るだけでは添付が死ぬ(添付の直後は必ず非空)。消すだけでは人の下書きを黙って消す。
+    //     両立の鍵は「**誰が置いたか**」で、`typeLiteral` が置いた物だけを記憶している。
+    //     記憶に無い文字が在れば人の物なので、**触らずに断る**。
+    const body = composerText(before);
+    if (body !== null && !composerIsEmpty(before)) {
+      const mine = norm(this.placedIn(pane));
+      const inBox = norm(body);
+      // 机が置いた物と一致する時だけ通す。前方一致ではなく**完全一致**にするのは、
+      // 「机が置いた path + 人が続けて打った文」を通すと、また合成が起きるから。
+      if (mine === "" || inBox !== mine) {
+        return { sent: false, state: "SENDABLE", delivered: null, reason: "composer-busy" };
+      }
     }
 
     const probe = probeOf(text);
@@ -995,7 +1082,33 @@ export class TmuxInjector {
       return { sent: false, state: s1.state, delivered: null, reason: "composer-mismatch" };
     }
 
+    // ★★Enter の直前に、**入力欄の全文**が机の認めた物かを見る(2026-09-04、Codex F1)。
+    //
+    //   最初の確認は `before`(打つ前の撮影)に対して行う。だが人の手は tmux の鍵に
+    //   従わないので、**撮影から Enter までの間に机で打たれた文字**は最初の確認をすり抜ける。
+    //   其の窓は `pollScreen` を含むので秒の単位で開いている。旧来の確認は「印が増えたか」
+    //   —— 足した分しか見ないので、`deploy production` + `run tests` でも増えて通る。
+    //
+    //   ★見るのは「全文が、机が認めた物の**末尾**か」。等号にしないのは入力欄が長文で
+    //     巻き上がり、**先頭から画面外へ出る**から(2026-08-01 実測、JP 1500 字)。
+    //     人が前に足せば全文の方が長くなり、後ろに足せば末尾が変わる —— どちらも末尾条件が破れる。
+    //   ★此の窓は 0 にはならない。tmux へ Enter を送るのは別の呼び出しで、其の隙に
+    //     打たれた文字は誰にも観測できない。**縮められるのは窓であって、消せはしない** ——
+    //     秒(撮影〜Enter)から tmux の 1 往復(ms)へ縮める、が此処の正確な効能。
+    const ownedBefore = composerIsEmpty(before) ? "" : norm(composerText(before) ?? "");
+    const authorized = ownedBefore + norm(text);
+    const atEnter = norm(composerText(echo.text) ?? "");
+    if (atEnter === "" || !authorized.endsWith(atEnter)) {
+      // 打鍵は済んでいるので入力欄は汚れている。**Enter は押さない**。
+      // 文面はその状態を隠さない(`composer-busy` と分けているのは此の一点)。
+      return { sent: false, state: "SENDABLE", delivered: null, reason: "composer-raced" };
+    }
+
     this.tmux.run(["send-keys", "-t", pane, "Enter"]);
+    // ★Enter を押した = 入力欄の中身は机の手を離れた。記憶を捨てる(2026-09-04)。
+    //   残すと、次の送信が「机が置いた物」と読んで通してしまう —— 実際には
+    //   其の時点で入力欄に在るのは**人が新しく打った物**かもしれない。
+    this.forgetPlaced(pane);
 
     // 送信後: composer から本文が消えていれば消費された(即送信 or TUI のキュー入り)。
     // ここも描き直し待ちが要る。composer 自体が消えていた場合は**確かめられなかった**ので、

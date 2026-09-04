@@ -478,8 +478,15 @@ function screenOf(pane) {
   }
 }
 
-/** 送信を断った理由 -> 電話に出す文。injector.send() の reason と 1:1。 */
-const SEND_REFUSAL = {
+/** 送信を断った理由 -> 電話に出す文。injector.send() の reason と 1:1。
+ *
+ * ★此の「1:1」は長く**注釈でしか無かった**。2026-09-04 に `composer-busy` を足した時、
+ *   此処に文を足し忘れ、電話には `unknown` の文(「入力欄が見つからない」)が出た ——
+ *   入力欄は在るのに無いと言う、**事実として誤りの文**。断りの層を足す時に文を足し忘れる
+ *   のは気付けない型なので、`test/send-refusal-vocabulary.test.mjs` が
+ *   inject.mjs の送信経路が返し得る reason を数え、此の表の鍵と突き合わせる。
+ */
+export const SEND_REFUSAL = {
   choice:
     "The screen is waiting on a choice. Enter could approve or spend, so nothing was sent. Check the screen.",
   unknown:
@@ -488,6 +495,20 @@ const SEND_REFUSAL = {
     "A choice screen appeared right after the text was typed. Enter was not pressed. Check the screen.",
   "composer-mismatch":
     "The text did not land in the composer. Enter was not pressed. Try again.",
+  // ★机の入力欄に**別の誰かの文字**が残っている(2026-09-04)。打てば混ざった一文が
+  //   Enter まで行くので、1文字も打たずに断る。文面が言うべきは 2 つ:
+  //   「送っていない」と「机で消せば送れる」—— 後者が無いと、電話からは直しようの無い
+  //   壁に見える(断りは、直し方が書いていないと ただの壁)。
+  "composer-busy":
+    "The composer on the Mac already has text in it that this app did not put there. " +
+    "**Nothing was sent** — sending would have run it merged with your message. " +
+    "Clear the composer on the desk, then send again.",
+  // ★上と分けている理由は 1 つ: **此方は既に打鍵している**(打った後、Enter の直前に
+  //   気付いた)。入力欄は今 2 人分の文字で汚れているので、「此のアプリが置いていない
+  //   文字が在る」と書くと嘘になる。断りの文は、机の前に立った人が見る物と一致させる。
+  "composer-raced":
+    "Someone typed on the Mac while this message was being placed. **Enter was not pressed**, " +
+    "so nothing ran — but the composer now holds both. Clear it on the desk, then send again.",
   // ★鍵が取れなかった時(DESIGN §2.18-1)。どちらも**打鍵を1文字もしていない**。
   //   「混ざった物を送る」より「送らずに断る」が安全側、という決め事の表側。
   "pane-busy":
@@ -1825,8 +1846,13 @@ const server = createServer(async (req, res) => {
         const r = resolvePane();
         if (r.pane) {
           // 本文だけ。Enter は送らない。
-          injector.typeLiteral(r.pane, abs);
-          injected = true;
+          // ★返り値を**読む**(2026-09-04、Codex F5)。初版は await しただけで
+          //   `injected = true` にしていたので、鍵が取れなくても・人の下書きが
+          //   在って断られても、電話には「差し込めた」と出た。1 文字も打っていない時に
+          //   打てたと名乗るのは、この repo が何度も潰してきた型そのもの。
+          const placed = await injector.typeLiteralExclusive(r.pane, abs);
+          if (placed && placed.typed > 0) injected = true;
+          else injectReason = (placed && placed.reason) || "inject-refused";
         } else {
           injectReason = r.reason || "no-pane";
         }
@@ -1871,8 +1897,13 @@ const server = createServer(async (req, res) => {
         const r = resolvePane();
         if (r.pane) {
           // 本文だけ。Enter は送らない。
-          injector.typeLiteral(r.pane, abs);
-          injected = true;
+          // ★返り値を**読む**(2026-09-04、Codex F5)。初版は await しただけで
+          //   `injected = true` にしていたので、鍵が取れなくても・人の下書きが
+          //   在って断られても、電話には「差し込めた」と出た。1 文字も打っていない時に
+          //   打てたと名乗るのは、この repo が何度も潰してきた型そのもの。
+          const placed = await injector.typeLiteralExclusive(r.pane, abs);
+          if (placed && placed.typed > 0) injected = true;
+          else injectReason = (placed && placed.reason) || "inject-refused";
         } else {
           injectReason = r.reason || "no-pane";
         }
