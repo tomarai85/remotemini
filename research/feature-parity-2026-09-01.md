@@ -130,7 +130,7 @@ diff の口が `SESSION_ROUTE_RE` に無い / `@` 補完の不在が別機能を
 | 40 | 転写の markdown 描画 | **在る**。whats-new/2026-w34(2026-08-17〜21)「Your own prompts now render markdown in the transcript, with highlighted code blocks, inline code, and lists」 | absent | ios/Sources/Screens/Conversation/ConversationView.swift の `EntryBubble` が描く `Text(entry.text)`(素の Text = markdown を解釈しない) | 素の `Text`。コードブロックも箇条書きも平文で流れる |
 | 41 | 道具出力の折り畳み | 不明(公式ドキュメントに記述なし) | absent | ios/Sources/Screens/Conversation/ConversationView.swift の `EntryBubble` が描く `Text(entry.text)`(素の Text = markdown を解釈しない) | #7 の従属。そもそも道具出力が転写に入っていない |
 | 42 | 検索の一致箇所ハイライト | 不明 | **landed**(2026-09-03、f920183: `SearchHighlight`、机と同じ一致規則) | ios/Sources/Core/HistoryClient.swift の `func search` | 100 件の結果を目で追う事になる |
-| 43 | キーボード上の道具列 | 不明(公式の composer の造りは記述が無い) | absent | ios/Sources/Screens/Conversation/ConversationView.swift の `TextField("Message", text: $viewModel.draft, axis: .vertical)` | `.toolbar(.keyboard)` を持たない。カーソル移動や記号入力の補助が無い |
+| 43 | キーボード上の道具列 | 不明(公式の composer の造りは記述が無い) | **landed**(2026-09-03: `@` `/` バッククォートを末尾に差す + Hide。カーソル移動は SwiftUI の TextField に API が無く作らない) | ios/Sources/Screens/Conversation/ConversationView.swift の `TextField("Message", text: $viewModel.draft, axis: .vertical)` | `.toolbar(.keyboard)` を持たない。カーソル移動や記号入力の補助が無い |
 | 44 | 入力欄が行数で伸びる | 不明 | present | ios/Sources/Screens/Conversation/ConversationView.swift の `TextField("Message", text: $viewModel.draft, axis: .vertical)` | `axis:.vertical` + `.lineLimit(1...5)`。5 行で頭打ち |
 | 45 | 話者の表示 | 不明 | present | ios/Sources/Screens/Conversation/ConversationView.swift の `EntryBubble` が描く `Text(entry.display.who)` | `display.who` を机が決めて電話は描くだけ(文言を電話側で作らない規約) |
 
