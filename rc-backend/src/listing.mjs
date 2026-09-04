@@ -182,15 +182,22 @@ export function readMetaFromFd(io, fd, opts = {}) {
  * @param {object} [o]
  * @param {number} [o.chunk] 1歩の大きさ
  * @param {number} [o.maxBytes] 遡る上限。超えたら reachedStart=false のまま返る
+ * @param {number} [o.end] 走査の境界。渡すと此処を**あたかも file の末尾であるかのように**
+ *   扱って遡る(2026-09-03、窓読み。対照表 #3 の続き)。既定は本物の file size で、その時の
+ *   挙動は此のオプションが無かった頃と1 byte も変わらない —— 錨から**手前**だけを読みたい
+ *   呼び手(`readHistoryAround`)が、持ち越し・短い read・多バイト境界の扱いを2箇所目に
+ *   書かずに済む為だけに居る。
  * @param {(lines:string[]) => boolean} [o.done] 十分集まったか。既定は1歩で止める
  * @returns {{lines:string[], reachedStart:boolean, scanned:number, size:number}}
  *   lines は**古い順**(ファイルの並びのまま)。reachedStart=false は「これより前がある」。
+ *   `size` は常に本物の file size(`end` を渡しても変わらない —— 境界は走査だけに効く)。
  */
 export function readLinesBackward(io, fd, o = {}) {
   const chunk = o.chunk ?? TAIL_CHUNK;
   const maxBytes = o.maxBytes ?? TAIL_MAX;
   const done = o.done ?? (() => true);
   const size = io.fstat(fd).size;
+  const end = Math.min(o.end ?? size, size);
 
   // 短く返ってきたら続きを読む。★1回で満たされる前提にすると、後方チャンクと
   // 持ち越しの間に**穴**が開き(持ち越しは pos+len から始まる物なので)、
@@ -214,12 +221,12 @@ export function readLinesBackward(io, fd, o = {}) {
   let reachedStart = false;
   let carry = Buffer.alloc(0);
   while (scanned < maxBytes) {
-    const step = Math.min(chunk, size - scanned);
+    const step = Math.min(chunk, end - scanned);
     if (step <= 0) {
       reachedStart = true;
       break;
     }
-    const pos = size - scanned - step;
+    const pos = end - scanned - step;
     const raw = read(step, pos);
     // 読めた量が足りない = 読んでいる最中に切り詰められた。持ち越しは pos+step から
     // 始まる物なので、ここで繋ぐと**存在しない並び**を作る。繋がず捨てる方が正しい。
@@ -237,6 +244,92 @@ export function readLinesBackward(io, fd, o = {}) {
     if (done(lines)) break;
   }
   return { lines, offsets, reachedStart, scanned, size };
+}
+
+/**
+ * ファイルの `o.start` byte から**前方**へ、チャンク単位で完全な行だけを集める
+ * (2026-09-03、窓読み。`readLinesBackward` の対)。
+ *
+ * ★`o.start` は**行の先頭**でなければならない(呼び手 `readHistoryAround` が錨を検証してから
+ *   渡す)。途中から読み始めると、最初に見付ける「完全な行」が実在しない継ぎ目になる。
+ * ★`readLinesBackward` と対称な構造だが使い回さない —— 後方は「チャンクの**先頭**断片が
+ *   前のチャンクに繋がる持ち越し」、前方は「チャンクの**末尾**断片が次のチャンクに繋がる
+ *   持ち越し」で、繋ぐ向きが逆(`tailLinesWithOffsets` は後方専用の形)。
+ *
+ * @param {object} io { fstat, read }
+ * @param {number} fd
+ * @param {object} [o]
+ * @param {number} [o.start] 読み始める byte 位置(既定 0。行頭である事は呼び手の責任)
+ * @param {number} [o.chunk] 1歩の大きさ
+ * @param {number} [o.maxBytes] 読む上限。超えたら reachedEnd=false のまま返る
+ * @param {(lines:string[]) => boolean} [o.done] 十分集まったか。既定は1歩で止める
+ * @returns {{lines:string[], offsets:number[], reachedEnd:boolean, scanned:number}}
+ *   lines は**古い順**(ファイルの並びのまま)。reachedEnd=false は「これより後がある」。
+ */
+export function readLinesForward(io, fd, o = {}) {
+  const chunk = o.chunk ?? TAIL_CHUNK;
+  const maxBytes = o.maxBytes ?? TAIL_MAX;
+  const done = o.done ?? (() => true);
+  const size = io.fstat(fd).size;
+  const start = o.start ?? 0;
+
+  // `readLinesBackward` の `read` と同じ理由で同じ形(短く返れば続きを読む)。
+  const read = (len, pos) => {
+    const b = Buffer.alloc(len);
+    let got = 0;
+    while (got < len) {
+      const n = io.read(fd, b.subarray(got), pos + got);
+      if (n <= 0) break; // EOF
+      got += n;
+    }
+    return b.subarray(0, got);
+  };
+
+  let lines = [];
+  let offsets = [];
+  let scanned = 0;
+  let reachedEnd = false;
+  let carry = Buffer.alloc(0); // 未完の断片(次の chunk で完成するかもしれない行の先頭)
+  let carryBase = start; // carry の file 内 byte 位置
+  let pos = start;
+  while (scanned < maxBytes) {
+    const step = Math.min(chunk, size - pos);
+    if (step <= 0) {
+      reachedEnd = true; // pos が size に届いた = 末尾まで読み切った
+      break;
+    }
+    const raw = read(step, pos);
+    // 読めた量が足りない(=読んでいる最中に切り詰められた)時は持ち越しを繋がない
+    // (`readLinesBackward` と同じ理由 —— 繋ぐと存在しない並びを作る)。
+    const buf = carry.length > 0 && raw.length === step ? Buffer.concat([carry, raw]) : raw;
+    const base = carry.length > 0 && raw.length === step ? carryBase : pos;
+    let i = 0;
+    let j;
+    while ((j = buf.indexOf(0x0a, i)) >= 0) {
+      if (j > i) {
+        lines.push(buf.subarray(i, j).toString("utf8"));
+        offsets.push(base + i);
+      }
+      i = j + 1;
+    }
+    carry = buf.subarray(i);
+    carryBase = base + i;
+    pos += step;
+    scanned += step;
+    if (pos >= size) {
+      reachedEnd = true;
+      break;
+    }
+    if (done(lines)) break;
+  }
+  // ★改行無しで終わる最終行(または EOF)は、**本当に末尾まで読み切った時だけ**1行として拾う。
+  //   予算切れ(reachedEnd=false)の時に拾うと、続きが在るかもしれない断片を完成した行として
+  //   混ぜる事になる。
+  if (reachedEnd && carry.length > 0) {
+    lines.push(carry.toString("utf8"));
+    offsets.push(carryBase);
+  }
+  return { lines, offsets, reachedEnd, scanned };
 }
 
 /** 本物の fs。test で偽物に差し替えられる様に、ここ以外に `readSync` を書かない。 */

@@ -271,19 +271,21 @@ MUT = [
  # 単体も e2e も「module が読めない」で落ちていた = 検出に見えて**何も測っていない**。
  # 実際に測りたいのは「1回しか read しない実装を、7バイトずつ返す io が捕まえるか」。
  ("M43 短く返った read を読み直さない(繋いだ buffer に穴が開く)", LIS,
-  '''    while (got < len) {
-      const n = io.read(fd, b.subarray(got), pos + got);
-      if (n <= 0) break; // EOF
-      got += n;
-    }''',
-  '''    const n = io.read(fd, b.subarray(got), pos + got);
-    if (n > 0) got += n;'''),
+  # ★2026-09-03: `readLinesForward` が同じ read を持つので、後方読みの注釈行で的を一意にする
+  '  // 繋いだ buffer が実ファイルと違う並びになる = 黙って間違える形。\n  const read = (len, pos) => {\n    const b = Buffer.alloc(len);\n    let got = 0;\n    while (got < len) {\n      const n = io.read(fd, b.subarray(got), pos + got);\n      if (n <= 0) break; // EOF\n      got += n;\n    }',
+  '  // 繋いだ buffer が実ファイルと違う並びになる = 黙って間違える形。\n  const read = (len, pos) => {\n    const b = Buffer.alloc(len);\n    let got = 0;\n    const n = io.read(fd, b.subarray(got), pos + got);\n    if (n > 0) got += n;'),
+ ("M43f 前方読みの read が短く返った分を読み直さない(around の窓に穴が開く)", LIS,
+  '  // `readLinesBackward` の `read` と同じ理由で同じ形(短く返れば続きを読む)。\n  const read = (len, pos) => {\n    const b = Buffer.alloc(len);\n    let got = 0;\n    while (got < len) {\n      const n = io.read(fd, b.subarray(got), pos + got);\n      if (n <= 0) break; // EOF\n      got += n;\n    }',
+  '  // `readLinesBackward` の `read` と同じ理由で同じ形(短く返れば続きを読む)。\n  const read = (len, pos) => {\n    const b = Buffer.alloc(len);\n    let got = 0;\n    const n = io.read(fd, b.subarray(got), pos + got);\n    if (n > 0) got += n;'),
  ("M44 読み切っていなくても「無い」と断言する(metadataIncomplete を常に false)", LIS,
   'metadataIncomplete: !r.reachedStart && (m.entrypoint === null || m.lastPrompt === null),',
   'metadataIncomplete: false,'),
  ("M45 読む上限を外す(280MB の会話で一覧が止まる)", LIS,
-  'while (scanned < maxBytes) {',
-  'while (true) {'),
+  'while (scanned < maxBytes) {\n    const step = Math.min(chunk, end - scanned);',
+  'while (true) {\n    const step = Math.min(chunk, end - scanned);'),
+ ("M45f 前方読みの上限を外す(around の窓が末尾まで読み続ける)", LIS,
+  'while (scanned < maxBytes) {\n    const step = Math.min(chunk, size - pos);',
+  'while (true) {\n    const step = Math.min(chunk, size - pos);'),
  ("M46 改行で切らずに断片を完全な行として扱う(多バイト文字が割れる)", LIS,
   '''  if (!atFileStart) {
     const nl = buf.indexOf(0x0a);

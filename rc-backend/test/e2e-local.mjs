@@ -1078,6 +1078,49 @@ try {
       JSON.stringify({ stopped: stopped.searchedToStart, toStart: toStart.searchedToStart }));
   }
 
+  // 3-A. 錨を中心にした窓読み(`?around=`)—— 対照表 #3 の続き(2026-09-03)。
+  //
+  // ★何故 此処が要るか: 検索は当たりの錨と `fromEnd` を返すが、机の1要求あたりの上限(500件)
+  //   より深い当たりには電話は `tooFar` としか言えなかった(search-jump.md)。`?around=` は
+  //   其の先 —— 錨さえ渡せば、直接其処を中心にした窓を読める。関数の扉(`test/history-around.test.mjs`)
+  //   は通っているが、配線が届いているかは実サーバへ HTTP を撃たないと分からない
+  //   (2026-08-31 の全ルート死亡が同じ型で見つかった前例が此のファイルの頭に在る)。
+  {
+    const q = encodeURIComponent("最初");
+    const sr = await fetch(`${B}/api/sessions/${SID1}/history?q=${q}&limit=100`, { headers: H });
+    const sj = await sr.json();
+    const hit = (sj.history || [])[0];
+    check("★窓読みの前提: 検索が当たりを返す(錨付き)",
+      !!hit && typeof hit.anchor === "string", JSON.stringify(sj).slice(0, 200));
+    if (hit) {
+      const ar = await fetch(`${B}/api/sessions/${SID1}/history?around=${encodeURIComponent(hit.anchor)}&limit=6`, { headers: H });
+      const aj = await ar.json();
+      check("★窓読み: 検索の当たりの錨を中心にした窓が 200 で返り、其の錨を含む",
+        ar.status === 200 && Array.isArray(aj.history) && aj.history.some((e) => e.anchor === hit.anchor),
+        `status=${ar.status} ${JSON.stringify(aj).slice(0, 200)}`);
+      check("★窓読み: `olderAvailable` / `newerAvailable` はその綴りの真偽値で載る",
+        typeof aj.olderAvailable === "boolean" && typeof aj.newerAvailable === "boolean",
+        JSON.stringify(aj).slice(0, 200));
+      check("★窓読み: 応答の `anchor` は要求と同じ値を素通しする(窓が本当に其の錨を中心にした証拠)",
+        aj.anchor === hit.anchor, `req=${hit.anchor} got=${aj.anchor}`);
+      check("★窓読み: 項目は素の履歴と同じく `display.who` を持つ(電話が復号できる形)",
+        aj.history.every((e) => typeof e?.display?.who === "string"), JSON.stringify(aj.history[0]));
+    }
+
+    // 捏造された錨(範囲外)。転写が書き換わった/でっち上げの錨を、電話のバグ(bad-anchor)とは
+    // 別の状態として正直に断る。
+    const gone = await fetch(`${B}/api/sessions/${SID1}/history?around=999999:0`, { headers: H });
+    const goneJ = await gone.json().catch(() => null);
+    check("★窓読み: 捏造された錨(範囲外)は 409 anchor_gone", gone.status === 409 && goneJ?.reason === "anchor_gone",
+      `status=${gone.status} ${JSON.stringify(goneJ)}`);
+
+    // 形の壊れた錨。
+    const bad = await fetch(`${B}/api/sessions/${SID1}/history?around=xyz`, { headers: H });
+    const badJ = await bad.json().catch(() => null);
+    check("★窓読み: 形の壊れた錨は 400 bad_anchor", bad.status === 400 && badJ?.reason === "bad_anchor",
+      `status=${bad.status} ${JSON.stringify(badJ)}`);
+  }
+
   // 3-P. `@` のパス補完(`/paths`)—— **扉E**(2026-09-02)。
   //
   // 測るのは 3 層:
@@ -1734,6 +1777,34 @@ try {
     check("★PNG バイト -> 400 use-image-door(画像は attach の門を通す)",
       rPng.status === 400 && jPng.error === "ATTACH_REJECTED" && jPng.reason === "use-image-door",
       JSON.stringify(jPng));
+
+    // ★PDF(行 #24「PDF 添付」、2026-09-03)。v1 の文書語彙(sniff せず申告名の拡張子で
+    //   決める)と違い、PDF は**唯一の binary 例外**で magic byte だけで見分ける
+    //   ——ここで測るのは HTTP 層まで通しても content-type-blind のまま保たれているか
+    //   (申告名は信じない: bad-name の対照も併せて撃つ)。
+    const PDF_MIN = Buffer.concat([
+      Buffer.from("%PDF-1.4\n", "latin1"),
+      Buffer.from([0x00, 0x01]),
+      Buffer.from("\n%%EOF", "latin1"),
+    ]);
+    const beforePdf = sentKeys().length;
+    const rPdf = await attachFile(SID_READY, "report.pdf", PDF_MIN);
+    const jPdf = await rPdf.json();
+    check("★PDF magic 入り本文 -> 200、ext === pdf(NUL があっても binary にならない)",
+      rPdf.status === 200 && jPdf.ext === "pdf" && jPdf.name === "report.pdf"
+        && typeof jPdf.attachmentId === "string",
+      JSON.stringify(jPdf));
+    const pdfKeys = sentKeys().slice(beforePdf);
+    check("★置いた PDF の絶対パス(sandbox 配下、.pdf)が偽 tmux の send-keys ログに実在する",
+      pdfKeys.some((c) => c.includes("-l")
+        && String(c.at(-1)) === join(SB, "attachments", `${jPdf.attachmentId}.pdf`)),
+      JSON.stringify(pdfKeys));
+
+    const rPdfBadName = await attachFile(SID_READY, "notes.txt", PDF_MIN);
+    const jPdfBadName = await rPdfBadName.json();
+    check("★PDF magic 入り本文を .txt で申告 -> 400 bad-name(申告名は pdf に限定)",
+      rPdfBadName.status === 400 && jPdfBadName.error === "ATTACH_REJECTED" && jPdfBadName.reason === "bad-name",
+      JSON.stringify(jPdfBadName));
   }
 
   // ---- 10-h. 選択メニューへの打鍵(§2.29) ------------------------------------

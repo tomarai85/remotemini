@@ -15,8 +15,8 @@ import { homedir } from "node:os";
 import { spawn as nodeSpawn, execFileSync, execFile } from "node:child_process";
 import { makeDiffCache } from "./gitdiff.mjs";
 import { promisify } from "node:util";
-import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords, searchHistoryFromPath, permissionModeOf } from "./sessions.mjs";
-import { accountBody, diffBody, gapItem, healthzBody, historyBody, historySearchBody, messageItem, pathsBody, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody, attachFileBody, statusBodyTmux, statusBodyWorker } from "./wire.mjs";
+import { buildListing, isPhoneVisible, readHistoryFromPath, readHistoryAround, entriesFromRecord, unreadableRow, readRawRecords, searchHistoryFromPath, permissionModeOf } from "./sessions.mjs";
+import { accountBody, diffBody, gapItem, healthzBody, historyBody, historySearchBody, historyAroundBody, messageItem, pathsBody, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody, attachFileBody, statusBodyTmux, statusBodyWorker } from "./wire.mjs";
 import { completePaths, clampLimit as clampPathsLimit, PATHS_NO_CWD } from "./paths.mjs";
 // 差分を読む(対照表 #4)。git を撃つのは此の module だけで、撃つ動詞は `diff` のみ。
 import { readWorkingDiff } from "./sessiondiff.mjs";
@@ -1701,6 +1701,31 @@ const server = createServer(async (req, res) => {
           // 枝ごとに手で組むと、鍵が 1 つ増えた日に片方だけが古くなる。
           if (e.code === "ENOENT") {
             return json(res, 200, historySearchBody({ entries: [], matched: 0, reachedStart: true }));
+          }
+          return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", errno: errnoOf(e) });
+        }
+      }
+      // ★錨を中心にした窓読み(2026-09-03、窓読み)。`q` と`around` は同時に効かせない ——
+      //   `q` が在ればそちらを優先する(既に上で return 済み。此処へ来る時点で `q` は空)。
+      //   検索の当たりが机の1要求あたりの上限(500件)より深い時、電話は `tooFar` とだけ
+      //   答えていた(search-jump.md)。此処が其の先 —— 錨さえ渡せば、直接其処を中心にした
+      //   窓を読める。
+      const around = url.searchParams.get("around");
+      if (around !== null) {
+        try {
+          const r = readHistoryAround(target, around, limit);
+          return json(res, 200, historyAroundBody({
+            entries: r.history, anchor: r.anchor, olderAvailable: r.olderAvailable, newerAvailable: r.newerAvailable,
+          }));
+        } catch (e) {
+          // ★壊れた入力(形が違う)と、書き換わった転写(其の位置が今は行頭ではない/範囲外)を
+          //   区別する —— 前者は電話のバグ、後者は「転写が動いた」という状態で、電話側の
+          //   出し分け(再検索を促す/黙って諦める)が違う。
+          if (e.message === "bad-anchor") return json(res, 400, { error: "bad anchor", reason: "bad_anchor" });
+          if (e.message === "anchor-gone") return json(res, 409, { error: "anchor gone", reason: "anchor_gone" });
+          // まだ file が無い = 窓は空、両側とも「続きは無い」で正しい(検索の ENOENT 分岐と同じ判断)。
+          if (e.code === "ENOENT") {
+            return json(res, 200, historyAroundBody({ entries: [], anchor: around, olderAvailable: false, newerAvailable: false }));
           }
           return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", errno: errnoOf(e) });
         }

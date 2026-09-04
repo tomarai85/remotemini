@@ -69,6 +69,8 @@ const SH_INSTRUMENTS = [
   "../ios/tools/live-send-check.sh",
   "../ios/tools/live-interrupt-check.sh",
   "../ios/tools/live-poll-check.sh",
+  // ★2026-09-03: 探索→跳びの窓。GET だけの門なので「利用上限」は無く、3 = 机が答えていない(測っていない)。
+  "../ios/tools/live-search-check.sh",
 ];
 // ★写しでも**一覧からは落とさない**。落とすと TAP から名前ごと消えて「測っていない」が
 //   誰にも見えなくなる(= 黙って範囲が縮む)。skip として名前を残し、理由を言わせる。

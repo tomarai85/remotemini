@@ -14,7 +14,7 @@
 // listing.mjs の readLinesBackward に任せる — 持ち越し・短い read・多バイト境界の
 // 扱いを2箇所に書かない為(2026-08-02)。
 import { closeSync, openSync } from "node:fs";
-import { nodeIo, readLinesBackward, TAIL_MAX } from "./listing.mjs";
+import { nodeIo, readLinesBackward, readLinesForward, TAIL_MAX } from "./listing.mjs";
 
 /**
  * jsonl の1ファイル分のテキストから一覧用メタデータを抜く。
@@ -272,6 +272,96 @@ export function searchHistoryFromPath(path, q, limit = 50, opts = {}) {
       matched: all.length,
       reachedStart: r.reachedStart,
       scanned: r.scanned,
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * 錨(対照表 #3)を中心に、前後合わせて `limit` 件の履歴窓を返す(2026-09-03、窓読み)。
+ *
+ * ── 何故 要るか(`.harness/evidence-2026-09-03/search-jump.md`)────────────────────────
+ * 電話の探索は机の1要求あたりの上限(500 件)より深い当たりに `tooFar` と正直に言うだけで、
+ * 其処へ**着地する**手段が無かった。錨は行の byte 位置(追記専用の jsonl では不変)なので、
+ * 其処から**手前**(古い方)へ `Math.ceil(limit/2)` 件、**先**(新しい方)へ残りを読めば、
+ * 当たりを中心にした窓が組める —— 一覧・検索と同じ `readLinesBackward` の上に、対称形の
+ * 新設 `readLinesForward` を足すだけで、有界読みの規約(持ち越し・短い read・多バイト境界)を
+ * 3箇所目に書かない。
+ *
+ * ★錨の検証は2段:
+ *   ① 形が `<byte 位置>:<行内の番号>` でなければ `bad-anchor`(壊れた入力・打ち間違い)。
+ *   ② byte 位置が `[0, fileSize)` の外、または**行の先頭ではない**なら `anchor-gone`
+ *      (転写が書き換わった・錨が捏造された)。追記専用の jsonl では「行の先頭でない」は
+ *      本物の錨には偶然起きない —— 起きるとしたら其の錨が本物の行から来ていない時だけ。
+ *
+ * ★chunk が広いと(既定 64KiB)、錨の手前が丸ごと1 chunk に収まって `done` の出番が来る前に
+ *   `Math.ceil(limit/2)` を大きく超えて集まる事が在る(境界の外側は全部1歩で読めてしまう為)。
+ *   **錨に近い側だけ残す様に trim する** —— でないと chunk の大小で窓の大きさが変わり、
+ *   同じ錨・同じ `limit` でも呼ぶ度に答えが違う事になる(`readHistoryFromPath` の
+ *   `all.slice(-limit)` と同じ判断)。trim で切り落とした分は**確かに存在する**ので、
+ *   `olderAvailable`/`newerAvailable` は其れも「続きが在る」に数える
+ *   (`readHistoryFromPath` の `truncated: !r.reachedStart || all.length > limit` と同型)。
+ *
+ * ★前方の要求数は**最低 `錨の行内番号 + 1` 件**にする。手前の読みが overshoot で
+ *   既に `limit` 件を超えていても、錨そのものが載る行は `before` 側には絶対に入らない
+ *   (`readLinesBackward` は `end` より**手前**しか見ない)。単純に「最低1件」にすると、
+ *   其の行が複数項目を持つ(道具呼び出し込みの assistant 発言)時、trim で錨自身の番号
+ *   (2番目以降)が切り落とされ得る —— 「錨は必ず窓に入る」を守るには、其の行の**冒頭から
+ *   錨の番号まで**を最低ラインにしなければならない。
+ *
+ * @param {string} path
+ * @param {string} anchor `<byteOffset>:<indexWithinRecord>`
+ * @param {number} limit 返す項目数(前後の合計の目安)
+ * @param {object} [opts] io / chunk / maxBytes(test 用)
+ * @returns {{history:Array, anchor:string, olderAvailable:boolean, newerAvailable:boolean, scanned:number}}
+ */
+export function readHistoryAround(path, anchor, limit = 50, opts = {}) {
+  const m = /^(\d+):(\d+)$/.exec(String(anchor));
+  if (!m) throw new Error("bad-anchor");
+  const offset = Number(m[1]);
+  const wantIndex = Number(m[2]); // 錨が指す、其の行の中の何番目の項目か
+
+  const io = opts.io ?? nodeIo;
+  const fd = openSync(path, "r");
+  try {
+    const size = io.fstat(fd).size;
+    if (!(offset >= 0 && offset < size)) throw new Error("anchor-gone");
+    // 行の先頭かどうかは、直前の1 byte が改行(0x0a)かで判る。`offset===0` は無条件に行頭。
+    if (offset > 0) {
+      const prev = Buffer.alloc(1);
+      const n = io.read(fd, prev, offset - 1);
+      if (n !== 1 || prev[0] !== 0x0a) throw new Error("anchor-gone");
+    }
+
+    const wantOlder = Math.ceil(limit / 2);
+    const before = readLinesBackward(io, fd, {
+      chunk: opts.chunk,
+      maxBytes: opts.maxBytes,
+      end: offset,
+      done: (lines) => entriesFromLines(lines).length >= wantOlder,
+    });
+    const beforeAll = entriesFromLines(before.lines, before.offsets);
+    // 手前の trim: 錨に近い側(=末尾)を残す。
+    const beforeEntries = beforeAll.length > wantOlder ? beforeAll.slice(-wantOlder) : beforeAll;
+
+    const wantNewer = Math.max(wantIndex + 1, limit - beforeEntries.length);
+    const after = readLinesForward(io, fd, {
+      chunk: opts.chunk,
+      maxBytes: opts.maxBytes,
+      start: offset,
+      done: (lines) => entriesFromLines(lines).length >= wantNewer,
+    });
+    const afterAll = entriesFromLines(after.lines, after.offsets);
+    // 先の trim: 錨に近い側(=先頭)を残す。
+    const afterEntries = afterAll.length > wantNewer ? afterAll.slice(0, wantNewer) : afterAll;
+
+    return {
+      history: [...beforeEntries, ...afterEntries],
+      anchor,
+      olderAvailable: !before.reachedStart || beforeAll.length > beforeEntries.length,
+      newerAvailable: !after.reachedEnd || afterAll.length > afterEntries.length,
+      scanned: before.scanned + after.scanned,
     };
   } finally {
     closeSync(fd);

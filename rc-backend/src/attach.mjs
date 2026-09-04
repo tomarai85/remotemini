@@ -74,21 +74,40 @@ export function newAttachmentId() {
  * `storeFile` が通す文書の拡張子(2026-09-03、行 #23「非画像の添付」)。
  * ★v1 は**文章だけ**(log tail / CSV / JSON / Markdown / ソース)。実行される物・
  *   圧縮/アーカイブ・バイナリは対象外(`storeFile` の NUL 検査が別途弾く)。
+ * ★PDF(行 #24)はここに**入れない**。PDF は magic byte(`isPdfMagic`)だけで見分ける
+ *   唯一の binary 例外で、拡張子ではなく中身が通す/落とすを決める(content-type-blind
+ *   の意味そのもの)。ここへ混ぜると「中身が PDF でない `.pdf` 申告」も文書として
+ *   通ってしまい、判定が申告名に寄ってしまう。
  */
 const TEXT_ATTACH_EXTS = [
   "txt", "log", "md", "csv", "json", "yaml", "yml", "toml", "diff", "patch",
   "py", "js", "ts", "mjs", "swift", "sh", "rb", "go", "rs", "html", "css", "xml",
 ];
-const ATTACH_EXT_RE = new RegExp(`^(?:png|jpg|${TEXT_ATTACH_EXTS.join("|")})$`);
+
+/**
+ * `storeFile` が admit する唯一の binary 形式(2026-09-03、行 #24「PDF 添付」)。
+ * ★**厳密に5byte**(`%PDF-`、版番号の前の dash まで)。PDF 仕様は dash を必ず伴うので、
+ *   4byte(`%PDF`)止まりの一致は本物の PDF 頭ではあり得ない —— それを PDF として
+ *   通すと「印だけ似せたバイト列」が NUL 拒否の抜け道になる(検査は下の
+ *   mutation-style negative が裏を取る)。
+ */
+const PDF_MAGIC = Buffer.from("%PDF-", "latin1");
+const PDF_EXT = "pdf";
+function isPdfMagic(buf) {
+  return buf.length >= PDF_MAGIC.length && buf.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC);
+}
+
+const ATTACH_EXT_RE = new RegExp(`^(?:png|jpg|${PDF_EXT}|${TEXT_ATTACH_EXTS.join("|")})$`);
 
 /**
  * 置き場の中の絶対パス。**外へ出さない**(応答には id だけ載せる)。
  * id は自分で作った 32 文字の hex だけを受ける —— 呼び手が別の物を渡した時に
  * 黙って外へ出ないよう、ここで形を検める。
  *
- * ★拡張子の語彙は画像(png/jpg)と `storeFile` の文書語彙(`TEXT_ATTACH_EXTS`)の和。
- *   `storeFile` はここへ**申告名の拡張子**を渡す為、語彙を広げるのはここが唯一の場所
- *   ——「安全な拡張子か」を決める責任を2箇所に散らさない。
+ * ★拡張子の語彙は画像(png/jpg)・PDF(`PDF_EXT`)・`storeFile` の文書語彙
+ *   (`TEXT_ATTACH_EXTS`)の和。`storeFile` はここへ**申告名の拡張子**を渡す為、
+ *   語彙を広げるのはここが唯一の場所 ——「安全な拡張子か」を決める責任を
+ *   2箇所に散らさない。
  */
 export function pathOf(baseDir, id, ext) {
   if (!/^[0-9a-f]{32}$/.test(String(id))) throw new Error("bad-attachment-id");
@@ -228,12 +247,14 @@ export function storeImage(buf, o) {
  * ★`../../x.txt` を basename へ削って通すと、「拒んだ」という記録が電話に届かないまま
  *   `x.txt` として通ってしまう —— 拒否と受理の境目が消える。だから許す形に**完全一致**
  *   しない申告名は、削らずそのまま `bad-name` で落とす。
- * ★拡張子は `TEXT_ATTACH_EXTS`(= `pathOf` が持つ和の文書側)としか一致させない —— 実行される
- *   物や圧縮/アーカイブは v1 の対象外(attach.mjs 冒頭の注記どおり、防げない物を先に書く形)。
+ * ★拡張子の語彙は呼び手が渡す(`allowedExts`)——中身が PDF かどうかで許す拡張子の
+ *   集合が変わる(PDF なら `pdf` だけ、それ以外は `TEXT_ATTACH_EXTS`)ので、ここへ
+ *   固定で焼き込まない。実行される物や圧縮/アーカイブは v1 の対象外(attach.mjs
+ *   冒頭の注記どおり、防げない物を先に書く形)。
  * @returns {{name:string, ext:string}}
  * @throws Error("bad-name")
  */
-function sanitiseAttachName(raw) {
+function sanitiseAttachName(raw, allowedExts) {
   if (typeof raw !== "string" || raw.length === 0) throw new Error("bad-name");
   if (raw.length > 64) throw new Error("bad-name");
   // '/' はこの形に無い = 経路の区切りを含む申告名はここで落ちる(basename には削らない)。
@@ -242,12 +263,12 @@ function sanitiseAttachName(raw) {
   const dot = raw.lastIndexOf(".");
   if (dot <= 0 || dot === raw.length - 1) throw new Error("bad-name");   // 拡張子が無い
   const ext = raw.slice(dot + 1);
-  if (!TEXT_ATTACH_EXTS.includes(ext)) throw new Error("bad-name");
+  if (!allowedExts.includes(ext)) throw new Error("bad-name");
   return { name: raw, ext };
 }
 
 /**
- * 非画像の文書を検めて置く(2026-09-03、行 #23「非画像の添付」)。
+ * 非画像の文書を検めて置く(2026-09-03、行 #23「非画像の添付」/ 行 #24「PDF 添付」)。
  *
  * ★`storeImage` と役割を分ける理由: 画像は形式を**先頭バイトで**決める(申告は読まない)が、
  *   文書は形式が多様すぎて sniff できない —— 代わりに**申告名**(の拡張子)を、
@@ -256,10 +277,18 @@ function sanitiseAttachName(raw) {
  *   通す。二重の入口を持たせない。
  * ★NUL バイトを含む物は弾く(`binary`)。v1 は log tail / CSV / JSON / Markdown / ソースだけ
  *   ——「読めば済む」範囲を超えた物は対象にしない(attach.mjs 冒頭の注記と同じ判断)。
+ * ★★PDF だけは例外(行 #24、2026-09-03、design 確定)。**magic byte だけ**で見分ける
+ *   ——申告名は信じない(content-type-blind の意味そのもの)。`%PDF-` で始まる本文は
+ *   NUL 拒否を迂回して `format:"pdf"` で置く。ただし申告名の拡張子は `pdf` に**限定**
+ *   する(それ以外は `bad-name`)—— 中身が PDF でも申告名が PDF だと言っていない物を
+ *   通す理由が無い。逆に申告名が `.pdf` でも中身に `%PDF-` が無ければ同じく `bad-name`
+ *   ——「名前は PDF だと言うがバイトはそう言っていない」を content-type-blind のまま
+ *   拒む(通常の文書として扱う理由も無い、`pdf` は `TEXT_ATTACH_EXTS` に無い)。
+ *   PDF のパース・レンダリング・メタデータ読み出しは一切しない —— バイトはそのまま置く。
  *
  * @param {Buffer} buf 受け取った生バイト
  * @param {{baseDir:string, name:string, id?:string}} o
- * @returns {{id:string, ext:string, bytes:number, name:string, format:"text"}}
+ * @returns {{id:string, ext:string, bytes:number, name:string, format:"text"|"pdf"}}
  * @throws Error("too-large"|"empty-body"|"use-image-door"|"binary"|"bad-name"|...)
  */
 export function storeFile(buf, o) {
@@ -269,8 +298,11 @@ export function storeFile(buf, o) {
   if (buf.length > ATTACH_MAX_BYTES) throw new Error("too-large");
   // ★画像は別の門(storeImage)を通す。ここで通すと sniff/scrub の保護が素通りする。
   if (sniffFormat(buf)) throw new Error("use-image-door");
-  if (buf.includes(0)) throw new Error("binary");
-  const { name, ext } = sanitiseAttachName(o?.name);
+  // ★PDF magic(`%PDF-`、5byte 厳密一致)の時だけ NUL 拒否を迂回する。PDF はバイナリ
+  //   形式そのもので、NUL を含むのが普通 —— テキストの語彙にはこの迂回を及ぼさない。
+  const isPdf = isPdfMagic(buf);
+  if (!isPdf && buf.includes(0)) throw new Error("binary");
+  const { name, ext } = sanitiseAttachName(o?.name, isPdf ? [PDF_EXT] : TEXT_ATTACH_EXTS);
 
   ensureBaseDir(baseDir);
   const id = o?.id ?? newAttachmentId();
@@ -283,7 +315,7 @@ export function storeFile(buf, o) {
     renameExclusive(tmp, dest);
     // ★`storeImage` と同じ理由でもう一度締める(2026-08-26 実測の教訓を踏襲)。
     chmodSync(dest, 0o600);
-    return { id, ext, bytes: statSync(dest).size, name, format: "text" };
+    return { id, ext, bytes: statSync(dest).size, name, format: isPdf ? "pdf" : "text" };
   } catch (e) {
     try { unlinkSync(tmp); } catch { /* 置きっぱなしにしない */ }
     throw e;
@@ -345,9 +377,10 @@ function sipsConvert(from, to, fmt) {
     { encoding: "utf8", timeout: 60000, killSignal: "SIGKILL" });
 }
 
-/** `sweepOld` が消す対象の名前の形。`pathOf` の拡張子語彙(画像+文書)と揃える —— 揃えないと
- *  `storeFile` が置いた文書が「形の合わない名前」として掃除から漏れ、置き場が育ち続ける。 */
-const ATTACH_NAME_RE = new RegExp(`^[0-9a-f]{32}\\.(?:png|jpg|${TEXT_ATTACH_EXTS.join("|")})(\\.part)?$`);
+/** `sweepOld` が消す対象の名前の形。`pathOf` の拡張子語彙(画像+PDF+文書)と揃える ——
+ *  揃えないと `storeFile` が置いた PDF/文書が「形の合わない名前」として掃除から漏れ、
+ *  置き場が育ち続ける。 */
+const ATTACH_NAME_RE = new RegExp(`^[0-9a-f]{32}\\.(?:png|jpg|${PDF_EXT}|${TEXT_ATTACH_EXTS.join("|")})(\\.part)?$`);
 
 /**
  * 古い添付を消す。**置き場の中の、形の合う名前だけ**を消す。

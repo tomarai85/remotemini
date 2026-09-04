@@ -1328,8 +1328,9 @@ struct ConversationView: View {
                 .accessibilityIdentifier("conversation.attachFileButton")
                 .accessibilityLabel("Attach a text file")
                 .fileImporter(isPresented: $showFileImporter,
+                              // `.pdf` は机が magic bytes(`%PDF-`)で見て受ける唯一の binary(2026-09-03)。
                               allowedContentTypes: [.plainText, .utf8PlainText, .text, .json, .commaSeparatedText,
-                                                    .yaml, .xml, .html, .sourceCode, .log, .delimitedText]) { result in
+                                                    .yaml, .xml, .html, .sourceCode, .log, .delimitedText, .pdf]) { result in
                     Task { await sendPickedFile(result) }
                 }
 
