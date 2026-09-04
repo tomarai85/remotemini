@@ -64,6 +64,9 @@ const MJS_INSTRUMENTS = [
   "tools/live-http-check.mjs",
   "tools/live-choice-check.mjs",
   "tools/live-resume-cwd-check.mjs",
+  // ★2026-09-04: 本番の机で一度も叩かれていなかった読むだけの 3 口(status/diff/paths)。
+  //   8 日分のログを数えて見つけた —— 検査も e2e も緑だが、通っていたのは偽 tmux と作り物の机だけ。
+  "tools/live-cold-routes-check.mjs",
 ];
 const SH_INSTRUMENTS = [
   "../ios/tools/live-send-check.sh",
