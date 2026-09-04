@@ -1087,6 +1087,9 @@ LOCAL_CTLS=(
     test/run-controls-coverage-controls.sh
     # 2026-09-01: `--dry-run` が指紋台帳を書き、本物の通知を 1 回食っていた欠陥の対照。
     test/digest-notify-dry-controls.sh
+    test/digest-notify-completion-log-controls.sh # ★2026-09-04。完了の遷移を「記録するだけ」の仕掛けが
+                                     # 鳴らす経路を汚していないか(14 通り)。C4 = 完了を挟んでも判断待ちは鳴る、
+                                     # C7 = 記録が標準出力へ紛れても通知しない、C8 = 台帳が無制限に太らない。
                                      # ★2026-08-31。「取りこぼしが無いか」を答える計器が
                                      #   **答えるだけで何も起こさない**事を測る。初版の案内文が
                                      #   二重引用符の中に backtick を書いていて、読むだけの筈の
