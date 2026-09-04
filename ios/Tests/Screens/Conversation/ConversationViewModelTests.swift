@@ -48,6 +48,12 @@ final class ConversationViewModelTests: XCTestCase {
             guard !searchQueue.isEmpty else { return .failure(.unreachable) }
             return searchQueue.removeFirst()
         }
+
+        /// 錨の窓は此の suite の対象外(窓の歩き方は `SearchJumpTests` が測る)。
+        /// 呼ばれたら黙って通さず、届かないと答える。
+        func around(baseURL: URL, apiKey: String, sessionID: String, anchor: String, limit: Int) async -> Result<HistoryAroundResponse, SessionsFetchError> {
+            .failure(.unreachable)
+        }
     }
 
     /// Sprint 5's send-path stub. Records what `ConversationViewModel.send()` handed
@@ -123,6 +129,10 @@ final class ConversationViewModelTests: XCTestCase {
         /// 「もっともらしい `.unreachable`」ではなく**名前の付いた赤**を出す。
         func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async -> Result<TranscriptSearchResponse, SessionsFetchError> {
             XCTFail("this test's view model was not expected to search the transcript")
+            return .failure(.unreachable)
+        }
+        func around(baseURL: URL, apiKey: String, sessionID: String, anchor: String, limit: Int) async -> Result<HistoryAroundResponse, SessionsFetchError> {
+            XCTFail("this test's view model was not expected to read an anchored window")
             return .failure(.unreachable)
         }
     }

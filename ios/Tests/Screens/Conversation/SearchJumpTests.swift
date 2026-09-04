@@ -51,6 +51,9 @@ final class SearchJumpTests: XCTestCase {
         func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async -> Result<TranscriptSearchResponse, SessionsFetchError> {
             .failure(.unreachable)
         }
+        func around(baseURL: URL, apiKey: String, sessionID: String, anchor: String, limit: Int) async -> Result<HistoryAroundResponse, SessionsFetchError> {
+            .failure(.unreachable)
+        }
     }
 
     func testAHitAlreadyLoadedIsRevealedWithoutRefetching() async {

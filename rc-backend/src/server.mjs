@@ -1032,6 +1032,28 @@ function speaks(res, fn) {
 const AUTH_REQUIRED = Object.freeze({ error: "unauthorized", code: "AUTH_REQUIRED" });
 /// 転写検索の後方走査の上限。素の履歴の `TAIL_MAX`(1 MiB)とは**別に持つ** —— 用途が違う。
 export const SEARCH_TAIL_MAX = 16 * 1024 * 1024;
+
+/**
+ * `/history` の `limit` を枠へ収める(既定 50、1..500)。2026-09-04、Codex around-review F3。
+ *
+ * ★旧実装は `Math.min(Number(url.searchParams.get("limit") || 50), 500)` を history ハンドラの
+ *   頭で1回だけ計算し、`q` / `around` / tail の**3経路が其の1つの値を共有**していた
+ *   (`url.searchParams.get("limit")` が truthy な非数値文字列だと `Number(...)` が
+ *   `NaN` になり、`Math.min(NaN, 500)` も `NaN` のまま素通りする —— JS の `||` は左辺が
+ *   truthy な文字列なら右辺の既定 50 を見ない)。`limit=bogus` で `NaN` が
+ *   `readHistoryAround`/`readHistoryFromPath` の `done` 判定(`entries.length >= NaN` は
+ *   常に false)まで届き、trim も効かなくなる(F3 の指摘そのもの)。`limit=-1` は
+ *   `all.slice(-(-1))===all.slice(1)` で先頭を1件失う。`limit=1e9` は素の `Number()` が
+ *   受理するので此処では実害が無いが(既に 500 へ丸まる)、`bogus`/`-1` は3経路とも壊れて
+ *   いたので**此処1箇所を直せば3経路とも直る**(tail 側も同じ式を使っていた = F3 の
+ *   指示通り両方を同じ形で直す)。
+ * @param {unknown} v `url.searchParams.get("limit")` の生の返り値(string | null)
+ */
+function clampHistoryLimit(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1) return 50;
+  return Math.min(500, n);
+}
 /// 作業木の差分の数(一覧の ± バッジ)。同期で返し、裏で cwd ごとに取り直す。
 const diffCache = makeDiffCache();
 const SESSION_NOT_FOUND = Object.freeze({ error: "unknown session", code: "SESSION_NOT_FOUND" });
@@ -1670,17 +1692,44 @@ const server = createServer(async (req, res) => {
     };
 
     if (action === "history" && req.method === "GET") {
-      const limit = Math.min(Number(url.searchParams.get("limit") || 50), 500);
-      // ★§2.18-4b: fork の後、本文も返事も**枝の file** に書かれる。祖先を読むと電話には
-      //   fork より前しか出ず、送った筈の一言が消えて見える。引き先を頭へ付け替える
-      //   (変異 P13)。頭が無い / 頭の file が見つからない = 祖先のまま = 何も失わない。
-      const target = transcriptTarget();
-      if (!target) return json(res, 200, { history: [] }); // まだ何も言っていない会話
+      // ★F3(2026-09-04、Codex around-review): garbage(非数値・負・小数)は既定 50 へ
+      //   落とし、1..500 に収める。`q`/`around`/tail の3経路が此の1つの `limit` を
+      //   共有するので、此処1箇所を直せば3経路とも直る(旧実装の不具合と経路は
+      //   `clampHistoryLimit` の頭注に書いた)。
+      const limit = clampHistoryLimit(url.searchParams.get("limit"));
       // ★転写の中を探す(2026-08-31)。`q` が在る時だけ経路が変わる。
       //   0 件には 2 つの意味が在る —— 走査した範囲に無かった / 会話の最初まで見て無かった。
       //   混ぜると「無い」と言い切れない物を言い切る事になるので、`reachedStart` を返して
       //   電話側が「此処までは見た」と言える様にする。
       const q = (url.searchParams.get("q") || "").trim();
+      // ★錨を中心にした窓読み(2026-09-03、窓読み)。`around` の有無は之で判定する
+      //   (`!target`/F6 の分岐が `q` と `around` の両方を先に知る必要がある為、
+      //   `!target` の**手前**へ引き上げた —— 2026-09-04、Codex F4/F6)。
+      const around = url.searchParams.get("around");
+      // ★F6(2026-09-04): `q` と `around` を同時に渡された時、旧実装は `q` を無条件に
+      //   優先していた(`around` の値が捏造でも 200 が返る) —— 意図が消える組み合わせ
+      //   なので、其の場で断る。`bad_anchor`/`anchor_gone` と同じ小文字スネークケースの
+      //   語彙(此の handler の既存の reason)に揃える —— 大文字語彙にすると
+      //   `test/wire-vocabulary-agreement.test.mjs` の採取対象になり、電話側の許可表を
+      //   増やす必要が出る(此の reason は電話が分岐に使う語ではない)。
+      if (q && around !== null) {
+        return json(res, 400, { error: "q and around are mutually exclusive", reason: "q_and_around" });
+      }
+      // ★§2.18-4b: fork の後、本文も返事も**枝の file** に書かれる。祖先を読むと電話には
+      //   fork より前しか出ず、送った筈の一言が消えて見える。引き先を頭へ付け替える
+      //   (変異 P13)。頭が無い / 頭の file が見つからない = 祖先のまま = 何も失わない。
+      const target = transcriptTarget();
+      if (!target) {
+        // ★F4(2026-09-04): `around` が在る時は形も合わせる —— 後段の ENOENT 分岐
+        //   (`historyAroundBody({..., olderAvailable:false, newerAvailable:false})`)と
+        //   同じ封筒にする。旧実装はここで無条件に `{history:[]}` を返しており、電話の
+        //   `HistoryAroundResponse`(anchor/olderAvailable/newerAvailable が非 optional)が
+        //   復号できない応答になっていた。
+        if (around !== null) {
+          return json(res, 200, historyAroundBody({ entries: [], anchor: around, olderAvailable: false, newerAvailable: false }));
+        }
+        return json(res, 200, { history: [] }); // まだ何も言っていない会話
+      }
       if (q) {
         try {
           // ★2026-09-02: 走査距離を `TAIL_MAX`(1 MiB)から `SEARCH_TAIL_MAX` へ。
@@ -1705,12 +1754,11 @@ const server = createServer(async (req, res) => {
           return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", errno: errnoOf(e) });
         }
       }
-      // ★錨を中心にした窓読み(2026-09-03、窓読み)。`q` と`around` は同時に効かせない ——
-      //   `q` が在ればそちらを優先する(既に上で return 済み。此処へ来る時点で `q` は空)。
+      // ★錨を中心にした窓読み(2026-09-03、窓読み)。`q` と `around` の同時指定は
+      //   既に頭(F6)で 400 にした上で此処へ来ているので、此処に来た時点で `q` は空。
       //   検索の当たりが机の1要求あたりの上限(500件)より深い時、電話は `tooFar` とだけ
       //   答えていた(search-jump.md)。此処が其の先 —— 錨さえ渡せば、直接其処を中心にした
       //   窓を読める。
-      const around = url.searchParams.get("around");
       if (around !== null) {
         try {
           const r = readHistoryAround(target, around, limit);

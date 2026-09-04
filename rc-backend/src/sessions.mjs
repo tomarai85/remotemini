@@ -14,7 +14,7 @@
 // listing.mjs の readLinesBackward に任せる — 持ち越し・短い read・多バイト境界の
 // 扱いを2箇所に書かない為(2026-08-02)。
 import { closeSync, openSync } from "node:fs";
-import { nodeIo, readLinesBackward, readLinesForward, TAIL_MAX } from "./listing.mjs";
+import { nodeIo, readLinesBackward, readLinesForward, TAIL_MAX, LINE_CAP_MAX } from "./listing.mjs";
 
 /**
  * jsonl の1ファイル分のテキストから一覧用メタデータを抜く。
@@ -162,21 +162,29 @@ export function extractHistory(jsonlText, limit = 50) {
 }
 
 /**
- * 行の配列(古い順)を表示用の項目列にする。壊れた行は飛ばす。
+ * 行の配列(古い順)を、**共有の `pending`** へ対して処理する下回り(2026-09-04、T-F2/T-F5)。
+ * `out` へ積み、`pending` を書き換える(呼び手が2回呼んで橋を渡す為に分けた —— 下記)。
  *
  * ★道具の結果の畳み込み(2026-09-03、queue `transcript-tool-output-folds-into-the-entry`):
  *   `tool_use` の entry と、其の後の行で届く `tool_result` を此処で対にする ——
  *   1レコードずつしか見ない `entriesFromRecord` では出来ない(結果は**後の**行に居る)。
- *   `pending`(tool_use の id -> 其の entry への参照)を行を跨いで持ち回り、`tool_result` の
- *   `tool_use_id` が当たったら**其の entry を直接書き換える**(`out` に積んだのと同じ
- *   オブジェクト参照なので、此処での変更がそのまま返り値に乗る)。
+ *   `pending`(tool_use の id -> 其の entry への参照の**列**)を行を跨いで持ち回り、
+ *   `tool_result` の `tool_use_id` が当たったら**先頭の entry を直接書き換える**
+ *   (`out` に積んだのと同じオブジェクト参照なので、此処での変更がそのまま返り値に乗る)。
  * ★`tool_use_id` 自体は entry に残さない —— `wire.mjs` の `withWho` は entry を丸ごと
  *   spread して線に出すので、entry のプロパティに残せば其のまま漏れる。ペアリングの
  *   材料は此の関数のローカル変数(`pending` / `toolPairs`)だけに留める。
+ * ★T-F5: 同じ id の `tool_use` が2つ在っても(理論上/壊れた転写)、`pending` は
+ *   id -> **FIFO キュー**を持つ。`tool_result` は其の id の**先頭(先に来た方)**を消費して
+ *   解決する —— 素の `Map.set` が上書きだと、2つ目の `tool_use` が1つ目を踏み消し、
+ *   後から来た `tool_result` が**間違った方**(2つ目)に付いてしまう。
+ * ★`pending` を呼び手から**受け取る**理由(2026-09-04、T-F2): `readHistoryAround` が
+ *   before(手前)と after(先)を別々の `readLinesBackward`/`readLinesForward` で読む ——
+ *   其々が自分の `pending` を新しく持つと、`tool_use` が手前・`tool_result` が先という
+ *   **継ぎ目を跨いだ対**は永遠に揃わない。呼び手が1つの `pending` を両方の呼び出しへ
+ *   渡せば、時系列順(before → after)に通す限り継ぎ目を跨いでも対になる。
  */
-export function entriesFromLines(lines, offsets) {
-  const out = [];
-  const pending = new Map();
+function collectEntries(lines, offsets, pending, out) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
@@ -187,12 +195,16 @@ export function entriesFromLines(lines, offsets) {
       continue;
     }
     const { entries, toolPairs, results } = analyzeRecord(obj);
-    for (const { id, entry } of toolPairs) pending.set(id, entry);
+    for (const { id, entry } of toolPairs) {
+      if (!pending.has(id)) pending.set(id, []);
+      pending.get(id).push(entry);
+    }
     for (const r of results) {
-      const target = pending.get(r.toolUseId);
-      if (target) {
+      const q = pending.get(r.toolUseId);
+      if (q && q.length > 0) {
+        const target = q.shift(); // FIFO: 先に呼ばれた tool_use から解決する
         applyToolOutput(target, r);
-        pending.delete(r.toolUseId);
+        if (q.length === 0) pending.delete(r.toolUseId);
       }
     }
     // ★錨(2026-09-03、対照表 #3): 行の byte 位置 + 行内の何番目か。追記しか起きない jsonl では
@@ -203,6 +215,12 @@ export function entriesFromLines(lines, offsets) {
     }
     out.push(...entries);
   }
+}
+
+/** 行の配列(古い順)を表示用の項目列にする。壊れた行は飛ばす。単発の呼び手用(`pending` は使い捨て)。 */
+export function entriesFromLines(lines, offsets) {
+  const out = [];
+  collectEntries(lines, offsets, new Map(), out);
   return out;
 }
 
@@ -215,7 +233,7 @@ export function entriesFromLines(lines, offsets) {
  *
  * @param {string} path
  * @param {number} limit 返す項目数
- * @param {object} [opts] io / chunk / maxBytes(test 用)
+ * @param {object} [opts] io / chunk / maxBytes / lineCap(test 用)
  * @returns {{history:Array, truncated:boolean, scanned:number}}
  *   `truncated` = これより前の履歴がまだ在る(読み切っていない)。UI はここで「以前がある」と言える。
  */
@@ -225,6 +243,13 @@ export function readHistoryFromPath(path, limit = 50, opts = {}) {
     const r = readLinesBackward(opts.io ?? nodeIo, fd, {
       chunk: opts.chunk,
       maxBytes: opts.maxBytes,
+      // ★T-F1(2026-09-04、Codex toolout-review): 1.1MB の `tool_result` 1件が既定の
+      //   `maxBytes`(TAIL_MAX=1MiB)より大きいだけで、其の record が丸ごと未完のまま
+      //   捨てられ、`tool_use` の entry まで消えていた(道具の entry は `tool_use` の
+      //   行が読めて初めて生まれる)。`readLinesBackward` 側の延長(1レコード分だけ
+      //   `LINE_CAP_MAX` まで読み切る)を既定で効かせる —— 通常サイズの record しか
+      //   無い時は`lines.length===0`にならないので延長は起動せず、挙動は変わらない。
+      lineCap: opts.lineCap ?? LINE_CAP_MAX,
       // 「行が limit 本」ではなく「**項目が limit 件**」で止める。
       // 1レコードが 0 件(meta 行)にも複数件(本文 + tool 呼び)にもなるので、
       // 行数で数えると足りない/読み過ぎのどちらにもなる。
@@ -300,7 +325,8 @@ export function searchHistoryFromPath(path, q, limit = 50, opts = {}) {
 }
 
 /**
- * 錨(対照表 #3)を中心に、前後合わせて `limit` 件の履歴窓を返す(2026-09-03、窓読み)。
+ * 錨(対照表 #3)を中心に、前後合わせて `limit` 件の履歴窓を返す(2026-09-03、窓読み。
+ * 2026-09-04、Codex around-review F1/F2/F5 + toolout-review T-F2 を反映)。
  *
  * ── 何故 要るか(`.harness/evidence-2026-09-03/search-jump.md`)────────────────────────
  * 電話の探索は机の1要求あたりの上限(500 件)より深い当たりに `tooFar` と正直に言うだけで、
@@ -315,26 +341,50 @@ export function searchHistoryFromPath(path, q, limit = 50, opts = {}) {
  *   ② byte 位置が `[0, fileSize)` の外、または**行の先頭ではない**なら `anchor-gone`
  *      (転写が書き換わった・錨が捏造された)。追記専用の jsonl では「行の先頭でない」は
  *      本物の錨には偶然起きない —— 起きるとしたら其の錨が本物の行から来ていない時だけ。
+ *   ③ 窓を組み終えた後、其の窓が要求した錨(`${offset}:${wantIndex}`)を**実際に含む**か
+ *      (F2)。含まなければ `anchor-gone` —— `wantIndex` が其の行の実際の項目数を超えている
+ *      (行はあるが番号が存在しない)場合と、錨の行自体が `LINE_CAP_MAX` を超えていて
+ *      forward 読みが1行も完成させられなかった場合(F1)の**両方**を此の1箇所で捕まえる。
+ *
+ * ★F1(2026-09-04): 錨の行自体は、周辺窓の予算(`maxBytes`、既定 TAIL_MAX=1MiB)より先に、
+ *   別枠の `lineCap`(既定 `LINE_CAP_MAX`=16MiB)で読み切る。`readLinesForward`/
+ *   `readLinesBackward` に `lineCap` を渡すだけで済む —— 両関数とも「通常予算を使い切っても
+ *   1行も完成していなければ `lineCap` まで其の1レコードだけ延長する」を自前で持つ
+ *   (listing.mjs、T-F1 と共通の機構)。1.1MB の1行レコードが最初の record でも、
+ *   `lineCap` の中に収まる限り②で弾かれず、②で弾かれる時は「本当に読めない」時だけ。
  *
  * ★chunk が広いと(既定 64KiB)、錨の手前が丸ごと1 chunk に収まって `done` の出番が来る前に
  *   `Math.ceil(limit/2)` を大きく超えて集まる事が在る(境界の外側は全部1歩で読めてしまう為)。
  *   **錨に近い側だけ残す様に trim する** —— でないと chunk の大小で窓の大きさが変わり、
  *   同じ錨・同じ `limit` でも呼ぶ度に答えが違う事になる(`readHistoryFromPath` の
- *   `all.slice(-limit)` と同じ判断)。trim で切り落とした分は**確かに存在する**ので、
- *   `olderAvailable`/`newerAvailable` は其れも「続きが在る」に数える
- *   (`readHistoryFromPath` の `truncated: !r.reachedStart || all.length > limit` と同型)。
+ *   `all.slice(-limit)` と同じ判断)。
  *
- * ★前方の要求数は**最低 `錨の行内番号 + 1` 件**にする。手前の読みが overshoot で
- *   既に `limit` 件を超えていても、錨そのものが載る行は `before` 側には絶対に入らない
- *   (`readLinesBackward` は `end` より**手前**しか見ない)。単純に「最低1件」にすると、
- *   其の行が複数項目を持つ(道具呼び出し込みの assistant 発言)時、trim で錨自身の番号
- *   (2番目以降)が切り落とされ得る —— 「錨は必ず窓に入る」を守るには、其の行の**冒頭から
- *   錨の番号まで**を最低ラインにしなければならない。
+ * ★F5(2026-09-04、進む保証): 手前・先ともに、窓に残す数より**1件多く**(`+1`)を `done`
+ *   自体へ要求する。旧実装は「窓のちょうど縁で trim する」為、要求した錨の**行自体**が
+ *   複数項目を持ち其の全部が丁度 `limit` に収まる時、窓の最先の錨が要求した錨と**同じ**
+ *   になり得た(Codex の実例: 4項目の assistant 行の `:3` を limit=4 で要求 → 窓が丁度
+ *   其の4項目で終わり、`newerAvailable:true` なのに其の錨で再要求すると**同じ窓**が返る =
+ *   進めない)。`+1` を over-read(chunk が広いと1歩で偶然掴めてしまう事がある)頼みでなく
+ *   `done` 自体へ課すのは、chunk の大小で**残す窓の中身**が変わらない為(既存の chunk
+ *   不変性と同じ判断) —— `+1` が見つかった(= 其の分だけ overshoot した)時は窓へも残す。
+ *   ★`olderAvailable`/`newerAvailable` 自体は**旧来通りの式**(`!reachedStart/!reachedEnd`
+ *   との OR)に戻す —— 之を「見つかった証拠(overshoot の量)」だけで決めると、証拠の量が
+ *   chunk 依存になり真偽値が chunk で変わってしまう(小さい chunk は `done` を満たした瞬間に
+ *   止まるので overshoot が0の事がある、大きい chunk は同じ歩幅で先の record まで丸ごと
+ *   読み切る事が多く overshoot が大きい)。旧式は其の非対称を `reachedStart`/`reachedEnd`
+ *   (小さい chunk は之が false のまま止まる)で吸収するので、両者は chunk に依らず一致する
+ *   ——実測(下の「small chunk と既定 chunk が同じ窓」検査)で確かめた。
+ *
+ * ★T-F2(2026-09-04、Codex toolout-review): `tool_use`/`tool_result` の対を、before と
+ *   after の**2つの読みを跨いで**揃える。旧実装は `entriesFromLines` を before/after で
+ *   別々に(=別々の `pending`)呼んでいたので、`tool_use` が手前・`tool_result` が先(又は
+ *   逆)という継ぎ目を跨いだ対は決して揃わなかった。`collectEntries`(下)へ**同じ
+ *   `pending`** を before → after の時系列順に通す事で、継ぎ目を跨いでも `output` が乗る。
  *
  * @param {string} path
  * @param {string} anchor `<byteOffset>:<indexWithinRecord>`
  * @param {number} limit 返す項目数(前後の合計の目安)
- * @param {object} [opts] io / chunk / maxBytes(test 用)
+ * @param {object} [opts] io / chunk / maxBytes / lineCap(test 用)
  * @returns {{history:Array, anchor:string, olderAvailable:boolean, newerAvailable:boolean, scanned:number}}
  */
 export function readHistoryAround(path, anchor, limit = 50, opts = {}) {
@@ -342,8 +392,11 @@ export function readHistoryAround(path, anchor, limit = 50, opts = {}) {
   if (!m) throw new Error("bad-anchor");
   const offset = Number(m[1]);
   const wantIndex = Number(m[2]); // 錨が指す、其の行の中の何番目の項目か
+  const canonicalAnchor = `${offset}:${wantIndex}`;
 
   const io = opts.io ?? nodeIo;
+  const windowMaxBytes = opts.maxBytes ?? TAIL_MAX;
+  const lineCap = opts.lineCap ?? LINE_CAP_MAX;
   const fd = openSync(path, "r");
   try {
     const size = io.fstat(fd).size;
@@ -355,33 +408,50 @@ export function readHistoryAround(path, anchor, limit = 50, opts = {}) {
       if (n !== 1 || prev[0] !== 0x0a) throw new Error("anchor-gone");
     }
 
+    // ★T-F2: before と after を同じ `pending` へ通す(時系列順 = before が先)。
+    const pending = new Map();
+
     const wantOlder = Math.ceil(limit / 2);
     const before = readLinesBackward(io, fd, {
       chunk: opts.chunk,
-      maxBytes: opts.maxBytes,
+      maxBytes: windowMaxBytes,
+      lineCap,
       end: offset,
-      done: (lines) => entriesFromLines(lines).length >= wantOlder,
+      done: (lines) => entriesFromLines(lines).length >= wantOlder + 1, // F5: +1
     });
-    const beforeAll = entriesFromLines(before.lines, before.offsets);
-    // 手前の trim: 錨に近い側(=末尾)を残す。
-    const beforeEntries = beforeAll.length > wantOlder ? beforeAll.slice(-wantOlder) : beforeAll;
+    const beforeAll = [];
+    collectEntries(before.lines, before.offsets, pending, beforeAll);
+    // 手前の trim: 錨に近い側(=末尾)を残す。overshoot していれば `+1`(F5 の証拠)も残す。
+    const beforeKeep = beforeAll.length > wantOlder ? wantOlder + 1 : beforeAll.length;
+    const beforeEntries = beforeAll.slice(beforeAll.length - beforeKeep);
+    // F5: 「其れより手前が在る」は、実際に其の証拠(trim で切った1件以上)を掴めた時だけ言う。
+    const olderAvailable = !before.reachedStart || beforeAll.length > beforeEntries.length;
 
-    const wantNewer = Math.max(wantIndex + 1, limit - beforeEntries.length);
+    const wantNewerCore = Math.max(wantIndex + 1, limit - beforeEntries.length);
     const after = readLinesForward(io, fd, {
       chunk: opts.chunk,
-      maxBytes: opts.maxBytes,
+      maxBytes: windowMaxBytes,
+      lineCap,
       start: offset,
-      done: (lines) => entriesFromLines(lines).length >= wantNewer,
+      done: (lines) => entriesFromLines(lines).length >= wantNewerCore + 1, // F5: +1
     });
-    const afterAll = entriesFromLines(after.lines, after.offsets);
-    // 先の trim: 錨に近い側(=先頭)を残す。
-    const afterEntries = afterAll.length > wantNewer ? afterAll.slice(0, wantNewer) : afterAll;
+    const afterAll = [];
+    collectEntries(after.lines, after.offsets, pending, afterAll);
+    // 先の trim: 錨に近い側(=先頭)を残す。overshoot していれば `+1`(F5 の証拠)も残す。
+    const afterKeep = afterAll.length > wantNewerCore ? wantNewerCore + 1 : afterAll.length;
+    const afterEntries = afterAll.slice(0, afterKeep);
+    const newerAvailable = !after.reachedEnd || afterAll.length > afterEntries.length;
+
+    const history = [...beforeEntries, ...afterEntries];
+    // F2: 窓が要求した錨を実際に含むか。含まなければ echo しても嘘になる
+    // (`wantIndex` が其の行の項目数を超えている / 錨の行が `lineCap` でも読み切れない)。
+    if (!history.some((e) => e.anchor === canonicalAnchor)) throw new Error("anchor-gone");
 
     return {
-      history: [...beforeEntries, ...afterEntries],
+      history,
       anchor,
-      olderAvailable: !before.reachedStart || beforeAll.length > beforeEntries.length,
-      newerAvailable: !after.reachedEnd || afterAll.length > afterEntries.length,
+      olderAvailable,
+      newerAvailable,
       scanned: before.scanned + after.scanned,
     };
   } finally {
@@ -508,13 +578,34 @@ function stripAnsiAndCr(s) {
   return s.replace(ANSI_ESCAPE_RE, "").replace(/\r/g, "");
 }
 
-/** `tool_result` block 自身の `content`(string か `[{type:"text",text}]`)から文字列の破片を拾う。 */
-function textPartsOf(content) {
-  if (typeof content === "string") return [content];
-  if (Array.isArray(content)) {
-    return content.filter((b) => b && b.type === "text" && typeof b.text === "string").map((b) => b.text);
+/**
+ * `tool_result` block 自身の `content`(string か `[{type:"text",text}]`)から文字列の破片を
+ * **遅延**で拾う(2026-09-04、Codex toolout-review T-F3)。
+ *
+ * ★何故 generator か: 旧実装は `content.filter(...).map(...)` で**全破片を先に配列化**していた。
+ *   `content` が空文字列の `{type:"text"}` を数十万個並べた形(意地悪な入力・壊れた転写)だと、
+ *   予算(下の `previewOf` の 8192 文字)は全く効かないまま(空文字は budget を1文字も
+ *   減らさない)全要素を舐め切る事になる。generator にすれば、呼び手(`previewOf`)が
+ *   `break` した瞬間に此処も止まる —— 呼ばれていない要素は一度も `content` から読まれない。
+ * ★`unsupported`(呼び手が渡す3引数目、mutable な1要素配列)へ「文字列として拾えなかった
+ *   block が在った」の合図を書く(T-F4)。`type:"text"` 以外の block(image 等)を黙って
+ *   捨てると、「全部載せた」のか「一部だけ載せた」のかが呼び手から見分けられない。
+ */
+function* textPartsOf(content, unsupportedOut) {
+  if (typeof content === "string") {
+    yield content;
+    return;
   }
-  return [];
+  if (Array.isArray(content)) {
+    for (const b of content) {
+      if (b && b.type === "text" && typeof b.text === "string") yield b.text;
+      else if (unsupportedOut) unsupportedOut.flag = true; // 型が違う block を省いた
+    }
+    return;
+  }
+  // 配列でも文字列でもない形(オブジェクト単体・数値等)。中身が在る以上「省いた」扱い ——
+  // `undefined`/`null`(=そもそも content が無い)は之と区別する(呼び手側で判定)。
+  if (content !== undefined && content !== null && unsupportedOut) unsupportedOut.flag = true;
 }
 
 /**
@@ -522,18 +613,43 @@ function textPartsOf(content) {
  * 手順: ①連結**前**に粗い文字数で切る(巨大な結果を丸ごと繋がない) → ② ANSI/CR を剥がす →
  * ③行数の上限 → ④ byte 数の上限(多 byte 文字の境界を跨がない)。どれか1つでも切ったら
  * `truncated: true`。
+ *
+ * ★T-F3(2026-09-04): 予算(`TOOL_OUTPUT_PRE_SLICE_CHARS`)は**破片の文字数だけ**でなく
+ *   **繋ぐ改行の分**も削る。空文字列の破片(`p.length===0`)は其れ単体では budget を
+ *   減らさないので、旧実装は「予算より遥かに広い件数のループ」を回してしまっていた
+ *   (join/split が `N-1` 本の改行を処理する)。繋ぐ度に1文字を予算から引けば、何万件
+ *   在っても此処のループは**高々 `TOOL_OUTPUT_PRE_SLICE_CHARS+1` 回**で止まる。
+ * ★T-F4(2026-09-04): `text:null` は「拾える文字列が1つも無かった」の印(`tool_use` だけ
+ *   の行と区別する為に呼び手 `applyToolOutput` が `output` 系の鍵ごと省く)。空文字列
+ *   `""` を返す旧実装は、`content:[{type:"image",…}]` の様に**何も表示できていない**時にも
+ *   `output:"", outputTruncated:false` を返し「空だが完全に読めた」と嘘をついていた。
+ *   `truncated` は `unsupported`(型が違う block を省いた)も理由に数える —— 省いた分は
+ *   確かに存在するので「全部載せた」と言えない。
  */
 function previewOf(content) {
-  const parts = textPartsOf(content);
-  if (parts.length === 0) return { text: "", truncated: false };
-
+  const unsupported = { flag: false };
   let sliced = false;
   let budget = TOOL_OUTPUT_PRE_SLICE_CHARS;
   const trimmed = [];
-  for (const p of parts) {
+  let sawAny = false;
+  for (const p of textPartsOf(content, unsupported)) {
+    sawAny = true;
+    if (trimmed.length > 0) {
+      // 繋ぐ "\n" もこの予算から払う(T-F3: 空文字列の破片が大量でも、繋ぐ改行だけで
+      // 予算を使い切って止められる為)。
+      budget -= 1;
+    }
     if (budget <= 0) { sliced = true; break; }
-    if (p.length > budget) { trimmed.push(p.slice(0, budget)); sliced = true; budget = 0; } else { trimmed.push(p); budget -= p.length; }
+    if (p.length > budget) {
+      trimmed.push(p.slice(0, budget));
+      sliced = true;
+      break;
+    }
+    trimmed.push(p);
+    budget -= p.length;
   }
+
+  if (!sawAny) return { text: null, truncated: unsupported.flag };
 
   const joined = stripAnsiAndCr(trimmed.join("\n"));
 
@@ -551,7 +667,7 @@ function previewOf(content) {
     byteTrunc = true;
   }
 
-  return { text, truncated: sliced || lineTrunc || byteTrunc };
+  return { text, truncated: sliced || lineTrunc || byteTrunc || unsupported.flag };
 }
 
 /** 多 byte 文字の境界を跨がずに、byte 数の予算まで削る。 */
@@ -561,11 +677,18 @@ function sliceToByteBudget(s, maxBytes) {
   return out;
 }
 
-/** 対になった `tool_result` を、其の `tool_use` の entry へ直接書き込む。 */
+/**
+ * 対になった `tool_result` を、其の `tool_use` の entry へ直接書き込む。
+ * ★T-F4: `previewOf` が `text:null`(=拾える文字列が1つも無かった)を返した時は
+ *   `output`/`outputTruncated` の鍵ごと生やさない —— `③ 結果が無い` の既存 test と
+ *   同じ「無ければ鍵を付けない」規約に、`content` が有るのに何も表せなかった時も揃える。
+ */
 function applyToolOutput(entry, result) {
   const { text, truncated } = previewOf(result.content);
-  entry.output = text;
-  entry.outputTruncated = truncated;
+  if (text !== null) {
+    entry.output = text;
+    entry.outputTruncated = truncated;
+  }
   if (result.isError) entry.outputError = true;
 }
 

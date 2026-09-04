@@ -18,6 +18,14 @@ protocol HistoryFetching {
     /// `limit` は「返す一致の数」であって走査量ではない —— 机は一致が `limit` 件
     /// 集まった所で後方読みを止めるので、`limit` は速さと網羅の両方に効く。
     func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async -> Result<TranscriptSearchResponse, SessionsFetchError>
+
+    /// 錨を中心にした窓を読む(対照表 #3 の後追い、2026-09-04)。
+    ///
+    /// 末尾からの `limit` 件ではなく、**転写の中の 1 点の周り**を返す。探索の当たりが机の上限
+    /// (500)より奥に在る時、末尾の窓を伸ばして届かせる道は「電話が転写を丸ごと抱える」に
+    /// なるので採らない —— 窓の位置を変える。戻り値が別の型なのは `search` と同じ理由で、
+    /// `truncated` の意味が違う(此の窓には両端が在り、`olderAvailable`/`newerAvailable` で言う)。
+    func around(baseURL: URL, apiKey: String, sessionID: String, anchor: String, limit: Int) async -> Result<HistoryAroundResponse, SessionsFetchError>
 }
 
 /// `GET /api/sessions/<id>/history?limit=N` -- same shape as `SessionsClient`
@@ -61,10 +69,23 @@ struct HistoryClient: HistoryFetching {
         )
     }
 
-    /// 2 つの口が共有する **1 本の**要求の組み立てと status の読み。
+    func around(baseURL: URL, apiKey: String, sessionID: String, anchor: String, limit: Int) async -> Result<HistoryAroundResponse, SessionsFetchError> {
+        // ★`q` と併せて送らない。机は両方在る要求を 400 で断る(Codex 所見 F6)ので、
+        //   此処で混ぜない事が唯一の正しい呼び方 —— `search` と `around` は別の呼び出し。
+        await get(
+            HistoryAroundResponse.self,
+            baseURL: baseURL, apiKey: apiKey, sessionID: sessionID,
+            items: [
+                URLQueryItem(name: "around", value: anchor),
+                URLQueryItem(name: "limit", value: String(limit)),
+            ]
+        )
+    }
+
+    /// 3 つの口が共有する **1 本の**要求の組み立てと status の読み。
     ///
     /// ★分けたのは戻り値の型だけ、という主張の実体が此処。URL の組み立て・method・
-    ///   `Bearer` header・待ち時間・status の写像を 2 箇所に書くと、片方だけが
+    ///   `Bearer` header・待ち時間・status の写像を 3 箇所に書くと、片方だけが
     ///   直る日が来る(此の repo が `title` / `archive` で実演済み)。違うのは
     ///   最後の 1 行 —— どの型へ復号するか —— だけ。
     private func get<T: Decodable>(

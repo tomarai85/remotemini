@@ -1174,6 +1174,38 @@ try {
     const badJ = await bad.json().catch(() => null);
     check("★窓読み: 形の壊れた錨は 400 bad_anchor", bad.status === 400 && badJ?.reason === "bad_anchor",
       `status=${bad.status} ${JSON.stringify(badJ)}`);
+
+    // ★F6(2026-09-04、Codex around-review): `q` と `around` を同時に渡すと、旧実装は
+    //   `q` を無条件に優先して 200 を返していた(`around` が捏造でも気付かれない)。
+    //   意図が消える組み合わせなので、其の場で 400 を返す事。
+    const both = await fetch(`${B}/api/sessions/${SID1}/history?q=A&around=garbage`, { headers: H });
+    const bothJ = await both.json().catch(() => null);
+    check("★F6: `q` と `around` の同時指定は 400 q_and_around",
+      both.status === 400 && bothJ?.reason === "q_and_around", `status=${both.status} ${JSON.stringify(bothJ)}`);
+
+    // ★F3(2026-09-04、Codex around-review): `limit` が garbage(非数値・負・巨大)でも
+    //   clamp されて壊れない事 —— 旧実装は `limit=bogus` が `NaN` を通し、`entries.length
+    //   >= NaN` が常に false で trim が効かなくなる(500件の上限を実質バイパスする)。
+    //   `SID_SEARCH`(300件超・チャンク境界を跨ぐ長さ)を的にして、実際に効いている事を測る。
+    const searchHit = await (await fetch(
+      `${B}/api/sessions/${SID_SEARCH}/history?q=${encodeURIComponent(SEARCH_NEEDLE)}&limit=1`, { headers: H })).json();
+    const searchAnchor = (searchHit.history || [])[0]?.anchor;
+    check("★F3 の前提: SID_SEARCH の探索が錨付きの当たりを返す",
+      typeof searchAnchor === "string", JSON.stringify(searchHit).slice(0, 200));
+    if (searchAnchor) {
+      // `bogus`/`-1` は既定 50 へ落ちる(窓は其の近辺)。`1e9` は正当な巨大値として
+      // 500 まで clamp される(SID_SEARCH は300件超あるので、窓がほぼ全件に育ってよい —
+      // 測りたいのは「壊れていない(500 の枠は超えない)」事で、既定と同じ小ささではない)。
+      for (const [bogusLimit, maxLen] of [["bogus", 55], ["-1", 55], ["1e9", 500]]) {
+        const rL = await fetch(
+          `${B}/api/sessions/${SID_SEARCH}/history?around=${encodeURIComponent(searchAnchor)}&limit=${bogusLimit}`,
+          { headers: H });
+        const jL = await rL.json().catch(() => null);
+        check(`★F3: limit=${bogusLimit} は 200 のまま、history が枠(<=${maxLen})に収まる(NaN で壊れない)`,
+          rL.status === 200 && Array.isArray(jL?.history) && jL.history.length > 0 && jL.history.length <= maxLen,
+          `status=${rL.status} len=${jL?.history?.length}`);
+      }
+    }
   }
 
   // 3-P. `@` のパス補完(`/paths`)—— **扉E**(2026-09-02)。
@@ -2180,6 +2212,16 @@ try {
   const jHF = await rHF.json();
   check("★未発言: history は 404 でなく空配列", rHF.status === 200 && Array.isArray(jHF.history) && jHF.history.length === 0,
     `${rHF.status} ${JSON.stringify(jHF)}`);
+  // ★F4(2026-09-04、Codex around-review): `around` が在る時、jsonl が無い会話(此処の
+  //   `!target` 分岐)は後段の ENOENT 分岐と**同じ形**(anchor/olderAvailable/newerAvailable
+  //   付き)を返す事 —— 旧実装は此処だけ `{history:[]}` のまま(電話の
+  //   `HistoryAroundResponse` は其の3鍵が非 optional なので復号が落ちる)。
+  const rHFA = await fetch(`${B}/api/sessions/${SID_FRESH}/history?around=0:0`, { headers: H });
+  const jHFA = await rHFA.json().catch(() => null);
+  check("★F4: 未発言(jsonl無し)+ around は around 形の空応答(200, anchor/olderAvailable/newerAvailable 付き)",
+    rHFA.status === 200 && Array.isArray(jHFA?.history) && jHFA.history.length === 0 &&
+      jHFA.anchor === "0:0" && jHFA.olderAvailable === false && jHFA.newerAvailable === false,
+    `${rHFA.status} ${JSON.stringify(jHFA)}`);
   const stF = await (await fetch(`${B}/api/sessions/${SID_FRESH}/status`, { headers: H })).json();
   check("★未発言: status は tmux/registry", stF.route === "tmux" && stF.pane === "%23" && stF.source === "registry",
     JSON.stringify(stF));
