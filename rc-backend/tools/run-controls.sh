@@ -697,6 +697,9 @@ LOCAL_CTLS=(
                                      # ★一番危ない足は「印が消えた」: 200 のまま gap が消えると
                                      #   電話は取りこぼしを黙って捨て、画面は正常に見えたまま出力が抜ける。
     ../ios/tools/live-search-check-control.sh # ★2026-09-03。探索の当たり→跳びの窓(#3)の live 計器の判定を全通り撃つ(11 通り、実機不要)
+    test/live-cold-routes-controls.sh # ★2026-09-04。本番の机で 0 件だった読むだけの 3 口の live 計器の
+                                     # 判定を全通り撃つ(14 通り)。200 でも中身が噛み合わなければ赤、
+                                     # 届かなければ 3、上限の机では緑を名乗らない。
     ../.harness/preflight-ledgers-controls.sh # ★2026-09-04。門を撃つ前の自己点検 `preflight-ledgers.sh` が
                                      # **赤を出せる**事を 5 種それぞれ壊して測る(7 通り)。作った当日の
                                      # 1 回目で 2 件落ち、doc-linerefs が index を読む事と的の錨違いを暴いた。
