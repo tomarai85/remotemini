@@ -88,6 +88,9 @@ const NOT_SCANNED = {
   ],
   ios: [
     ["build", "xcodebuild の出力"],
+    ["build-device", "**実機**向け xcodebuild の出力(2026-09-04 新設)。" +
+      "`build` と分けるのは、同じ derivedData を simulator と device で共有すると " +
+      "毎回の建て直しが起きる為。中身は成果物だけで source は無い"],
     ["RemoteMini.xcodeproj", "生成物(実測 2026-08-05: 追跡 0 件)"],
     ["Assets.xcassets", "アイコン等の画像資産(2026-08-16 新設)。png と Contents.json だけで、" +
       "走査対象の拡張子は 0 件。source を置く場所ではない"],
