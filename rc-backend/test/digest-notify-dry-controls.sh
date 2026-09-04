@@ -151,8 +151,14 @@ BROKEN="$SB/digest-notify-broken.sh"
 import io, sys
 src, dst = sys.argv[1], sys.argv[2]
 s = io.open(src, encoding="utf-8").read()
-a = 'if not dry:\n    json.dump(fresh, open(statep, "w"), ensure_ascii=False, indent=1)'
-b = 'json.dump(fresh, open(statep, "w"), ensure_ascii=False, indent=1)'
+# ★番人**だけ**を無効化する(2026-09-04 に切り口を変えた)。
+#   旧版は `if not dry:` と続く 1 行を丸ごと 1 行へ潰していた。其れはブロックの中身が
+#   1 文の間しか成り立たない切り方で、2026-09-04 に完了の記録(もう 1 つの書き込み)が
+#   同じブロックへ入った瞬間、変異体は**字下げの壊れた Python** になった ——
+#   台本ごと落ちるので台帳は書かれず、対照は「守りが効いている」の顔で赤くなる。
+#   `if True:` なら中身が何文でも構文は保たれ、外れるのは番人だけ。
+a = 'if not dry:'
+b = 'if True:'
 assert a in s, "変異の錨が無い = N1 は空虚"
 io.open(dst, "w", encoding="utf-8").write(s.replace(a, b, 1))
 MUT
