@@ -1854,6 +1854,25 @@ try {
     check("★Enter は送っていない(送るかは人が決める。attach と同じ規約)",
       !afKeys.some((c) => c.at(-1) === "Enter"), JSON.stringify(afKeys));
 
+    // ★★2026-09-04(Codex 再レビュー F5)。添付の**断りが電話まで届くか**。
+    //   初版は `typeLiteralExclusive` を await しただけで `injected = true` にしていたので、
+    //   人の下書きが在って 1 文字も打てなかった時でも「置けた」と返っていた。
+    //   打鍵は打鍵の層で測れるが、**名乗りの嘘は机の応答でしか測れない**ので此処に置く。
+    {
+      const S10 = join(SB, "screen-10.txt");
+      const keep = readFileSync(S10, "utf8");
+      writeFileSync(S10, shot("composer-holds-text")); // 机に人の下書きが残っている
+      const before = sentKeys().length;
+      const r = await attachFile(SID_READY, "draft.md", Buffer.from("x", "utf8"));
+      const j = await r.json();
+      check("★人の下書きの上には添付を置かない -> injected:false + 理由",
+        r.status === 200 && j.injected === false && j.injectReason === "composer-busy",
+        JSON.stringify(j));
+      check("★その時 send-keys は 1 本も増えない(置けなかったのだから)",
+        sentKeys().length === before, String(sentKeys().length - before));
+      writeFileSync(S10, keep);
+    }
+
     const rNul = await attachFile(SID_READY, "notes.md", Buffer.from("plain\x00text"));
     const jNul = await rNul.json();
     check("★NUL バイトを含む本文 -> 400 binary(v1 は文書だけ)",
