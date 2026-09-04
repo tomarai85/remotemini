@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UniformTypeIdentifiers
 import os
 
 /// The Conversation screen (Sprint 3 brief §3). Renders `ConversationViewModel`'s
@@ -26,6 +27,8 @@ struct ConversationView: View {
 
     /// 写真ピッカーの選択。★選ばれた事と送れた事は別なので、状態を分けて持つ。
     @State private var pickedPhoto: PhotosPickerItem?
+    /// 文書の添付(対照表 #23)の Files 画面を出す合図。
+    @State private var showFileImporter = false
     @State private var attachBusy = false
     /// 結果の1文。**「送れました」で丸めない**(置けたが載っていない状態が実在する)。
     @State private var attachNotice: String?
@@ -847,6 +850,30 @@ struct ConversationView: View {
     /// ★ここで**画像を作り直さない**。机側が形式を先頭バイトで判定し、HEIC は向こうで
     ///   JPEG へ変換する。電話でも変換すると判定の材料が2箇所で変わり、
     ///   「どちらの変換が原因か」が切り分けられなくなる。運ぶのは撮った物そのまま。
+    /// 文書を添付する(対照表 #23、2026-09-03)。`fileImporter` が返す URL は security-scoped なので、読む間だけ
+    /// 権利を取る。大きさは机の上限(12 MiB)を電話側でも見る = 送る前に断れる物は送らない。
+    private func sendPickedFile(_ result: Result<URL, Error>) async {
+        attachBusy = true
+        attachNotice = nil
+        defer { attachBusy = false }
+        let url: URL
+        switch result {
+        case .success(let u): url = u
+        case .failure: attachNotice = "Could not open that file."; return
+        }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else {
+            attachNotice = "Could not read that file."
+            return
+        }
+        let name = url.lastPathComponent
+        if data.isEmpty { attachNotice = AttachWording.fileText(for: .rejected(reason: "empty-body"), name: name); return }
+        if data.count > 12 * 1024 * 1024 { attachNotice = AttachWording.fileText(for: .tooLarge, name: name); return }
+        let outcome = await viewModel.attach(file: data, name: name)
+        attachNotice = AttachWording.fileText(for: outcome, name: name)
+    }
+
     private func sendPicked(_ item: PhotosPickerItem) async {
         attachBusy = true
         attachNotice = nil
@@ -1268,6 +1295,25 @@ struct ConversationView: View {
                 .disabled(!viewModel.composerEnabled || attachBusy)
                 .accessibilityIdentifier("conversation.attachButton")
                 .accessibilityLabel("Attach a photo")
+
+                // ★文書の添付(対照表 #23、2026-09-03)。写真とは別のボタン: `PhotosPicker` は写真の口、
+                //   `fileImporter` は Files の口で、1 つのボタンに畳むと片方が必ず 1 段深くなる。
+                Button {
+                    showFileImporter = true
+                } label: {
+                    Image(systemName: "doc.badge.plus")
+                        .font(.system(size: 22))
+                        .foregroundStyle(viewModel.composerEnabled ? Color.accentColor : Color.secondary)
+                        .frame(width: 34, height: 34)
+                }
+                .disabled(!viewModel.composerEnabled || attachBusy)
+                .accessibilityIdentifier("conversation.attachFileButton")
+                .accessibilityLabel("Attach a text file")
+                .fileImporter(isPresented: $showFileImporter,
+                              allowedContentTypes: [.plainText, .utf8PlainText, .text, .json, .commaSeparatedText,
+                                                    .yaml, .xml, .html, .sourceCode, .log, .delimitedText]) { result in
+                    Task { await sendPickedFile(result) }
+                }
 
                 // ★`.roundedBorder` を使わない(2026-08-29、Tom「黒い箱が洗練されていない」)。
                 //   あの様式は暗い系で**真っ黒な矩形**を描き、面に穴が空いた様に見える。

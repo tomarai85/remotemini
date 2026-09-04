@@ -21,6 +21,9 @@ enum AttachOutcome: Equatable {
 
 protocol Attaching {
     func attach(baseURL: URL, apiKey: String, sessionID: String, image: Data) async -> AttachOutcome
+    /// 画像以外の**文書**(対照表 #23、2026-09-03): ログの末尾・CSV・JSON・Markdown・ソース。机は中身を
+    /// 信じず(NUL を含む binary と画像は断る)、名前は英数に正規化し、保存名は id で付ける。
+    func attachFile(baseURL: URL, apiKey: String, sessionID: String, data: Data, name: String) async -> AttachOutcome
 }
 
 /// `POST /api/sessions/<id>/attach`、本文は**画像の生バイトそのもの**。
@@ -95,6 +98,60 @@ struct AttachClient: Attaching {
     /// ★断りの形(`reason` / `code`)を**この型に混ぜない**。2026-08-26 に一度混ぜて、
     ///   鍵名の突き合わせが「電話にしか無い鍵が2つ」として掴んだ。1つの型で2つの応答を
     ///   受けると、どちらの形が来たのかを型が説明しなくなる。
+    func attachFile(baseURL: URL, apiKey: String, sessionID: String, data: Data, name: String) async -> AttachOutcome {
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("api/sessions/\(sessionID)/attach-file"),
+            resolvingAgainstBaseURL: false
+        )
+        // 名前は問いで渡す(本文は生の bytes のまま = 画像の口と同じ形。multipart にしない理由も同じ)。
+        components?.queryItems = [URLQueryItem(name: "name", value: name)]
+        guard let url = components?.url else { return .unreachable }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = max(BackendSession.writeTimeout, 60)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+
+        let body: Data
+        let response: URLResponse
+        do {
+            (body, response) = try await session.data(for: request)
+        } catch is CancellationError {
+            return .cancelled
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            return .cancelled
+        } catch {
+            return .unreachable
+        }
+        guard let http = response as? HTTPURLResponse else { return .unreachable }
+        if http.statusCode == 401 { return .unauthorized }
+        if http.statusCode == 413 { return .tooLarge }
+        let envelope = try? JSONDecoder().decode(FileEnvelope.self, from: body)
+        let reject = try? JSONDecoder().decode(RejectEnvelope.self, from: body)
+        if http.statusCode == 404 {
+            guard reject?.code == RecoveryCode.sessionNotFound else { return .contractViolation(status: 404) }
+            return .sessionNotFound
+        }
+        if http.statusCode == 400 { return .rejected(reason: reject?.reason ?? "unknown") }
+        guard http.statusCode == 200, let id = envelope?.attachmentId else {
+            return .contractViolation(status: http.statusCode)
+        }
+        return .stored(id: id, bytes: envelope?.bytes ?? 0, converted: false,
+                       injected: envelope?.injected ?? false, reason: envelope?.injectReason)
+    }
+
+    /// `attachFileBody`(`src/wire.mjs`)の写し。画像の封筒と違い `format` / `converted` は無く、`name` / `ext` が在る。
+    private struct FileEnvelope: Decodable {
+        let attachmentId: String?
+        let bytes: Int?
+        let name: String?
+        let ext: String?
+        let injected: Bool?
+        let injectReason: String?
+        let swept: Int?
+    }
+
     private struct Envelope: Decodable {
         let attachmentId: String?
         let bytes: Int?
@@ -137,6 +194,29 @@ enum AttachWording {
         case .unreachable:  return "Could not reach the desk."
         case .cancelled:    return "Cancelled."
         case let .contractViolation(status): return "The desk answered in a shape this app does not know (\(status))."
+        }
+    }
+
+    /// 文書の添付(対照表 #23)の 1 文。断りの語は机の `storeFile` の物。
+    static func fileText(for outcome: AttachOutcome, name: String) -> String {
+        switch outcome {
+        case let .stored(_, bytes, _, injected, reason):
+            let kb = max(1, bytes / 1024)
+            if injected {
+                return "\(name) sent — \(kb) KB. The path is in the composer; press send when ready."
+            }
+            return "\(name) saved on the desk — \(kb) KB — but the path could not be typed (\(reason ?? "no pane"))."
+        case let .rejected(reason):
+            switch reason {
+            case "binary":         return "That file isn't text. Only text documents can be attached this way."
+            case "use-image-door": return "That's an image — use the photo button instead."
+            case "bad-name":       return "That file name or type isn't accepted (text documents only)."
+            case "too-large":      return "That file is too big to send."
+            case "empty-body":     return "That file is empty."
+            default:               return "The desk refused the file (\(reason))."
+            }
+        case .tooLarge:     return "That file is too big to send."
+        default:            return text(for: outcome)
         }
     }
 }

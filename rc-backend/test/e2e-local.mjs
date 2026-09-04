@@ -739,6 +739,10 @@ const sv = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
     // ★roots の台帳(2026-09-03、対照表 #11)。sandbox 自身を root に 1 行。台帳は要求ごとに読まれるので、
     //   検査は file を消して `no_roots` を測り、書き戻して 202 を測る(再起動を挟まない)。
     RC_ROOTS_FILE: ROOTS_LEDGER,
+    // ★添付の置き場(行 #23「非画像の添付」、2026-09-03)。ここを渡さないと `server.mjs` は
+    //   `homedir()` 由来の**本物の** `~/.rc-backend/attachments` へ書く —— 検査機で
+    //   `mkdirSync` が実際に走る。sandbox の下へ寄せて、他の RC_*_DIR と同じ扱いにする。
+    RC_ATTACH_DIR: join(SB, "attachments"),
     // ★echo 待ちの予算を広げる栓(server.mjs 側に理由を書いた)。11-g2 が測る
     //   「鍵が満杯」の窓がこの値ぶんしか続かないので、既定 1500ms だと検査側の
     //   遅れで窓を跨ぐ。6000ms にすると跨げなくなる(下の 12並列で実測)。
@@ -1686,6 +1690,51 @@ try {
     byId[SID_CHOICE]?.screen === "CHOICE", JSON.stringify(byId[SID_CHOICE]));
   check("一覧: 特定不能は blocked", byId[SID_AMBIG]?.route === "blocked", JSON.stringify(byId[SID_AMBIG]));
   check("一覧: 開いていない会話は worker", byId[SID1]?.route === "worker", JSON.stringify(byId[SID1]));
+
+  // ---- 10-g2. ★非画像の添付(attach-file、行 #23「非画像の添付」、2026-09-03) --------
+  // `attach`(画像)は単体(test/attach.test.mjs)しか撃っていなかった —— HTTP 層(鍵・
+  // pane への差し込み・偽 tmux の send-keys ログまで届くか)は attach-file が初めて測る。
+  // pane は 10 の頭で確立済みの SID_READY(%10、入力欄が実在する)を再利用する。
+  {
+    const attachFile = (sid, name, buf, headers) => fetch(
+      `${B}/api/sessions/${sid}/attach-file?name=${encodeURIComponent(name)}`,
+      { method: "POST", headers: headers ?? H, body: buf },
+    );
+
+    check("★鍵が無ければ attach-file も 401",
+      (await attachFile(SID_READY, "notes.md", Buffer.from("x"), {})).status === 401);
+
+    const beforeAF = sentKeys().length;
+    const rAF = await attachFile(SID_READY, "notes.md", Buffer.from("2026-09-03 の tail\n", "utf8"));
+    const jAF = await rAF.json();
+    check("★UTF-8 文書 -> 200、申告名がそのまま返る(id.ext ではない)",
+      rAF.status === 200 && jAF.name === "notes.md" && jAF.ext === "md" && typeof jAF.attachmentId === "string",
+      JSON.stringify(jAF));
+    check("★injected は必ず bool、載らなかった時だけ理由が付く(attach と同じ規約)",
+      typeof jAF.injected === "boolean"
+        && (jAF.injected ? jAF.injectReason === null : typeof jAF.injectReason === "string"),
+      JSON.stringify(jAF));
+    const afKeys = sentKeys().slice(beforeAF);
+    check("★入力欄のあるペインには実際に載る(SID_READY は 10-a で送信済みの窓)",
+      jAF.injected === true, JSON.stringify(jAF));
+    check("★偽 tmux の send-keys ログに、置いた絶対パス(sandbox 配下)が実在する",
+      afKeys.some((c) => c.includes("-l")
+        && String(c.at(-1)) === join(SB, "attachments", `${jAF.attachmentId}.${jAF.ext}`)),
+      JSON.stringify(afKeys));
+    check("★Enter は送っていない(送るかは人が決める。attach と同じ規約)",
+      !afKeys.some((c) => c.at(-1) === "Enter"), JSON.stringify(afKeys));
+
+    const rNul = await attachFile(SID_READY, "notes.md", Buffer.from("plain\x00text"));
+    const jNul = await rNul.json();
+    check("★NUL バイトを含む本文 -> 400 binary(v1 は文書だけ)",
+      rNul.status === 400 && jNul.error === "ATTACH_REJECTED" && jNul.reason === "binary", JSON.stringify(jNul));
+
+    const rPng = await attachFile(SID_READY, "notes.md", Buffer.from("89504e470d0a1a0a".repeat(4), "hex"));
+    const jPng = await rPng.json();
+    check("★PNG バイト -> 400 use-image-door(画像は attach の門を通す)",
+      rPng.status === 400 && jPng.error === "ATTACH_REJECTED" && jPng.reason === "use-image-door",
+      JSON.stringify(jPng));
+  }
 
   // ---- 10-h. 選択メニューへの打鍵(§2.29) ------------------------------------
   // 出典: DESIGN D4 + Tom 裁定「自動化に安全確認を押させない」。

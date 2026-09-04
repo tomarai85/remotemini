@@ -1269,6 +1269,11 @@ final class ConversationViewModel: ObservableObject {
         await attachClient.attach(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, image: image)
     }
 
+    /// 文書の添付(対照表 #23)。机が名前を正規化し保存名を id で付けるので、電話は生の名前を渡すだけ。
+    func attach(file: Data, name: String) async -> AttachOutcome {
+        await attachClient.attachFile(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, data: file, name: name)
+    }
+
     func interrupt() async {
         guard canInterrupt else { return }
 

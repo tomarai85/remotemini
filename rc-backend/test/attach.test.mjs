@@ -68,7 +68,10 @@ test("★id の形が違えばパスを作らない(トラバーサルの入口�
 
 test("★拡張子も自分の語彙だけ", () => {
   const id = newAttachmentId();
-  for (const bad of ["sh", "exe", "png.sh", "", "../png"]) {
+  // ★`sh` は 2026-09-03(行 #23)に `pathOf` の語彙から**外れた** —— `storeFile` の
+  //   文書拡張子(`attach.mjs` の `TEXT_ATTACH_EXTS`)へ入ったので、もう bad ではない。
+  //   悪い側の錨は「その語彙の和にも無い物」で取り直す。
+  for (const bad of ["zip", "exe", "png.sh", "", "../png"]) {
     assert.throws(() => pathOf("/base", id, bad), /bad-attachment-ext/, bad);
   }
 });

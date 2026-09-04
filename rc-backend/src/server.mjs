@@ -16,7 +16,7 @@ import { spawn as nodeSpawn, execFileSync, execFile } from "node:child_process";
 import { makeDiffCache } from "./gitdiff.mjs";
 import { promisify } from "node:util";
 import { buildListing, isPhoneVisible, readHistoryFromPath, entriesFromRecord, unreadableRow, readRawRecords, searchHistoryFromPath, permissionModeOf } from "./sessions.mjs";
-import { accountBody, diffBody, gapItem, healthzBody, historyBody, historySearchBody, messageItem, pathsBody, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody, statusBodyTmux, statusBodyWorker } from "./wire.mjs";
+import { accountBody, diffBody, gapItem, healthzBody, historyBody, historySearchBody, messageItem, pathsBody, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody, attachFileBody, statusBodyTmux, statusBodyWorker } from "./wire.mjs";
 import { completePaths, clampLimit as clampPathsLimit, PATHS_NO_CWD } from "./paths.mjs";
 // 差分を読む(対照表 #4)。git を撃つのは此の module だけで、撃つ動詞は `diff` のみ。
 import { readWorkingDiff } from "./sessiondiff.mjs";
@@ -65,7 +65,7 @@ import { loadRoots, resolveUnderRoots } from "./roots.mjs";
 import { handleRootsList, handleRootsPaths, handleRootsNew, resolveRequestedCwd } from "./rootsroute.mjs";
 import { rootsBody } from "./wire.mjs";
 import { digestOf, digestLine, actionRequired, attentionOf, digestBody } from "./digest.mjs";
-import { storeImage, pathOf, sweepOld, ATTACH_MAX_BYTES } from "./attach.mjs";
+import { storeImage, storeFile, pathOf, sweepOld, ATTACH_MAX_BYTES } from "./attach.mjs";
 import { loadRules, checkDeny, denyMessage } from "./deny.mjs";
 import { createIdemStore, validKey, IDEM_REFUSAL } from "./idem.mjs";
 
@@ -1763,6 +1763,52 @@ const server = createServer(async (req, res) => {
       // 掃除はここで安く回す(別 job を増やさない)。消すのは形の合う古い物だけ。
       const swept = sweepOld(ATTACH_DIR, Date.now());
       return json(res, 200, attachBody(stored, injected, injectReason, swept.removed));
+    }
+
+    // ★電話から**非画像**の文書(log tail / CSV / JSON / Markdown / ソース)を置く道
+    //   (2026-09-03、行 #23「非画像の添付」)。`attach` の隣に置く —— 読み方(バイト読み・
+    //   413/401/404 の扱い・pane への差し込み・掃除)は画像と同じ規約で、変わるのは
+    //   検め方(sniff ではなく sanitise した申告名)と応答の鍵だけ。
+    // ★申告名は `?name=` に載る。ファイル名として使うのは `storeFile` が sanitise した後の
+    //   値だけで、ディスク上の名前(`<id>.<ext>`)には一度も使わない(`attach` と同じ規約)。
+    if (action === "attach-file" && req.method === "POST") {
+      let buf;
+      try {
+        buf = await readBodyBytes(req, ATTACH_MAX_BYTES);
+      } catch (e) {
+        if (e instanceof BodyTooLarge) return tooLarge(req, res, e);
+        return json(res, 400, { error: "ATTACH_READ_FAILED" });
+      }
+      let stored;
+      try {
+        stored = storeFile(buf, { baseDir: ATTACH_DIR, name: url.searchParams.get("name") });
+      } catch (e) {
+        // ★理由を語彙で返す(`attach` と同じ判断)。「失敗しました」だけだと、
+        //   電話の持ち主は名前を直せばよいのか諦めるのかが分からない。
+        const code = String(e.message || "");
+        const known = ["too-large", "empty-body", "use-image-door", "binary", "bad-name"];
+        if (known.includes(code)) return json(res, 400, { error: "ATTACH_REJECTED", reason: code });
+        return json(res, 500, { error: "ATTACH_FAILED", reason: "store-failed" });
+      }
+      // 置けた物の在り処は**サーバの中だけ**で解決し、pane へ差し込む文だけを作る。
+      const abs = pathOf(ATTACH_DIR, stored.id, stored.ext);
+      let injected = false;
+      let injectReason = null;
+      try {
+        const r = resolvePane();
+        if (r.pane) {
+          // 本文だけ。Enter は送らない。
+          injector.typeLiteral(r.pane, abs);
+          injected = true;
+        } else {
+          injectReason = r.reason || "no-pane";
+        }
+      } catch (e) {
+        injectReason = "inject-failed";
+      }
+      // 掃除はここで安く回す(別 job を増やさない)。消すのは形の合う古い物だけ。
+      const swept = sweepOld(ATTACH_DIR, Date.now());
+      return json(res, 200, attachFileBody(stored, injected, injectReason, swept.removed));
     }
 
     // ★「留守中に何が起きたか」を1画面ぶんで返す(2026-08-26)。研究で判った実際の

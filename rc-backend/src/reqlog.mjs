@@ -40,7 +40,10 @@
 //   此の表に無く、電話の「New session here」は机で **404 `NO_SUCH_ROUTE`** になっていた —— 上の註が
 //   警告している形そのもの。e2e が `/new` を一度も叩いていなかったので誰も気付かなかった
 //   (roots の口の e2e を足した時に `会話の道の cwd 付き` が 404 で赤になって発覚)。
-export const SESSION_ROUTE_RE = /^\/api\/sessions\/([^/]+)\/(history|messages|stream|poll|interrupt|status|choice|queue|title|archive|return-request|digest|attach|diff|paths|new)$/;
+// ★`attach-file` は 2026-09-03(行 #23「非画像の添付」)に足した。`attach`(画像)の隣に
+//   handler を置いただけでは此処に載らず、上と同じ形で永久に 404 になる —— この表が
+//   handler の到達性を決める唯一の場所である事を、足す度に自分で踏んで確かめている。
+export const SESSION_ROUTE_RE = /^\/api\/sessions\/([^/]+)\/(history|messages|stream|poll|interrupt|status|choice|queue|title|archive|return-request|digest|attach|attach-file|diff|paths|new)$/;
 
 /**
  * roots の道(2026-09-03、対照表 #11)。会話に**紐づかない** 2 本 = `/api/roots/<i>/paths` と
