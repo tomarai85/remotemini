@@ -531,16 +531,33 @@ final class HistoryClientTests: XCTestCase {
         XCTAssertEqual(items.first(where: { $0.name == "around" })?.value, "9007199254740991:3")
     }
 
-    /// 消えた錨(机が 409 を返す)。**`.notFound` ではない** —— 会話は在って錨だけが古い。
-    /// 現状の写像では 409 は `default` へ落ちて `.unreachable`。画面は「読めない」と言い、
-    /// 黙って一番上を見せない。此処を変えるなら机と一緒に。
-    func testAroundStatus409IsUnreachableNotNotFound() async {
+    /// 消えた錨(机が 409 `anchor_gone`)。**`.notFound` でも `.unreachable` でもない**。
+    ///
+    /// ★2026-09-04 に変えた(Codex 所見 F2)。旧版は 409 を `default` へ落として `.unreachable` にし、
+    ///   此の検査は其の挙動を固定していた —— つまり「電波が切れた」と「錨が消えた」が同じ値だった。
+    ///   2 つは読み手に逆の行動を求める(再試行 / 位置を諦めて live へ戻る)ので、値を分けた。
+    func testAroundStatus409WithAnchorGoneIsItsOwnCase() async {
         MockURLProtocol.stubQueue = [.init(statusCode: 409, body: Data(#"{"reason":"anchor_gone"}"#.utf8))]
         let client = HistoryClient(session: MockURLProtocol.makeSession())
 
         let result = await client.around(baseURL: baseURL, apiKey: "k", sessionID: "s", anchor: "1:0", limit: 40)
 
-        guard case .failure(.unreachable) = result else { return XCTFail("expected .unreachable, got \(result)") }
+        guard case .failure(.anchorGone) = result else { return XCTFail("expected .anchorGone, got \(result)") }
+    }
+
+    /// ★陰性対照: status だけで決めない。理由が違う 409 を「錨が消えた」と読むと、将来 409 を
+    ///   別の意味で使い始めた口の応答が、電話では位置の喪失として出る。
+    func testAroundStatus409WithAnotherReasonIsAContractViolation() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 409, body: Data(#"{"reason":"something_else"}"#.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        let result = await client.around(baseURL: baseURL, apiKey: "k", sessionID: "s", anchor: "1:0", limit: 40)
+
+        guard case .failure(.contractViolation(let v)) = result else {
+            return XCTFail("expected .contractViolation, got \(result)")
+        }
+        XCTAssertEqual(v.status, 409)
+        XCTAssertEqual(v.code, "something_else")
     }
 
     private static let validAroundBody = """

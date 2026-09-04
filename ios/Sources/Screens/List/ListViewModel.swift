@@ -258,7 +258,10 @@ final class ListViewModel: ObservableObject {
             reachability.recordFailure()
             phase = failurePhase()
 
-        case .failure(.unreachable), .failure(.malformedBody), .failure(.notFound):
+        // ★`.anchorGone` は錨の窓(`HistoryClient.around`)だけが作る値で、一覧の口は 409 を返さない。
+        //   到達しない分岐だが、網羅を崩さない為に置く —— `default` に逃がすと、次に生えた case が
+        //   黙って「届かない」の顔で一覧に出る(此の file が `.notFound` で既に踏んだ形)。
+        case .failure(.unreachable), .failure(.malformedBody), .failure(.notFound), .failure(.anchorGone):
             if !toldUnreachable, let tell = onUnreachable {
                 toldUnreachable = true
                 Task { await tell() }
