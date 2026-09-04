@@ -302,6 +302,20 @@ export function historySearchBody({ entries, matched, reachedStart }) {
 }
 
 /**
+ * `GET /api/sessions/<id>/history?around=<錨>` の封筒(2026-09-03、窓読み)。
+ *
+ * `historyBody` と別の builder にする理由は `historySearchBody` と同じ:
+ * 同じ `history` の語彙だが、此方は「錨を中心にした窓」で `truncated` の代わりに
+ * 両側の続きの有無(`olderAvailable` / `newerAvailable`)を持つ —— 1つの型に両方の意味を
+ * 持たせると、電話がどちらの経路の応答を読んでいるのか鍵の**有無**でしか判らなくなる。
+ * `anchor` を素通しで返すのは、電話が「今どの錨を中心にしているか」を応答だけから
+ * 確かめられる為(要求と同じ値が返る事自体が、窓が本当にその錨を中心にした証拠になる)。
+ */
+export function historyAroundBody({ entries, anchor, olderAvailable, newerAvailable }) {
+  return { history: entries.map(withWho), anchor, olderAvailable, newerAvailable };
+}
+
+/**
  * 補完の候補1件(2026-09-02)。**2鍵しか無いのが要点。**
  *
  * ★大きさ・時刻・権限・絶対 path を足さない。電話が要るのは「入力欄へ差す文字列」と

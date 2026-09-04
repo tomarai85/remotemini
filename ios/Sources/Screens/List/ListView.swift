@@ -278,12 +278,24 @@ struct ListView: View {
                     updateBar(notice)
                 }
                 ScrollView {
-                    Text("No sessions")
-                        .font(.headline)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 80)
-                        .frame(maxWidth: .infinity)
-                        .accessibilityIdentifier("list.empty")
+                    VStack(spacing: 6) {
+                        Text("No sessions")
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("list.empty")
+                        // ★空の机で `+` を指す 1 行(対照表 #11 の後追い、2026-09-03)。文であってボタンではない:
+                        //   工具帯の `+` が 1 押しの距離に在るので、同じ行き先の押し場所を 2 つ作らない。
+                        //   "above" と書くのは、`+` の左右がもう一度動いても嘘にならない為(今日 1 回動いた)。
+                        //   文言の根拠 = .harness/evidence-2026-09-03/research-empty-state-hint.md
+                        Text("Tap + above to start a session on this desk.")
+                            .font(.subheadline)
+                            .foregroundStyle(.tertiary)
+                            .multilineTextAlignment(.center)
+                            .accessibilityIdentifier("list.empty.hint")
+                    }
+                    .padding(.top, 80)
+                    .padding(.horizontal, 24)
+                    .frame(maxWidth: .infinity)
                 }
             }
 
