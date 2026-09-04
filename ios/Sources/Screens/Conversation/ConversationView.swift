@@ -29,6 +29,24 @@ struct ConversationView: View {
     @State private var pickedPhoto: PhotosPickerItem?
     /// 文書の添付(対照表 #23)の Files 画面を出す合図。
     @State private var showFileImporter = false
+    /// 入力欄の focus(対照表 #43 の「Hide」が畳む為)。
+    @FocusState private var composerFocused: Bool
+
+    /// keyboard の上の道具列の 1 マス(対照表 #43)。**末尾に差す**だけ。`@` と `/` は語の頭でしか意味を持たないので、
+    /// 直前が空白でも行頭でも無ければ空白を 1 つ挟む(`foo@` にしない)。
+    private func keyboardTool(_ token: String, id: String, label: String) -> some View {
+        Button {
+            let d = viewModel.draft
+            let needsGap = (token == "@" || token == "/") && !d.isEmpty && !(d.last?.isWhitespace ?? true)
+            viewModel.draft = d + (needsGap ? " " : "") + token
+        } label: {
+            Text(token)
+                .font(.body.monospaced().weight(.semibold))
+                .frame(minWidth: 28)
+        }
+        .accessibilityLabel(label)
+        .accessibilityIdentifier(id)
+    }
     @State private var attachBusy = false
     /// 結果の1文。**「送れました」で丸めない**(置けたが載っていない状態が実在する)。
     @State private var attachNotice: String?
@@ -1341,6 +1359,27 @@ struct ConversationView: View {
                     .lineLimit(1...5)
                     .disabled(!viewModel.composerEnabled)
                     .accessibilityIdentifier("conversation.composerField")
+                    .focused($composerFocused)
+                    // ★keyboard の上の道具列(対照表 #43、2026-09-03)。歩きながら片手で打つ時に一番重いのは
+                    //   `@` `/` バッククォートの位置(記号面へ切り替えて探す)。此処に 3 つ置けば 1 押しで差せる。
+                    //   ★差すのは**末尾**: SwiftUI の TextField は入力位置(cursor)を晒さないので、位置へ差す事は
+                    //     できない。移動中の打鍵はほぼ末尾なので、末尾で足りる(カーソル移動は作らない、と証拠に書く)。
+                    //   ★押しても送らない(他の帯と同じ規約)。「Hide」は keyboard を畳むだけ。
+                    .toolbar {
+                        ToolbarItemGroup(placement: .keyboard) {
+                            keyboardTool("@", id: "conversation.kb.at", label: "Insert @ for a path")
+                            keyboardTool("/", id: "conversation.kb.slash", label: "Insert / for a command")
+                            keyboardTool("`", id: "conversation.kb.backtick", label: "Insert a backtick")
+                            Spacer()
+                            Button {
+                                composerFocused = false
+                            } label: {
+                                Image(systemName: "keyboard.chevron.compact.down")
+                            }
+                            .accessibilityLabel("Hide keyboard")
+                            .accessibilityIdentifier("conversation.kb.hide")
+                        }
+                    }
 
                 Button {
                     Task { await viewModel.send() }
