@@ -277,9 +277,10 @@ probe "発言者名を本番が作れない語にする" "$HISTF" \
     'display: .init(who: "Tools")'
 
 # ⑳ ★役と名前の取り違え。両方とも producible なので、集合しか見ない検査は通す。
+#    (2026-09-03: tool 行が `output:` を続きの行に持つ様になったので、錨は 1 行目の形 = 末尾 `,` で終わる)
 probe "役と名前を取り違える(両方 producible なので集合検査では捕まらない)" "$HISTF" \
-    'HistoryEntry(role: .tool, text: "⚙ Bash", display: .init(who: "Tool")),' \
-    'HistoryEntry(role: .tool, text: "⚙ Bash", display: .init(who: "Claude")),'
+    'HistoryEntry(role: .tool, text: "⚙ Bash", display: .init(who: "Tool"),' \
+    'HistoryEntry(role: .tool, text: "⚙ Bash", display: .init(who: "Claude"),'
 
 # ㉑ もう一方の fixture。1件しか who を持たないので、見張りから漏れやすい。
 probe "もう一方の fixture の発言者名がズレる(PollFixture も見張られているか)" "$POLLF" \

@@ -248,9 +248,15 @@ const CASES = {
   ],
   // ★錨(2026-09-03、対照表 #3): 履歴の項目は `anchor`(行の byte 位置:行内番号)を持ち、探索の当たりは
   //   更に `fromEnd`(末尾から何番目か)を持つ。**両方の枝**を通す(無い項目 = ライブ / 要約、在る項目 = 履歴 / 探索)。
+  // ★道具の結果の畳み込み(2026-09-03、queue transcript-tool-output-folds-into-the-entry):
+  //   tool entry に `output`/`outputTruncated`/`outputError` が乗る枝。**両方**通す
+  //   (成功 = outputError 無し / 失敗 = outputError:true)—— 片方だけだと其の鍵を
+  //   一度も突き合わせないまま緑になる(此のファイル冒頭の主張そのもの)。
   withWho: [[ENTRIES[0]], [ENTRIES[1]], [{ role: "tool", text: "⚙ Bash" }], [null],
     [{ role: "user", text: "with anchor", anchor: "5137:0" }],
-    [{ role: "assistant", text: "search hit", anchor: "5195:1", fromEnd: 12 }]],
+    [{ role: "assistant", text: "search hit", anchor: "5195:1", fromEnd: 12 }],
+    [{ role: "tool", text: "⚙ Bash", output: "line1\nline2", outputTruncated: false }],
+    [{ role: "tool", text: "⚙ Bash", output: "boom", outputTruncated: true, outputError: true }]],
   messageItem: [
     [{ entries: ENTRIES.map((e) => wire.withWho(e)), seq: 7 }],
     [{ event: { type: "assistant", text: "a" }, seq: 8 }],
@@ -731,6 +737,11 @@ const PAIRS = [
   },
   { swift: "GapItem.DisplayBox", builders: ["gapItem"], at: "display" },
   { swift: "HistoryResponse", builders: ["historyBody"], at: "" },
+  // 2026-09-03(queue transcript-tool-output-folds-into-the-entry): 道具呼び出しの entry に
+  // 結果の前置き `output` / `outputTruncated` / `outputError` を畳み込んだ(追加のみ)。机側を
+  // 作った worktree では電話が未対応だったので serverOnly に置いたが、同じ commit で電話の
+  // `HistoryEntry` が 3 鍵とも Optional で読む様になったので、素の一致に戻した(宣言が古い
+  // serverOnly は此の検査が赤にする —— 門で実測、2026-09-03 22:58)。
   { swift: "HistoryEntry", builders: ["withWho"], at: "" },
   { swift: "HistoryEntry.EntryDisplay", builders: ["withWho"], at: "display" },
   {
@@ -1073,6 +1084,10 @@ test("`phone-subset` の宣言が、緩める言い訳になっていない", ()
   //   `pane`/`source` はどの画面にも出さない診断値、`worker`/`state`/`queued`/`errored` は
   //   `manager.status()` の生の形でまだ何処も読んでいない —— 此処でもう1本読むと、
   //   同じ事実の2本目の写しを作る事になる。
+  // ★ 2026-09-03 に `HistoryEntry` が1つ増えた(queue transcript-tool-output-folds-into-the-entry)。
+  //   理由: 道具呼び出しの entry に結果の前置き(`output`/`outputTruncated`/`outputError`)を
+  //   畳み込んだ。3鍵とも追加のみで既存鍵は動かないが、電話の `HistoryEntry` はまだこの3鍵を
+  //   持たない —— 読まないと決めた訳ではなく、此の作業(机側)の対象外なだけ。
   assert.deepEqual(PAIRS.filter((p) => p.mode === "phone-subset").map((p) => p.swift),
     ["DigestEnvelope.Digest", "DigestEnvelope.Digest.Window",
      "AttachClient.Envelope", "SessionsResponse", "SessionRow", "PollResponse",

@@ -120,13 +120,25 @@ struct HistoryEntry: Decodable, Equatable {
     /// 探索の当たりにだけ載る「末尾から何番目か」(最新 = 0)。此の数 + 1 まで limit を伸ばして
     /// 履歴を読めば其の項目が入る(机の `searchHistoryFromPath`)。素の履歴では nil。
     let fromEnd: Int?
+    /// 道具の結果の**切り詰めた**写し(対照表 #41、2026-09-04)。`.tool` の項目にだけ、机が転写の
+    /// `tool_result` を対にできた時だけ載る(机の `TOOL_OUTPUT_PREVIEW_MAX` = 600 byte / 6 行、ANSI と CR は
+    /// 机で落とす)。電話は畳んで持ち、押した時だけ開く。ライブ(SSE)の行には無い(結果は後の record で届く)。
+    let output: String?
+    /// 机が上限で切った(= 全文ではない)。`output` が無い時は無い。
+    let outputTruncated: Bool?
+    /// 道具が失敗した結果(`is_error`)。`output` が無い時は無い。
+    let outputError: Bool?
 
-    init(role: EntryRole, text: String, display: EntryDisplay, anchor: String? = nil, fromEnd: Int? = nil) {
+    init(role: EntryRole, text: String, display: EntryDisplay, anchor: String? = nil, fromEnd: Int? = nil,
+         output: String? = nil, outputTruncated: Bool? = nil, outputError: Bool? = nil) {
         self.role = role
         self.text = text
         self.display = display
         self.anchor = anchor
         self.fromEnd = fromEnd
+        self.output = output
+        self.outputTruncated = outputTruncated
+        self.outputError = outputError
     }
 
     /// Brief §0-a-3: `who` is S-group -- computed server-side by `whoOf(role)` and

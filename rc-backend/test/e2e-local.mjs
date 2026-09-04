@@ -39,6 +39,10 @@ const CWD_NOTRUST = join(SB, "notrust");  // 実在するが一覧に無い → 
 const CWD_GONE    = join(SB, "gone");     // 一覧に在るが dir が無い → 409 cwd_missing
 const TRUST_FILE  = join(SB, "trust.json");
 const SID1 = "11111111-1111-1111-1111-111111111111";
+// 道具の結果の畳み込み(2026-09-03、queue transcript-tool-output-folds-into-the-entry)専用の
+// fixture。SID1 に足さないのは、SID1 の行数(:145 の註)と `histShape` の完全一致検査
+// (下の「history has user+assistant+tool」)を壊さない為 —— 別の会話にすれば両方無傷。
+const SID_TOOL_OUTPUT = "aaaaaaaa-0000-0000-0000-000000000099";
 // 注入経路の fixture。cwd は SID1(/Users/Shared/dev/roundtrip)と必ず別にする —
 // 同じにすると既存のワーカー経路テストが注入経路に化けて、何を測ったか分からなくなる。
 const SID_READY  = "44444444-4444-4444-4444-444444444444"; // READY のペインがある
@@ -148,6 +152,29 @@ writeFileSync(join(PROJ, `${SID1}.jsonl`), [
 ].join("\n"));
 writeFileSync(join(PROJ, "22222222-2222-2222-2222-222222222222.jsonl"),
   JSON.stringify({ entrypoint: "sdk-cli", cwd: "/x", type: "user", message: { content: "noise" } }));
+
+// 道具の結果の畳み込み(2026-09-03、queue transcript-tool-output-folds-into-the-entry)。
+// `tool_use` に id を持たせ、其の直後の行で `tool_result` を返す —— Claude Code の転写形
+// (此の repo に実例が無かったので queue の brief に書かれた形をそのまま採った)。
+const TOOL_OUTPUT_MARKER = "E2E_TOOL_OUTPUT_MARKER";
+writeFileSync(join(PROJ, `${SID_TOOL_OUTPUT}.jsonl`), [
+  JSON.stringify({ entrypoint: "cli", cwd: CWD_WORK, type: "user", message: { role: "user", content: "道具を使って" } }),
+  JSON.stringify({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "取りかかります" },
+        { type: "tool_use", id: "toolu_e2e_1", name: "Bash", input: {} },
+      ],
+    },
+  }),
+  JSON.stringify({
+    type: "user",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_e2e_1", content: `${TOOL_OUTPUT_MARKER}\n2行目` }] },
+  }),
+  JSON.stringify({ type: "ai-title", aiTitle: "道具の結果" }),
+].join("\n"));
 
 const FIXTURED = new Set();
 // ★`permissionMode` は既定で**省く**(第4引数を渡した呼び手だけが持つ)。全呼び手に
@@ -975,6 +1002,34 @@ try {
       { role: "assistant", text: "最初の答え" },
       { role: "tool", text: "⚙ Bash" },
     ]), JSON.stringify(hist.history));
+
+  // 3-T. 道具の結果の畳み込み(2026-09-03、queue transcript-tool-output-folds-into-the-entry)—— 扉E。
+  //
+  // ★何故 実サーバへ HTTP を撃つ必要が在るか: 関数の扉(`test/tool-output.test.mjs`)は
+  //   `entriesFromLines` を直に呼んで通っているが、此処が測るのは「配線」——
+  //   `/history` のハンドラが実際に其の関数を通しているか、`withWho` の spread が
+  //   `output`/`outputTruncated` を落とさずに線まで運ぶか。此のファイル冒頭に在る
+  //   前例(2026-08-31 の全ルート死亡・2026-09-01 の `display` 欠落)がどちらも
+  //   「関数の扉は緑、実サーバは壊れていた」の形だった。
+  {
+    const th = await (await fetch(`${B}/api/sessions/${SID_TOOL_OUTPUT}/history`, { headers: H })).json();
+    const rows = th.history || [];
+    check("★道具の結果: tool_result の行が別途 user entry として出ていない(3件だけ)",
+      rows.length === 3 && rows.map((e) => e.role).join(",") === "user,assistant,tool",
+      JSON.stringify(rows.map((e) => [e.role, e.text])));
+    const toolRow = rows.find((e) => e.role === "tool");
+    check("★道具の結果: tool entry に output/outputTruncated が乗り、marker が読める",
+      !!toolRow && toolRow.output === `${TOOL_OUTPUT_MARKER}\n2行目` && toolRow.outputTruncated === false && !("outputError" in toolRow),
+      JSON.stringify(toolRow));
+    check("★道具の結果: 項目は素の履歴と同じく display.who を持つ(電話が復号できる形)",
+      !!toolRow && typeof toolRow.display?.who === "string", JSON.stringify(toolRow));
+
+    // 探索は output を見ない(scope) —— marker は output だけに在り、text には無い。
+    const sr = await (await fetch(
+      `${B}/api/sessions/${SID_TOOL_OUTPUT}/history?q=${encodeURIComponent(TOOL_OUTPUT_MARKER)}&limit=50`, { headers: H })).json();
+    check("★道具の結果: 探索は output の中身に当たらない(marker は text ではなく output に在る)",
+      sr.matched === 0 && (sr.history || []).length === 0, JSON.stringify(sr).slice(0, 200));
+  }
 
   // 3-S. 転写の探索(`?q=`)—— **扉E**(spec §8)。
   //

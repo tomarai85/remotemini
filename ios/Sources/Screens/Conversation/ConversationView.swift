@@ -1946,6 +1946,8 @@ private struct EntryBubble: View {
     let entry: HistoryEntry
     /// 検索の結果の面でだけ渡る当たり語(対照表 #42、2026-09-03)。nil = 素の本文。
     var highlight: String? = nil
+    /// tool 行の出力を開いているか(対照表 #41)。行ごとの状態、既定は畳む。
+    @State private var showOutput = false
 
     /// 本文。当たり語が渡っていれば其処だけ色 + 太字(規則は `SearchHighlight`、机の一致規則と同じ)。
     private var highlightedText: Text {
@@ -1977,22 +1979,65 @@ private struct EntryBubble: View {
             // (13/25 in one observed transcript), so this must stay visually
             // lightweight or it would dominate the screen.
             // 2026-08-14: 公式アプリの「活動チップ」の型(丸めた薄い背景の1行)。
-            HStack(spacing: 5) {
-                Text(entry.display.who)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                highlightedText
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+            // ★2026-09-04(対照表 #41): 机が道具の結果を対にできた行は chip の右に chevron が付き、
+            //   押すと**その下**に切り詰めた出力が開く。既定は畳む —— tool 行は転写の半分近くを
+            //   占めるので、開いたままにすると画面が出力で埋まる。出力は等幅にしない(#40 の裁定)。
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 5) {
+                    Text(entry.display.who)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    highlightedText
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if entry.output != nil {
+                        // ★accessibility の identifier / value は**此処**(chevron)に置く。容器の HStack に
+                        //   付けると SwiftUI が中の Text を 1 要素に畳み、`staticTexts["⚙ Bash"]` が消える
+                        //   (Button で包んだ時と同じ形、2026-09-03 に UI 検査で実測)。
+                        Image(systemName: "chevron.down")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(showOutput ? 180 : 0))
+                            .accessibilityLabel("Tool output")
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityValue(showOutput ? "expanded" : "collapsed")
+                            .accessibilityIdentifier("conversation.tool.toggle")
+                    }
+                }
+                .padding(.horizontal, Self.textInset)
+                .padding(.vertical, 4)
+                // ★2026-09-01: 平らな側を `Color(.systemGray6)`(中立灰)から配色の面へ。
+                //   系統の混在の直し —— 詳細は `RCTheme.surfaceElevated` の頭。
+                .background(RCTheme.usesGlass ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(RCTheme.surface),
+                            in: Capsule())
+                .contentShape(Capsule())
+                // `Button` で包むと中の Text が label に畳まれて `staticTexts["⚙ Bash"]` が消える(#3 で実測)。
+                .onTapGesture {
+                    guard entry.output != nil else { return }
+                    withAnimation(.snappy(duration: 0.22)) { showOutput.toggle() }
+                }
+
+                if showOutput, let out = entry.output {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(out)
+                            .font(.caption)
+                            .foregroundStyle(entry.outputError == true ? AnyShapeStyle(RCTheme.danger) : AnyShapeStyle(.secondary))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("conversation.tool.output")
+                        if entry.outputTruncated == true {
+                            // 机が切った印。全文は転写にしか無い(電話は要求しない = 読むだけの層)。
+                            Text("… (trimmed by the desk)")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .accessibilityIdentifier("conversation.tool.output.more")
+                        }
+                    }
+                    .padding(.leading, Self.textInset)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
-            .padding(.horizontal, Self.textInset)
-            .padding(.vertical, 4)
-            // ★2026-09-01: 平らな側を `Color(.systemGray6)`(中立灰)から配色の面へ。
-            //   系統の混在の直し —— 詳細は `RCTheme.surfaceElevated` の頭。
-            .background(RCTheme.usesGlass ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(RCTheme.surface),
-                        in: Capsule())
             .frame(maxWidth: .infinity, alignment: .leading)
 
         // 2026-08-14 の UI 作り直し。北極星 = Claude の公式アプリ:
