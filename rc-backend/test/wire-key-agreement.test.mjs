@@ -216,6 +216,11 @@ const CASES = {
     [{ id: "a", bytes: 1, format: "png", converted: false }, true, null, 0],
     [{ id: "a", bytes: 1, format: "heic", converted: true }, false, "tmux-unavailable", 2],
   ],
+  // 2026-09-03(対照表 #23): 文書の添付。画像の封筒と同じく**両方の枝**(載った / 載らなかった)を通す。
+  attachFileBody: [
+    [{ id: "a", bytes: 27, name: "boot.log", ext: "log" }, true, null, 0],
+    [{ id: "a", bytes: 27, name: "notes.md", ext: "md" }, false, "no-pane", 1],
+  ],
   clearQueueResult: [[200, { dropped: 2 }], [400, {}]],
   // 2026-08-26: 留守中の要約。★**読めた窓と読めなかった窓の両方**を通す ——
   //   読めなかった時は `counts`/`tools`/`fileTargets` が **null** で来るので、
@@ -362,6 +367,7 @@ const MODULE_OF = {
   interruptResult: ["view", "src/view.mjs"],
   choiceResult: ["view", "src/view.mjs"],
   attachBody: ["wire", "src/wire.mjs"],
+  attachFileBody: ["wire", "src/wire.mjs"],
   digestBody: ["digest", "src/digest.mjs"],
   clearQueueResult: ["view", "src/view.mjs"],
   paneFaultView: ["blocked", "src/blocked.mjs"],
@@ -643,6 +649,9 @@ const PAIRS = [
   { swift: "ChoiceButton", builders: ["choiceView"], at: "buttons[]" },
   // 2026-08-26: 承認の危険度。**許可は変えず表示の重さだけ**を運ぶ枝(`src/risk.mjs`)。
   { swift: "ChoiceRisk", builders: ["choiceView"], at: "risk" },
+  // 2026-09-03(対照表 #23): 文書の添付の応答。7 鍵を電話も全部復号する(`swept` も含めて = 画像の封筒と違い
+  // 新しい型なので、読まない鍵を最初から生やさない)。絶対パスの欄が無い事は此処でも見張る。
+  { swift: "AttachClient.FileEnvelope", builders: ["attachFileBody"], at: "" },
   // 2026-08-26: 添付の応答。★絶対パスの欄が両側に無い事も、この突き合わせが見張る。
   {
     swift: "AttachClient.Envelope", builders: ["attachBody"], at: "",

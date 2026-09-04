@@ -496,6 +496,28 @@ export function attachBody(stored, injected, injectReason, swept) {
 }
 
 /**
+ * `POST /api/sessions/<id>/attach-file` の封筒(2026-09-03、行 #23「非画像の添付」)。
+ *
+ * ★`attachBody` の隣に置くが**同じ関数にしない**: 画像は `format`/`converted` を持ち、
+ *   文書は `name`/`ext` を持つ —— 鍵の集合そのものが違う(電話の Decodable も別の型になる)。
+ *   1つの関数に両方を詰めると、片方しか通らない枝の鍵が測れなくなる
+ *   (`attachBody` の頭の註と同じ理由でここも純関数に切り出す)。
+ * ★**絶対パスの欄を持たない**(`attachBody` と同じ判断)。応答には申告名の
+ *   sanitise 済み `name` と、置いた物の `ext` だけを載せる。
+ */
+export function attachFileBody(stored, injected, injectReason, swept) {
+  return {
+    attachmentId: stored.id,
+    bytes: stored.bytes,
+    name: stored.name,
+    ext: stored.ext,
+    injected,
+    injectReason: injected ? null : (injectReason ?? "unknown"),
+    swept,
+  };
+}
+
+/**
  * `GET /api/sessions/<id>/diff` の封筒(2026-09-02、対照表 #4)。
  *
  * 中身を作るのは `src/sessiondiff.mjs`。此処が持つのは**鍵名だけ** ——
