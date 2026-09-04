@@ -52,3 +52,10 @@ One iteration on the phone: wrapping the result bubble in a `Button` folded its 
 an existing search test that anchors on `staticTexts["line 155"]`; a tap gesture on the bubble keeps the accessibility
 tree as it was. One on the desk: `readLinesBackward`'s default `done` stops after the first chunk, so the offsets test
 passes `done: () => false` to read the whole file.
+
+Deployed first as e1d3342 / OTA 147 (desk `/history` anchors and `/history?q=` hits with `fromEnd` observed live on
+friday). Codex adversarial review afterwards: 4 Medium + 2 Low, all applied (`codex-jump-review.md`): the jump target is
+held as an anchor and resolved to an index at render time, stale `fromEnd` after appends is recovered by doubling the
+window up to the ceiling, jumps are exclusive with a generation counter and `busy`, hostile `fromEnd` is range-checked
+before arithmetic, the failure notice is cleared on close / new results / new jump, and the missing boundary tests
+were added on both sides.

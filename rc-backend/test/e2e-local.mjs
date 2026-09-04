@@ -1203,6 +1203,11 @@ try {
         inside.status === 202 && ij.started === true && !("cwd" in ij) && after.length === before + 1
         && cwdOf(after[after.length - 1]) === join(SB_REAL, "projects"),
         `status=${inside.status} ${JSON.stringify(ij)} tmux=${JSON.stringify(after[after.length - 1] || null)}`);
+      // ★起動側の合図(Codex #3 の後追い): tmux の command は `RC_PHONE_LAUNCH=1 exec <launcher>` で始まる =
+      //   `rc-claude` が物理 cwd を台帳と突き合わせる。此の語が無いと起動側の検査は走らない。
+      check("★roots: tmux の command が RC_PHONE_LAUNCH=1 で始まる(起動側の cwd 再検査の合図)",
+        after.length > 0 && /^RC_PHONE_LAUNCH=1 exec /.test(String(after[after.length - 1].slice(-1)[0])),
+        JSON.stringify((after[after.length - 1] || []).slice(-1)));
       const outside = await fetch(`${B}/api/roots/0/new`, { method: "POST", headers: jh, body: JSON.stringify({ path: "../" }) });
       const oj = await outside.json();
       check("★★roots: root の外を指す相対 path = 400 outside_roots(allowlist が本当に効いている)",

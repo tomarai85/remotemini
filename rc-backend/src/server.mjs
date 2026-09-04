@@ -2545,9 +2545,12 @@ const LOG_PATHS = new Set([
  */
 function startPhoneWindow(cwd) {
   const name = `phone-new-${Date.now().toString(36)}`;
+  // ★`RC_PHONE_LAUNCH=1`(2026-09-03、Codex 所見 #3 の後追い): 起動側(`rc-claude`)が物理 cwd を台帳と
+  //   突き合わせる合図。机の realpath 検査と tmux の chdir は別の瞬間なので、最後の瞬間にもう一度見る。
+  //   手で起動する `rc-claude` には此の合図が無い = 台帳の外でも今までどおり動く。
   const out = tmuxRunner.run([
     "new-window", "-d", "-P", "-F", "#{window_id} #{pane_id}",
-    "-t", TMUX_SESSION, "-n", name, "-c", cwd, `exec ${CLAUDE_LAUNCHER}`,
+    "-t", TMUX_SESSION, "-n", name, "-c", cwd, `RC_PHONE_LAUNCH=1 exec ${CLAUDE_LAUNCHER}`,
   ]);
   const ids = String(out || "").trim().split(/\s+/);
   if (ids.length < 2 || !ids[0].startsWith("@")) return null;
