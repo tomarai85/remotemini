@@ -109,3 +109,37 @@ test("追記しても既存の錨は動かない(jsonl は追記のみ)", () => 
   assert.deepEqual(after.slice(0, before.length).map((e) => e.anchor), before);
   assert.equal(after.length, before.length + 1);
 });
+
+// ---- Codex 2026-09-03 #6 の対照 ------------------------------------------------------------------
+
+test("★早く止まる探索(limit で done)でも fromEnd は全読みと同じ(読めた範囲は常に EOF までの suffix)", () => {
+  const { p } = transcript();
+  const full = searchHistoryFromPath(p, "needle", 50, { chunk: 101 });
+  const early = searchHistoryFromPath(p, "needle", 1, { chunk: 101 });   // 1 件で done
+  assert.equal(early.history.length, 1);
+  const newest = early.history[0];
+  const same = full.history.find((h) => h.anchor === newest.anchor);
+  assert.ok(same, "早止まりの当たりが全読みに無い");
+  assert.equal(newest.fromEnd, same.fromEnd, "fromEnd が走査の止め方で変わった");
+  assert.equal(newest.fromEnd, 0);
+  const bounded = searchHistoryFromPath(p, "needle", 50, { chunk: 101, maxBytes: 900 }); // 途中で打ち切り
+  for (const h of bounded.history) {
+    assert.equal(h.fromEnd, full.history.find((x) => x.anchor === h.anchor)?.fromEnd, `maxBytes 打ち切りで fromEnd がずれた: ${h.anchor}`);
+  }
+  assert.equal(bounded.reachedStart, false);
+});
+
+test("CRLF と最終改行なしでも offset は行頭の実位置", () => {
+  const dir = mkdtempSync(join(tmpdir(), "anchor-crlf-"));
+  const p = join(dir, "t.jsonl");
+  const recs = [rec("user", "一"), rec("assistant", "二 needle"), rec("user", "三")];
+  writeFileSync(p, recs.join("\r\n"));   // \r\n 区切り、末尾に改行無し
+  const h = readHistoryFromPath(p, 10, { chunk: 37 });
+  assert.equal(h.history.length, 3);
+  const expect = [0, Buffer.byteLength(recs[0]) + 2, Buffer.byteLength(recs[0]) + Buffer.byteLength(recs[1]) + 4];
+  assert.deepEqual(h.history.map((e) => Number(e.anchor.split(":")[0])), expect);
+  for (const e of h.history) assert.ok(lineAt(p, e.anchor).includes(e.text.slice(0, 1)), "錨の位置に其の行が無い");
+  const s = searchHistoryFromPath(p, "needle", 5, { chunk: 37 });
+  assert.equal(s.history[0].anchor, h.history[1].anchor);
+  assert.equal(s.history[0].fromEnd, 1);
+});

@@ -244,6 +244,7 @@ struct ConversationView: View {
 
     /// 探索の当たりへ跳ぶ。跳べたら探索の面を閉じる(転写の其の行が中央に来る)。
     private func jump(to entry: HistoryEntry) async {
+        jumpNotice = nil   // 前回の断りを持ち越さない(Codex #5)
         let outcome = await viewModel.jump(to: entry)
         if outcome == .revealed {
             jumpNotice = nil
@@ -599,7 +600,9 @@ struct ConversationView: View {
                             // 探索の当たりへ跳ぶ(対照表 #3)。行を画面の**中央**に置く = 前後の文脈が
                             // 両方見える。着地の補正はここでも終える(下端へ引き戻さない)。
                             initialLandingPending = false
-                            guard let index = viewModel.jumpRevealIndex else { return }
+                            // ★index は**今**の `entries` から引く(Codex #2)。錨が消えていれば動かない。
+                            guard let anchor = viewModel.jumpRevealAnchor,
+                                  let index = viewModel.entries.firstIndex(where: { $0.anchor == anchor }) else { return }
                             withAnimation { proxy.scrollTo(index, anchor: .center) }
                         }
                     }
@@ -655,6 +658,9 @@ struct ConversationView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(RCBackdrop())
+        // 新しい問いの結果が来たら、前の跳びの断りは消す(Codex #5)。面を閉じた時も同じ。
+        .onChange(of: viewModel.searchState) { _, _ in jumpNotice = nil }
+        .onDisappear { jumpNotice = nil }
     }
 
     /// 面から出る口。

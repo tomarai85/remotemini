@@ -143,15 +143,22 @@ final class ConversationViewModel: ObservableObject {
     /// 探索の当たりへ**跳ぶ**(対照表 #3、2026-09-03)。`earlierRevealToken` と同じ形: 札が進んだら View は
     /// `jumpRevealIndex` の行を画面の**中央**へ置く。行の識別は既存の index のまま(`ForEach` の offset)。
     @Published private(set) var jumpRevealToken = 0
-    @Published private(set) var jumpRevealIndex: Int?
+    /// 跳ぶ先は **錨**で持つ(index ではない。Codex 2026-09-03 #2: 札が進んでから描画までの間に窓が
+    /// 差し替わると同じ index が別の行になる)。View は描画の瞬間に `entries` から index を引く。
+    @Published private(set) var jumpRevealAnchor: String?
+    /// 跳びの世代(Codex #3): 遅く返った古い応答が新しい跳びを上書きしない為の札。
+    private var jumpGeneration = 0
+    private(set) var isJumping = false
 
     enum JumpOutcome: Equatable {
         /// 行は手元に在る(読み足した後を含む)。View が scroll する。
         case revealed
         /// 机が 1 回で返せる上限(500 項目)より奥。読み足しでは届かない。
         case tooFar
-        /// 錨が無い当たり(古い机)か、読み足しても其の錨が来なかった。
+        /// 錨が無い当たり(古い机)か、転写を全部読んでも其の錨が無かった。
         case notFound
+        /// 別の読み足し(跳び / 以前を読む)が走っている最中。押し直せば良い。
+        case busy
         case failed(String)
 
         var text: String {
@@ -159,6 +166,7 @@ final class ConversationViewModel: ObservableObject {
             case .revealed:  return ""
             case .tooFar:    return "That match is further back than the phone can load."
             case .notFound:  return "Couldn't find that line in the transcript."
+            case .busy:      return "Still loading — try again in a moment."
             case .failed(let t): return t
             }
         }
@@ -1560,34 +1568,52 @@ final class ConversationViewModel: ObservableObject {
     /// 3. 机の上限(500)より奥は `.tooFar`(正直に言う。黙って一番上を見せない)。
     func jump(to hit: HistoryEntry) async -> JumpOutcome {
         guard let anchor = hit.anchor else { return .notFound }
-        if let i = entries.firstIndex(where: { $0.anchor == anchor }) {
-            reveal(i)
+        if entries.contains(where: { $0.anchor == anchor }) {
+            reveal(anchor)
             return .revealed
         }
+        // ★範囲を**先に**見る(Codex #4): `Int.max + 1` は trap。線の値は信じない。
         guard let fromEnd = hit.fromEnd else { return .notFound }
-        let needed = fromEnd + 1 + Self.jumpContextMargin
-        guard fromEnd + 1 <= Self.deskHistoryLimitCeiling else { return .tooFar }
-        let limit = min(Self.deskHistoryLimitCeiling, max(currentLimit, needed))
-        let result = await client.fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: limit)
-        switch result {
-        case .success(let response):
-            currentLimit = limit
-            history = response.history
-            truncated = response.truncated
-            loadEarlierState = Self.resolveLoadEarlierState(truncated: truncated, currentLimit: currentLimit, advanced: true)
-            guard let i = entries.firstIndex(where: { $0.anchor == anchor }) else { return .notFound }
-            reveal(i)
-            return .revealed
-        case .failure(.unauthorized):
-            onUnauthorized()
-            return .failed(NewSessionOutcome.unauthorized.text)
-        case .failure:
-            return .failed(NewSessionOutcome.unreachable.text)
+        guard (0..<Self.deskHistoryLimitCeiling).contains(fromEnd) else { return .tooFar }
+        // ★排他(Codex #3): 跳びの最中の再タップ、「以前を読む」との同時走行は受けない。
+        //   遅く返った古い応答が `history` と跳び先を上書きする形を、世代の札でも塞ぐ。
+        guard !isJumping, !isFetchingEarlier else { return .busy }
+        isJumping = true
+        isFetchingEarlier = true
+        jumpGeneration += 1
+        let generation = jumpGeneration
+        defer { isJumping = false; isFetchingEarlier = false }
+
+        var limit = min(Self.deskHistoryLimitCeiling, max(currentLimit, fromEnd + 1 + Self.jumpContextMargin))
+        while true {
+            let result = await client.fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: limit)
+            guard generation == jumpGeneration else { return .busy }
+            switch result {
+            case .success(let response):
+                currentLimit = limit
+                history = response.history
+                truncated = response.truncated
+                loadEarlierState = Self.resolveLoadEarlierState(truncated: truncated, currentLimit: currentLimit, advanced: true)
+                if entries.contains(where: { $0.anchor == anchor }) {
+                    reveal(anchor)
+                    return .revealed
+                }
+                // ★探索の後に机で会話が伸びると `fromEnd` は古くなる(Codex #1)。転写を全部読んだのに無い =
+                //   本当に無い。まだ手前が在るなら窓を倍にして上限まで追い、上限でも無ければ「奥すぎる」。
+                if !response.truncated { return .notFound }
+                if limit >= Self.deskHistoryLimitCeiling { return .tooFar }
+                limit = min(Self.deskHistoryLimitCeiling, limit * 2)
+            case .failure(.unauthorized):
+                onUnauthorized()
+                return .failed(NewSessionOutcome.unauthorized.text)
+            case .failure:
+                return .failed(NewSessionOutcome.unreachable.text)
+            }
         }
     }
 
-    private func reveal(_ index: Int) {
-        jumpRevealIndex = index
+    private func reveal(_ anchor: String) {
+        jumpRevealAnchor = anchor
         jumpRevealToken += 1
     }
 
