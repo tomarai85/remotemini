@@ -115,6 +115,32 @@ struct HistoryFetchingFixture: HistoryFetching {
         return .success(Self.scan(Self.transcript(for: state), needle: needle, limit: limit))
     }
 
+    /// 錨の窓(2026-09-04)。作り物の転写は錨を `n*100:0` で振ってあるので、其の並びの中から
+    /// 要求された錨を探し、前後を `limit` に切って返す。**机の約束を fixture でも守る**:
+    /// 要求した錨は必ず窓の中に在り、旗が立つ側の端の錨は要求した錨より外側にある
+    /// (= 端の錨で読み直せば必ず進む)。守らないと、画面の「もっと古く/新しく」の検査が
+    /// 実機で無限に同じ窓を読む欠陥を通してしまう。
+    func around(baseURL: URL, apiKey: String, sessionID: String, anchor: String, limit: Int) async -> Result<HistoryAroundResponse, SessionsFetchError> {
+        if state == .searchUnreachable { return .failure(.unreachable) }
+        let all = Self.transcript(for: state)
+        guard let at = all.firstIndex(where: { $0.anchor == anchor }) else {
+            // 机は 409 anchor_gone。client の写像では `.unreachable` に落ちる。
+            return .failure(.unreachable)
+        }
+        let span = max(1, limit)
+        let before = (span - 1) / 2
+        let lower = max(0, at - before)
+        let upper = min(all.count - 1, lower + span - 1)
+        let start = max(0, min(lower, upper - span + 1))
+        let window = Array(all[start...upper])
+        return .success(HistoryAroundResponse(
+            history: window,
+            anchor: anchor,
+            olderAvailable: start > 0,
+            newerAvailable: upper < all.count - 1
+        ))
+    }
+
     /// 走査の 1 歩(机の `TAIL_CHUNK` = 64 KiB に当たる)。
     private static let scanChunk = 32
     /// 遡れる上限(机の `TAIL_MAX` = 1 MiB に当たる)。

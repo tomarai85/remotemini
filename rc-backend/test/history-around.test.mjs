@@ -61,7 +61,10 @@ test("★窓: 中央の錨は必ず入り、前後 ~limit/2 件が file 順で�
   assert.deepEqual(offs, [...offs].sort((a, b) => a - b), "並びが file 順でない");
 
   const idx = anchors.indexOf(mid.anchor);
-  assert.ok(idx >= Math.ceil(limit / 2) - 2 && idx <= Math.ceil(limit / 2), `手前が ~limit/2 件でない(idx=${idx})`);
+  // ★F5(2026-09-04、進む保証): 手前は `wantOlder` 件でなく `wantOlder+1` 件を要求する
+  //   ("+1" が実際に見つかった時は窓へも残す —— chunk 不変に olderAvailable を決める為の
+  //   証拠)。此の transcript は 300 件均一で手前に十分な数が在るので、上限が +1 される。
+  assert.ok(idx >= Math.ceil(limit / 2) - 2 && idx <= Math.ceil(limit / 2) + 1, `手前が ~limit/2 件でない(idx=${idx})`);
   assert.ok(r.history.length >= limit - 2 && r.history.length <= limit + 2, `窓の大きさが limit から離れすぎ(${r.history.length})`);
   assert.equal(r.olderAvailable, true, "中央の錨なら手前にまだ在る");
   assert.equal(r.newerAvailable, true, "中央の錨ならまだ先も在る");
@@ -230,4 +233,133 @@ test("readLinesForward: read が 1 byte ずつしか返らなくても、繋い�
   assert.deepEqual(r.lines, ["aaa", "bbb", "ccc"]);
   assert.deepEqual(r.offsets, [0, 4, 8]);
   assert.equal(r.reachedEnd, true);
+});
+
+// ── ここから Codex around-review (2026-09-04) の F1/F2/F5 追加分 ─────────────────
+
+test("★F1: 巨大な1行(1.1MB)が最初の record でも around=0:0 は其の entry を返す(空にならない)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hist-around-huge-"));
+  const p = join(dir, "t.jsonl");
+  const big = "x".repeat(1_100_000); // TAIL_MAX(1MiB既定)より大きい1行
+  writeFileSync(p, `${rec("user", big)}\n`);
+  const r = readHistoryAround(p, "0:0", 50);
+  assert.equal(r.history.length, 1, "巨大な最初の record が消えた(空配列になった)");
+  assert.equal(r.history[0].anchor, "0:0");
+  assert.equal(r.history[0].text, big);
+});
+
+test("★F1: 巨大な1行が lineCap も超えれば anchor-gone になる(諦めて捏造しない)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hist-around-toohuge-"));
+  const p = join(dir, "t.jsonl");
+  const big = "x".repeat(2_000_000); // 此の test の lineCap(1MiB)より大きい1行
+  writeFileSync(p, `${rec("user", big)}\n`);
+  assert.throws(() => readHistoryAround(p, "0:0", 50, { maxBytes: 64 * 1024, lineCap: 1024 * 1024 }), /anchor-gone/);
+});
+
+test("★F2: 錨の行内番号が其の行の実際の項目数を超えると anchor-gone(嘘の echo をしない)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hist-around-f2-"));
+  const p = join(dir, "t.jsonl");
+  const line1 = rec("user", "1件目");
+  const line2 = rec("user", "2件目"); // 1エントリ(index 0)しか持たない行
+  writeFileSync(p, `${[line1, line2].join("\n")}\n`);
+  const offset2 = Buffer.byteLength(line1, "utf8") + 1;
+  assert.throws(() => readHistoryAround(p, `${offset2}:1`, 10), /anchor-gone/);
+  // 対照: index 0 なら通る
+  const ok = readHistoryAround(p, `${offset2}:0`, 10);
+  assert.ok(ok.history.some((e) => e.anchor === `${offset2}:0`));
+});
+
+test("★F5(Codex 実例1): 4項目の行の最後の錨(:3)を limit=4 で要求しても、其の錨で再要求すると窓が進む", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hist-around-f5-tool-"));
+  const p = join(dir, "t.jsonl");
+  const asstTool = (t, ...tools) =>
+    JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: t }, ...tools.map((n) => ({ type: "tool_use", name: n }))] },
+    });
+  const before = [rec("user", "前1"), rec("user", "前2")];
+  const target = asstTool("やります", "Read", "Bash", "Grep"); // 4項目、番号3が最後
+  const after = [rec("user", "後1"), rec("user", "後2")];
+  writeFileSync(p, `${[...before, target, ...after].join("\n")}\n`);
+
+  const full = readHistoryFromPath(p, 500).history;
+  const anchorEntry = full.find((e) => e.text === "⚙ Grep");
+  assert.ok(anchorEntry, "fixture の組み立てが違う");
+
+  const r1 = readHistoryAround(p, anchorEntry.anchor, 4);
+  assert.ok(r1.history.some((e) => e.anchor === anchorEntry.anchor));
+  const lastAnchor1 = r1.history[r1.history.length - 1].anchor;
+  assert.equal(r1.newerAvailable, true, "後に2件在るので newerAvailable は true の筈");
+  assert.notEqual(lastAnchor1, anchorEntry.anchor,
+    "newerAvailable なのに窓の最先が要求した錨と同じ(進めない = F5 違反)");
+
+  const r2 = readHistoryAround(p, lastAnchor1, 4);
+  assert.notDeepEqual(r2.history.map((e) => e.anchor), r1.history.map((e) => e.anchor),
+    "窓の最先の錨で再要求しても同じ窓が返る(進んでいない)");
+});
+
+test("★F5(Codex 実例2): A/B/C(1件ずつ)を limit=1 で around=B すると窓が C まで届き、進める", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hist-around-f5-abc-"));
+  const p = join(dir, "t.jsonl");
+  writeFileSync(p, `${[rec("user", "A"), rec("user", "B"), rec("user", "C")].join("\n")}\n`);
+  const full = readHistoryFromPath(p, 500).history;
+  const b = full.find((e) => e.text === "B");
+  assert.ok(b);
+  const r = readHistoryAround(p, b.anchor, 1);
+  const anchors = r.history.map((e) => e.anchor);
+  assert.ok(anchors.includes(b.anchor), "窓に B(要求した錨)が無い");
+  // 此の3件だけの file では C が最後 = 窓は本当に其処まで届いて良い(進めた証拠)。
+  assert.deepEqual(r.history.map((e) => e.text), ["A", "B", "C"],
+    "窓が B で止まっていて C まで届いていない(旧実装の不具合そのもの)");
+  assert.equal(r.newerAvailable, false, "C が本当に最後なので newerAvailable は false");
+});
+
+test("★F5 property: 40件を中央から両端まで歩いても窓は繰り返さず、必ず端で止まる", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hist-around-walk-"));
+  const p = join(dir, "t.jsonl");
+  const lines = Array.from({ length: 40 }, (_, i) => rec(i % 2 ? "assistant" : "user", `entry ${i}`));
+  writeFileSync(p, `${lines.join("\n")}\n`);
+  const full = readHistoryFromPath(p, 500).history;
+  assert.equal(full.length, 40);
+  const limit = 5;
+  const mid = full[20];
+
+  // 前方(newerAvailable)へ、窓の最先の錨だけを使って歩く。
+  let cur = readHistoryAround(p, mid.anchor, limit);
+  const seenForward = new Set([cur.history.map((e) => e.anchor).join(",")]);
+  let steps = 0;
+  while (cur.newerAvailable && steps < 100) {
+    const lastAnchor = cur.history[cur.history.length - 1].anchor;
+    const next = readHistoryAround(p, lastAnchor, limit);
+    assert.notEqual(next.history[next.history.length - 1].anchor, lastAnchor,
+      `newerAvailable なのに窓が進んでいない(前方 step=${steps})`);
+    const key = next.history.map((e) => e.anchor).join(",");
+    assert.ok(!seenForward.has(key), `同じ窓を繰り返した(前方 step=${steps})`);
+    seenForward.add(key);
+    cur = next;
+    steps += 1;
+  }
+  assert.ok(steps > 0 && steps < 100, `前方の歩数が異常(${steps})`);
+  assert.equal(cur.newerAvailable, false, "前方の歩きが終端(newerAvailable:false)に届いていない");
+  assert.equal(cur.history[cur.history.length - 1].anchor, full[full.length - 1].anchor,
+    "前方の終点が本当の最後の錨でない");
+
+  // 後方(olderAvailable)へ、窓の最古の錨だけを使って歩く。
+  cur = readHistoryAround(p, mid.anchor, limit);
+  const seenBackward = new Set([cur.history.map((e) => e.anchor).join(",")]);
+  steps = 0;
+  while (cur.olderAvailable && steps < 100) {
+    const firstAnchor = cur.history[0].anchor;
+    const next = readHistoryAround(p, firstAnchor, limit);
+    assert.notEqual(next.history[0].anchor, firstAnchor,
+      `olderAvailable なのに窓が進んでいない(後方 step=${steps})`);
+    const key = next.history.map((e) => e.anchor).join(",");
+    assert.ok(!seenBackward.has(key), `同じ窓を繰り返した(後方 step=${steps})`);
+    seenBackward.add(key);
+    cur = next;
+    steps += 1;
+  }
+  assert.ok(steps > 0 && steps < 100, `後方の歩数が異常(${steps})`);
+  assert.equal(cur.olderAvailable, false, "後方の歩きが終端(olderAvailable:false)に届いていない");
+  assert.equal(cur.history[0].anchor, full[0].anchor, "後方の終点が本当の最初の錨でない");
 });

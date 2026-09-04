@@ -284,6 +284,13 @@ const CASES = {
     [{ entries: ENTRIES, truncated: true }],
     [{ entries: [], truncated: false }],
   ],
+  // 錨の窓(2026-09-04)。★**両端の旗を逆向きに**通す。両方 true / 両方 false だけを
+  //   入力にすると、2 つの旗が同じ鍵の綴り違いでも照合が通ってしまう。空の窓(転写が
+  //   まだ無い会話)も入れる —— 机が `!target` の枝で返す形が此処に在る(Codex F4)。
+  historyAroundBody: [
+    [{ entries: ENTRIES, anchor: "1200:0", olderAvailable: true, newerAvailable: false }],
+    [{ entries: [], anchor: "0:0", olderAvailable: false, newerAvailable: true }],
+  ],
   // 転写の探索(2026-09-01)。★**両向きの `reachedStart`** を通す。片方だけだと
   //   `truncated` と `searchedToStart` が常に同じ値で出るので、2 つが逆を向いている
   //   (= 一方が他方の否定である)事を、鍵名の照合以前に入力が隠してしまう。
@@ -392,6 +399,7 @@ const MODULE_OF = {
   statusBodyTmux: ["wire", "src/wire.mjs", "export function statusBodyTmux({ pane, screen, source, permissionMode }) {"],
   statusBodyWorker: ["wire", "src/wire.mjs", "export function statusBodyWorker({ worker, permissionMode }) {"],
   historyBody: ["wire", "src/wire.mjs", "export function historyBody({ entries, truncated }) {"],
+  historyAroundBody: ["wire", "src/wire.mjs", "export function historyAroundBody({ entries, anchor, olderAvailable, newerAvailable }) {"],
   historySearchBody: ["wire", "src/wire.mjs", "export function historySearchBody({ entries, matched, reachedStart }) {"],
   // 分解するので目印を明示(既定だと**引数の分解**を本文と読んで鍵が0件になる)。
   pathsBody: ["wire", "src/wire.mjs", "export function pathsBody({ entries, truncated, reason }) {"],
@@ -737,6 +745,9 @@ const PAIRS = [
   },
   { swift: "GapItem.DisplayBox", builders: ["gapItem"], at: "display" },
   { swift: "HistoryResponse", builders: ["historyBody"], at: "" },
+  // 2026-09-04: 錨の窓。電話が `HistoryAroundResponse` で受ける(末尾の窓とは別の型 =
+  // `truncated` の 1 方向と `olderAvailable`/`newerAvailable` の 2 方向を混ぜない)。
+  { swift: "HistoryAroundResponse", builders: ["historyAroundBody"], at: "" },
   // 2026-09-03(queue transcript-tool-output-folds-into-the-entry): 道具呼び出しの entry に
   // 結果の前置き `output` / `outputTruncated` / `outputError` を畳み込んだ(追加のみ)。机側を
   // 作った worktree では電話が未対応だったので serverOnly に置いたが、同じ commit で電話の

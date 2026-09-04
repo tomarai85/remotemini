@@ -179,7 +179,8 @@ test("⑬ readHistoryAround(窓読み)でも同じ側に在れば preview が乗
   assert.equal(tool.output, "書き込み完了");
 });
 
-test("⑭ readHistoryAround: tool_result が窓の外なら例外を投げず、output 系の鍵が無いまま出る", () => {
+test("⑭ readHistoryAround: tool_result が両方の窓の外なら例外を投げず、output 系の鍵が無いまま出る" +
+  "(2026-09-04、T-F2 の対照: before/after を跨いだ対にする修正は、実際に読んでいない行までは取りに行かない)", () => {
   const lines = [];
   lines.push(toolUseLine("tu_1", "Bash")); // これを錨にする(file 先頭 = before 側は空)
   // 錨と tool_result の間に十分な数の user 行を挟む。`readLinesForward` は chunk ごとに
@@ -206,4 +207,99 @@ test("⑮ extractHistory(要約読み)でも preview が乗り、tail から lim
   const h = extractHistory(lines.join("\n"), 10);
   const tool = h.find((e) => e.role === "tool");
   assert.equal(tool.output, "結果1");
+});
+
+// ── ここから Codex toolout-review (2026-09-04) の T-F1/T-F2/T-F3/T-F4/T-F5 追加分 ──────
+
+test("★T-F1: 1.1MB の tool_result が在っても readHistoryFromPath(末尾読み)は tool entry を失わない", () => {
+  const big = "x".repeat(1_100_000); // TAIL_MAX(1MiB既定)より大きい1レコード
+  const p = tmpFile([toolUseLine("tu_1", "Bash"), toolResultLine("tu_1", big)]);
+  const r = readHistoryFromPath(p, 50);
+  const tool = r.history.find((e) => e.role === "tool");
+  assert.ok(tool, "巨大な tool_result のせいで tool_use の entry ごと消えた(旧実装の不具合)");
+  assert.equal(tool.output, "x".repeat(TOOL_OUTPUT_PREVIEW_MAX), "帯の上限までは中身が届いている筈");
+  assert.equal(tool.outputTruncated, true);
+});
+
+test("★T-F2: readHistoryAround は before(手前)の tool_use と after(先)の tool_result も対にする", () => {
+  const p = tmpFile([toolUseLine("tu_1", "Bash"), userLine("錨"), toolResultLine("tu_1", "結果本文")]);
+  const full = readHistoryFromPath(p, 500).history;
+  const anchorEntry = full.find((e) => e.role === "user" && e.text === "錨");
+  assert.ok(anchorEntry, "fixture の組み立てが違う");
+  const r = readHistoryAround(p, anchorEntry.anchor, 4);
+  const tool = r.history.find((e) => e.role === "tool");
+  assert.ok(tool, "窓に tool entry が入っていない(before 側に居る筈)");
+  assert.equal(tool.output, "結果本文",
+    "before の tool_use と after の tool_result が対にならなかった(継ぎ目を跨げていない)");
+});
+
+test("★T-F3: content が空文字列の破片を大量に(20万件)持っていても、予算より先に全走査しない", () => {
+  const n = 200000;
+  const items = new Array(n).fill('{"type":"text","text":""}');
+  const contentJson = `[${items.join(",")}]`;
+  const line1 = toolUseLine("tu_1", "Bash");
+  // ★JSON.stringify(配列) だと**検体を作る側**が先に全要素へ触れてしまう(測りたい対象は
+  //   `entriesFromLines` 側の遅延なので、検体は文字列連結で直接組み立てる)。
+  const line2 = `{"type":"user","message":{"role":"user","content":[` +
+    `{"type":"tool_result","tool_use_id":"tu_1","content":${contentJson}}]}}`;
+  const t0 = Date.now();
+  const entries = entriesFromLines([line1, line2]);
+  const ms = Date.now() - t0;
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].outputTruncated, true,
+    "空文字列の破片でも、繋ぐ改行だけで予算(8192文字)を使い切る筈(T-F3 の柵)");
+  assert.ok(Buffer.byteLength(entries[0].output ?? "", "utf8") <= TOOL_OUTPUT_PREVIEW_MAX);
+  assert.ok(ms < 500, `20万件の空文字列破片の処理に ${ms}ms も掛かっている = 予算より先に全走査している疑い`);
+});
+
+test("★T-F4: 表示できない block(image 等)が混ざると truncated:true になる(『全部載せた』と嘘をつかない)", () => {
+  const lines = [
+    toolUseLine("tu_1", "Read"),
+    L({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: "tu_1",
+          content: [
+            { type: "text", text: "shown" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } },
+          ],
+        }],
+      },
+    }),
+  ];
+  const entries = entriesFromLines(lines);
+  assert.equal(entries[0].output, "shown");
+  assert.equal(entries[0].outputTruncated, true, "image block を省いたのに truncated が立っていない");
+});
+
+test("★T-F4: content が配列でも文字列でもない形は、拾える文字列が無ければ output 系の鍵ごと省く", () => {
+  const lines = [
+    toolUseLine("tu_1", "Bash"),
+    L({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tu_1", content: { weird: "shape" } }],
+      },
+    }),
+  ];
+  const entries = entriesFromLines(lines);
+  assert.equal("output" in entries[0], false, "何も読めていないのに output:\"\" を捏造している");
+  assert.equal("outputTruncated" in entries[0], false);
+});
+
+test("★T-F5: 同じ id の tool_use が2つ在っても、tool_result は先に呼ばれた方(FIFO)に対応する", () => {
+  const lines = [
+    L({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "dup", name: "Read", input: {} }] } }),
+    L({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "dup", name: "Bash", input: {} }] } }),
+    toolResultLine("dup", "read result"),
+  ];
+  const entries = entriesFromLines(lines);
+  const read = entries.find((e) => e.text === "⚙ Read");
+  const bash = entries.find((e) => e.text === "⚙ Bash");
+  assert.equal(read.output, "read result", "先に来た tool_use(Read)に対応していない(FIFO 違反)");
+  assert.equal("output" in bash, false, "後の tool_use(Bash)にまで結果が付いている(二重に対応している)");
 });

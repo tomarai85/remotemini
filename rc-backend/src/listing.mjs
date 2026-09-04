@@ -34,6 +34,16 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 export const TAIL_CHUNK = 64 * 1024; // 後方探索の1歩
 export const TAIL_MAX = 1024 * 1024; // 後方へ遡る上限。これを超えたら incomplete と言う
 
+// ★1レコードだけを完成させる為の別枠(2026-09-04、Codex around-review F1 / toolout-review T-F1)。
+//   `readLinesBackward`/`readLinesForward` は既定で `maxBytes`(小さい窓の予算)を使い切ると、
+//   丁度読んでいる最中だった1行(record)が未完のまま`carry`ごと捨てられる —— 1.1MB の
+//   `tool_result` 1件が TAIL_MAX(1MiB)の窓に収まらないだけで、窓の中身が丸ごと消える
+//   (錨そのものが `history: []` になる/道具の結果が対にならない)。검색路 `SEARCH_TAIL_MAX`
+//   (server.mjs、16MiB)が「大きい会話でも探索は届く」為に持つ広い予算と同じ発想を、
+//   「1レコードだけ」に絞って両方の読み手へ持たせる。ここに専用の定数が無かったので
+//   Codex の指示通り 16 MiB を採る(search 路と値を揃えた —— 別の定数だが同じ大きさ)。
+export const LINE_CAP_MAX = 16 * 1024 * 1024;
+
 /**
  * 後方チャンクを、完全な行と**持ち越し**に分ける。
  *
@@ -187,6 +197,12 @@ export function readMetaFromFd(io, fd, opts = {}) {
  *   挙動は此のオプションが無かった頃と1 byte も変わらない —— 錨から**手前**だけを読みたい
  *   呼び手(`readHistoryAround`)が、持ち越し・短い read・多バイト境界の扱いを2箇所目に
  *   書かずに済む為だけに居る。
+ * @param {number} [o.lineCap] 1レコードだけを完成させる為の延長予算(2026-09-04、T-F1)。
+ *   既定は `maxBytes` と同じ = **延長なし**(此のオプションが無かった頃と1 byte も変わらない)。
+ *   `maxBytes` を使い切った時、其の時点で**1行も完成していなければ**(= 直近の1レコードが
+ *   `maxBytes` より大きい)、之を超えて `lineCap` まで読み続けて其の1レコードだけを
+ *   完成させる。1行でも完成していれば(= 只の予算切れ)延長しない —— 「280MB の会話の
+ *   一覧が固まる」を再現しない為に、延長は**本当に詰まっている時**にしか効かせない。
  * @param {(lines:string[]) => boolean} [o.done] 十分集まったか。既定は1歩で止める
  * @returns {{lines:string[], reachedStart:boolean, scanned:number, size:number}}
  *   lines は**古い順**(ファイルの並びのまま)。reachedStart=false は「これより前がある」。
@@ -195,6 +211,7 @@ export function readMetaFromFd(io, fd, opts = {}) {
 export function readLinesBackward(io, fd, o = {}) {
   const chunk = o.chunk ?? TAIL_CHUNK;
   const maxBytes = o.maxBytes ?? TAIL_MAX;
+  const lineCap = o.lineCap ?? maxBytes;
   const done = o.done ?? (() => true);
   const size = io.fstat(fd).size;
   const end = Math.min(o.end ?? size, size);
@@ -221,7 +238,7 @@ export function readLinesBackward(io, fd, o = {}) {
   let reachedStart = false;
   let carry = Buffer.alloc(0);
   while (scanned < maxBytes) {
-    const step = Math.min(chunk, end - scanned);
+    const step = Math.min(chunk, end - scanned, maxBytes - scanned);
     if (step <= 0) {
       reachedStart = true;
       break;
@@ -243,6 +260,29 @@ export function readLinesBackward(io, fd, o = {}) {
     }
     if (done(lines)) break;
   }
+  // ★T-F1: 通常予算(maxBytes)を使い切っても、其の時点で**1行も完成していなければ**
+  //   (`lines.length === 0`)、直近の1レコードだけが `maxBytes` より大きい状態。
+  //   `lineCap` まで別枠で読み切り、完成した瞬間(1行でも採れたら)其処で打ち切る ——
+  //   之より手前の record まで巻き込んで読み続けない(1レコード分だけの見捨て救済)。
+  //   `lineCap` でも終わらなければ諦めて `carry` を捨てる(`reachedStart`/`scanned` は
+  //   正直な値のまま返す —— 嘘の完了を返さない)。
+  while (!reachedStart && lines.length === 0 && carry.length > 0 && scanned < lineCap) {
+    const step = Math.min(chunk, end - scanned, lineCap - scanned);
+    if (step <= 0) break;
+    const pos = end - scanned - step;
+    const raw = read(step, pos);
+    const buf = raw.length === step ? Buffer.concat([raw, carry]) : raw; // 短く返れば繋がない(上と同じ理由)
+    const got = tailLinesWithOffsets(buf, pos === 0, pos);
+    carry = got.carry;
+    lines = got.lines.concat(lines);
+    offsets = got.offsets.concat(offsets);
+    scanned += step;
+    if (pos === 0) {
+      reachedStart = true;
+      break;
+    }
+    if (lines.length > 0) break; // 完成した = 此の1レコードの救済は終わり
+  }
   return { lines, offsets, reachedStart, scanned, size };
 }
 
@@ -262,6 +302,12 @@ export function readLinesBackward(io, fd, o = {}) {
  * @param {number} [o.start] 読み始める byte 位置(既定 0。行頭である事は呼び手の責任)
  * @param {number} [o.chunk] 1歩の大きさ
  * @param {number} [o.maxBytes] 読む上限。超えたら reachedEnd=false のまま返る
+ * @param {number} [o.lineCap] 1レコードだけを完成させる為の延長予算(2026-09-04、around F1)。
+ *   `readLinesBackward` の同名オプションと対(意味・既定とも同じ)。既定は `maxBytes` = 延長なし。
+ *   forward は**必ず錨の行から読み始める**ので、此処が効くのは大抵「錨自身の1行が
+ *   `maxBytes` より大きい」時 —— 窓の予算(小さい)を使い切っても錨だけは `lineCap`
+ *   (既定 16MiB)まで読み切る。読み切れなければ `lines` は空のまま返る(呼び手
+ *   `readHistoryAround` が「窓に錨が無い」を見て `anchor-gone` にする)。
  * @param {(lines:string[]) => boolean} [o.done] 十分集まったか。既定は1歩で止める
  * @returns {{lines:string[], offsets:number[], reachedEnd:boolean, scanned:number}}
  *   lines は**古い順**(ファイルの並びのまま)。reachedEnd=false は「これより後がある」。
@@ -269,6 +315,7 @@ export function readLinesBackward(io, fd, o = {}) {
 export function readLinesForward(io, fd, o = {}) {
   const chunk = o.chunk ?? TAIL_CHUNK;
   const maxBytes = o.maxBytes ?? TAIL_MAX;
+  const lineCap = o.lineCap ?? maxBytes;
   const done = o.done ?? (() => true);
   const size = io.fstat(fd).size;
   const start = o.start ?? 0;
@@ -293,7 +340,7 @@ export function readLinesForward(io, fd, o = {}) {
   let carryBase = start; // carry の file 内 byte 位置
   let pos = start;
   while (scanned < maxBytes) {
-    const step = Math.min(chunk, size - pos);
+    const step = Math.min(chunk, size - pos, maxBytes - scanned);
     if (step <= 0) {
       reachedEnd = true; // pos が size に届いた = 末尾まで読み切った
       break;
@@ -321,6 +368,35 @@ export function readLinesForward(io, fd, o = {}) {
       break;
     }
     if (done(lines)) break;
+  }
+  // ★around F1: 通常予算(maxBytes)を使い切っても、其の時点で1行も完成していなければ
+  //   (`lines.length === 0`)、読み始めの1レコード(大抵は錨自身)だけが `maxBytes` より
+  //   大きい状態。`lineCap` まで延長して其の1レコードだけを完成させ、完成した瞬間に
+  //   打ち切る(`readLinesBackward` の延長と対称、同じ「1レコード分だけの救済」)。
+  while (!reachedEnd && lines.length === 0 && carry.length > 0 && scanned < lineCap) {
+    const step = Math.min(chunk, size - pos, lineCap - scanned);
+    if (step <= 0) break;
+    const raw = read(step, pos);
+    const buf = raw.length === step ? Buffer.concat([carry, raw]) : raw; // 短く返れば繋がない(上と同じ理由)
+    const base = carryBase;
+    let i = 0;
+    let j;
+    while ((j = buf.indexOf(0x0a, i)) >= 0) {
+      if (j > i) {
+        lines.push(buf.subarray(i, j).toString("utf8"));
+        offsets.push(base + i);
+      }
+      i = j + 1;
+    }
+    carry = buf.subarray(i);
+    carryBase = base + i;
+    pos += step;
+    scanned += step;
+    if (pos >= size) {
+      reachedEnd = true;
+      break;
+    }
+    if (lines.length > 0) break; // 完成した = 此の1レコードの救済は終わり
   }
   // ★改行無しで終わる最終行(または EOF)は、**本当に末尾まで読み切った時だけ**1行として拾う。
   //   予算切れ(reachedEnd=false)の時に拾うと、続きが在るかもしれない断片を完成した行として

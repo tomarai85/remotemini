@@ -459,4 +459,99 @@ final class HistoryClientTests: XCTestCase {
       "truncated": false
     }
     """
+
+    // MARK: - 錨の窓(`?around=`、2026-09-04)
+
+    func testAroundStatus200DecodesTheWindowShape() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validAroundBody.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        let result = await client.around(baseURL: baseURL, apiKey: "k", sessionID: "s", anchor: "1200:0", limit: 40)
+
+        guard case .success(let response) = result else { return XCTFail("expected .success, got \(result)") }
+        XCTAssertEqual(response.history.count, 2)
+        XCTAssertEqual(response.anchor, "1200:0")
+        XCTAssertTrue(response.olderAvailable)
+        XCTAssertFalse(response.newerAvailable)
+    }
+
+    /// ★旗の鍵が**丸ごと無い**体(転写がまだ無い会話へ机が返す空の窓)。`Bool?` にしていると
+    ///   「解らない」が画面へ漏れ、非 optional の `Bool` にしていると復号ごと落ちる。
+    func testAroundFlagsAbsentDecodeToFalse() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(#"{"history":[],"anchor":"0:0"}"#.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        let result = await client.around(baseURL: baseURL, apiKey: "k", sessionID: "s", anchor: "0:0", limit: 40)
+
+        guard case .success(let response) = result else { return XCTFail("expected .success, got \(result)") }
+        XCTAssertTrue(response.history.isEmpty)
+        XCTAssertFalse(response.olderAvailable)
+        XCTAssertFalse(response.newerAvailable)
+    }
+
+    /// 机は `anchor` を必ず返す(要求した錨が窓の中に在る事の証)。無い体は契約違反なので
+    /// `.success` にしない —— 空文字を捏造すると、電話は在りもしない錨で読み直しに行く。
+    func testAroundWithoutTheAnchorKeyIsMalformed() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(#"{"history":[],"olderAvailable":false}"#.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        let result = await client.around(baseURL: baseURL, apiKey: "k", sessionID: "s", anchor: "0:0", limit: 40)
+
+        guard case .failure(.malformedBody) = result else { return XCTFail("expected .malformedBody, got \(result)") }
+    }
+
+    /// ★`around` と `q` を**同時に送らない**。机は両方在る要求を 400 で断る(Codex 所見 F6、
+    ///   2026-09-03)ので、混ぜた要求は「探索でも窓でもない物」になる。URL を実測して固定する。
+    func testAroundRequestSendsAnchorAndLimitAndNoQuery() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validAroundBody.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.around(baseURL: baseURL, apiKey: "k", sessionID: "sess-0001", anchor: "1200:0", limit: 40)
+
+        let url = try? XCTUnwrap(MockURLProtocol.requestedURLs.last)
+        let items = URLComponents(url: url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(url?.path, "/api/sessions/sess-0001/history")
+        XCTAssertEqual(items.first(where: { $0.name == "around" })?.value, "1200:0")
+        XCTAssertEqual(items.first(where: { $0.name == "limit" })?.value, "40")
+        XCTAssertNil(items.first(where: { $0.name == "q" }), "`q` と `around` は同時に送らない")
+        XCTAssertEqual(MockURLProtocol.requestedMethods.last, "GET")
+        XCTAssertEqual((MockURLProtocol.requestedBodies.last ?? nil)?.count ?? 0, 0)
+        XCTAssertEqual(MockURLProtocol.lastRequestHeaders?["Authorization"], "Bearer k")
+        XCTAssertEqual(MockURLProtocol.requestedTimeouts, [BackendSession.interactiveTimeout])
+    }
+
+    /// 錨は不透明な文字列(`<byte 位置>:<行内番号>`)。`:` が URL で壊れない事を実測する。
+    func testAroundEscapesTheAnchorInTheQuery() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 200, body: Data(Self.validAroundBody.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        _ = await client.around(baseURL: baseURL, apiKey: "k", sessionID: "s", anchor: "9007199254740991:3", limit: 1)
+
+        let items = URLComponents(url: MockURLProtocol.requestedURLs.last!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(items.first(where: { $0.name == "around" })?.value, "9007199254740991:3")
+    }
+
+    /// 消えた錨(机が 409 を返す)。**`.notFound` ではない** —— 会話は在って錨だけが古い。
+    /// 現状の写像では 409 は `default` へ落ちて `.unreachable`。画面は「読めない」と言い、
+    /// 黙って一番上を見せない。此処を変えるなら机と一緒に。
+    func testAroundStatus409IsUnreachableNotNotFound() async {
+        MockURLProtocol.stubQueue = [.init(statusCode: 409, body: Data(#"{"reason":"anchor_gone"}"#.utf8))]
+        let client = HistoryClient(session: MockURLProtocol.makeSession())
+
+        let result = await client.around(baseURL: baseURL, apiKey: "k", sessionID: "s", anchor: "1:0", limit: 40)
+
+        guard case .failure(.unreachable) = result else { return XCTFail("expected .unreachable, got \(result)") }
+    }
+
+    private static let validAroundBody = """
+    {
+      "history": [
+        { "role": "user", "text": "a", "display": { "who": "Tom" }, "anchor": "1200:0" },
+        { "role": "assistant", "text": "b", "display": { "who": "Claude" }, "anchor": "1260:0" }
+      ],
+      "anchor": "1200:0",
+      "olderAvailable": true,
+      "newerAvailable": false
+    }
+    """
 }

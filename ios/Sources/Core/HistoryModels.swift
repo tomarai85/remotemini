@@ -39,6 +39,47 @@ struct HistoryResponse: Decodable, Equatable {
     }
 }
 
+/// 錨を中心にした窓(`?around=`、2026-09-04)。**末尾の窓とは別の型**。
+///
+/// `HistoryResponse` と分けた理由は `TranscriptSearchResponse` と同じ: 一致するのは `history` だけで、
+/// 「まだ在るか」の言い方が違う。末尾の窓は `truncated`(手前にまだ在る、の 1 方向)だが、此の窓は
+/// **両端**を持つので `olderAvailable` / `newerAvailable` の 2 つが要る。同じ型で受けると、窓の
+/// `olderAvailable` が `loadEarlierState` へ流れ込む道が残る —— 2026-09-01 に探索の口で塞いだのと同じ形。
+///
+/// `anchor` は机が返す**正規化した**錨(要求した錨と同じ物)。机は「要求した錨が窓の中に必ず在る」事を
+/// 約束し、旗が立っている側の端の錨は要求した錨より必ず外側にある(= 端の錨で読み直せば必ず進む)。
+/// 其の約束が無いと、電話は同じ窓を延々と読み直す(Codex 所見 F5、2026-09-03)。
+struct HistoryAroundResponse: Decodable, Equatable {
+    let history: [HistoryEntry]
+    let anchor: String
+    /// 此の窓より**古い**側にまだ項目が在る。端(`history.first`)の錨で読み直せば進む。
+    let olderAvailable: Bool
+    /// 此の窓より**新しい**側にまだ項目が在る。端(`history.last`)の錨で読み直せば進む。
+    let newerAvailable: Bool
+
+    init(history: [HistoryEntry], anchor: String, olderAvailable: Bool, newerAvailable: Bool) {
+        self.history = history
+        self.anchor = anchor
+        self.olderAvailable = olderAvailable
+        self.newerAvailable = newerAvailable
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case history, anchor, olderAvailable, newerAvailable
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        history = try container.decode([HistoryEntry].self, forKey: .history)
+        anchor = try container.decode(String.self, forKey: .anchor)
+        // ★旗は `decodeIfPresent ?? false`。机が転写の無い会話へ返す空の窓は旗を持たない形が在り得るが、
+        //   「鍵が無い」と「false」は電話には同じ意味(其の側に読み足す物は無い)。`Bool?` にすると
+        //   「解らない」の第 3 の状態が画面の分岐へ漏れる —— `HistoryResponse.truncated` と同じ判断。
+        olderAvailable = try container.decodeIfPresent(Bool.self, forKey: .olderAvailable) ?? false
+        newerAvailable = try container.decodeIfPresent(Bool.self, forKey: .newerAvailable) ?? false
+    }
+}
+
 /// 探索がどこまで見たか。**`Bool` のまま画面へ流さない**。
 ///
 /// ★`searchedToStart` は線の綴りで、画面が答える問いは「見つかりませんと言い切って

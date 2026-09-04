@@ -34,6 +34,8 @@ final class PathCompletionViewModelTests: XCTestCase {
             -> Result<HistoryResponse, SessionsFetchError> { .failure(.unreachable) }
         func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async
             -> Result<TranscriptSearchResponse, SessionsFetchError> { .failure(.unreachable) }
+        func around(baseURL: URL, apiKey: String, sessionID: String, anchor: String, limit: Int) async
+            -> Result<HistoryAroundResponse, SessionsFetchError> { .failure(.unreachable) }
     }
 
     private struct SilentPoll: PollFetching {

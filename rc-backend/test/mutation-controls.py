@@ -280,11 +280,17 @@ MUT = [
  ("M44 読み切っていなくても「無い」と断言する(metadataIncomplete を常に false)", LIS,
   'metadataIncomplete: !r.reachedStart && (m.entrypoint === null || m.lastPrompt === null),',
   'metadataIncomplete: false,'),
+ # ★2026-09-04(Codex around-review F7): `step` の `Math.min` に `maxBytes - scanned` を
+ #   足した(旧実装は之を欠き、`{chunk:65536, maxBytes:1}` で 65536 byte 読んでしまっていた
+ #   = `maxBytes` が名目上の上限でしかなかった)。的の文字列も其の行に合わせて更新し、
+ #   壊す側(replace)は `while(true)` **と** `, maxBytes - scanned` の両方を落とす —— 片方
+ #   だけ残すと、之が in-line の第二の柵として上限を肩代わりしてしまい、`while` を壊しても
+ #   実害が出ない(=此の変異が何も測らなくなる)。
  ("M45 読む上限を外す(280MB の会話で一覧が止まる)", LIS,
-  'while (scanned < maxBytes) {\n    const step = Math.min(chunk, end - scanned);',
+  'while (scanned < maxBytes) {\n    const step = Math.min(chunk, end - scanned, maxBytes - scanned);',
   'while (true) {\n    const step = Math.min(chunk, end - scanned);'),
  ("M45f 前方読みの上限を外す(around の窓が末尾まで読み続ける)", LIS,
-  'while (scanned < maxBytes) {\n    const step = Math.min(chunk, size - pos);',
+  'while (scanned < maxBytes) {\n    const step = Math.min(chunk, size - pos, maxBytes - scanned);',
   'while (true) {\n    const step = Math.min(chunk, size - pos);'),
  ("M46 改行で切らずに断片を完全な行として扱う(多バイト文字が割れる)", LIS,
   '''  if (!atFileStart) {
