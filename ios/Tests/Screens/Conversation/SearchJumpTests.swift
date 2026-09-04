@@ -2,7 +2,10 @@ import XCTest
 @testable import RemoteMini
 
 /// 探索の当たりへ跳ぶ判断(対照表 #3、2026-09-03)。作り物の机(`conversation-search`、240 行、錨 = 行番号 × 100)で、
-/// 「手元に在る → 読み足さず印」「無い → fromEnd まで読み足して印」「上限より奥 → tooFar」「錨無し → notFound」を測る。
+/// 「手元に在る → 読み足さず印」「無い → fromEnd まで読み足して印」「錨無し → notFound」を測る。
+/// ★2026-09-04 に契約が 1 つ変わった: **上限より奥は `tooFar` で断らず、離脱窓(`?around=`)へ回す**。
+///   此の file の机(`DeskStub`)は `around` に答えないので、其の経路は「届かない」で終わる ——
+///   窓が開く側の測定は `JumpEntersDetachedModeTests` が持つ。此処が測るのは「末尾の窓で届く範囲」だけ。
 /// Codex 2026-09-03 の所見の対照: 探索後の追記(#1)/ 錨で跳ぶ(#2)/ 跳びの最中の再タップ(#3)/ 異常な fromEnd(#4)。
 @MainActor
 final class SearchJumpTests: XCTestCase {
@@ -79,14 +82,25 @@ final class SearchJumpTests: XCTestCase {
         XCTAssertEqual(vm.entries.last?.text, "line 240", "窓は末尾から N 件のまま(別の窓の型を作らない)")
     }
 
-    func testAHitBeyondTheDeskCeilingIsTooFarNotSilentlyTop() async {
+    /// ★2026-09-04 改訂。以前は「上限より奥 = `tooFar` と断る」を固定していたが、其の断りは
+    ///   離脱窓が届ける様になった時点で誤りになった。**此処が今も守っているのは 2 つ**:
+    ///   末尾の窓を上限より先へ伸ばさない事(電話が転写を丸ごと抱えない)と、黙って一番上を
+    ///   見せない事。窓が開く側は `JumpEntersDetachedModeTests` が測る。
+    func testAHitBeyondTheDeskCeilingOpensTheWindowWithoutGrowingTheTail() async {
         let vm = makeVM()
         await vm.load()
+        // ★窓の大きさの私有な控えは検査から見えないので、**末尾の窓そのもの**(`history`)で測る。
+        //   `entries` は離脱中に窓へ切り替わるので、伸びたかどうかの証拠にならない。
+        let tailBefore = vm.history.count
         let far = HistoryEntry(role: .user, text: "line 001", display: .init(who: "Tom"), anchor: "100:0", fromEnd: 999)
         let outcome = await vm.jump(to: far)
-        XCTAssertEqual(outcome, .tooFar)
-        XCTAssertEqual(vm.entries.count, 50, "跳べないのに読み足した")
-        XCTAssertFalse(outcome.text.isEmpty)
+        // 作り物の机は `around` に答えるので、此処は離脱窓が開く経路を通る。
+        XCTAssertEqual(outcome, .detached, "上限より奥の当たりをまだ断っている")
+        XCTAssertTrue(vm.isDetached)
+        XCTAssertTrue(vm.entries.contains { $0.anchor == "100:0" }, "頼んだ行が窓に無い(黙って別の場所を見せている)")
+        // ★守っている本体: **末尾の窓は伸びていない**。伸ばして届かせる道を採ると、
+        //   深い当たり 1 件の為に電話が転写を丸ごと抱える。
+        XCTAssertEqual(vm.history.count, tailBefore, "上限より奥の当たりで末尾の窓を伸ばした")
     }
 
     func testAHostileFromEndDoesNotTrap() async {
@@ -95,7 +109,12 @@ final class SearchJumpTests: XCTestCase {
         for bad in [Int.max, Int.min, -1, 500, 1_000_000] {
             let e = HistoryEntry(role: .user, text: "x", display: .init(who: "Tom"), anchor: "1:0", fromEnd: bad)
             let outcome = await vm.jump(to: e)
-            XCTAssertEqual(outcome, .tooFar, "fromEnd=\(bad) は範囲外 = 奥すぎる(加算の前に弾く)")
+            // ★測っているのは **trap しない事**(`fromEnd + 1 + 余白` の加算が溢れない)。
+            //   結果の値は 2026-09-04 に変わった —— 範囲外の `fromEnd` は断る理由ではなく
+            //   「末尾の窓では判断できない」の印で、其の時に効くのは錨の方だから窓へ回す。
+            //   此の机は `around` に答えないので `.failed` で終わる。`.revealed` になったら
+            //   範囲外の値を信じて読み足した事になるので、其れだけは許さない。
+            XCTAssertNotEqual(outcome, .revealed, "fromEnd=\(bad) を信じて読み足している")
         }
         XCTAssertEqual(vm.entries.count, 50)
     }

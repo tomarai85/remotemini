@@ -153,8 +153,13 @@ final class ConversationViewModel: ObservableObject {
     enum JumpOutcome: Equatable {
         /// 行は手元に在る(読み足した後を含む)。View が scroll する。
         case revealed
-        /// 机が 1 回で返せる上限(500 項目)より奥。読み足しでは届かない。
+        /// 机が 1 回で返せる上限(500 項目)より奥。**2026-09-04 以降、`jump(to:)` は之を返さない**
+        /// —— 其処は離脱窓(`?around=`)が届く。値は探索の面の古い応答を描く為に残す。
         case tooFar
+        /// 離脱窓を開いた。転写は末尾ではなく錨の周りを写していて、ライブは混ざらない。
+        case detached
+        /// 錨が消えていた(机が 409、または返った窓に其の錨が居ない)。**接続失敗ではない**。
+        case anchorGone
         /// 錨が無い当たり(古い机)か、転写を全部読んでも其の錨が無かった。
         case notFound
         /// 別の読み足し(跳び / 以前を読む)が走っている最中。押し直せば良い。
@@ -167,6 +172,10 @@ final class ConversationViewModel: ObservableObject {
             case .tooFar:    return "That match is further back than the phone can load."
             case .notFound:  return "Couldn't find that line in the transcript."
             case .busy:      return "Still loading — try again in a moment."
+            case .detached:  return ""
+            // ★接続失敗と混ぜない(設計レビュー、2026-09-04): 「届かない」と言うと利用者は
+            //   再試行するが、此れは何度試しても同じ —— 転写の其の場所が変わっている。
+            case .anchorGone: return "That part of the history changed. Showing the latest instead."
             case .failed(let t): return t
             }
         }
@@ -672,11 +681,30 @@ final class ConversationViewModel: ObservableObject {
     /// ★此のクラスは `@MainActor` の class なので、getter の中で cache を書いてよい
     ///   (値型なら書けないし、並行に触られる型なら競合する)。
     var entries: [HistoryEntry] {
+        // ★離脱窓を開いている間は**窓が転写**で、ライブは混ざらない(不変条件 1、2026-09-04)。
+        //   窓は転写の途中を指していて末尾と隣接していないので、`live` を後ろに足すと
+        //   存在しない並びを作る。届いた数は `detached.liveArrived` が持つ。
+        if detached.isOpen { return detached.entries }
         if let cached = entriesCache { return cached }
         let merged = MergeHistory.merge(history, live)
         entriesCache = merged
         return merged
     }
+
+    /// 離脱窓(対照表 #3、2026-09-04)。開いていなければ全ての問いに「閉じている」と答える。
+    let detached: DetachedHistoryWindow
+
+    /// 画面のモード分岐は此処だけを見る。
+    var isDetached: Bool { detached.isOpen }
+    /// 離脱中に届いたライブが在るか。**数は出さない**(設計レビュー 2026-09-04): 数は
+    /// 押す頃には古く、「3 件が下に在る」と言いながら下には無い —— 在る事だけを言う。
+    var hasLiveWhileDetached: Bool { detached.liveArrived > 0 }
+    var canWalkOlder: Bool { detached.olderAvailable }
+    var canWalkNewer: Bool { detached.newerAvailable }
+
+    /// 離脱窓の出入りの記録(設計レビューが指定した唯一の測定)。
+    /// 「送信で戻った回数 / 明示的に戻った回数」の比が、モードの境界が読まれているかの直接の信号。
+    private(set) var detachedExits: [String] = []
 
     /// `history` / `live` の代入で nil に戻る。nil = 次の読みで merge し直す。
     private var entriesCache: [HistoryEntry]?
@@ -822,6 +850,9 @@ final class ConversationViewModel: ObservableObject {
         self.title = title
         self.onUnauthorized = onUnauthorized
         self.currentLimit = initialLimit
+        // 離脱窓は同じ client / 同じ鍵を使う。別の口ではなく、同じ `/history` の別の読み方。
+        self.detached = DetachedHistoryWindow(client: clients.history, baseURL: baseURL,
+                                              apiKey: apiKey, sessionID: sessionID)
 
         // 打ちかけの復元(DESIGN §2.53)。`didSet` は init 内では発火しないので、
         // ここで書き戻しは起きない —— 開き直すだけで時刻が若返る型を、呼ぶ側でも
@@ -901,7 +932,10 @@ final class ConversationViewModel: ObservableObject {
             onUnauthorized()
         case .failure(.cancelled):
             break // a newer request owns the outcome
-        case .failure(.unreachable):
+        // ★`.anchorGone` は錨の窓(`?around=`)だけが作る値で、末尾の読みは 409 を返さない。
+        //   到達しないが `default` へは逃がさない —— 逃がすと、次に生えた case が黙って
+        //   「届かない」の顔で画面に出る(`SessionsFetchError` を増やした 2026-09-04 の判断)。
+        case .failure(.unreachable), .failure(.anchorGone):
             // Counted (§5-4) as well as phased. The two are not redundant: `.unreachable`
             // as a PHASE means "the initial load never produced a screen, so there is
             // nothing to show"; the meter is what the banner over an *already-loaded*
@@ -975,6 +1009,10 @@ final class ConversationViewModel: ObservableObject {
 
     func send() async {
         guard canSend else { return }
+        // ★離脱中の送信は**先に live へ戻す**(設計レビュー 2026-09-04)。文は必ず末尾へ着くので、
+        //   窓を開いたまま送ると「送ったのに転写に出ない」= 送信が消えた様に見える。
+        //   3 つの出口(押す / 送る / 錨が消える)が同じ着地を通る、の 2 つ目。
+        if detached.isOpen { await backToLive(reason: "send") }
         // ★★2026-09-02(対照表 #6): 机へ実際に打つ本文は `draft` そのままではない。
         //   `DiffCommentFormatter.compose` が保留中の行コメント(在れば)を頭へ足す。
         //   `draft` 自体には**触れない** -- composer の入力欄は今まで通り利用者が
@@ -1579,7 +1617,13 @@ final class ConversationViewModel: ObservableObject {
         }
         // ★範囲を**先に**見る(Codex #4): `Int.max + 1` は trap。線の値は信じない。
         guard let fromEnd = hit.fromEnd else { return .notFound }
-        guard (0..<Self.deskHistoryLimitCeiling).contains(fromEnd) else { return .tooFar }
+        // ★2026-09-04: 上限より奥は**断らない**。末尾の窓を伸ばして届かせる道は「電話が転写を
+        //   丸ごと抱える」になるので採らず、窓の位置を動かす(離脱窓)。上限の中に在る当たりは
+        //   従来通り末尾を伸ばして届かせる —— 其方はライブが混ざったまま読めるので、
+        //   態々モードを変える理由が無い。
+        guard (0..<Self.deskHistoryLimitCeiling).contains(fromEnd) else {
+            return await enterDetached(at: anchor)
+        }
         // ★排他(Codex #3): 跳びの最中の再タップ、「以前を読む」との同時走行は受けない。
         //   遅く返った古い応答が `history` と跳び先を上書きする形を、世代の札でも塞ぐ。
         guard !isJumping, !isFetchingEarlier else { return .busy }
@@ -1606,7 +1650,8 @@ final class ConversationViewModel: ObservableObject {
                 // ★探索の後に机で会話が伸びると `fromEnd` は古くなる(Codex #1)。転写を全部読んだのに無い =
                 //   本当に無い。まだ手前が在るなら窓を倍にして上限まで追い、上限でも無ければ「奥すぎる」。
                 if !response.truncated { return .notFound }
-                if limit >= Self.deskHistoryLimitCeiling { return .tooFar }
+                // 上限まで伸ばしても居ない = 末尾の窓では届かない。窓の位置を動かす。
+                if limit >= Self.deskHistoryLimitCeiling { return await enterDetached(at: anchor) }
                 limit = min(Self.deskHistoryLimitCeiling, limit * 2)
             case .failure(.unauthorized):
                 onUnauthorized()
@@ -1616,6 +1661,65 @@ final class ConversationViewModel: ObservableObject {
             }
         }
     }
+
+    // MARK: - 離脱窓(対照表 #3、2026-09-04)
+
+    /// 錨を中心に窓を開き、其の行を見せる。ライブは以後**混ぜず数えるだけ**になる。
+    private func enterDetached(at anchor: String) async -> JumpOutcome {
+        switch await detached.open(at: anchor) {
+        case .moved:
+            stopPolling()          // 窓に混ぜない以上、poll を回し続ける理由が無い
+            entriesCache = nil     // `entries` の出所が変わった
+            reveal(anchor)
+            return .detached
+        case .anchorGone:
+            return .anchorGone
+        case .busy:
+            return .busy
+        case .atEdge, .failed:
+            return .failed(NewSessionOutcome.unreachable.text)
+        }
+    }
+
+    /// 古い側 / 新しい側へ 1 窓ぶん歩く。**2 つを 1 つの状態に畳まない**(設計レビュー 2026-09-04):
+    /// 机は 2 つの独立した旗を返すので、片方だけ立つ状態が正しく描けなくなる。
+    func walkDetachedOlder() async -> JumpOutcome { await walkDetached { await self.detached.walkOlder() } }
+    func walkDetachedNewer() async -> JumpOutcome { await walkDetached { await self.detached.walkNewer() } }
+
+    private func walkDetached(_ step: () async -> DetachedHistoryWindow.Outcome) async -> JumpOutcome {
+        guard detached.isOpen else { return .notFound }
+        switch await step() {
+        case .moved:
+            entriesCache = nil
+            return .detached
+        case .atEdge:
+            return .detached   // 窓は据え置き。画面は旗が下りた事で端に着いたと分かる
+        case .anchorGone:
+            await backToLive(reason: "anchor-gone")
+            return .anchorGone
+        case .busy:
+            return .busy
+        case .failed:
+            return .failed(NewSessionOutcome.unreachable.text)
+        }
+    }
+
+    /// live へ戻す。**3 つの出口(明示的に押す / 送信する / 錨が消える)が全部此処を通る**
+    /// (設計レビュー 2026-09-04)。文言だけが理由で変わり、着地は 1 つ。
+    /// `reason` は測定の為だけに残す —— 送信で戻った回数と押して戻った回数の比が、
+    /// モードの境界が読まれているかの直接の信号。
+    func backToLive(reason: String) async {
+        guard detached.isOpen else { return }
+        detachedExits.append(reason)
+        detached.close()
+        entriesCache = nil
+        // 末尾を読み直す。離脱中に机が伸びているので、閉じた時点の `history` は古い。
+        let result = await client.fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: currentLimit)
+        applyInitial(result)
+    }
+
+    /// ライブが 1 件届いた時に画面側から呼ぶ。離脱中は**数えるだけ**。
+    func noteLiveWhileDetached(_ count: Int = 1) { detached.noteLiveArrival(count) }
 
     private func reveal(_ anchor: String) {
         jumpRevealAnchor = anchor
@@ -1679,7 +1783,8 @@ final class ConversationViewModel: ObservableObject {
             // Restore whatever was showing before this attempt; the newer request
             // owns the real outcome.
             loadEarlierState = stateBeforeAttempt
-        case .failure(.unreachable), .failure(.malformedBody):
+        // 錨の窓だけが作る `.anchorGone` は此処へ来ない。網羅を崩さない為に併記する。
+        case .failure(.unreachable), .failure(.malformedBody), .failure(.anchorGone):
             // Brief §3-b-3: a one-time failure to advance is never treated as the
             // permanent ceiling -- a network hiccup on "load earlier" reads exactly
             // like "fetched, but the oldest entry didn't move": button stays
@@ -1890,7 +1995,8 @@ final class ConversationViewModel: ObservableObject {
         case .failure(.contractViolation(let violation)):
             searchState = faceBefore
             applyContractViolation(violation)
-        case .failure(.unreachable):
+        case .failure(.unreachable), .failure(.anchorGone):
+            // 探索の口は 409 を返さない(錨の窓だけ)。網羅の為に併記する。
             searchState = .failed(.unreachable, query: query)
         case .failure(.malformedBody):
             searchState = .failed(.malformedBody, query: query)

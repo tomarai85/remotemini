@@ -636,7 +636,13 @@ struct ConversationView: View {
                 //   ★下書きは失われない —— `ConversationViewModel.draft` は `didSet` で
                 //     打鍵ごとに `draftStore` へ書かれるので、面を消しても値は残る。
                 if !isSearchPresented {
-                    loadEarlierFooter
+                    // 離脱中は「以前を読む」を出さない —— あれは**末尾の窓**を伸ばす操作で、
+                    // 離脱窓には効かない。同じ場所に、其のモードの操作子を出す。
+                    if viewModel.isDetached {
+                        detachedFooter
+                    } else {
+                        loadEarlierFooter
+                    }
                     composer
                         .onChange(of: pickedPhoto) { _, item in
                             guard let item else { return }
@@ -1606,6 +1612,65 @@ struct ConversationView: View {
                 .frame(maxWidth: .infinity)
                 .accessibilityIdentifier("conversation.loadEarlierCeiling")
         }
+    }
+
+    /// 離脱窓の帯と操作子(対照表 #3、2026-09-04)。**入力欄の側に置く**。
+    ///
+    /// ★置き場の理由(設計レビュー 2026-09-04): 防ぎたい失敗は「離脱している事に気づかず送る」で、
+    ///   其れが起きるのは画面の**下端**(親指の位置)。上端の `statusBanners` に混ぜると、
+    ///   利用者が既に読み飛ばす事を学習した灰色の一文と同じ見た目になり、境界が見えない。
+    ///   だから色を持つ面(`RCTheme.accent` の淡い地)にし、`loadEarlierFooter` と同じ高さに置く。
+    /// ★操作子は**2 つ独立**。机は `olderAvailable` / `newerAvailable` を別々に返し、
+    ///   片方だけ立つ状態が普通に在る —— 1 つの行を貼り替える形では描けない。
+    @ViewBuilder
+    private var detachedFooter: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.caption)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Viewing older history")
+                        .font(.caption.weight(.semibold))
+                        .accessibilityIdentifier("conversation.detached.banner")
+                    if viewModel.hasLiveWhileDetached {
+                        // ★数を出さない(設計レビュー): 押す頃には古い。在る事だけ言う。
+                        Text("New messages arrived")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("conversation.detached.newArrived")
+                    }
+                }
+                Spacer(minLength: 8)
+                Button {
+                    Task { await viewModel.backToLive(reason: "tap") }
+                } label: {
+                    Text("Back to live").font(.caption.weight(.semibold)).tapTarget()
+                }
+                .accessibilityIdentifier("conversation.detached.backToLive")
+            }
+            HStack(spacing: 12) {
+                Button {
+                    Task { _ = await viewModel.walkDetachedOlder() }
+                } label: {
+                    Text("Older").font(.caption).tapTarget()
+                }
+                .disabled(!viewModel.canWalkOlder)
+                .accessibilityIdentifier("conversation.detached.older")
+
+                Button {
+                    Task { _ = await viewModel.walkDetachedNewer() }
+                } label: {
+                    Text("Newer").font(.caption).tapTarget()
+                }
+                .disabled(!viewModel.canWalkNewer)
+                .accessibilityIdentifier("conversation.detached.newer")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(RCTheme.accent.opacity(0.12))
     }
 
     /// Brief §4 gap-notice display + brief §1-b's "D-A" choice badge + the

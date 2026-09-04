@@ -28,6 +28,13 @@ protocol HistoryFetching {
     func around(baseURL: URL, apiKey: String, sessionID: String, anchor: String, limit: Int) async -> Result<HistoryAroundResponse, SessionsFetchError>
 }
 
+/// 409 の本文。机は `{ reason: "anchor_gone" }` を返す(`historyAroundBody` とは別の、断りの形)。
+/// `RecoveryCode` と分けてあるのは鍵の名前が違うからで、寛容に読もうとして両方の鍵を持つ型を
+/// 作ると「どちらでも通る」= 綴りの取り違えが検査を素通りする。
+private struct AnchorGoneReason: Decodable {
+    let reason: String?
+}
+
 /// `GET /api/sessions/<id>/history?limit=N` -- same shape as `SessionsClient`
 /// (Sprint 3 brief §1-a): protocol + struct, `BackendSession` (never a bare
 /// `URLSession` -- `rc-backend/test/session-guard.test.mjs` scans `ios/Sources/` and
@@ -131,6 +138,16 @@ struct HistoryClient: HistoryFetching {
             break
         case 401:
             return .failure(.unauthorized)
+        case 409:
+            // 錨の窓だけが返す status(机の `readHistoryAround` -> `anchor_gone`)。
+            // ★本文の `reason` まで見る(Codex 所見 F2)。status だけで決めると、将来 409 を
+            //   別の意味で使い始めた口の応答が「錨が消えた」の顔で電話に届く —— 404 を
+            //   `SESSION_NOT_FOUND` に絞ったのと同じ判断。
+            let reason = try? JSONDecoder().decode(AnchorGoneReason.self, from: data).reason
+            guard reason == "anchor_gone" else {
+                return .failure(.contractViolation(ResponseContractViolation(status: 409, code: reason)))
+            }
+            return .failure(.anchorGone)
         case 404:
             // Sprint 3 brief §3-c made 404 distinct from the `default` bucket below:
             // Conversation renders it as "this conversation is gone," never as

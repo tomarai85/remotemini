@@ -54,6 +54,16 @@ enum SessionsFetchError: Error, Equatable {
     /// failure. Folding them would put the single most likely client bug (a wrong
     /// path) into the same bucket as an ordinary bad payload.
     case contractViolation(ResponseContractViolation)
+    /// HTTP 409 from the anchored-window door: the anchor no longer names a record
+    /// (the transcript was rewritten, or the anchor was never real).
+    ///
+    /// ★Kept out of `.unreachable` on purpose (Codex 所見 F2、2026-09-04). Folding it in
+    ///   made a dropped connection and a vanished anchor the same value, and the two ask the
+    ///   reader for opposite actions: a dropped connection means try again, a vanished anchor
+    ///   means this position is gone, go back to live. The window's state machine was reading
+    ///   `.unreachable` as "anchor gone" once open and as "unreachable" before open — one
+    ///   error, two contradictory readings, decided by unrelated state.
+    case anchorGone
 }
 
 protocol SessionsListing {

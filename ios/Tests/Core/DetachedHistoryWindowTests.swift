@@ -72,6 +72,91 @@ final class DetachedHistoryWindowTests: XCTestCase {
         }
     }
 
+    /// 片側だけ動く机(Codex 所見 F4)。古い端は常に `200:0` のまま、新しい端だけを交互に振る。
+    private final class LopsidedDesk: HistoryFetching, @unchecked Sendable {
+        private var flip = false
+        func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> { .failure(.unreachable) }
+        func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async -> Result<TranscriptSearchResponse, SessionsFetchError> { .failure(.unreachable) }
+        func around(baseURL: URL, apiKey: String, sessionID: String, anchor: String, limit: Int) async -> Result<HistoryAroundResponse, SessionsFetchError> {
+            flip.toggle()
+            let tail = flip ? "300:0" : "400:0"
+            let rows = ["200:0", tail].map {
+                HistoryEntry(role: .user, text: $0, display: .init(who: "Tom"), anchor: $0)
+            }
+            return .success(HistoryAroundResponse(history: rows, anchor: anchor,
+                                                  olderAvailable: true, newerAvailable: true))
+        }
+    }
+
+    /// 頼んだ錨を含まない窓を返す机(Codex 所見 F3)。`anchor` は律儀に echo する。
+    private struct DriftingDesk: HistoryFetching {
+        func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> { .failure(.unreachable) }
+        func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async -> Result<TranscriptSearchResponse, SessionsFetchError> { .failure(.unreachable) }
+        func around(baseURL: URL, apiKey: String, sessionID: String, anchor: String, limit: Int) async -> Result<HistoryAroundResponse, SessionsFetchError> {
+            if anchor == "200:0" {
+                let rows = ["100:0", "200:0", "300:0"].map {
+                    HistoryEntry(role: .user, text: $0, display: .init(who: "Tom"), anchor: $0)
+                }
+                return .success(HistoryAroundResponse(history: rows, anchor: anchor, olderAvailable: true, newerAvailable: false))
+            }
+            // 歩いた先: 頼んだ `100:0` がどこにも居ない窓
+            let rows = ["0:0", "50:0"].map {
+                HistoryEntry(role: .user, text: $0, display: .init(who: "Tom"), anchor: $0)
+            }
+            return .success(HistoryAroundResponse(history: rows, anchor: anchor, olderAvailable: false, newerAvailable: true))
+        }
+    }
+
+    /// 合図があるまで返さない机(Codex 所見 F1)。走行中に `close()` を挟む為だけに在る。
+    private final class SlowDesk: HistoryFetching, @unchecked Sendable {
+        private let asked = AsyncGate()
+        private let gate = AsyncGate()
+        func waitUntilAsked() async { await asked.wait() }
+        func release() { gate.open() }
+        func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> { .failure(.unreachable) }
+        func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async -> Result<TranscriptSearchResponse, SessionsFetchError> { .failure(.unreachable) }
+        func around(baseURL: URL, apiKey: String, sessionID: String, anchor: String, limit: Int) async -> Result<HistoryAroundResponse, SessionsFetchError> {
+            let rows = ["100:0", "200:0", "300:0"].map {
+                HistoryEntry(role: .user, text: $0, display: .init(who: "Tom"), anchor: $0)
+            }
+            guard anchor == "200:0" else {
+                // 歩きの往路だけ待たせる
+                asked.open()
+                await gate.wait()
+                let older = ["0:0", "50:0", "100:0"].map {
+                    HistoryEntry(role: .user, text: $0, display: .init(who: "Tom"), anchor: $0)
+                }
+                return .success(HistoryAroundResponse(history: older, anchor: anchor, olderAvailable: false, newerAvailable: true))
+            }
+            return .success(HistoryAroundResponse(history: rows, anchor: anchor, olderAvailable: true, newerAvailable: true))
+        }
+    }
+
+    /// 1 回だけ開く門。`DispatchSemaphore` を使うと `@MainActor` の検査を塞ぐので継続で書く。
+    private final class AsyncGate: @unchecked Sendable {
+        private var opened = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        private let lock = NSLock()
+        func open() {
+            lock.lock()
+            opened = true
+            let w = waiters; waiters = []
+            lock.unlock()
+            for c in w { c.resume() }
+        }
+        func wait() async {
+            lock.lock()
+            if opened { lock.unlock(); return }
+            lock.unlock()
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                if opened { lock.unlock(); c.resume(); return }
+                waiters.append(c)
+                lock.unlock()
+            }
+        }
+    }
+
     private func make(_ desk: HistoryFetching) -> DetachedHistoryWindow {
         DetachedHistoryWindow(client: desk, baseURL: baseURL, apiKey: "k", sessionID: "s")
     }
@@ -138,6 +223,9 @@ final class DetachedHistoryWindowTests: XCTestCase {
             XCTAssertLessThan(steps, 50, "端へ着かない")
         }
         XCTAssertEqual(w.entries.last?.anchor, "3900:0", "一番新しい項目が窓に入っていない")
+        // ★Codex 所見 F6: 之が無いと `newerAvailable = r.newerAvailable` を消しても検査は緑のまま。
+        //   終端の証拠は「最後の項目が入っている」だけでなく「旗が下りている」の両方。
+        XCTAssertFalse(w.newerAvailable, "端まで来たのに新しい側の旗が立っている")
     }
 
     /// ★机が前進の約束を破っても、電話は無限に往復しない。
@@ -150,8 +238,50 @@ final class DetachedHistoryWindowTests: XCTestCase {
         let callsAfterOpen = desk.calls
         let walked = await w.walkOlder()
         XCTAssertEqual(walked, .atEdge, "進まない机を『動いた』と読んでいる")
-        XCTAssertEqual(desk.calls, callsAfterOpen + 1, "端と判定した後も叩き続けている")
-        XCTAssertTrue(w.olderAvailable, "机の旗はそのまま(嘘を電話側で書き換えない)")
+        XCTAssertEqual(desk.calls, callsAfterOpen + 1)
+        // ★Codex 所見 F5 + F7: 進まなかった向きは**其の場で端に確定**する。旗を立てたままだと
+        //   押す度に机を叩き続けるボタンが残り、1 回しか呼ばない検査では其れが見えない。
+        XCTAssertFalse(w.olderAvailable, "進まなかった向きの旗が下りていない")
+        let again = await w.walkOlder()
+        XCTAssertEqual(again, .atEdge)
+        XCTAssertEqual(desk.calls, callsAfterOpen + 1, "端と確定した後も机を叩いている")
+    }
+
+    /// ★Codex 所見 F4: 歩いた向きと**反対側**の端だけが動いた応答を「進んだ」と読まない。
+    func testOnlyTheWalkedEdgeCountsAsProgress() async {
+        let desk = LopsidedDesk()
+        let w = make(desk)
+        let opened = await w.open(at: "200:0")
+        XCTAssertEqual(opened, .moved)
+        let walked = await w.walkOlder()
+        XCTAssertEqual(walked, .atEdge, "古い端が動いていないのに『進んだ』と読んでいる")
+        XCTAssertFalse(w.olderAvailable)
+    }
+
+    /// ★Codex 所見 F3: 頼んだ錨を含まない窓は、別の場所の窓。歩く時も開く時と同じ強さで断る。
+    func testWalkingIntoAWindowWithoutTheRequestedAnchorIsAnchorGone() async {
+        let w = make(DriftingDesk())
+        let opened = await w.open(at: "200:0")
+        XCTAssertEqual(opened, .moved)
+        let walked = await w.walkOlder()
+        XCTAssertEqual(walked, .anchorGone, "頼んだ錨の無い窓を受け入れている")
+    }
+
+    /// ★Codex 所見 F1: 走行中に閉じられたら、遅れて返った応答は**書き戻さない**。
+    func testAResponseArrivingAfterCloseDoesNotResurrectTheWindow() async {
+        let desk = SlowDesk()
+        let w = make(desk)
+        let opened = await w.open(at: "200:0")
+        XCTAssertEqual(opened, .moved)
+        async let walking = w.walkOlder()
+        await desk.waitUntilAsked()
+        w.close()
+        desk.release()
+        let outcome = await walking
+        XCTAssertEqual(outcome, .busy, "閉じた後の応答を遷移として扱っている")
+        XCTAssertFalse(w.isOpen, "閉じた窓が蘇っている")
+        XCTAssertTrue(w.entries.isEmpty)
+        XCTAssertNil(w.openedAt)
     }
 
     func testWalkingWithTheFlagDownDoesNotAskTheDesk() async {
@@ -182,7 +312,13 @@ final class DetachedHistoryWindowTests: XCTestCase {
         w.noteLiveArrival()
         w.noteLiveArrival(3)
         XCTAssertEqual(w.liveArrived, 4)
-        XCTAssertEqual(w.entries, snapshot, "ライブの項目が窓に混ざった")
+        // ★Codex 所見 F8: 旧版は `entries == snapshot` だけを見ていたが、`noteLiveArrival` は
+        //   数しか受け取らないので**本文ごと消しても緑**だった(混ぜようがないので混ざらない)。
+        //   此の型で測れるのは「数が窓と独立に動く」事なので、其方を測る。
+        //   本当の非混合は SSE の合流点(`ConversationViewModel`)でしか測れない —— そちらの検査は
+        //   繋ぎ込みの task が持つ。
+        XCTAssertEqual(w.entries, snapshot)
+        XCTAssertEqual(w.entries.count, snapshot.count, "窓の長さがライブで動いた")
     }
 
     func testLiveArrivalsAreIgnoredWhileClosed() {

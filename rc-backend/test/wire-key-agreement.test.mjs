@@ -841,6 +841,15 @@ const IGNORED = {};
  *   `.harness/wire-vocabulary-agreement-controls.sh`)。
  */
 const UNPAIRED = {
+  // 2026-09-04: 錨の窓が 409 で返す断りの本文 `{error, reason}` の、電話側の読み口。
+  // 組む相手は `wire.mjs` の builder ではなく `server.mjs` の
+  // `json(res, 409, { error: "anchor gone", reason: "anchor_gone" })` —— 上の註が
+  // 誤り応答 4 本について測った結論と同じ形で、鍵名を突き合わせても新しい主張が乗らない。
+  // 本当に守りたいのは鍵名ではなく**値**(`"anchor_gone"` の一語一致)で、其方は
+  // `HistoryClientTests` の陽性 / 陰性 2 本が持つ。
+  "AnchorGoneReason":
+    "409 の断りの本文。builder ではなく server.mjs の json(res, 409, …) が組む。守るのは鍵名ではなく " +
+    "reason の値で、其れは HistoryClientTests の陽性・陰性 2 本が測っている。",
   "AttachClient.RejectEnvelope":
     "断りの形。組むのは `attachBody` ではなく各ルートの `json(res, 400, …)` で、"
     + "同じ2鍵(`reason` / `code`)を複数のルートが別々に出す。1つの builder に"

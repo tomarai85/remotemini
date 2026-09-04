@@ -60,6 +60,9 @@ final class DiffViewModel: ObservableObject {
             return violation.displayText
         case .unreachable:
             return "Couldn't reach the desk."
+        case .anchorGone:
+            // 錨の窓だけが作る値。/diff の口は 409 を返さないので到達しないが、網羅は崩さない。
+            return "That part of the history changed."
         case .cancelled:
             // `load()` は此のケースで `phase` を触らない(上を見よ)。此処へは
             // 到達しない分岐だが、`SessionsFetchError` の4値を網羅する為に残す --
