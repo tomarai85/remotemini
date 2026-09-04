@@ -216,7 +216,11 @@ struct HistoryFetchingFixture: HistoryFetching {
         history: [
             HistoryEntry(role: .user, text: "Check the booking status", display: .init(who: "Tom")),
             HistoryEntry(role: .assistant, text: "Checking now — one moment.", display: .init(who: "Claude")),
-            HistoryEntry(role: .tool, text: "⚙ Bash", display: .init(who: "Tool")),
+            // ★2026-09-04(#41): 机が対にした道具の結果を持つ tool 行。畳んだまま(chevron だけ)なので
+            //   DoD の写真は変わらず、押すと下に出力が開く(ToolOutputFoldUITests)。
+            HistoryEntry(role: .tool, text: "⚙ Bash", display: .init(who: "Tool"),
+                         output: "booking-1  confirmed  2026-09-12\nbooking-2  pending    2026-09-19",
+                         outputTruncated: true),
             HistoryEntry(role: .assistant, text: "Found 2 bookings. Sending details.", display: .init(who: "Claude")),
         ],
         // truncated: true so the DoD screenshot also shows the "以前を読む" button

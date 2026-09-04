@@ -161,9 +161,22 @@ export function extractHistory(jsonlText, limit = 50) {
   return entriesFromLines(lines, offsets).slice(-limit);
 }
 
-/** 行の配列(古い順)を表示用の項目列にする。壊れた行は飛ばす。 */
+/**
+ * 行の配列(古い順)を表示用の項目列にする。壊れた行は飛ばす。
+ *
+ * ★道具の結果の畳み込み(2026-09-03、queue `transcript-tool-output-folds-into-the-entry`):
+ *   `tool_use` の entry と、其の後の行で届く `tool_result` を此処で対にする ——
+ *   1レコードずつしか見ない `entriesFromRecord` では出来ない(結果は**後の**行に居る)。
+ *   `pending`(tool_use の id -> 其の entry への参照)を行を跨いで持ち回り、`tool_result` の
+ *   `tool_use_id` が当たったら**其の entry を直接書き換える**(`out` に積んだのと同じ
+ *   オブジェクト参照なので、此処での変更がそのまま返り値に乗る)。
+ * ★`tool_use_id` 自体は entry に残さない —— `wire.mjs` の `withWho` は entry を丸ごと
+ *   spread して線に出すので、entry のプロパティに残せば其のまま漏れる。ペアリングの
+ *   材料は此の関数のローカル変数(`pending` / `toolPairs`)だけに留める。
+ */
 export function entriesFromLines(lines, offsets) {
   const out = [];
+  const pending = new Map();
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
@@ -173,7 +186,15 @@ export function entriesFromLines(lines, offsets) {
     } catch {
       continue;
     }
-    const entries = entriesFromRecord(obj);
+    const { entries, toolPairs, results } = analyzeRecord(obj);
+    for (const { id, entry } of toolPairs) pending.set(id, entry);
+    for (const r of results) {
+      const target = pending.get(r.toolUseId);
+      if (target) {
+        applyToolOutput(target, r);
+        pending.delete(r.toolUseId);
+      }
+    }
     // ★錨(2026-09-03、対照表 #3): 行の byte 位置 + 行内の何番目か。追記しか起きない jsonl では
     //   一度付いた位置が変わらないので、探索の当たりと素の履歴で**同じ項目が同じ錨**を持つ =
     //   電話が「其の項目へ跳ぶ」為の鍵。`offsets` が無い呼び手(要約など)には付けない。
@@ -398,20 +419,154 @@ function flattenContent(content) {
 }
 
 function toolNames(content) {
+  return toolCallsFromContent(content).map((c) => c.label);
+}
+
+/**
+ * `tool_use` の block を id 付きで拾う(entriesFromLines のペアリング専用)。
+ * 表示語(label)の作り方は `toolNames` と**同じ関数**(`toolLabel`)を通す —— 2箇所に
+ * 書くと、片方だけ Task の description 添えを直した日に表示が食い違う。
+ */
+function toolCallsFromContent(content) {
   if (!Array.isArray(content)) return [];
   return content
     .filter((b) => b && b.type === "tool_use" && typeof b.name === "string")
-    .map((b) => {
-      // ★subagent(Task)は名前だけだと全部同じ「⚙ Task」になり、何が走っているのか
-      //   電話から読めない(spec-audit C2、本家は subagent の進捗を見せる)。入力の
-      //   description(短い人向けの題)が在れば添える。値の中身は description **だけ**
-      //   読む — prompt 本文は長く、機密が乗り得るので線に出さない。
-      if (b.name === "Task" && typeof b.input?.description === "string" && b.input.description.trim()) {
-        const d = b.input.description.trim().replace(/\s+/g, " ");
-        return `⚙ Task: ${d.length > 40 ? `${d.slice(0, 40)}…` : d}`;
-      }
-      return `⚙ ${b.name}`;
-    });
+    .map((b) => ({ id: typeof b.id === "string" ? b.id : null, label: toolLabel(b) }));
+}
+
+function toolLabel(b) {
+  // ★subagent(Task)は名前だけだと全部同じ「⚙ Task」になり、何が走っているのか
+  //   電話から読めない(spec-audit C2、本家は subagent の進捗を見せる)。入力の
+  //   description(短い人向けの題)が在れば添える。値の中身は description **だけ**
+  //   読む — prompt 本文は長く、機密が乗り得るので線に出さない。
+  if (b.name === "Task" && typeof b.input?.description === "string" && b.input.description.trim()) {
+    const d = b.input.description.trim().replace(/\s+/g, " ");
+    return `⚙ Task: ${d.length > 40 ? `${d.slice(0, 40)}…` : d}`;
+  }
+  return `⚙ ${b.name}`;
+}
+
+/**
+ * `tool_result` の block(Claude Code の転写形: `{type:"user", message:{content:[
+ * {type:"tool_result", tool_use_id, content, is_error?}, …]}}`)を拾う。
+ * 此の repo に実例の fixture が無かったので、上の形は queue の brief に書かれた
+ * Claude Code の転写形をそのまま採った(report で明記)。
+ */
+function resultsFromContent(content) {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((b) => b && b.type === "tool_result" && typeof b.tool_use_id === "string")
+    .map((b) => ({ toolUseId: b.tool_use_id, content: b.content, isError: !!b.is_error }));
+}
+
+/**
+ * `entriesFromLines` 専用の1レコード解析。表に出す entry(`entries`)に加え、
+ * 道具呼び出しの id と其の entry への参照(`toolPairs`。ペアリングだけに使い、
+ * entry 自体には id を残さない)、此の行が運ぶ `tool_result` の記述子(`results`)を返す。
+ * `entriesFromRecord`(ライブ配信・単発呼び出し用)とは別に持つ —— ライブは1レコードずつ
+ * しか見ないので跨いだペアリングが出来ず、id を持ち回る意味が無い。
+ */
+function analyzeRecord(obj) {
+  const entries = [];
+  const toolPairs = [];
+  const results = [];
+  if (!obj || typeof obj !== "object") return { entries, toolPairs, results };
+  if (obj.type === "user" && obj.message) {
+    const content = obj.message.content;
+    const text = flattenContent(content);
+    if (text) entries.push({ role: "user", text });
+    // ★`tool_result` だけを運ぶ行は text を持たない(`flattenContent` が `type:"text"`
+    //   の block しか拾わない為、空文字 = 上の `if (text)` が落ちて entry を生やさない)。
+    //   之で「tool_result の行がそのまま user 発言として画面に出る」事は起きない。
+    for (const r of resultsFromContent(content)) results.push(r);
+  } else if (obj.type === "assistant" && obj.message) {
+    const content = obj.message.content;
+    const text = flattenContent(content);
+    if (text) entries.push({ role: "assistant", text });
+    for (const c of toolCallsFromContent(content)) {
+      const entry = { role: "tool", text: c.label };
+      entries.push(entry);
+      if (c.id) toolPairs.push({ id: c.id, entry });
+    }
+  }
+  return { entries, toolPairs, results };
+}
+
+/** 道具の結果を折り畳んだ帯の上限(bytes)。行数の上限とは別に効く(先に当たった方で切る)。 */
+export const TOOL_OUTPUT_PREVIEW_MAX = 600;
+export const TOOL_OUTPUT_LINE_MAX = 6;
+// ★連結する前に各破片へ掛ける粗い文字数の柵。予算(600B/6行)よりずっと広く取ってあるが、
+//   何 MB もある道具の出力を**先に1本の string へ連結してから**縮める、を避ける為。
+//   ここで切ってから join するので、巨大な結果でも此の関数が触る文字数は此の柵止まり。
+const TOOL_OUTPUT_PRE_SLICE_CHARS = 8192;
+
+// ANSI の CSI シーケンス(色・カーソル移動等)。道具の出力(特に Bash)は端末向けの制御
+// 文字を含む事があり、其れを電話の画面へそのまま流すと文字化けに見える。
+const ANSI_ESCAPE_RE = /\x1B\[[0-9;?]*[ -/]*[@-~]/g;
+
+function stripAnsiAndCr(s) {
+  return s.replace(ANSI_ESCAPE_RE, "").replace(/\r/g, "");
+}
+
+/** `tool_result` block 自身の `content`(string か `[{type:"text",text}]`)から文字列の破片を拾う。 */
+function textPartsOf(content) {
+  if (typeof content === "string") return [content];
+  if (Array.isArray(content)) {
+    return content.filter((b) => b && b.type === "text" && typeof b.text === "string").map((b) => b.text);
+  }
+  return [];
+}
+
+/**
+ * `tool_result` の `content` から、帯に載せる短い前置きを作る。
+ * 手順: ①連結**前**に粗い文字数で切る(巨大な結果を丸ごと繋がない) → ② ANSI/CR を剥がす →
+ * ③行数の上限 → ④ byte 数の上限(多 byte 文字の境界を跨がない)。どれか1つでも切ったら
+ * `truncated: true`。
+ */
+function previewOf(content) {
+  const parts = textPartsOf(content);
+  if (parts.length === 0) return { text: "", truncated: false };
+
+  let sliced = false;
+  let budget = TOOL_OUTPUT_PRE_SLICE_CHARS;
+  const trimmed = [];
+  for (const p of parts) {
+    if (budget <= 0) { sliced = true; break; }
+    if (p.length > budget) { trimmed.push(p.slice(0, budget)); sliced = true; budget = 0; } else { trimmed.push(p); budget -= p.length; }
+  }
+
+  const joined = stripAnsiAndCr(trimmed.join("\n"));
+
+  let lines = joined.split("\n");
+  let lineTrunc = false;
+  if (lines.length > TOOL_OUTPUT_LINE_MAX) {
+    lines = lines.slice(0, TOOL_OUTPUT_LINE_MAX);
+    lineTrunc = true;
+  }
+  let text = lines.join("\n");
+
+  let byteTrunc = false;
+  if (Buffer.byteLength(text, "utf8") > TOOL_OUTPUT_PREVIEW_MAX) {
+    text = sliceToByteBudget(text, TOOL_OUTPUT_PREVIEW_MAX);
+    byteTrunc = true;
+  }
+
+  return { text, truncated: sliced || lineTrunc || byteTrunc };
+}
+
+/** 多 byte 文字の境界を跨がずに、byte 数の予算まで削る。 */
+function sliceToByteBudget(s, maxBytes) {
+  let out = s.length > maxBytes ? s.slice(0, maxBytes) : s;
+  while (out.length > 0 && Buffer.byteLength(out, "utf8") > maxBytes) out = out.slice(0, -1);
+  return out;
+}
+
+/** 対になった `tool_result` を、其の `tool_use` の entry へ直接書き込む。 */
+function applyToolOutput(entry, result) {
+  const { text, truncated } = previewOf(result.content);
+  entry.output = text;
+  entry.outputTruncated = truncated;
+  if (result.isError) entry.outputError = true;
 }
 
 /**
