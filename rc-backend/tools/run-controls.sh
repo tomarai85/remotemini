@@ -698,6 +698,9 @@ LOCAL_CTLS=(
                                      #   電話は取りこぼしを黙って捨て、画面は正常に見えたまま出力が抜ける。
     ../ios/tools/live-search-check-control.sh # ★2026-09-03。探索の当たり→跳びの窓(#3)の live 計器の判定を全通り撃つ(11 通り、実機不要)
     test/live-cold-routes-controls.sh # ★2026-09-04。本番の机で 0 件だった読むだけの 3 口の live 計器の
+    test/live-write-routes-controls.sh # ★2026-09-04。書き込む口の live 計器の判定を全通り撃つ
+                                     # (13 通り)。`torn_down` の赤を落とすと机に使い捨てが積むので、
+                                     # 其の 1 件だけ重さが違う(実際に 4 本積んだ日に据えた)。
                                      # 判定を全通り撃つ(14 通り)。200 でも中身が噛み合わなければ赤、
                                      # 届かなければ 3、上限の机では緑を名乗らない。
     ../.harness/preflight-ledgers-controls.sh # ★2026-09-04。門を撃つ前の自己点検 `preflight-ledgers.sh` が
