@@ -699,6 +699,9 @@ LOCAL_CTLS=(
     ../ios/tools/live-search-check-control.sh # ★2026-09-03。探索の当たり→跳びの窓(#3)の live 計器の判定を全通り撃つ(11 通り、実機不要)
     test/live-cold-routes-controls.sh # ★2026-09-04。本番の机で 0 件だった読むだけの 3 口の live 計器の
     test/live-write-routes-controls.sh # ★2026-09-04。書き込む口の live 計器の判定を全通り撃つ
+    test/live-composer-guard-controls.sh # ★2026-09-05。2026-09-04 の Critical(人の下書きに
+                                     # 追記して Enter)の**配備の検証**の判定を全通り撃つ。
+                                     # 202(合成が通る)を緑と読まない事が此の対照の本体。
                                      # (13 通り)。`torn_down` の赤を落とすと机に使い捨てが積むので、
                                      # 其の 1 件だけ重さが違う(実際に 4 本積んだ日に据えた)。
                                      # 判定を全通り撃つ(14 通り)。200 でも中身が噛み合わなければ赤、
