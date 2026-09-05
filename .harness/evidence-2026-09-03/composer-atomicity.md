@@ -128,6 +128,71 @@ The only other discriminator available is the activity signal, measured at 61-82
 not a decision input, so gating on it would drop roughly a fifth of legitimate sends. The residual needs a
 person to type a 32-character TUI string verbatim and leave it unsent.
 
+## Deployed, and the fix broke sending for ten minutes (2026-09-05)
+
+The fix went to the production desk at 11:37. At 11:47 the instrument written to verify it reported that a
+phone send to a **completely untouched session** was refused:
+
+```
+composer: ❯ Try "write a test for lib-login.mjs"
+POST …/messages {"text":"ping"}  →  409 composer-busy
+```
+
+An idle Claude Code puts a rotating suggestion into the empty composer. `composerIsEmpty` recognised exactly
+one placeholder string — the queued-messages hint — so every suggestion read as somebody's draft, and **every
+send from the phone was refused.** The refusal I added to stop an occasional merged command had stopped all
+traffic instead. Measured against the harm it prevents, this was the larger harm by a wide margin.
+
+**The tests could not have caught it, and that is the lesson.** Four contract cases covered "does it refuse
+when a draft is present." Zero covered "does it still pass when nothing is there." Enumerating the refusal
+conditions closes the population to inputs that *should* be refused; the inputs that should pass sit outside
+it, so 1,288 green tests said nothing about the case that broke.
+
+What did catch it was the live instrument shipped the same day. Four of its six fields were green — the
+refusal worked exactly as designed — and only "clearing the draft lets you send again" was red. Following that
+one field led to the regression. Without it, `409 where yesterday there was 202` would have read as proof and
+the lane would have closed.
+
+### The discriminator is the TUI's own styling, not the wording
+
+The suggestion text changes every time, and a person can type the same words, so matching on wording is both
+fragile and unsound. But the TUI already declares the difference to the terminal: it wraps the suggestion in
+dim (SGR 2) and leaves a real draft unstyled. Captured from the machine:
+
+```
+hint : \e[39m❯ \e[2mTry "refactor portal-check.test.mjs"\e[0m
+draft: \e[39m❯ deploy production
+```
+
+`composerIsHintOnly()` reads that, from a second capture taken with `-e` **only on the path about to refuse**,
+so the extra tmux round trip is paid only when refusing. When the styling cannot be read at all the answer is
+`false` — refuse — because being told to clear a composer is cheaper than running a command nobody wrote.
+
+Three call sites needed it: the send entry, the attach entry, and the whole-composer check before Enter.
+Missing the third leaves the same wall standing further in, as `composer-raced`.
+
+Two side findings, both measured rather than assumed: **Escape does not clear the composer** (the clearing key
+is `C-u`), so the fake tmux's model of Escape is right for an interrupt mid-generation and wrong for an idle
+draft; and a single teardown of a disposable session can leave its registry file behind when a request
+re-registered the pane, so the instrument now retries once and reports `torn_retry` rather than hiding it.
+
+**And one of my own regression tests was vacuous.** The first version of "a hint can be sent over" handed the
+injector an empty screen, so the branch under test never executed and disabling the fix produced no red. It
+now asserts `composerIsEmpty(shown) === false` as a precondition, which is what makes the later green mean
+something.
+
+### Observed on the production desk
+
+| | before the fix (09-04 21:44) | after the regression fix (09-05 12:0x) |
+|---|---|---|
+| send with a human draft present | **202, `delivered: verified`, "Sent"** | 409 `composer-busy` |
+| send with nothing in the composer | 202 | 202 |
+| draft after the refusal | — | still there |
+| send after clearing with `C-u` | — | 202 |
+| disposable session left behind | 0 | 0 (`torn_retry=1`) |
+
+`live-composer-guard-check.mjs` exits 0 against the real desk, all six fields green.
+
 ## Observed, after round two
 
 | what | result |
