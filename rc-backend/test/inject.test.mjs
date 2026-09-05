@@ -26,6 +26,7 @@ import {
   composerText,
   composerBox,
   composerIsEmpty,
+  composerIsHintOnly,
   COMPOSER_PLACEHOLDER,
   parsePaneList,
   parsePaneListStrict,
@@ -530,6 +531,67 @@ test("★F2 空白だけの違いは見分けない(見分けると長文が送�
   inj.typeLiteral("%1", ABS);
   const r = await inj.send("%1", "まとめて");
   assert.equal(r.sent, true, "★空白だけの差は通る = 既知の残り穴。塞ぐ代償の方が大きい");
+});
+
+// ★★2026-09-05、**本番で起きた回帰**を固定する。
+//
+//   前日の Critical(人の下書きに追記して Enter)の直しは「入力欄が空でなく、机が置いた
+//   物とも違えば人の下書き」と読んでいた。ところが待機中の Claude Code は空の入力欄へ
+//   候補の案内を出す —— `Try "fix lint errors"` の類で、文言は毎回変わる。
+//   配備した直後の本番で、**何も置かずに送っても 409** になった(11:47 実測)。
+//   電話からの送信が丸ごと死んだ。断りが、直そうとした害より広い害を出した形。
+//
+//   見分けは文言ではなく装飾で行う。案内は TUI 自身が dim(SGR 2)で囲んで
+//   「此れは仮の文字だ」と端末に宣言している。下は**実機から撮った生バイトそのもの**。
+const STYLED_HINT = "\u001b[39m❯ \u001b[2mTry \"refactor portal-check.test.mjs\"\u001b[0m";
+const STYLED_DRAFT = "\u001b[39m❯ deploy production";
+
+test("★案内文だけの入力欄は「空」と読む(装飾で見分ける)", () => {
+  assert.equal(composerIsHintOnly(STYLED_HINT), true, "案内を人の下書きと読んだ");
+  assert.equal(composerIsHintOnly(STYLED_DRAFT), false, "人の下書きを案内と読んだ");
+});
+
+test("★装飾が撮れない時は案内と読まない(断る側へ倒す)", () => {
+  // 装飾の無い画面では「仮の文字だ」という宣言が消える。合成された命令を作るより、
+  // 断って人に消してもらう方が安い —— 判らない時の倒し方を固定する。
+  assert.equal(composerIsHintOnly('❯ Try "fix lint errors"'), false);
+  assert.equal(composerIsHintOnly(""), false);
+  assert.equal(composerIsHintOnly(null), false);
+});
+
+test("★dim が本文の途中に在るだけなら案内ではない", () => {
+  // 人の文の一部が装飾されている画面を、案内と読まない事。
+  assert.equal(composerIsHintOnly("\u001b[39m❯ hello \u001b[2mworld\u001b[0m"), false);
+});
+
+test("★案内文の上には送れる(2026-09-05 の回帰そのもの)", async () => {
+  const base = screen("idle-boot");
+  // ★素の撮影で入力欄に**文字が見えている**事が前提。初版は空の画面を渡していて、
+  //   判定の分岐に一度も入らないまま緑だった —— 直しを外しても赤が出ず、
+  //   「通った」ではなく「測っていない」を緑と読みかけた(2026-09-05 に自分で踏んだ)。
+  const HINT = 'Try "fix lint errors"';
+  const shown = withComposerBody(base, HINT);
+  assert.equal(composerIsEmpty(shown), false, "前提: 素の撮影では案内文が本文に見える");
+  // ★打つと案内文は**消える**(placeholder の実際の振る舞い)。実機の撮影も
+  //   空の時は案内、打鍵後は打った本文だけで、案内は残らない。
+  //   初版は「案内 + 本文」の画面を渡していて、Enter 直前の全文照合が
+  //   `composer-raced` で断った —— 検査が実機と違う形を主張していた。
+  const t = fakeTmux([shown, withComposerBody(base, "ping"), base]);
+  const rawRun = t.run;
+  t.run = (args) => (args.includes("-e") ? STYLED_HINT : rawRun(args));
+  const r = await new TmuxInjector({ tmux: t }).send("%1", "ping");
+  assert.equal(r.sent, true, `案内文の上への送信を断った(reason=${r.reason})`);
+});
+
+test("★人の下書きの上は今まで通り断る(装飾つきでも)", async () => {
+  const held = screen("composer-holds-text");
+  const t = fakeTmux([held]);
+  const rawRun = t.run;
+  t.run = (args) => (args.includes("-e") ? STYLED_DRAFT : rawRun(args));
+  const r = await new TmuxInjector({ tmux: t }).send("%1", "run tests");
+  assert.equal(r.sent, false, "装飾で撮り直したら人の下書きまで通した");
+  assert.equal(r.reason, "composer-busy");
+  assert.equal(sends(t).length, 0, "★1 文字も打たない");
 });
 
 test("★CHOICE 画面には絶対に送らない(本文も Enter も)", async () => {
