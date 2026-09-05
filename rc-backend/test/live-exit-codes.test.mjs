@@ -70,6 +70,10 @@ const MJS_INSTRUMENTS = [
   // ★2026-09-04: 書き込む口(title / archive)を**使い捨ての会話**にだけ撃つ。
   //   `disposable-session.mjs` が `rc-e2e-` の形しか作らないので実会話に触る道が無い。
   "tools/live-write-routes-check.mjs",
+  // ★2026-09-05: 2026-09-04 の Critical(人の下書きに追記して Enter を押す)の**配備の検証**。
+  //   使い捨ての会話の入力欄に下書きを置いてから電話の口を撃ち、409 `composer-busy` を見る。
+  //   単体は偽の tmux に対する物なので、本番の TUI が同じ形を出すかは別の問いとして残る。
+  "tools/live-composer-guard-check.mjs",
 ];
 const SH_INSTRUMENTS = [
   "../ios/tools/live-send-check.sh",
