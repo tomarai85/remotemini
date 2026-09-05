@@ -183,8 +183,21 @@ else ng "U13 連続性" "通知=$(notices) 通 = 見ていない時間を『続�
 : > "$SB/notified"
 printf '%s undelivered 0 %s %s\n' "$NOWE" "$(( NOWE - 4 * DAY ))" "$NOWE" > "$SB/u13b.json"
 run "$SB/u13b.json" 3
-[ "$(notices)" = "1" ] && ok "U13b ★ずっと見えていたなら猶予越えで鳴る(黙り過ぎない)" \
-                       || ng "U13b" "通知=$(notices) 通(1 が期待)= 何も鳴らない検査になった"
+if [ "$(notices)" = "1" ]; then
+    ok "U13b ★ずっと見えていたなら猶予越えで鳴る(黙り過ぎない)"
+else
+    # ★落ちた時に**原因の材料を其の場で出す**(2026-09-05)。此の 1 件は
+    #   `run-controls --all` の中でだけ落ち、単独では 10 走行とも緑だった。
+    #   仮説を 3 つ立てて 3 つとも実測で外した(環境変数の持ち越し / `LOG`・`NOTIFY` の
+    #   継承 / 回線の判定)。単独で再現できない物は、**次に落ちた時に自分で語れる形**に
+    #   しておくのが唯一の前進 —— 件数だけの赤は、何度見ても同じ情報しか持たない。
+    ng "U13b" "通知=$(notices) 通(1 が期待)= 何も鳴らない検査になった"
+    printf '        [U13b 診断] 状態=%s\n' "$(cat "$SB/u13b.json" 2>/dev/null)"
+    printf '        [U13b 診断] 観測器の log=%s\n' "$(tail -3 "$SB/o.log" 2>/dev/null | tr '\n' '|')"
+    printf '        [U13b 診断] 継承 NOTIFY=%s LOG=%s RC_OU_EVERY=%s\n' \
+        "${NOTIFY:-未設定}" "${LOG:-未設定}" "${RUN_EVERY:-未設定}"
+    printf '        [U13b 診断] notified の中身=%s\n' "$(cat "$SB/notified" 2>/dev/null | tr '\n' '|')"
+fi
 
 # ── 変異 ──────────────────────────────────────────────────────────────────
 mutate() {

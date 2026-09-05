@@ -5,3 +5,8 @@ __pycache__/
 
 # 並列エージェントの worktree(isolation: worktree が作る)。本流の写しなので追跡しない(2026-09-02)
 .claude/
+
+# 実機ビルドの生成物(2026-09-05。`ios/tools/device-ui-check.sh` などが吐く)。
+# 追跡していないだけでは足りない —— 257MB 在り、`git add -A` 一発で履歴に入る。
+# 此の repo は 2026-09-04 に同じ形で生ログ 61,451 行を stage しかけた。
+ios/build-device/

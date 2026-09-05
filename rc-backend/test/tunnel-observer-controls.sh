@@ -21,20 +21,49 @@ env_for() { # <url>
     echo "HOME=$D/home RC_TUNNEL_URL=$1 RC_TUNNEL_STATE=$D/home/.rc-backend/tunnel-state.json"
 }
 
+# ★偽サーバの立ち上がりを **待つのではなく観測する**(2026-09-05)。
+#   直す前は `PORT=$((20000 + RANDOM % 20000))` で番号を選ぶだけ、立ち上がりは `sleep 1`。
+#   どちらも推測なので、番号が既に使われていたり、機械が混んで 1 秒で bind し切れないと
+#   偽サーバが居ない状態で probe が走り、**観測器が正しく振る舞っていても赤になる**。
+#   2026-09-04 の `run-controls --all` で此処が 1 件落ちた(単独では 3 走行とも 17/17)。
+#   計器が**測る対象以外の理由で赤くなる**と、赤の意味が消える。だから
+#   (1) 空いている番号を掴んでから渡し、(2) 実際に繋がるまで待ち、(3) 待ち切れなければ
+#   「観測器が違う事を言った」ではなく **準備が出来なかった** と名乗って落ちる。
+free_port() { # 空いている TCP 番号を1つ返す
+    /usr/bin/python3 -c "
+import socket
+s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()"
+}
+# ★合図は**サーバ自身に書かせる**(2026-09-05、1度外した)。初版は「其の番号に繋がるか」で
+#   待っていたが、番号を**他人が握っている**時も繋がってしまうので、自分のサーバが
+#   bind に失敗した事を「上がった」と読む。しかも相手が返事をしない socket だと
+#   その後の probe が相手の timeout まで固まる。**繋がる事は、自分が上がった事ではない。**
+wait_ready() { # <ready-file>
+    local f="$1" i=0
+    while [ $i -lt 150 ]; do
+        [ -f "$f" ] && return 0
+        i=$((i+1)); sleep 0.1
+    done
+    printf '  ★準備できず  偽サーバが上がらなかった(観測器の判定ではない): %s\n' "$f"
+    return 1
+}
+
 # --- 一度も走っていない時 ------------------------------------------------------
 out="$(HOME=$D/home RC_TUNNEL_STATE=$D/home/.rc-backend/none.json bash "$OBS" --report 2>&1)"; rc=$?
 [ "$rc" -eq 3 ] && ok "T1 一度も測っていない時は rc=3(異常なしと言わない)" || ng "T1" "rc=$rc"
 printf '%s' "$out" | grep -q "異常なし" && ok "T2 その旨を文で名指しする" || ng "T2" "文が無い"
 
 # --- 生きている時 --------------------------------------------------------------
-PORT=$(( 20000 + RANDOM % 20000 ))
+PORT=$(free_port)
 /usr/bin/python3 -c "
 import http.server,sys
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(s): s.send_response(200); s.end_headers(); s.wfile.write(b'{\"ok\":true,\"pid\":1,\"uptime\":5,\"version\":\"abc1234\"}')
     def log_message(*a): pass
-http.server.HTTPServer(('127.0.0.1',$PORT),H).serve_forever()" &
-sleep 1
+srv=http.server.HTTPServer(('127.0.0.1',$PORT),H)
+open('$D/ready-1','w').close()
+srv.serve_forever()" &
+wait_ready "$D/ready-1" || exit 2
 S="$D/home/.rc-backend/t.json"
 HOME=$D/home RC_TUNNEL_STATE=$S RC_TUNNEL_URL="http://127.0.0.1:$PORT/healthz" \
   RC_TUNNEL_NOTIFY="$D/bin/notify" bash "$OBS" >/dev/null 2>&1
@@ -86,39 +115,41 @@ class H(http.server.BaseHTTPRequestHandler):
         s.send_response($2); s.send_header('content-type','application/json'); s.end_headers()
         s.wfile.write(b'''$3''')
     def log_message(*a): pass
-http.server.HTTPServer(('127.0.0.1',$1),H).serve_forever()" &
-    sleep 1
+srv=http.server.HTTPServer(('127.0.0.1',$1),H)
+open('$D/ready-$1','w').close()
+srv.serve_forever()" &
+    wait_ready "$D/ready-$1" || exit 2
 }
 probe() { # <port> <state file>
     HOME=$D/home RC_TUNNEL_STATE="$2" RC_TUNNEL_URL="http://127.0.0.1:$1/healthz" \
       RC_TUNNEL_NOTIFY="$D/bin/notify" RC_TUNNEL_TIMEOUT=3 bash "$OBS" >/dev/null 2>&1
 }
 
-P2=$(( 20000 + RANDOM % 20000 )); S2="$D/home/.rc-backend/t2.json"
+P2=$(free_port); S2="$D/home/.rc-backend/t2.json"
 serve_body $P2 200 '{"ok":true,"pid":1,"uptime":5,"version":"abc1234"}'
 probe $P2 "$S2"; [ $? -eq 0 ] && ok "T12 正しい本文なら up" || ng "T12" "非零"
 kill %1 2>/dev/null; sleep 1
 
 # ★200 を返す「別のサーバ」を緑と読まない
-P3=$(( 20000 + RANDOM % 20000 )); S3="$D/home/.rc-backend/t3.json"
+P3=$(free_port); S3="$D/home/.rc-backend/t3.json"
 serve_body $P3 200 '<html>someone elses service</html>'
 probe $P3 "$S3"; [ $? -eq 1 ] && ok "T13 ★200 でも本文が別物なら down(別のサーバを緑にしない)" || ng "T13" "緑にした"
 kill %1 2>/dev/null; sleep 1
 
 # ★形は JSON でも ok:false は緑にしない
-P4=$(( 20000 + RANDOM % 20000 )); S4="$D/home/.rc-backend/t4.json"
+P4=$(free_port); S4="$D/home/.rc-backend/t4.json"
 serve_body $P4 200 '{"ok":false,"pid":1,"uptime":5,"version":"x"}'
 probe $P4 "$S4"; [ $? -eq 1 ] && ok "T14 ★ok:false を緑にしない" || ng "T14" "緑にした"
 kill %1 2>/dev/null; sleep 1
 
 # ★version が空 = 版を名乗れないサーバも緑にしない
-P5=$(( 20000 + RANDOM % 20000 )); S5="$D/home/.rc-backend/t5.json"
+P5=$(free_port); S5="$D/home/.rc-backend/t5.json"
 serve_body $P5 200 '{"ok":true,"pid":1,"uptime":5,"version":""}'
 probe $P5 "$S5"; [ $? -eq 1 ] && ok "T15 ★版を名乗れないサーバも緑にしない" || ng "T15" "緑にした"
 kill %1 2>/dev/null; sleep 1
 
 # ★観測の空白を事件として鳴らす
-P6=$(( 20000 + RANDOM % 20000 )); S6="$D/home/.rc-backend/t6.json"
+P6=$(free_port); S6="$D/home/.rc-backend/t6.json"
 serve_body $P6 200 '{"ok":true,"pid":1,"uptime":5,"version":"abc1234"}'
 probe $P6 "$S6"
 python3 -c "

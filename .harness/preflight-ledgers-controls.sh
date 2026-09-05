@@ -7,15 +7,42 @@
 # 「緑を見た」だけだった —— 其れは「壊れていても緑」と区別が付かない。同じ夜に Codex から
 # 「落ちない検査」を 3 本指摘された直後に、同じ形の物をもう 1 つ増やす訳にいかない。
 #
-# ★復元は**写しから**。`git checkout --` は未コミットの実装ごと消す(2026-09-03 に踏んだ)。
-# ★staged の状態を触るので、走らせる前に staged が空か、失っても良い状態である事を確かめる。
+# ★★2026-09-05 に**走る場所を変えた**。初版は作業中の木と**本物の index** を直接
+#   書き換えて `cp` で戻していた。`ios/tools/mutation-worktree-gate.sh` が其れを
+#   「作業中の木を直接書き換える対照が増えた」と正しく捕まえ、全走行で赤を出した。
+#   門が正しく、此の対照が違反側だった。危険は 2 つ在り、どちらも実在する:
+#     1. 走行が殺されると `trap` が走らず、**変異が木に残る**。残った変異は単体も UI も
+#        緑のまま出荷経路に乗る(CF-12 で焼く 3 分前に気付いた前科が此の repo に在る)。
+#     2. `git add` を**本物の index** に撃つので、門付きの commit が同時に走っていると
+#        其の commit の中身を書き換え得る。
+#   直し = `git worktree` で **HEAD から使い捨ての第二の木**を作り、其の中だけで壊す。
+#   別の木は index も別なので、上の 2 つが構造的に消える(依存 package が無いので
+#   新しい木でもそのまま走る —— `rc-backend/package.json` に dependencies は無い)。
 set -u
+# ★git の hook 環境を落とす(2026-09-05、門に拒まれて判った)。門は commit の最中に
+#   此の対照を回す。其の時 git は hook へ `GIT_DIR=.git` / `GIT_INDEX_FILE=.git/index` を
+#   **相対パスで**渡すので、別の木へ `cd` した瞬間に解決できなくなる:
+#     fatal: .git/index: index file open failed: Not a directory
+#   結果 `git worktree add` が失敗し、対照は「測れていない」を返す —— 門は其れを
+#   正しく緑と認めない。**作業木を触らない直しが、commit 中に測れない直しと交換になっていた。**
+#   実測: 手で `GIT_DIR=.git GIT_INDEX_FILE=.git/index git worktree add …` を撃つと同じ文で落ちる。
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 2
-PRE="rc-backend/tools/preflight-ledgers.sh"
 TMP="$(mktemp -d)"
+WT="$TMP/wt"
 PASS=0; FAIL=0
-trap 'rm -rf "$TMP"' EXIT
+cleanup() {
+  cd "$ROOT" 2>/dev/null || true
+  git worktree remove --force "$WT" >/dev/null 2>&1
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
+if ! git worktree add --detach "$WT" HEAD >/dev/null 2>&1; then
+  echo "使い捨ての木が作れない(= 測れていない)"; exit 2
+fi
+cd "$WT" || exit 2
+PRE="rc-backend/tools/preflight-ledgers.sh"
 
 # preflight を走らせて、期待した検査名の行が RED かを見る
 expect_red() { # expect_red <題> <検査名>
