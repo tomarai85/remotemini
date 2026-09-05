@@ -277,7 +277,11 @@ for o in $offenders; do
 done
 if [ -n "${new// /}" ]; then
     echo "mutation-worktree-gate: ★作業中の木を直接書き換える対照が**増えた**:$new" >&2
-    echo "  変異は使い捨ての worktree(`git worktree add`)か、mktemp した写しの上で撃つ事。" >&2
+    # ★引用符を単引用符にした(2026-09-05)。二重引用符の中の `` ` `` は**コマンド置換**なので、
+    #   此の行は文言を出すたびに `git worktree add` を引数無しで実行し、其の usage が
+    #   標準エラーへ混ざっていた —— 対照の失敗理由を読む人が、まず此の usage を読む事になる。
+    #   **説明する行が副作用を持ってはいけない。**
+    echo '  変異は使い捨ての worktree(git worktree add)か、mktemp した写しの上で撃つ事。' >&2
     echo "  木に残った変異は、単体も UI も緑のまま Tom の電話へ載る(CF-12 で3分前に気付いた)。" >&2
     fail=1
 fi

@@ -22,8 +22,17 @@
 # ★測らない物: 離脱窓の本体。あれは ViewModel の検査(机も作り物)なので、
 #   実機で確かめるには「本物の机の長い会話で 500 件より奥を押す」形が別に要る。
 set -u
-cd /Users/tomtim/Infra/mobile-work/ios || exit 1
-. ./tools/xcode-tree-guard.sh
+# ★自分の在り処から解く(2026-09-05 に直した)。直す前は 2 つ間違っていた:
+#   1. `cd /Users/tomtim/Infra/mobile-work/ios` と**絶対パスを焼き込んで**いた。
+#      作業木(`.claude/worktrees/*`)から撃つと、其の木ではなく**本流の木**を焼く。
+#   2. `. ./tools/xcode-tree-guard.sh` と相対で source していた。台本は `-e` を
+#      持たないので、パスが解けなければ「No such file」を1行吐いて**先へ進む** ——
+#      錠を取らないまま xcodebuild を撃つ = 掛けたつもりの側から fail-open が開く。
+#      `xcode-tree-lock-controls.sh` の C3 が此れを名指しで赤にしていた(門が正しい)。
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # = <木>/ios/tools
+IOS="$(cd "$HERE/.." && pwd)"                          # = <木>/ios
+cd "$IOS" || exit 1
+. "$IOS/tools/xcode-tree-guard.sh"
 trap 'xtl_release' EXIT
 RC_BUILD_REV="$(git rev-parse --short HEAD)"; export RC_BUILD_REV
 export RC_ROLE=control

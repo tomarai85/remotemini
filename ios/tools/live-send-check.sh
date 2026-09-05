@@ -59,14 +59,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -z "$REMOTE_NODE" ]; then
-  REMOTE_NODE="$(ssh "$SSH_HOST" 'command -v node || ls /opt/homebrew/bin/node 2>/dev/null' 2>/dev/null | head -1)"
-fi
-if [ -z "$REMOTE_NODE" ]; then
-  echo "相手の機械($SSH_HOST)で node が見つからない。RC_LIVE_NODE=/path/to/node で渡せる" >&2
-  exit 2
-fi
-
 # ── 判定 ──────────────────────────────────────────────────────────────────────
 # 観測値だけを受け取って終了コードを決める。**実機に一切触らない**ので、対照
 # (`live-send-check-control.sh`)から真理値表で直に駆動できる。
@@ -118,6 +110,21 @@ if [ "${1:-}" = "--verdict" ]; then
   shift
   send_verdict "$@"
   exit $?
+fi
+
+# ★相手の機械の `node` を訊くのは**判定の口を抜けた後**(2026-09-05 に位置を直した)。
+#   元は引数の解釈の直後に在り、`--verdict` でも必ず ssh していた —— 上の註が
+#   「実機も ssh も要らない」と書いている其の口が、**網に依存していた**。
+#   2026-09-04 の `run-controls --all` で此処が 20 件 落ち、赤の理由は判定の誤りではなく
+#   「其の時 ssh が答えなかった」だった(手で撃つと同じ ssh は `/opt/homebrew/bin/node` を返す)。
+#   計器が**測る対象以外の理由で赤くなる**と、赤の意味が消える。註とコードが食い違って
+#   いたのであって、註の方が正しかった。
+if [ -z "$REMOTE_NODE" ]; then
+  REMOTE_NODE="$(ssh "$SSH_HOST" 'command -v node || ls /opt/homebrew/bin/node 2>/dev/null' 2>/dev/null | head -1)"
+fi
+if [ -z "$REMOTE_NODE" ]; then
+  echo "相手の機械($SSH_HOST)で node が見つからない。RC_LIVE_NODE=/path/to/node で渡せる" >&2
+  exit 2
 fi
 
 IOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
