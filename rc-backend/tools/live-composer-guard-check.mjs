@@ -142,9 +142,14 @@ async function main(argv) {
     parts.push(`draft_kept=${screen.includes(DRAFT) ? 1 : 0}`);
 
     // 4. 下書きを消せば普通に送れる(断りが行き止まりでない事)。
-    //    ★Escape は入力欄を空にする(此の repo の実測)。承認画面では撃たない ——
-    //      使い捨ての会話は起動直後で選択待ちにならないので、此処では安全。
-    sh(`${tmux} send-keys -t ${pane} Escape`);
+    //    ★消す鍵は **C-u**。初版は Escape を撃っていたが、2026-09-05 に本番で測ると
+    //      Escape は入力欄を**消さない**(下書きが生き残り、此の段が永久に 409 になった)。
+    //      `inject-serial.test.mjs` の偽 tmux は「Escape も入力欄を空にする」と模しており、
+    //      其れは**生成中の巻き戻り**では正しいが、待機中の下書きには当たらない ——
+    //      作り物の模型を実機の挙動と読んだ形。実測: C-u で消え、案内文(Try "…")に戻る。
+    //    ★之は断りの文の裏取りでもある。文は「机で入力欄を消してから送り直せ」と言うので、
+    //      「消す」が実在する操作でなければ、其の文は行き止まりへの案内になる。
+    sh(`${tmux} send-keys -t ${pane} C-u`);
     await new Promise((r) => setTimeout(r, 1200));
     const ok = await post({ text: "hello", sendId: `guard${Date.now()}b` });
     parts.push(`after_clear=${ok.status}`);
@@ -159,14 +164,26 @@ async function main(argv) {
   let limited = "unknown";
   try { limited = sh(`${node} $HOME/rc-backend/tools/disposable-session.mjs limited '${sid}'`) || "unknown"; } catch { /* 訊けない */ }
   let torn = 0;
+  let retried = 0;
   try {
+    // ★1 回目の `down` の後に登録簿の file が**残る事が在る**(2026-09-05 実測)。
+    //   机は要求を捌く時にペインを登録し直すので、送信を挟んだ直後の畳みは競り得る。
+    //   だから畳んだ事は**確かめてから名乗り**、残っていたら 1 回だけ撃ち直す。
+    //   ★撃ち直した事実は `torn_retry` で表に出す —— 黙って再試行すると
+    //     「1 回で畳めた」と「2 回目で畳めた」が同じ緑になり、競りが見えなくなる。
     sh(`${node} $HOME/rc-backend/tools/disposable-session.mjs down ${tmuxName} ${sid}`);
     torn = sh(`test -e ~/.rc-backend/panes/${sid}.json && echo present || echo gone`) === "gone" ? 1 : 0;
+    if (!torn) {
+      retried = 1;
+      sh(`${node} $HOME/rc-backend/tools/disposable-session.mjs down ${tmuxName} ${sid}`);
+      torn = sh(`test -e ~/.rc-backend/panes/${sid}.json && echo present || echo gone`) === "gone" ? 1 : 0;
+    }
   } catch (e) {
     torn = 0;
     console.log(`  !!  : 畳む段で例外 — ${String(e && e.message || e).split("\n")[0].slice(0, 160)}`);
   }
   parts.push(`torn_down=${torn}`);
+  parts.push(`torn_retry=${retried}`);
 
   const line = `kind=ok ${parts.join(" ")} limited=${limited}`;
   console.log(`殻の出力: ${line}`);

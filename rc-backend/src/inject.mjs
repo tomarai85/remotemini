@@ -470,6 +470,43 @@ export const COMPOSER_PLACEHOLDER = "Press up to edit queued messages";
  * 実害はペイン固着ではなく**届いたのに届いた証明が出ない**こと。だが定型文が出ている状態は
  * むしろ「TUI が受け取った」の直接証拠なので、これを空と読むのは緩めではなく厳密化。
  */
+/**
+ * 入力欄に映っているのが TUI の**案内文だけ**か(2026-09-05、本番の回帰で判った)。
+ *
+ * ★何が起きたか: 2026-09-04 の Critical を直した時、私は「入力欄が空でなく、机が置いた
+ *   物とも違う = 人の下書き」と判定した。ところが待機中の Claude Code は空の入力欄に
+ *   **候補の案内**を出す(`Try "fix lint errors"` の類。文言は毎回変わる)。
+ *   `composerIsEmpty` が知っている定型文は「Press up to edit queued messages」1 種だけなので、
+ *   案内文は「人が書いた文」として読まれ、**素の会話への送信が全部断られた**。
+ *   実測(本番 2026-09-05 11:47): 何も置かずに送って 409。電話からの送信が丸ごと死んでいた。
+ *   直しの断りが、直そうとした害より広い害を出した形。
+ *
+ * ★見分け方に**文言を使わない**。案内文の綴りは毎回違うし、人が同じ文を打つ道も残る。
+ *   使うのは TUI 自身が端末に送っている装飾 —— 案内は dim(SGR 2)で囲まれ、
+ *   人の打った文には付かない。実測した生バイト(ESC を \e と書く):
+ *     案内  : "\e[39m❯ \e[2mTry \"refactor portal-check.test.mjs\"\e[0m"
+ *     下書き: "\e[39m❯ deploy production"
+ *   之は推測した目印ではなく、**TUI が「此れは仮の文字だ」と端末に宣言している信号**。
+ *
+ * ★見えない時は false(= 案内ではない = 断る側)。装飾を撮れない端末や、形が変わった
+ *   将来の版では「人の下書きかもしれない」に倒れる —— 合成された命令を作るより、
+ *   断って人に消してもらう方が安い。
+ *
+ * @param {string} styled `capture-pane -p -e` の出力(装飾を残した画面)
+ */
+export function composerIsHintOnly(styled) {
+  const s = typeof styled === "string" ? styled : "";
+  if (!s) return false;
+  const line = s.split("\n").find((l) => l.includes("❯"));
+  if (!line) return false;
+  // `❯` の後ろを見る。装飾を剥がす前に、**dim で始まっているか**だけを問う。
+  const after = line.slice(line.indexOf("❯") + 1);
+  if (!/^(?:\[[0-9;]*m)*\s*\[2m/.test(after)) return false;
+  // dim を剥がした中身が空なら案内ですら無い(素の空は composerIsEmpty の担当)。
+  const body = after.replace(/\[[0-9;]*m/g, "").trim();
+  return body.length > 0;
+}
+
 export function composerIsEmpty(text) {
   const body = composerText(text);
   if (body === null) return false;
@@ -898,6 +935,16 @@ export class TmuxInjector {
     return this.tmux.run(["capture-pane", "-t", pane, "-p"]);
   }
 
+  /**
+   * 色と装飾を**残した**まま撮る(2026-09-05)。素の `capture` と分けてあるのは、
+   * escape 列が混ざると `classifyScreen` / `probeOf` / `composerText` の全部が
+   * 文字列として狂うから —— 使うのは「入力欄の中身は案内文か」を決める1箇所だけ。
+   * ★呼ぶのは**断る直前**に限る。毎回撮ると tmux の往復が倍になる。
+   */
+  captureStyled(pane) {
+    return this.tmux.run(["capture-pane", "-t", pane, "-p", "-e"]);
+  }
+
   /** 今の画面状態。送信の可否はここだけを根拠にする。 */
   state(pane) {
     return classifyScreen(this.capture(pane));
@@ -1000,7 +1047,13 @@ export class TmuxInjector {
       // 入力欄が空 = 机が置いた物はもう無い。記憶を現物に合わせる。
       this.forgetPlaced(pane);
     } else if (norm(body) !== norm(this.placedIn(pane))) {
-      return { typed: 0, reason: "composer-busy" };
+      // ★送信側と同じ理由で、断る直前に装飾で撮り直す(2026-09-05)。
+      //   案内文の上には**置いてよい** —— 其れは人の文ではなく、TUI が出した仮の文字。
+      if (composerIsHintOnly(this.captureStyled(pane))) {
+        this.forgetPlaced(pane);
+      } else {
+        return { typed: 0, reason: "composer-busy" };
+      }
     }
     return this.typeLiteral(pane, text);
   }
@@ -1047,7 +1100,14 @@ export class TmuxInjector {
       // 机が置いた物と一致する時だけ通す。前方一致ではなく**完全一致**にするのは、
       // 「机が置いた path + 人が続けて打った文」を通すと、また合成が起きるから。
       if (mine === "" || inBox !== mine) {
-        return { sent: false, state: "SENDABLE", delivered: null, reason: "composer-busy" };
+        // ★断る前に**装飾で撮り直す**(2026-09-05)。待機中の TUI は空の入力欄へ
+        //   候補の案内(`Try "…"`)を出し、素の撮影では人の下書きと見分けが付かない。
+        //   直した当日の本番で、素の会話への送信が全部 409 になった —— 直しの断りが
+        //   直そうとした害より広い害を出した。撮り直すのは**断る直前だけ**なので、
+        //   tmux の往復が増えるのは断る回だけで済む。
+        if (!composerIsHintOnly(this.captureStyled(pane))) {
+          return { sent: false, state: "SENDABLE", delivered: null, reason: "composer-busy" };
+        }
       }
     }
 
@@ -1095,7 +1155,11 @@ export class TmuxInjector {
     //   ★此の窓は 0 にはならない。tmux へ Enter を送るのは別の呼び出しで、其の隙に
     //     打たれた文字は誰にも観測できない。**縮められるのは窓であって、消せはしない** ——
     //     秒(撮影〜Enter)から tmux の 1 往復(ms)へ縮める、が此処の正確な効能。
-    const ownedBefore = composerIsEmpty(before) ? "" : norm(composerText(before) ?? "");
+    // ★案内文だけの入力欄は**空**として数える(2026-09-05)。数えないと、打った後の
+    //   全文が「案内文 + 本文」になり、認めた物(本文だけ)の末尾条件を破って
+    //   `composer-raced` で毎回断る —— 送信側の入口を直しても出口で同じ壁が立つ。
+    const hintOnly = composerIsHintOnly(this.captureStyled(pane));
+    const ownedBefore = (composerIsEmpty(before) || hintOnly) ? "" : norm(composerText(before) ?? "");
     const authorized = ownedBefore + norm(text);
     const atEnter = norm(composerText(echo.text) ?? "");
     if (atEnter === "" || !authorized.endsWith(atEnter)) {
