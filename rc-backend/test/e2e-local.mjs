@@ -540,7 +540,12 @@ elif args and args[0] == "send-keys":
                 open(p, "w").write("\\n".join(lines))
             elif st["mode"] == "detail" and key == "x":
                 with open(os.path.join(SB, "stop30-x.log"), "a") as f: f.write(str(st["sel"]) + "\\n")
-                st["mode"] = "composer"; st["typed"] = ""; show("composer")
+                # ★実機(friday 2026-09-06 21:05)の挙動: x で詳細からパネルへ戻り、其の行が消える。stop30-noop が在れば
+                #   「x が効かない」の再現(詳細に留まる = driver は unverified を返す筈)。
+                if os.path.exists(os.path.join(SB, "stop30-noop")):
+                    pass
+                else:
+                    st["mode"] = "panel"; st["sel"] = 0; show("panel-after")
         elif key == "Enter":
             if st["mode"] == "composer" and st["typed"].strip() == "/tasks":
                 st["mode"] = "panel"; st["sel"] = 0; st["typed"] = ""; show("panel-0")
@@ -3332,17 +3337,19 @@ try {
     writeFileSync(join(PROJ, `${SID_STOP}.jsonl`), JSON.stringify({ entrypoint: "cli", cwd: CWD_STOP, type: "user", message: { role: "user", content: "launch two" } }) + "\n");
     const adir = join(PROJ, SID_STOP, "subagents");
     mkdirSync(adir, { recursive: true });
-    const agent = (id, prompt, tools) => {
+    const agent = (id, prompt, tools, description = "count slowly") => {
       writeFileSync(join(adir, `agent-${id}.jsonl`), [
         JSON.stringify({ type: "user", agentId: id, isSidechain: true, message: { role: "user", content: prompt } }),
         ...tools.map((t) => JSON.stringify({ type: "assistant", agentId: id, message: { role: "assistant", content: [{ type: "tool_use", name: "Bash", input: { command: t } }] } })),
       ].join("\n") + "\n");
-      writeFileSync(join(adir, `agent-${id}.meta.json`), JSON.stringify({ agentType: "general-purpose", description: "count slowly" }));
+      writeFileSync(join(adir, `agent-${id}.meta.json`), JSON.stringify({ agentType: "general-purpose", description }));
     };
     const AG_A = "ae2e0000000000001", AG_B = "ae2e0000000000002", AG_C = "ae2e0000000000003";
     agent(AG_A, P_A, ["sleep 12", "sleep 12"]);
     agent(AG_B, P_B, ["sleep 13"]);
-    agent(AG_C, "an old one", ["sleep 1"]);
+    // ★古い(stalled)agent は**別の説明文**にする: 同じ説明文だと「finished でない同名 = 3 本」と数えられ、パネルの 2 本より
+    //   多い = 双子の片方が終わった後かもしれないので ambiguous で断る(安全側。Codex c3 #6 の規則)。
+    agent(AG_C, "an old one", ["sleep 1"], "old job");
     const old = new Date(Date.now() - 2 * 3600 * 1000);
     utimesSync(join(adir, `agent-${AG_C}.jsonl`), old, old);
     const ROW = "count slowly (running) · Sonnet 5";
@@ -3352,11 +3359,14 @@ try {
     writeFileSync(join(SB, "screen-30-panel-1.txt"), panelScreen(rows, 1));
     writeFileSync(join(SB, "screen-30-detail-0.txt"), detailScreen(P_A, { tools: ["Bash(sleep 12)", "Bash(sleep 12)"] }));
     writeFileSync(join(SB, "screen-30-detail-1.txt"), detailScreen(P_B, { tools: ["Bash(sleep 13)"] }));
+    // x の後の画面 = パネルに戻り、其の行が消えて 1 本だけ(実機 friday 2026-09-06 21:05 の挙動)
+    writeFileSync(join(SB, "screen-30-panel-after.txt"), panelScreen([{ text: ROW }], 0));
     const resetPane = () => {
       writeFileSync(join(SB, "screen-30.txt"), shot("idle-boot"));
       writeFileSync(join(SB, "stop30.json"), JSON.stringify({ mode: "composer", sel: 0, typed: "" }));
       rmSync(join(SB, "stop30-x.log"), { force: true });
       rmSync(join(SB, "stop30-esc.log"), { force: true });
+      rmSync(join(SB, "stop30-noop"), { force: true });
     };
     resetPane();
     putRegistry(SID_STOP, "%30");
@@ -3375,8 +3385,10 @@ try {
     check("13-e x が届いたのは印 1(2 本目)の詳細", JSON.stringify(xlog()) === JSON.stringify(["1"]), JSON.stringify(xlog()));
     // ★同名が 2 本なので、計画は**両方の詳細を見てから**押す: 1 本目の詳細(外れ)→ Escape → 開き直し → Down → 2 本目の詳細(一致)→ x。
     //   消去法でも先着でも押さない(Codex r2 #1 / r4 #1)。x の後は overlay が閉じるので Escape は 1 回だけ。
-    check("13-e 打鍵列 = /tasks, Enter, Enter, Escape, /tasks, Enter, Down, Enter, x(両方の詳細を見てから x)",
-      JSON.stringify(keysSince(b1)) === JSON.stringify(["/tasks", "Enter", "Enter", "Escape", "/tasks", "Enter", "Down", "Enter", "x"]), JSON.stringify(keysSince(b1)));
+    // x の後はパネルに戻って行が 1 本減る(実機の形)→ driver は其れを数えてから Escape 1 回で閉じる。
+    check("13-e 打鍵列 = /tasks, Enter, Enter, Escape, /tasks, Enter, Down, Enter, x, Escape(両方の詳細を見てから x、減った行を数えて閉じる)",
+      JSON.stringify(keysSince(b1)) === JSON.stringify(["/tasks", "Enter", "Enter", "Escape", "/tasks", "Enter", "Down", "Enter", "x", "Escape"]), JSON.stringify(keysSince(b1)));
+    check("13-e 成功の根拠はパネルで行が減った事(after.stopObserved=panel)", rB.json.after?.stopObserved === "panel", JSON.stringify(rB.json.after));
     check("13-e 入力欄への Escape は 0(親への割り込み無し)", !existsSync(join(SB, "stop30-esc.log")));
 
     resetPane();
@@ -3384,9 +3396,17 @@ try {
     const rA = await stop(SID_STOP, AG_A);
     // 1 本目が目標: 1 本目の詳細(一致)→ まだ 2 本目を見ていないので閉じる → 2 本目の詳細(外れ)→ 閉じる → 開き直して 1 本目へ戻り x。
     check("13-e 1 本目(sleep 12)を名指せば、2 本目も見てから 1 本目へ戻って x が印 0 へ",
-      rA.status === 200 && JSON.stringify(keysSince(b2)) === JSON.stringify(["/tasks", "Enter", "Enter", "Escape", "/tasks", "Enter", "Down", "Enter", "Escape", "/tasks", "Enter", "Enter", "x"])
+      rA.status === 200 && JSON.stringify(keysSince(b2)) === JSON.stringify(["/tasks", "Enter", "Enter", "Escape", "/tasks", "Enter", "Down", "Enter", "Escape", "/tasks", "Enter", "Enter", "x", "Escape"])
         && JSON.stringify(xlog()) === JSON.stringify(["0"]),
       `${rA.status} ${JSON.stringify(keysSince(b2))} ${JSON.stringify(xlog())}`);
+
+    // x が効かない pane(詳細に留まる)= 409 unverified、sent:true、撃ち直さない(x は 1 回)
+    resetPane();
+    writeFileSync(join(SB, "stop30-noop"), "");
+    const rNoop = await stop(SID_STOP, AG_A);
+    check("13-e x が効かなければ 409 unverified(sent:true、x は 1 回、詳細は Escape で閉じる)",
+      rNoop.status === 409 && rNoop.json.reason === "unverified" && rNoop.json.sent === true && xlog().length === 1 && !existsSync(join(SB, "stop30-esc.log")),
+      `${rNoop.status} ${JSON.stringify(rNoop.json).slice(0, 200)} x=${JSON.stringify(xlog())}`);
 
     resetPane();
     const b3 = sentKeys().length;

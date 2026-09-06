@@ -42,12 +42,33 @@ test("renderToolCall: panel の描き方(`Bash(sleep 12)`)。第 1 引数は道�
 });
 
 test("★実 fixture の形の転写から prompt(先頭の user)と道具列(tool_use の順)を取る。text ブロックの列も読む", () => {
-  const { dir } = fixture({ agents: [A, { ...B, prompt: undefined, promptBlocks: true }] });
+  const { dir } = fixture({ agents: [A, B] });
   const a = readAgentTranscript(join(dir, `agent-${A.id}.jsonl`));
-  assert.deepEqual(a, { ok: true, promptPrefix: "Run `sleep 12` ten times.", recentTools: ["Bash(sleep 12)", "Bash(sleep 12)"] });
+  assert.equal(a.ok, true);
+  assert.equal(a.promptPrefix, "Run `sleep 12` ten times.");
+  assert.deepEqual(a.recentTools, ["Bash(sleep 12)", "Bash(sleep 12)"]);
+  assert.equal(a.toolsComplete, true);
   writeFileSync(join(dir, "agent-a3.jsonl"), JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "first" }, { type: "text", text: "second" }] } }) + "\nnot json\n");
-  assert.deepEqual(readAgentTranscript(join(dir, "agent-a3.jsonl")), { ok: true, promptPrefix: "first\nsecond", recentTools: [] });
+  const a3 = readAgentTranscript(join(dir, "agent-a3.jsonl"));
+  assert.equal(a3.promptPrefix, "first\nsecond");
+  assert.deepEqual(a3.recentTools, []);
   assert.equal(readAgentTranscript(join(dir, "agent-none.jsonl")).reason, "no-such-agent");
+});
+
+test("★大きい転写は頭と尻尾だけ読む: prompt は頭、道具は**尻尾側**(先頭側の古い道具を『直近』と読まない。Codex c3 #3/#7)", () => {
+  const { dir } = fixture({ agents: [A] });
+  const p = join(dir, "agent-big.jsonl");
+  const user = JSON.stringify({ type: "user", message: { role: "user", content: "big prompt" } });
+  const tool = (c) => JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", name: "Bash", input: { command: c } }] } });
+  const filler = JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "x".repeat(2000) }] } });
+  const lines = [user, tool("marker-OLD")];
+  for (let i = 0; i < 200; i++) lines.push(filler);              // 400 KB 超 = 頭 256 KB / 尻尾 512 KB に収まらない大きさにする
+  lines.push(tool("marker-NEW"));
+  writeFileSync(p, lines.join("\n") + "\n");
+  const r = readAgentTranscript(p, { headBytes: 64 * 1024, tailBytes: 8 * 1024 });
+  assert.equal(r.promptPrefix, "big prompt");
+  assert.deepEqual(r.recentTools, ["Bash(marker-NEW)"]);
+  assert.equal(r.toolsComplete, false);
 });
 
 test("★目標: 生きている 2 本の同名 → liveSameDescription 2、prompt と道具列が付く", () => {
@@ -62,15 +83,27 @@ test("★目標: 生きている 2 本の同名 → liveSameDescription 2、prom
   assert.equal(r.target.liveSameDescription, 2);
 });
 
-test("★片方が古い(stale)なら同名の生存数は 1、其の古い方は not-live で断る", () => {
+test("★片方が古い(stalled)でも同名の数には入る(finished でない全部。Codex c3 #6)。其の古い方を名指せば not-live", () => {
   const { transcript } = fixture({ agents: [A, { ...B, staleMs: 60 * 60 * 1000 }] });
   const a = buildStopTarget(transcript, A.id);
   assert.equal(a.ok, true);
-  assert.equal(a.target.liveSameDescription, 1);
+  assert.equal(a.target.liveSameDescription, 2);
   const b = buildStopTarget(transcript, B.id);
   assert.equal(b.ok, false);
   assert.equal(b.reason, "not-live");
   assert.ok(b.message.length > 30);
+});
+
+test("★同名の兄弟と prompt の先頭 297 字が同じなら、prompt は材料から外す(道具列だけで見分ける。Codex c3 #6)", () => {
+  const shared = "S".repeat(297);
+  const { transcript } = fixture({ agents: [{ ...A, prompt: shared + " tail A" }, { ...B, prompt: shared + " tail B" }] });
+  const a = buildStopTarget(transcript, A.id);
+  assert.equal(a.ok, true);
+  assert.equal(a.target.promptDistinct, false);
+  assert.equal(a.target.promptPrefix, "");
+  assert.deepEqual(a.target.recentTools, ["Bash(sleep 12)", "Bash(sleep 12)"]);
+  const { transcript: t2 } = fixture({ agents: [A, B] });
+  assert.equal(buildStopTarget(t2, A.id).target.promptDistinct, true);
 });
 
 test("知らない id / 変な id / 転写の無い会話は no-such-agent、材料の無い転写は no-material", () => {

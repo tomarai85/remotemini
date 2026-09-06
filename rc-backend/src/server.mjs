@@ -2074,23 +2074,23 @@ const server = createServer(async (req, res) => {
     if (action === "subagent-stop" && req.method === "POST") {
       const refuse = (reason, message, description = null, extra = {}) =>
         json(res, 409, subagentStopBody({ agentId: stopAgentId, description, out: { ok: false, reason, message, ...extra } }));
-      let allowShells = false;
-      try {
-        const raw = await readBody(req);
-        const body = raw.trim() ? JSON.parse(raw) : {};
-        allowShells = body && body.allowShells === true;
-      } catch (e) {
-        return json(res, 400, { error: `Request body unreadable: ${e.message}`, reason: "bad_body" });
+      // 本文は**読まない**(選択肢を持たない口。`allowShells` を電話から渡せる形は Codex が「HTTP 本文で shell 保護を
+      // 外せる」と名指した = 削った)。読み捨てるだけ。大きすぎれば他の口と同じ 413。
+      try { await readBody(req); } catch (e) {
+        if (e instanceof BodyTooLarge) return tooLarge(req, res, e);
       }
+      // ★worker の枝を持つ会話は、列挙が見せた subagent(枝の転写の物)と pane の会話(祖先)が別物になる。
+      //   pane で x を押しても枝の agent には届かない = 断る(Codex: 祖先の pane で別の同名 agent を殺す形)。
       const target = transcriptTarget();
       if (!target) return refuse("no-such-agent", TARGET_REFUSAL["no-such-agent"]);
+      if (target !== file) return refuse("no-pane", STOP_REASONS["no-pane"], null, { why: "worker-branch" });
       const r = resolvePane();
       if (UNDECIDABLE.has(r.reason)) return json(res, 409, { error: blockedMessage(r), ...blockedBody(r) });
       if (!r.pane) return refuse("no-pane", STOP_REASONS["no-pane"]);
       let built;
       try { built = buildStopTarget(target, stopAgentId); } catch { built = { ok: false, reason: "unreadable", message: TARGET_REFUSAL.unreadable }; }
       if (!built.ok) return refuse(built.reason, built.message);
-      const out = await stopSubagent(injector, r.pane, built.target, { allowShells });
+      const out = await stopSubagent(injector, r.pane, built.target);
       return json(res, out.ok ? 200 : 409, subagentStopBody({ agentId: stopAgentId, description: built.target.description, out }));
     }
 

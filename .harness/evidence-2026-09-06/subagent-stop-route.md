@@ -29,6 +29,52 @@ the FIRST, the plan opened row 0 (match) → closed (row 1 unseen) → opened ro
 so the driver reopens and returns to the matched row. Pinned in `test/panel-stop.test.mjs` and
 `test/panel-stop-driver.test.mjs`.
 
-## Production measurement
+## Production measurement — friday, 2026-09-06 21:05 (desk `5b8f728`, service pid 18564)
 
-(appended below by `tools/live-subagent-stop-check.mjs` after the deploy)
+`node rc-backend/tools/live-subagent-stop-check.mjs` from Jervis (raw log: `live-subagent-stop-run1.log`):
+
+```
+send HTTP 202 (0s) → running=2 (31s) → target=a6de70ba039382014 (sleep 13) peer=ad7d13792955b159b (sleep 12)
+stop HTTP 200 stopped=observed
+keys=["-l /tasks","Enter","Enter","Escape","-l /tasks","Enter","Down","Enter","Escape","-l /tasks","Enter","Enter","-l x","Escape"] escapes=3 (34s)
+target 183102->183102 bytes (frozen)   peer 181993->198610 bytes (still writing)   over 30 s
+torn_down=1   verdict: kind=ok … → 閉じた(0)
+```
+
+What the real TUI did, now measured (it had only been modelled before):
+- the panel listed the two same-description rows; the target sat on row **0** on this desk (the panel's order is not
+  the launch order). The plan opened row 0 (match, but row 1 unseen → close), reopened, moved Down, opened row 1
+  (mismatch → close), reopened and returned to row 0, and only then pressed `x` — the "return to the seen match"
+  path the local e2e had forced into the planner an hour earlier;
+- `x` in the detail view returns to the PANEL with the stopped row gone (the driver counted the same-text running rows
+  decreasing and only then called it observed); one guarded Escape closed the panel;
+- the stopped agent's transcript stopped growing at once; the peer kept appending (`sleep 12` × 10 in progress).
+
+## Codex adversarial review of c3 (`codex-c3-review.out`) — VERDICT: FAIL (6 fatal, 5 serious)
+OpenAI Codex v0.144.3
+session id: 01a0787f-1562-7250-8a62-4fbd7b2b7d8b
+
+| # | severity | finding | disposition (commit c3b) |
+|---|---|---|---|
+| 1 | FATAL | a session with a worker branch: the listing shows the branch's agents while the pane belongs to the ancestor → a same-description agent on the pane could be stopped | route refuses `no-pane` (why `worker-branch`) when `transcriptTarget() !== file` |
+| 2 | FATAL | `allowShells` accepted from the HTTP body disabled the shell guard | the route reads no options at all; the body is drained (413 on too large) |
+| 3 | FATAL | the 12 MB cap took the FIRST 12 MB, so "recent" tools were the oldest | prompt from the head (256 KB), tools from the TAIL (512 KB), both via fd reads |
+| 4 | FATAL | the re-capture before `x` compared only type + description | it now compares prompt prefix and tool list too |
+| 5 | FATAL | `stopped:"observed"` fired on "overlay closed" or a bare count drop; non-overlay screens counted as closed | observed only when the PANEL shows the same-text running rows decreased; if the overlay closed, `/tasks` is reopened to count; any other screen → `unverified` |
+| 6 | FATAL | a finished-but-fresh target + a stalled same-name sibling + prompts identical for 297 chars | siblings = every non-finished same-description agent (running/stalled/unknown); a prompt that matches a sibling's first 297 chars is dropped from the target (tools must discriminate) |
+| 7 | SERIOUS | `readFileSync` of a multi-GB transcript | head/tail fd reads |
+| 8 | SERIOUS | route id regex (80) narrower than the listing's (128) | both 128, same charset |
+| 9 | SERIOUS | body errors bypassed the closed contract | no body parsing; too-large → the server's shared 413 |
+| 10 | SERIOUS | instrument could pass with an ambiguous target, a stat failure read as 0, one late append, `limited=unknown` | target = exactly one transcript with `sleep 13` and not `sleep 12`; stat failure aborts; peer must grow across two intervals; unknown limit → not measured |
+| 11 | SERIOUS | the fake pane's `x` always returned to the composer → "observed" was vacuous | the fake now returns to the PANEL with the row removed (what the real TUI did above) and a no-effect variant yields `unverified` |
+
+A consequence of #6 worth naming: a same-description sibling that is stalled (no output for 15 min) but NOT on the
+panel now makes the count exceed the rows shown, and the desk refuses `ambiguous`. That is the safe side (the
+alternative was Codex's fatal case); the cost is a refusal until the listing marks the sibling finished. The e2e's
+stale agent was given a different description for this reason.
+
+Found while pinning #5 with the simulator (not by Codex): after stopping the LAST agent the panel has no section at
+all (`Background` + footer only), which `panelStateOf` does not call PANEL — the driver therefore neither counted it as
+"decreased" nor pressed Escape to close it. `emptyPanel()` now treats that shape as an open overlay with zero rows.
+The production run above never hit it (two agents, one survived); the single-agent case is still unmeasured on the
+real TUI and is named as a limit.

@@ -2,6 +2,8 @@
 // ★模型は**入力状態と描画を分ける**(Codex r5 #8): 打鍵は入力状態を即座に変えるが、描画は `lag` 回の撮影ぶん遅れる。
 //   詳細の数字(経過秒)は撮影ごとに進む(`tick`)。これが無いと「古い描画で二度目の Escape」「数字が進んだだけで
 //   x が効いたと読む」「撮った後に終わってパネルへ戻る」を表せない。
+// ★x の既定の効き目 = 詳細からパネルへ戻り、其の行が消える(実機 friday 2026-09-06 21:05 で観測)。"close" は overlay ごと
+//   閉じる形(driver は /tasks を開き直して数える)、"none" は何も起きない(詳細に留まる = unverified)。
 // 規則の検査: Escape は overlay の時だけ、閉じたのを見るまで二度打たない / x は一致した詳細でだけ、直前にもう一度撮る /
 // 印の移動は 1 打ごとに観測 / 入力欄に文字が在れば打たない / 断りは閉じた語彙。
 import { test } from "node:test";
@@ -55,12 +57,12 @@ function detailScreen(prompt, elapsed = 30) {
 /**
  * 模型: 入力状態 `st.mode` = composer | panel | detail。打鍵で即座に変わる。描画は `lag` 回の撮影ぶん遅れる。
  *  - agents: [{ text, prompt, shell? }] 表示順 / sel: 印の平らな位置 / composer: 入力欄の初期文字
- *  - xEffect: "close"(x で overlay が閉じる)| "panel"(パネルに戻り行が消える)| "none"(何も起きない。数字だけ進む)
+ *  - xEffect: "panel"(既定: 行が消えてパネルに戻る)| "close"(行が消えて overlay ごと閉じる)| "none"(何も起きない。数字だけ進む)
  *  - lag: 打鍵の後、古い描画を返す撮影の回数 / tick: 詳細の経過秒を撮影ごとに進める
  *  - ignoreMoves / neverOpenPanel / neverOpenDetail / reflowOnReopen / noEcho / finishAfterDetailCaptures(N 回撮った後に
  *    agent が終わってパネル(印はシェル行)へ戻る)
  */
-function sim({ agents, sel = 0, composer = "", xEffect = "close", lag = 0, tick = false, ignoreMoves = false, neverOpenPanel = false,
+function sim({ agents, sel = 0, composer = "", xEffect = "panel", lag = 0, tick = false, ignoreMoves = false, neverOpenPanel = false,
                neverOpenDetail = false, reflowOnReopen = false, noEcho = false, finishAfterDetailCaptures = 0 } = {}) {
   const st = { mode: "composer", typed: composer, sel, agents: agents.map((a) => ({ ...a })), opens: 0, log: [], xPressed: 0, stoppedFlat: null,
                staleLeft: 0, staleFrame: null, elapsed: 30, detailCaptures: 0, captures: 0 };
@@ -91,8 +93,7 @@ function sim({ agents, sel = 0, composer = "", xEffect = "close", lag = 0, tick 
       if (st.mode === "composer" && !noEcho) st.typed += key;
       else if (st.mode === "detail" && key === "x") {
         st.xPressed++; st.stoppedFlat = st.sel;
-        if (xEffect === "close") st.mode = "composer";
-        else if (xEffect === "panel") { st.agents.splice(st.agents.indexOf(flatRows()[st.sel]), 1); st.mode = "panel"; st.sel = 0; }
+        if (xEffect !== "none") { st.agents.splice(st.agents.indexOf(flatRows()[st.sel]), 1); st.sel = 0; st.mode = xEffect === "close" ? "composer" : "panel"; }
       } else if (st.mode === "panel" && key === "x") { st.log[st.log.length - 1].shellKilled = Boolean(flatRows()[st.sel]?.shell); st.xPressed++; }
     } else if (key === "Enter") {
       if (st.mode === "composer" && st.typed.trim() === "/tasks") { st.typed = ""; if (!neverOpenPanel) { st.mode = "panel"; st.opens++; if (reflowOnReopen && st.opens > 1) { st.sel = 0; st.agents.push({ text: "late (running) · Sonnet 5", prompt: "late" }); } } }
@@ -118,15 +119,25 @@ test("語彙: driver の断りは計画の 7 語と重ならず、合わせて�
   for (const v of Object.values(DRIVER_REFUSAL)) assert.match(v, /pressed/);
 });
 
-test("★単独候補: /tasks → Enter → 詳細 → 一致 → x → 閉じる(x の後に overlay が無ければ Escape は打たない)", async () => {
+test("★単独候補: /tasks → Enter → 詳細 → 一致 → x → パネルで行が減ったのを見る → Escape(実機の形)", async () => {
   const s = sim({ agents: A1 });
   const r = closedResult(await stopSubagent(inj(s), "%1", T()));
   assert.equal(r.ok, true);
   assert.equal(r.stopped, "observed");
-  assert.deepEqual(r.keys, ["-l /tasks", "Enter", "Enter", "-l x"]);
-  assert.equal(r.escapes, 0);
+  assert.equal(r.after.stopObserved, "panel");
+  assert.deepEqual(r.keys, ["-l /tasks", "Enter", "Enter", "-l x", "Escape"]);
+  assert.equal(r.escapes, 1);
   assert.equal(s.st.xPressed, 1);
   assert.equal(classifyScreen(s.tmux.run(["capture-pane"])).state, "SENDABLE");
+  noEscapeIntoComposer(s);
+});
+
+test("★x で overlay ごと閉じた時は /tasks を開き直して行が減ったのを数える(閉じただけでは成功と言わない。Codex c3 #5)", async () => {
+  const s = sim({ agents: A1, xEffect: "close" });
+  const r = closedResult(await stopSubagent(inj(s), "%1", T()));
+  assert.equal(r.ok, true);
+  assert.equal(r.after.stopObserved, "reopened");
+  assert.deepEqual(r.keys, ["-l /tasks", "Enter", "Enter", "-l x", "-l /tasks", "Enter", "Escape"]);
   noEscapeIntoComposer(s);
 });
 
@@ -134,28 +145,28 @@ test("★描画が 2 回遅れても同じ経路で止まる(打鍵ごとに『�
   const s = sim({ agents: A1, lag: 2, tick: true });
   const r = closedResult(await stopSubagent(inj(s), "%1", T()));
   assert.equal(r.ok, true);
-  assert.deepEqual(r.keys, ["-l /tasks", "Enter", "Enter", "-l x"]);
+  assert.deepEqual(r.keys, ["-l /tasks", "Enter", "Enter", "-l x", "Escape"]);
   noEscapeIntoComposer(s);
 });
 
 test("★同名 2 本: 1 本目の詳細が外れ → Escape 1 回 → /tasks を開き直し → Down → 2 本目の詳細が一致 → x", async () => {
-  const s = sim({ agents: [{ text: ROW, prompt: OTHER }, { text: ROW, prompt: PROMPT }], xEffect: "panel" });
+  const s = sim({ agents: [{ text: ROW, prompt: OTHER }, { text: ROW, prompt: PROMPT }] });
   const r = closedResult(await stopSubagent(inj(s), "%1", T({ liveSameDescription: 2 })));
   assert.equal(r.ok, true);
   assert.deepEqual(r.keys, ["-l /tasks", "Enter", "Enter", "Escape", "-l /tasks", "Enter", "Down", "Enter", "-l x", "Escape"]);
-  assert.equal(r.escapes, 2);                                   // 1 回目 = 詳細を閉じる(閉じたのを見た)、2 回目 = x の後のパネル
+  assert.equal(r.escapes, 2);
   assert.equal(s.st.stoppedFlat, 1);
   assert.equal(r.target.flat, 1);
   noEscapeIntoComposer(s);
 });
 
-test("★同名 2 本で目標が 1 本目: 1 本目(一致)→ 閉じる → 2 本目(外れ)→ 閉じる → 開き直して 1 本目へ戻り x(e2e 13-e で発見)", async () => {
+test("★同名 2 本で目標が 1 本目: 1 本目(一致)→ 閉じる → 2 本目(外れ)→ 閉じる → 開き直して 1 本目へ戻り x(実機 friday で観測した形)", async () => {
   const s = sim({ agents: [{ text: ROW, prompt: PROMPT }, { text: ROW, prompt: OTHER }] });
   const r = closedResult(await stopSubagent(inj(s), "%1", T({ liveSameDescription: 2 })));
   assert.equal(r.ok, true);
-  assert.deepEqual(r.keys, ["-l /tasks", "Enter", "Enter", "Escape", "-l /tasks", "Enter", "Down", "Enter", "Escape", "-l /tasks", "Enter", "Enter", "-l x"]);
+  assert.deepEqual(r.keys, ["-l /tasks", "Enter", "Enter", "Escape", "-l /tasks", "Enter", "Down", "Enter", "Escape", "-l /tasks", "Enter", "Enter", "-l x", "Escape"]);
   assert.equal(s.st.stoppedFlat, 0);
-  assert.equal(r.escapes, 2);
+  assert.equal(r.escapes, 3);
   noEscapeIntoComposer(s);
 });
 
@@ -179,7 +190,6 @@ test("★入力欄に文字が残っていれば /tasks を打たない(親へ�
 });
 
 test("★Escape の後、閉じたのを見るまで二度目は打たない。見えなければ escape-unverified(Codex r5 #2)", async () => {
-  // 詳細が開いた状態で始まり、描画が 6 回遅れる = 期限内に閉じたのが見えない。
   const s = sim({ agents: [{ text: ROW, prompt: OTHER }], lag: 6 });
   s.st.mode = "detail";
   const r = closedResult(await stopSubagent(inj(s, { echoBudgetMs: 0 }), "%1", T(), { budgetMs: 0 }));
@@ -199,6 +209,22 @@ test("★撮った後に agent が終わってパネル(印はシェル行)へ�
   noEscapeIntoComposer(s);
 });
 
+test("★x の直前の再確認は prompt と道具列も比べる(型と説明文だけでは同名の隣を通す。Codex c3 #4)", async () => {
+  // 詳細を撮って照合した後、x を打つ直前の撮影では別の agent の詳細(同じ型・同じ説明文、prompt が違う)が映っている
+  const s = sim({ agents: [{ text: ROW, prompt: PROMPT }] });
+  const orig = s.tmux.run;
+  let detailCaptures = 0;
+  s.tmux.run = (a) => {
+    if (a[0] === "capture-pane" && s.st.mode === "detail") { detailCaptures++; if (detailCaptures === 2) s.st.agents[0].prompt = OTHER; }
+    return orig(a);
+  };
+  s.tmux.runStrict = s.tmux.run;
+  const r = closedResult(await stopSubagent(inj(s), "%1", T()));
+  assert.equal(r.reason, "reflow");
+  assert.equal(r.why, "detail-changed-before-x");
+  assert.equal(s.st.xPressed, 0);
+});
+
 test("★シェル行が在るパネルは既定で断る(shell-row / shells-present)。allowShells で進める", async () => {
   const s = sim({ agents: [{ text: "sleep 300 (running)", prompt: "", shell: true }, { text: ROW, prompt: PROMPT }] });
   const r = closedResult(await stopSubagent(inj(s), "%1", T()));
@@ -208,7 +234,7 @@ test("★シェル行が在るパネルは既定で断る(shell-row / shells-pre
   const s2 = sim({ agents: [{ text: "sleep 300 (running)", prompt: "", shell: true }, { text: "sleep 301 (running)", prompt: "", shell: true }, { text: ROW, prompt: PROMPT }] });
   const r2 = closedResult(await stopSubagent(inj(s2), "%1", T(), { allowShells: true }));
   assert.equal(r2.ok, true);
-  assert.deepEqual(r2.keys, ["-l /tasks", "Enter", "Down", "Down", "Enter", "-l x"]);
+  assert.deepEqual(r2.keys, ["-l /tasks", "Enter", "Down", "Down", "Enter", "-l x", "Escape"]);
   assert.equal(s2.st.stoppedFlat, 2);
   noShellKilled(s2);
 });
@@ -219,7 +245,7 @@ test("★x の後に数字が進んだだけ(同じ詳細に留まる)は成功�
   assert.equal(r.reason, "unverified");
   assert.equal(r.sent, true);
   assert.equal(s.st.xPressed, 1);
-  assert.equal(r.escapes, 1);                                   // 残った詳細は閉じる(閉じたのを見る)
+  assert.equal(r.escapes, 1);
   assert.equal(s.st.mode, "composer");
 });
 
@@ -228,14 +254,10 @@ test("★遅い描画: echo は猶予でもう一度待ち、来れば進む。�
   const r = closedResult(await stopSubagent(inj(s), "%1", T()));
   assert.equal(r.ok, true);
   const s2 = sim({ agents: A1, noEcho: true });
-  s2.st.typed = "";
-  const orig = s2.tmux.run;
-  // 打った後に echo が一度も来ない(入力欄は空のまま)= 残る物が無い
   const r2 = closedResult(await stopSubagent(inj(s2), "%1", T()));
   assert.equal(r2.reason, "panel-did-not-open");
   assert.equal(r2.why, "no-echo");
   assert.equal(r2.after.retracted, false);
-  // echo が期限(撮影 2 回)の後に来る = /tasks が残る → Backspace × 6 で消してから断る
   const s3 = sim({ agents: A1, lag: 2 });
   const r3 = closedResult(await stopSubagent(inj(s3, { echoBudgetMs: 0 }), "%1", T(), { budgetMs: 0 }));
   assert.equal(r3.reason, "panel-did-not-open");
@@ -243,7 +265,6 @@ test("★遅い描画: echo は猶予でもう一度待ち、来れば進む。�
   assert.equal(r3.keys.filter((k) => k === "BSpace").length, 6, "残った /tasks は取り消す");
   assert.equal(s3.st.typed, "", "入力欄は空に戻る");
   assert.equal(r3.keys.filter((k) => k === "Enter").length, 0, "Enter は打っていない");
-  void orig;
 });
 
 test("★/tasks でパネルが開かなければ panel-did-not-open(Enter は 1 回だけ、x は無し)", async () => {
@@ -297,7 +318,7 @@ test("★既にパネルが開いていれば /tasks を打たずに其れを使
   s.st.mode = "panel";
   const r = closedResult(await stopSubagent(inj(s), "%1", T()));
   assert.equal(r.ok, true);
-  assert.deepEqual(r.keys, ["Enter", "-l x"]);
+  assert.deepEqual(r.keys, ["Enter", "-l x", "Escape"]);
 });
 
 test("★画面を触る前に断れる物は 1 打も打たない(live でない / 材料が無い / 生存数が無い / pane が空 / 予算が NaN でも走る)", async () => {
@@ -307,10 +328,10 @@ test("★画面を触る前に断れる物は 1 打も打たない(live でな�
     assert.equal(r.ok, false);
     assert.deepEqual(r.keys, []);
   }
-  assert.equal(closedResult(await stopSubagent(inj(s), "", T())).reason, "no-pane");           // Codex r5 #7
+  assert.equal(closedResult(await stopSubagent(inj(s), "", T())).reason, "no-pane");
   assert.equal(closedResult(await stopSubagent(inj(s), "   ", T())).reason, "no-pane");
   assert.equal(s.calls.length, 0);
-  const r = closedResult(await stopSubagent(inj(s), "%1", T(), { budgetMs: NaN }));           // Codex r5 #6: 既定に落ちて走り切る
+  const r = closedResult(await stopSubagent(inj(s), "%1", T(), { budgetMs: NaN }));
   assert.equal(r.ok, true);
 });
 

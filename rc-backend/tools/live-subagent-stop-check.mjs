@@ -52,7 +52,7 @@ export function verdict(rc, line) {
   const get = (k) => (fields.has(k) ? fields.get(k) : null);
   if (get("kind") === "ng") return 3;                 // 準備段・机に届かない・活動が起きない = 測っていない
   if (Number(rc) !== 0) return 1;
-  if (get("limited") === "limited") return 3;
+  if (get("limited") === "limited" || get("limited") === "unknown") return 3;   // 訊けなかった机の緑を閉じたと言わない
   if (get("kind") !== "ok" || dup) return 1;
   const ok = get("two_running") === "1" && get("target_chosen") === "1" && get("stop_http") === "200"
     && get("stopped") === "observed" && get("target_frozen") === "1" && get("peer_running") === "1" && get("torn_down") === "1";
@@ -128,28 +128,36 @@ async function main(argv) {
     // 目標 = 転写に sleep 13 を含む方。転写の置き場は机側で探す(projects/<slug>/<sid>/subagents/agent-<id>.jsonl)。
     const dir = sh(`ls -d ~/.claude/projects/*/${sid}/subagents 2>/dev/null | head -1`);
     if (!dir) throw fail("transcript", "subagent transcript dir not found on the desk");
+    // 目標 = 転写に `sleep 13` が在って `sleep 12` が**無い**方が丁度 1 本(両方に出る / どちらにも出ないなら選ばない。Codex c3 #10)。
     const ids = running.map((a) => a.agentId);
-    const withThirteen = ids.filter((id) => { try { return sh(`grep -c 'sleep 13' '${dir}/agent-${id}.jsonl' 2>/dev/null || echo 0`) !== "0"; } catch { return false; } });
-    const target = withThirteen[0] ?? null;
-    const peer = ids.find((id) => id !== target) ?? null;
-    parts.push(`target_chosen=${target && peer ? 1 : 0}`);
-    console.log(`  ..  : target=${target} peer=${peer}`);
-    if (!target || !peer) throw fail("choose", "could not tell the two subagents apart by prompt");
+    const has = (id, word) => { try { return sh(`grep -c '${word}' '${dir}/agent-${id}.jsonl' 2>/dev/null || echo 0`) !== "0"; } catch { return false; } };
+    const only13 = ids.filter((id) => has(id, "sleep 13") && !has(id, "sleep 12"));
+    const only12 = ids.filter((id) => has(id, "sleep 12") && !has(id, "sleep 13"));
+    const target = only13.length === 1 ? only13[0] : null;
+    const peer = only12.length === 1 ? only12[0] : null;
+    parts.push(`target_chosen=${target && peer && target !== peer ? 1 : 0}`);
+    console.log(`  ..  : target=${target} peer=${peer} (only13=${only13.length} only12=${only12.length})`);
+    if (!target || !peer || target === peer) throw fail("choose", "could not tell the two subagents apart by prompt");
 
-    const size = (id) => Number(sh(`stat -f %z '${dir}/agent-${id}.jsonl' 2>/dev/null || echo 0`));
+    // 大きさは stat が答えた時だけ数字(失敗を 0 に丸めると「凍った」に化ける)。
+    const size = (id) => { const v = sh(`stat -f %z '${dir}/agent-${id}.jsonl' 2>/dev/null || echo ERR`); if (!/^\d+$/.test(v)) throw fail("stat", `stat failed for ${id}: ${v}`); return Number(v); };
+    const t0s = size(target), p0s = size(peer);
     const st = await postJson(`/api/sessions/${sid}/subagents/${target}/stop`, {});
     const stopped = st.json?.stopped ?? null;
     parts.push(`stop_http=${st.status}`);
     parts.push(`stopped=${stopped === "observed" ? "observed" : String(stopped ?? "none")}`);
     if (st.status !== 200) parts.push(`reason=${String(st.json?.reason ?? "none")}`);
-    console.log(`  ..  : stop HTTP ${st.status} stopped=${stopped} reason=${st.json?.reason ?? "-"} keys=${JSON.stringify(st.json?.keys ?? [])} escapes=${st.json?.escapes ?? "-"} (${stamp()})`);
+    console.log(`  ..  : stop HTTP ${st.status} stopped=${stopped} reason=${st.json?.reason ?? "-"} keys=${JSON.stringify(st.json?.keys ?? [])} escapes=${st.json?.escapes ?? "-"} after=${JSON.stringify(st.json?.after ?? null)} (${stamp()})`);
 
+    // 止めた方は**押した直後の大きさ**から一度も伸びない / もう片方は**2 区間とも**伸びる(1 度だけの追記で終わる形を通さない)。
     const t1 = size(target), p1 = size(peer);
-    await sleep(settleSec * 1000);
+    await sleep(Math.max(5, settleSec / 2) * 1000);
+    const tMid = size(target), pMid = size(peer);
+    await sleep(Math.max(5, settleSec / 2) * 1000);
     const t2 = size(target), p2 = size(peer);
-    parts.push(`target_frozen=${t2 === t1 ? 1 : 0}`);
-    parts.push(`peer_running=${p2 > p1 ? 1 : 0}`);
-    console.log(`  ..  : target ${t1}->${t2} peer ${p1}->${p2} (${stamp()})`);
+    parts.push(`target_frozen=${t2 === t1 && tMid === t1 ? 1 : 0}`);
+    parts.push(`peer_running=${pMid > p1 && p2 > pMid ? 1 : 0}`);
+    console.log(`  ..  : target ${t0s}->${t1}->${tMid}->${t2} peer ${p0s}->${p1}->${pMid}->${p2} (${stamp()})`);
   } catch (e) {
     const step = (e && e.step) || "probe";
     console.log(`殻の出力: kind=ng step=${step}`);
