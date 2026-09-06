@@ -26,7 +26,8 @@ function workerRoute(s) {
   // ★終端の目印は「ワーカー経路が 202 を返す所」。2026-08-26 に応答を `workerBody` へ
   //   括った時、この綴りが消えて**切り出しが丸ごと失敗し、W21 等が全部落ちた**。
   //   目印は綴りではなく**構造**に寄せる: `route: "worker"` を含む最後の行まで。
-  const end = s.indexOf('route: "worker", seq }', i);
+  // ★2026-09-06: 202 の本文に `spawn`(子の受領)が足されたので、目印は `route: "worker", seq` までの綴り。
+  const end = s.indexOf('route: "worker", seq', i);
   return end === -1 ? null : s.slice(i, end);
 }
 

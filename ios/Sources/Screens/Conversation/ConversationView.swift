@@ -1705,6 +1705,16 @@ struct ConversationView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("conversation.gapNotice")
             }
+            // Worker-route failure (2026-09-06): the desk lost or refused a background
+            // turn after the phone had already seen "Sent". Red, because the person's
+            // next action is to resend, not to wait.
+            if let workerError = viewModel.latestWorkerError {
+                Text(workerError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.workerError")
+            }
             // Sprint 6's `conversation.choiceBadge` lived here and rendered nothing but
             // `reason`. Sprint 7 moved the whole menu to `choiceCard` down in the
             // composer, and the badge went with it rather than staying as a second copy

@@ -106,6 +106,7 @@ export const WORKER_REFUSAL = {
   cwd_untrusted: "This folder isn't trusted by Claude Code yet. Start claude there once on the desk and answer the trust prompt (the phone never answers it).",
   // 2026-09-06: 机が worker 経路の launcher(claude-work)を見つけられない。起動の前に断る(202 の後で死なない)。
   launcher_missing: "The desk can't find its background launcher (claude-work), so this session can't be reached while it has no open pane. Open it on the desk, or fix the desk's launcher path.",
+  spawn_failed: "The desk's background launcher could not start for this session, so nothing was sent. Check the desk's launcher (claude-work) and try again.",
 };
 
 /** 決められなかった理由のうち、ワーカー経路にも落としてはいけないもの。 */

@@ -438,6 +438,9 @@ const MAX_WAITERS_PLUG = Number(process.env.RC_E2E_MAX_WAITERS || 0);
 //   **緑になる条件は一切緩まない**(縮めて壊れるのは「止まった」の側だけで、そちらは
 //   1枚目の capture で確定する)。本番では立てない = 既定の 3000ms のまま。
 const INTERRUPT_BUDGET_PLUG = Number(process.env.RC_E2E_INTERRUPT_BUDGET_MS || 0);
+// ★worker 経路の 202 が待つ「子が起きた」の期限(2026-09-06)。spawn 事象は普通 ms で来る。期限切れは失敗ではなく
+//   結果不明(202 に `spawn:"unconfirmed"`)。検査は短く、本番は 3 秒。
+const WORKER_SPAWN_ACK_MS = Math.max(50, Number(process.env.RC_WORKER_SPAWN_ACK_MS || 3000));
 const injector = new TmuxInjector({
   tmux: tmuxRunner,
   ...(ECHO_BUDGET_PLUG > 0 ? { echoBudgetMs: ECHO_BUDGET_PLUG } : {}),
@@ -2238,7 +2241,21 @@ const server = createServer(async (req, res) => {
           error: redact(String(e?.message || e)),
         });
       }
-      const workerBody = { accepted: true, route: "worker", seq };
+      // ★202 は**子が最初の行を出した後**(2026-09-06)。Node の spawn は実行できない file でも同期には投げず、
+      //   非同期の `error` で死ぬ。しかも `spawn` 事象は「起きた」までで、直後に exit 23 で死ぬ launcher を通す
+      //   (Codex 同日)。受領を待たないと、電話は 202「Sent」の後に `worker_error` を受け取る。
+      //   failed = 409 `spawn_failed`(受け付けていない。sendId は捨てて撃ち直せる)/ unconfirmed = 期限内に
+      //   行も死も来なかった = 結果不明であって失敗ではない(202 に `spawn` で名乗り、電話は成功と描かず本文を残す。
+      //   idempotency には**保存する**: 同じ sendId の再送に同じ「未確認」を返す方が、捨てて二重に届けるより安全)。
+      const ack = await manager.spawnAck(sessionId, { timeoutMs: WORKER_SPAWN_ACK_MS });
+      if (ack.status === "failed") {
+        if (idemHeld) idem.abandon(sendId);
+        return json(res, 409, {
+          accepted: false, route: "worker", reason: "spawn_failed",
+          error: WORKER_REFUSAL.spawn_failed, detail: ack.error,
+        });
+      }
+      const workerBody = { accepted: true, route: "worker", seq, spawn: ack.status };
       if (idemHeld) idem.finish(sendId, workerBody);
       return json(res, 202, workerBody);
     }

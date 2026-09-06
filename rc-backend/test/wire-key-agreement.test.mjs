@@ -219,6 +219,7 @@ const CASES = {
   // 202 は「受け取った」までしか言わない枝で、`keepText` を出すのは主に此処。
   sendResult: [
     [202, null], [202, {}], [202, { delivered: "unverified" }], [202, { delivered: true }],
+    [202, { route: "worker", spawn: "unconfirmed" }], [202, { route: "worker", spawn: "ready" }],
     [200, { accepted: true }], [409, { code: "X" }], [400, {}], [500, {}],
   ],
   interruptResult: [[200, { interrupted: true, stopped: true }], [409, {}], [400, {}]],
@@ -772,8 +773,9 @@ const PAIRS = [
     swift: "MessageItem", builders: ["messageItem"], at: "",
     mode: "phone-subset",
     // `kind` は項目の振り分け語で、電話は `PollItem` の側(enum)で読む。
-    // `event` はワーカーの生の NDJSON 1行 —— v1 では描かないと決めた(brief §1-a/§1-b)。
-    serverOnly: ["event", "kind"],
+    // `event` はワーカーの生の NDJSON 1行 —— 2026-09-06 から電話が読む(`WorkerEvent`、失敗の帯の為)。
+    //   v1 の「描かない」(brief §1-a/§1-b)は此の日に終わった。
+    serverOnly: ["kind"],
   },
   {
     swift: "GapItem", builders: ["gapItem"], at: "",
@@ -889,6 +891,14 @@ const IGNORED = {};
  *   `.harness/wire-vocabulary-agreement-controls.sh`)。
  */
 const UNPAIRED = {
+  // 2026-09-06: ワーカー経路の NDJSON 1 行(`MessageItem.event`)の電話側の読み口。組む相手は builder ではなく
+  //   `worker.mjs` の `_emit` が作る事象そのもの(`worker_error` / `user_dropped` / `user_sent` …)と、子の
+  //   stream-json の生の行。鍵の全集合は子の版で変わる(電話は `type`/`error`/`reason`/`text` だけ読み、他は捨てる)
+  //   ので、鍵名の突き合わせに新しい主張は乗らない。守りたいのは `type` の値と文で、其れは
+  //   `PollModelsTests` の worker_error / user_dropped / user_sent の 3 例と、`ConversationViewModelTests` の帯の検査が持つ。
+  "WorkerEvent":
+    "ワーカー経路の NDJSON 1 行。builder ではなく worker.mjs の _emit と子の stream-json が組む。守るのは type の値と文で、" +
+    "其れは PollModelsTests と ConversationViewModelTests が測っている。",
   // 2026-09-04: 錨の窓が 409 で返す断りの本文 `{error, reason}` の、電話側の読み口。
   // 組む相手は `wire.mjs` の builder ではなく `server.mjs` の
   // `json(res, 409, { error: "anchor gone", reason: "anchor_gone" })` —— 上の註が

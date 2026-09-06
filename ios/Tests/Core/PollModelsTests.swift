@@ -10,6 +10,50 @@ final class PollModelsTests: XCTestCase {
         try JSONDecoder().decode(type, from: Data(json.utf8))
     }
 
+    // MARK: - Worker route `event` line (2026-09-06)
+
+    func testWorkerRouteMessageItemDecodesAWorkerErrorEventIntoANotice() throws {
+        let response = try decode(PollResponse.self, """
+        { "items": [
+            { "kind": "message", "seq": 4, "event": { "type": "worker_error", "error": "spawn /x/claude-work ENOENT", "stderr": [] } },
+            { "kind": "message", "seq": 5, "event": { "type": "user_sent", "text": "hi" } },
+            { "kind": "message", "seq": 6, "event": { "type": "user_dropped", "text": "later", "queuedSeq": 5, "reason": "worker_died" } },
+            { "kind": "message", "seq": 7, "event": [1, 2] }
+          ], "screen": null, "queued": 0, "cursor": "w.7.4.0", "more": false }
+        """)
+        XCTAssertEqual(response.items.count, 4)
+        guard case .message(let failed) = response.items[0], let event = failed.event else { return XCTFail("worker_error item") }
+        XCTAssertEqual(event.type, "worker_error")
+        XCTAssertEqual(event.error, "spawn /x/claude-work ENOENT")
+        XCTAssertEqual(event.notice, "The desk's background worker failed: spawn /x/claude-work ENOENT. Your last message may not have been delivered.")
+        guard case .message(let sent) = response.items[1] else { return XCTFail("user_sent item") }
+        XCTAssertEqual(sent.event?.type, "user_sent")
+        XCTAssertNil(sent.event?.notice, "progress lines are not banners")
+        guard case .message(let dropped) = response.items[2] else { return XCTFail("user_dropped item") }
+        XCTAssertEqual(dropped.event?.notice, "The desk dropped a queued message (worker_died). Send it again when the desk is back.")
+        guard case .message(let odd) = response.items[3] else { return XCTFail("odd item") }
+        XCTAssertEqual(odd.event?.isEmpty, true, "a non-object event decodes as an empty event, not a failed poll")
+        XCTAssertNil(odd.event?.notice)
+        XCTAssertEqual(odd.seq, 7)
+    }
+
+    func testAStaleWorkerErrorAndAUserClearedDropCarryNoNotice() throws {
+        let response = try decode(PollResponse.self, """
+        { "items": [
+            { "kind": "message", "seq": 8, "event": { "type": "worker_error", "error": "killed", "stderr": [], "stale": true } },
+            { "kind": "message", "seq": 9, "event": { "type": "user_dropped", "text": "later", "queuedSeq": 5, "reason": "user_cleared" } },
+            { "kind": "message", "seq": 10, "event": { "type": "user_dropped", "text": "later", "queuedSeq": 5, "reason": "worker_error" } }
+          ], "screen": null, "queued": 0, "cursor": "w.7.10.0", "more": false }
+        """)
+        guard case .message(let stale) = response.items[0] else { return XCTFail("stale item") }
+        XCTAssertEqual(stale.event?.stale, true)
+        XCTAssertNil(stale.event?.notice, "a retired child's late failure is not this turn's failure")
+        guard case .message(let cleared) = response.items[1] else { return XCTFail("cleared item") }
+        XCTAssertNil(cleared.event?.notice, "the person's own queue clear is not a desk failure")
+        guard case .message(let dropped) = response.items[2] else { return XCTFail("dropped item") }
+        XCTAssertEqual(dropped.event?.notice, "The desk dropped a queued message (worker_error). Send it again when the desk is back.")
+    }
+
     // MARK: - Root response: tmux route, all 7 keys present
 
     func testTmuxRouteDecodesAllSevenRootKeys() throws {
