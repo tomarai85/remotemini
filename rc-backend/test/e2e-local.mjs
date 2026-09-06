@@ -72,6 +72,7 @@ const CWD_CHOICE = "/Users/Shared/dev/choice";
 const CWD_SHELL  = join(SB, "shell"); // ★ワーカーへ落ちた後**受理される**必要が在る(一覧に載せる)
 const CWD_AMBIG  = "/Users/Shared/dev/ambig";
 const CWD_GEN    = "/Users/Shared/dev/busy";
+const CWD_STOP   = "/Users/Shared/dev/stop";   // 13-e: subagent の停止(pane %30)
 const CWD_DEAF   = "/Users/Shared/dev/deaf";
 const CWD_RACE   = "/Users/Shared/dev/race";
 const CWD_INTR_OK    = "/Users/Shared/dev/intr-ok";
@@ -394,6 +395,7 @@ const PANES = [
   `%27${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys027${PANE_SEP}${CWD_PERM}`,       // 許可確認が出ている
   `%28${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys028${PANE_SEP}${CWD_FEEDREG}`,    // 13-Z: 付け替え前の登録先
   `%29${PANE_SEP}2.1.220${PANE_SEP}/dev/ttys029${PANE_SEP}${CWD_FEEDREG}`,    // 13-Z: 付け替え後の登録先
+  `%30${PANE_SEP}2.1.263${PANE_SEP}/dev/ttys030${PANE_SEP}${CWD_STOP}`,       // 13-e: subagent の停止(打鍵で画面が変わる pane)
 ].join("\n") + "\n";
 // ★2026-08-01: 画面はもう手で書かない。使い捨てセッションから撮った生の capture-pane 出力
 // (test/fixtures/screens/)をそのまま使う。前の版はここに手書きの画面を置いていて、
@@ -518,6 +520,50 @@ elif args and args[0] == "send-keys":
     #   -l -- <text> = 入力欄に載る / Enter = 入力欄が空に戻る、という実物の挙動を最小限で真似る。
     pane = args[args.index("-t") + 1] if "-t" in args else ""
     p = os.path.join(SB, "screen-" + pane.replace("%", "") + ".txt")
+    # ★%30 = subagent の停止(13-e、2026-09-06)。打鍵で画面が**状態機械**として変わる: 入力欄に /tasks → Enter で
+    #   パネル(印は 1 行目)/ Down・Up で印が動く / Enter で詳細(印の行の prompt)/ 詳細で x → 入力欄に戻り、
+    #   どの行に x が届いたかを stop30-x.log に残す / Escape は入力欄へ戻す(入力欄で Escape なら stop30-esc.log に残す
+    #   = 親への割り込み)。画面は JS が実 fixture から組んで screen-30-<state>.txt に置く。
+    if pane == "%30":
+        sp = os.path.join(SB, "stop30.json")
+        st = json.load(open(sp)) if os.path.exists(sp) else {"mode": "composer", "sel": 0, "typed": ""}
+        key = args[-1]
+        def show(name):
+            open(p, "w").write(open(os.path.join(SB, "screen-30-" + name + ".txt")).read())
+        if "-l" in args:
+            if st["mode"] == "composer":
+                st["typed"] += key
+                lines = open(p).read().split("\\n")
+                for i in range(len(lines) - 1, -1, -1):
+                    if lines[i].lstrip().startswith("\\u276f"):
+                        lines[i] = "\\u276f " + st["typed"]; break
+                open(p, "w").write("\\n".join(lines))
+            elif st["mode"] == "detail" and key == "x":
+                with open(os.path.join(SB, "stop30-x.log"), "a") as f: f.write(str(st["sel"]) + "\\n")
+                st["mode"] = "composer"; st["typed"] = ""; show("composer")
+        elif key == "Enter":
+            if st["mode"] == "composer" and st["typed"].strip() == "/tasks":
+                st["mode"] = "panel"; st["sel"] = 0; st["typed"] = ""; show("panel-0")
+            elif st["mode"] == "panel":
+                st["mode"] = "detail"; show("detail-" + str(st["sel"]))
+        elif key == "Down" and st["mode"] == "panel":
+            st["sel"] = min(st["sel"] + 1, 1); show("panel-" + str(st["sel"]))
+        elif key == "Up" and st["mode"] == "panel":
+            st["sel"] = max(st["sel"] - 1, 0); show("panel-" + str(st["sel"]))
+        elif key == "BSpace" and st["mode"] == "composer":
+            st["typed"] = st["typed"][:-1]
+            lines = open(p).read().split("\\n")
+            for i in range(len(lines) - 1, -1, -1):
+                if lines[i].lstrip().startswith("\\u276f"):
+                    lines[i] = "\\u276f " + st["typed"]; break
+            open(p, "w").write("\\n".join(lines))
+        elif key == "Escape":
+            if st["mode"] in ("panel", "detail"):
+                st["mode"] = "composer"; st["typed"] = ""; show("composer")
+            else:
+                with open(os.path.join(SB, "stop30-esc.log"), "a") as f: f.write("escape-into-composer\\n")
+        json.dump(st, open(sp, "w"))
+        sys.exit(0)
     # %16 だけは画面が動かない = 送ったのに入力欄に載らないペイン(実機では起きうる)。
     if os.path.exists(p) and pane != "%16":
         lines = open(p).read().split("\\n")
@@ -3268,6 +3314,97 @@ try {
     }
     sv3.kill("SIGKILL");
     await new Promise((r) => sv3.once("exit", r));
+  }
+
+  // ---- 13-e. ★subagent を名指して止める(2026-09-06、対照表 #8 の後半 c3) --------------------------
+  //
+  // pane %30 は偽 tmux が**状態機械**として動く(入力欄 → /tasks+Enter でパネル → Down/Up → Enter で詳細 → x)。
+  // 同じ説明文 `count slowly` の subagent が 2 本(prompt は sleep 12 と sleep 13)。電話の口で 2 本目を名指すと、
+  // 机は転写から prompt を組み、パネルを開き、印を 1 段下げ、詳細で prompt を照合してから x を打つ —— x が届いた行を
+  // 偽 tmux が stop30-x.log に残すので、**どの行に届いたか**を測れる。断りは 3 種(古い / 知らない / ペイン無し /
+  // 選択画面)で、打鍵が 0 の事を send-keys の数で見る。
+  {
+    const { panelScreen, detailScreen } = await import("./stop-screens.mjs");
+    const SID_STOP = "99999999-0000-0000-0000-0000000000e5";
+    const P_A = "Run the shell command `sleep 12` using the Bash tool, ten times in a row, as ten separate sequential Bash tool calls. Wait for each call to return before issuing the next one. Do not read files.";
+    const P_B = P_A.replace("sleep 12", "sleep 13");
+    mkdirSync(CWD_STOP, { recursive: true });
+    writeFileSync(join(PROJ, `${SID_STOP}.jsonl`), JSON.stringify({ entrypoint: "cli", cwd: CWD_STOP, type: "user", message: { role: "user", content: "launch two" } }) + "\n");
+    const adir = join(PROJ, SID_STOP, "subagents");
+    mkdirSync(adir, { recursive: true });
+    const agent = (id, prompt, tools) => {
+      writeFileSync(join(adir, `agent-${id}.jsonl`), [
+        JSON.stringify({ type: "user", agentId: id, isSidechain: true, message: { role: "user", content: prompt } }),
+        ...tools.map((t) => JSON.stringify({ type: "assistant", agentId: id, message: { role: "assistant", content: [{ type: "tool_use", name: "Bash", input: { command: t } }] } })),
+      ].join("\n") + "\n");
+      writeFileSync(join(adir, `agent-${id}.meta.json`), JSON.stringify({ agentType: "general-purpose", description: "count slowly" }));
+    };
+    const AG_A = "ae2e0000000000001", AG_B = "ae2e0000000000002", AG_C = "ae2e0000000000003";
+    agent(AG_A, P_A, ["sleep 12", "sleep 12"]);
+    agent(AG_B, P_B, ["sleep 13"]);
+    agent(AG_C, "an old one", ["sleep 1"]);
+    const old = new Date(Date.now() - 2 * 3600 * 1000);
+    utimesSync(join(adir, `agent-${AG_C}.jsonl`), old, old);
+    const ROW = "count slowly (running) · Sonnet 5";
+    const rows = [{ text: ROW }, { text: ROW }];
+    writeFileSync(join(SB, "screen-30-composer.txt"), shot("idle-boot"));
+    writeFileSync(join(SB, "screen-30-panel-0.txt"), panelScreen(rows, 0));
+    writeFileSync(join(SB, "screen-30-panel-1.txt"), panelScreen(rows, 1));
+    writeFileSync(join(SB, "screen-30-detail-0.txt"), detailScreen(P_A, { tools: ["Bash(sleep 12)", "Bash(sleep 12)"] }));
+    writeFileSync(join(SB, "screen-30-detail-1.txt"), detailScreen(P_B, { tools: ["Bash(sleep 13)"] }));
+    const resetPane = () => {
+      writeFileSync(join(SB, "screen-30.txt"), shot("idle-boot"));
+      writeFileSync(join(SB, "stop30.json"), JSON.stringify({ mode: "composer", sel: 0, typed: "" }));
+      rmSync(join(SB, "stop30-x.log"), { force: true });
+      rmSync(join(SB, "stop30-esc.log"), { force: true });
+    };
+    resetPane();
+    putRegistry(SID_STOP, "%30");
+    const stop = async (sid, id, body = {}) => {
+      const r = await fetch(`${B}/api/sessions/${sid}/subagents/${id}/stop`, { method: "POST", headers: H, body: JSON.stringify(body) });
+      return { status: r.status, json: await r.json().catch(() => ({})) };
+    };
+    const xlog = () => (existsSync(join(SB, "stop30-x.log")) ? readFileSync(join(SB, "stop30-x.log"), "utf8").trim().split("\n").filter(Boolean) : []);
+    const keysSince = (n) => sentKeys().slice(n).map((c) => c[c.length - 1]);
+
+    const b1 = sentKeys().length;
+    const rB = await stop(SID_STOP, AG_B);
+    check("13-e ★名指した subagent(2 本目、sleep 13)だけに x が届く(200 stopped:observed)",
+      rB.status === 200 && rB.json.stopped === "observed" && rB.json.sent === true && rB.json.target?.agentId === AG_B,
+      `${rB.status} ${JSON.stringify(rB.json).slice(0, 220)}`);
+    check("13-e x が届いたのは印 1(2 本目)の詳細", JSON.stringify(xlog()) === JSON.stringify(["1"]), JSON.stringify(xlog()));
+    // ★同名が 2 本なので、計画は**両方の詳細を見てから**押す: 1 本目の詳細(外れ)→ Escape → 開き直し → Down → 2 本目の詳細(一致)→ x。
+    //   消去法でも先着でも押さない(Codex r2 #1 / r4 #1)。x の後は overlay が閉じるので Escape は 1 回だけ。
+    check("13-e 打鍵列 = /tasks, Enter, Enter, Escape, /tasks, Enter, Down, Enter, x(両方の詳細を見てから x)",
+      JSON.stringify(keysSince(b1)) === JSON.stringify(["/tasks", "Enter", "Enter", "Escape", "/tasks", "Enter", "Down", "Enter", "x"]), JSON.stringify(keysSince(b1)));
+    check("13-e 入力欄への Escape は 0(親への割り込み無し)", !existsSync(join(SB, "stop30-esc.log")));
+
+    resetPane();
+    const b2 = sentKeys().length;
+    const rA = await stop(SID_STOP, AG_A);
+    // 1 本目が目標: 1 本目の詳細(一致)→ まだ 2 本目を見ていないので閉じる → 2 本目の詳細(外れ)→ 閉じる → 開き直して 1 本目へ戻り x。
+    check("13-e 1 本目(sleep 12)を名指せば、2 本目も見てから 1 本目へ戻って x が印 0 へ",
+      rA.status === 200 && JSON.stringify(keysSince(b2)) === JSON.stringify(["/tasks", "Enter", "Enter", "Escape", "/tasks", "Enter", "Down", "Enter", "Escape", "/tasks", "Enter", "Enter", "x"])
+        && JSON.stringify(xlog()) === JSON.stringify(["0"]),
+      `${rA.status} ${JSON.stringify(keysSince(b2))} ${JSON.stringify(xlog())}`);
+
+    resetPane();
+    const b3 = sentKeys().length;
+    const rC = await stop(SID_STOP, AG_C);
+    check("13-e 古い subagent は 409 not-live、打鍵ゼロ", rC.status === 409 && rC.json.reason === "not-live" && rC.json.sent === false && sentKeys().length === b3,
+      `${rC.status} ${JSON.stringify(rC.json).slice(0, 160)}`);
+    const rN = await stop(SID_STOP, "ae2e0000000000009");
+    check("13-e 知らない id は 409 no-such-agent、打鍵ゼロ", rN.status === 409 && rN.json.reason === "no-such-agent" && sentKeys().length === b3,
+      `${rN.status} ${JSON.stringify(rN.json).slice(0, 160)}`);
+    const rW = await stop(SID1, AG_A);
+    check("13-e ペインの無い会話は 409 no-pane(worker 経路にはパネルが無い)", rW.status === 409 && rW.json.reason === "no-pane" && sentKeys().length === b3,
+      `${rW.status} ${JSON.stringify(rW.json).slice(0, 160)}`);
+    writeFileSync(join(SB, "screen-30.txt"), shot("choice-model-menu"));
+    const rCh = await stop(SID_STOP, AG_A);
+    check("13-e 選択画面が出ている pane には 409 not-sendable、打鍵ゼロ", rCh.status === 409 && rCh.json.reason === "not-sendable" && sentKeys().length === b3,
+      `${rCh.status} ${JSON.stringify(rCh.json).slice(0, 160)}`);
+    check("13-e 断りの文は電話にそのまま出せる形(error が在る)", [rC, rN, rW, rCh].every((r) => typeof r.json.error === "string" && r.json.error.length > 20));
+    resetPane();
   }
 
   sseCtl.abort();

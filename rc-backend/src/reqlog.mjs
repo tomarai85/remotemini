@@ -55,6 +55,11 @@ export const SESSION_ROUTE_RE = /^\/api\/sessions\/([^/]+)\/(history|messages|st
  *   (`SESSION_ROUTE_RE` と同じ規約。検査 = test/reqlog.test.mjs)。
  */
 export const ROOTS_ROUTE_RE = /^\/api\/roots\/(\d{1,3})\/(paths|new)$/;
+/**
+ * subagent を名指して止める口(2026-09-06、対照表 #8 の後半 c3)。会話の道の下に 2 段(agentId / stop)が付くので
+ * `SESSION_ROUTE_RE` には畳めない。agentId は転写の file 名(`agent-<id>.jsonl`)の id と同じ字種。
+ */
+export const SUBAGENT_STOP_RE = /^\/api\/sessions\/([^/]+)\/subagents\/([A-Za-z0-9._-]{1,80})\/stop$/;
 
 /**
  * 語彙 = 小文字で始まり、小文字/数字/ハイフン/下線だけ、24字まで。
@@ -80,6 +85,7 @@ export function pathShape(path, known) {
   if (known && known.has(path)) return path;
   const m = SESSION_ROUTE_RE.exec(path);
   if (m) return `/api/sessions/:id/${m[2]}`;
+  if (SUBAGENT_STOP_RE.test(path)) return "/api/sessions/:id/subagents/:agentId/stop";
   const r = ROOTS_ROUTE_RE.exec(path);
   if (r) return `/api/roots/:i/${r[2]}`;
   return "(other)";
@@ -87,7 +93,7 @@ export function pathShape(path, known) {
 
 /** 会話の道なら sessionId の**先頭8文字**。それ以外は空。 */
 export function sessionOf(path) {
-  const m = SESSION_ROUTE_RE.exec(path);
+  const m = SESSION_ROUTE_RE.exec(path) || SUBAGENT_STOP_RE.exec(path);
   return m ? m[1].slice(0, 8) : "";
 }
 

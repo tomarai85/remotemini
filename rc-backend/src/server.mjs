@@ -63,7 +63,11 @@ import {
   sendResult, interruptResult, choiceResult, clearQueueResult,
 } from "./view.mjs";
 import { redact } from "./redact.mjs";
-import { attachRequestLog, markResult, noteBody, SESSION_ROUTE_RE, ROOTS_ROUTE_RE } from "./reqlog.mjs";
+import { attachRequestLog, markResult, noteBody, SESSION_ROUTE_RE, ROOTS_ROUTE_RE, SUBAGENT_STOP_RE } from "./reqlog.mjs";
+// subagent を名指して止める(2026-09-06、対照表 #8 の後半 c3)。目標の組み立ては subagentstop.mjs、打鍵は panelstop-driver.mjs。
+import { buildStopTarget, TARGET_REFUSAL } from "./subagentstop.mjs";
+import { stopSubagent, STOP_REASONS } from "./panelstop-driver.mjs";
+import { subagentStopBody } from "./wire.mjs";
 // roots の口(2026-09-03、対照表 #11)。台帳の読みと包含判定は roots.mjs、口の挙動は rootsroute.mjs。
 import { loadRoots, resolveUnderRoots } from "./roots.mjs";
 import { handleRootsList, handleRootsPaths, handleRootsNew, resolveRequestedCwd } from "./rootsroute.mjs";
@@ -1581,9 +1585,14 @@ const server = createServer(async (req, res) => {
       return json(res, 404, NO_SUCH_ROUTE);
     }
 
+    // subagent を名指して止める口は会話の道の下に 2 段付く(`/subagents/<agentId>/stop`)。会話の道と同じ前処理
+    // (転写・登録簿・ペインの解決)を使いたいので、action `subagent-stop` として此の塊に入れる(2026-09-06)。
+    const sm = SUBAGENT_STOP_RE.exec(path);
     const m = SESSION_ROUTE_RE.exec(path);
-    if (!m) return json(res, 404, NO_SUCH_ROUTE);
-    const [, sessionId, action] = m;
+    const route = m || (sm ? [sm[0], sm[1], "subagent-stop"] : null);
+    if (!route) return json(res, 404, NO_SUCH_ROUTE);
+    const [, sessionId, action] = route;
+    const stopAgentId = sm ? sm[2] : null;
     const file = findSessionFile(sessionId);
     // 登録簿は1リクエストにつき1回だけ読む。2回読むと、その間に書き手(statusLine が
     // 2秒ごとに書く)が挟まって「存在すると判定した直後の解決では別内容」になりうる。
@@ -2056,6 +2065,33 @@ const server = createServer(async (req, res) => {
           agents: [], directory: "unreadable", parent: "unscanned", truncated: false, counts: null,
         }));
       }
+    }
+
+    // ── subagent を名指して止める(2026-09-06、対照表 #8 の後半 c3)────────────────────
+    // 電話が列挙の口で得た agentId を名指す。机は id から画面で照合できる材料(型・説明文・prompt・道具列・生死・
+    // 同名の生存数)を組み、driver に渡す。driver は「押す直前の描画で印が目標の行に乗っている時だけ x」を守る。
+    // tmux 経路だけ(worker 経路にはパネルが無い)。断りは全部 409 で、reason は閉じた語彙、error は電話に出す文。
+    if (action === "subagent-stop" && req.method === "POST") {
+      const refuse = (reason, message, description = null, extra = {}) =>
+        json(res, 409, subagentStopBody({ agentId: stopAgentId, description, out: { ok: false, reason, message, ...extra } }));
+      let allowShells = false;
+      try {
+        const raw = await readBody(req);
+        const body = raw.trim() ? JSON.parse(raw) : {};
+        allowShells = body && body.allowShells === true;
+      } catch (e) {
+        return json(res, 400, { error: `Request body unreadable: ${e.message}`, reason: "bad_body" });
+      }
+      const target = transcriptTarget();
+      if (!target) return refuse("no-such-agent", TARGET_REFUSAL["no-such-agent"]);
+      const r = resolvePane();
+      if (UNDECIDABLE.has(r.reason)) return json(res, 409, { error: blockedMessage(r), ...blockedBody(r) });
+      if (!r.pane) return refuse("no-pane", STOP_REASONS["no-pane"]);
+      let built;
+      try { built = buildStopTarget(target, stopAgentId); } catch { built = { ok: false, reason: "unreadable", message: TARGET_REFUSAL.unreadable }; }
+      if (!built.ok) return refuse(built.reason, built.message);
+      const out = await stopSubagent(injector, r.pane, built.target, { allowShells });
+      return json(res, out.ok ? 200 : 409, subagentStopBody({ agentId: stopAgentId, description: built.target.description, out }));
     }
 
     if (action === "status" && req.method === "GET") {

@@ -699,6 +699,7 @@ LOCAL_CTLS=(
     ../ios/tools/live-search-check-control.sh # ★2026-09-03。探索の当たり→跳びの窓(#3)の live 計器の判定を全通り撃つ(11 通り、実機不要)
     test/live-cold-routes-controls.sh # ★2026-09-04。本番の机で 0 件だった読むだけの 3 口の live 計器の
     test/live-write-routes-controls.sh # ★2026-09-04。書き込む口の live 計器の判定を全通り撃つ
+    test/live-subagent-stop-controls.sh # ★2026-09-06。対照表 #8 の後半 c3: 停止の live 計器の判定を全通りで撃つ(3 欄が本体)。
     test/live-completion-log-controls.sh # ★2026-09-06。対照表 #32: 完了の遷移を使い捨ての会話で 1 件起こし、
                                      # 本番の digest-notify が**記録して鳴らさない**事を見る live 計器の判定を
                                      # 全通り撃つ(14 通り)。`no_alert=0` を緑と読まない事と、

@@ -445,6 +445,24 @@ export function rootItem(r, i) {
  *   組み立てさせると、机と電話で言葉が分かれて必ず片方だけ腐る(`requiresOwnerInput`
  *   を `attentionOf` に寄せたのと同じ判断)。
  */
+/**
+ * `POST /api/sessions/<id>/subagents/<agentId>/stop` の封筒(2026-09-06、対照表 #8 の後半 c3)。
+ * 200 も 409 も同じ形: `stopped`(`"observed"` か false)/ `reason`(閉じた語彙。成功なら null)/ `error`(電話に
+ * そのまま出す文。成功なら null)/ `sent`(x を打ったか)/ `keys`(打った列。診断用)/ `escapes` / `target` / `after`。
+ */
+export function subagentStopBody({ agentId, description, out }) {
+  return {
+    stopped: out.ok ? out.stopped : false,
+    reason: out.ok ? null : out.reason,
+    error: out.ok ? null : (out.message ?? null),
+    sent: out.sent === true,
+    keys: Array.isArray(out.keys) ? out.keys : [],
+    escapes: Number.isInteger(out.escapes) ? out.escapes : 0,
+    target: { agentId, description: description ?? null },
+    after: out.after ?? null,
+  };
+}
+
 export function subagentsBody({ agents, directory, parent, truncated, counts }) {
   return {
     subagents: agents,
