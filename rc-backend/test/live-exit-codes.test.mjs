@@ -78,6 +78,10 @@ const MJS_INSTRUMENTS = [
   //   其れを**記録して鳴らさない**事を見る。母集団が薄い(登録 3 本・動くのは 1 本)ので、計器が生きて
   //   いる事と現象が無い事を分けるには、現象を起こすしかない。
   "tools/live-completion-check.mjs",
+  // ★2026-09-06(対照表 #8 の後半 c3): 本番の机に同名の subagent 2 本を起こし、電話の口で片方を名指して止め、
+  //   止めた方の転写が凍り・もう片方が伸び続ける事を見る。計画と driver は偽 tmux で緑だが、本物の TUI で
+  //   x の効き目を見たのは此処が初めて(単体の緑を「効く」と読まない)。
+  "tools/live-subagent-stop-check.mjs",
 ];
 const SH_INSTRUMENTS = [
   "../ios/tools/live-send-check.sh",

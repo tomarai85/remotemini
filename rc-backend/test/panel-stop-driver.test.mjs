@@ -149,6 +149,16 @@ test("★同名 2 本: 1 本目の詳細が外れ → Escape 1 回 → /tasks �
   noEscapeIntoComposer(s);
 });
 
+test("★同名 2 本で目標が 1 本目: 1 本目(一致)→ 閉じる → 2 本目(外れ)→ 閉じる → 開き直して 1 本目へ戻り x(e2e 13-e で発見)", async () => {
+  const s = sim({ agents: [{ text: ROW, prompt: PROMPT }, { text: ROW, prompt: OTHER }] });
+  const r = closedResult(await stopSubagent(inj(s), "%1", T({ liveSameDescription: 2 })));
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.keys, ["-l /tasks", "Enter", "Enter", "Escape", "-l /tasks", "Enter", "Down", "Enter", "Escape", "-l /tasks", "Enter", "Enter", "-l x"]);
+  assert.equal(s.st.stoppedFlat, 0);
+  assert.equal(r.escapes, 2);
+  noEscapeIntoComposer(s);
+});
+
 test("★双子(prompt も同じ): 両方の詳細を見て ambiguous。x は打たない、Escape は overlay の時だけ", async () => {
   const s = sim({ agents: [{ text: ROW, prompt: PROMPT }, { text: ROW, prompt: PROMPT }] });
   const r = closedResult(await stopSubagent(inj(s), "%1", T({ liveSameDescription: 2 })));

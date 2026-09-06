@@ -101,6 +101,22 @@ test("★同名 2 本: 他方を見て外れていれば press-x-in-detail、他
   assert.equal(b.why, "duplicate");
 });
 
+test("★同名 2 本: 今の詳細は外れだが、先に見た候補が一致していた → close-detail(final)で戻って押す(e2e 13-e で発見)", () => {
+  const panel = parsePanel(fx("jervis-panel-down1.txt"));   // 印は flat 1
+  const detail = parseDetail(fx("jervis-detail-open.txt"));  // = 目標(TARGET)の prompt
+  const other = { ...detail, promptPrefix: "Count to ten slowly and then stop.", promptTruncated: false };
+  // 今開いているのは flat 1 = other(外れ)、flat 0 は既に見て一致
+  const p = closed(planStop({ panel, detail: other, target: TARGET, examined: [{ flat: 0, detail }] }));
+  assert.equal(p.action, "close-detail");
+  assert.equal(p.final, true);
+  assert.deepEqual(p.remaining, []);
+  // 閉じて開き直した後(詳細無し)は、一致した flat 0 へ open-detail(final)
+  const q = closed(planStop({ panel: parsePanel(fx("friday-panel-open.txt")), target: TARGET, examined: [{ flat: 0, detail }, { flat: 1, detail: other }] }));
+  assert.equal(q.action, "open-detail");
+  assert.equal(q.final, true);
+  assert.equal(q.target.flat, 0);
+});
+
 test("★同名 2 本を全部見た後(詳細は閉じている): 一致 1 本なら其処へ open-detail(final)、0 本なら no-such-row、2 本なら ambiguous", () => {
   const panel = parsePanel(fx("friday-panel-open.txt"));   // 印は flat 0
   const detail = parseDetail(fx("jervis-detail-open.txt"));

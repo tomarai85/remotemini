@@ -207,10 +207,12 @@ export function planStop(args) {
     const unseen = others.filter((_, i) => verdicts[i] === "unseen");
     if (unseen.length > 0) return { ok: true, action: "close-detail", moves: 0, direction: null, target: sel, remaining: unseen.map((c) => c.flat), matched: m.ok };
     if (verdicts.includes("undecided")) return { ok: false, reason: "ambiguous", why: "insufficient" };
-    const otherMatches = verdicts.filter((v) => v === "hit").length;
-    if (m.ok && otherMatches === 0) return { ok: true, action: "press-x-in-detail", moves: 0, direction: null, target: sel };
-    if (m.ok || otherMatches > 0) return { ok: false, reason: otherMatches + (m.ok ? 1 : 0) >= 2 ? "ambiguous" : "mismatch", why: m.ok ? "duplicate" : m.why };
-    return { ok: false, reason: "no-such-row", why: "none-matched" };
+    const hits = verdicts.filter((v) => v === "hit").length + (m.ok ? 1 : 0);
+    if (hits === 0) return { ok: false, reason: "no-such-row", why: "none-matched" };
+    if (hits >= 2) return { ok: false, reason: "ambiguous", why: "duplicate" };
+    if (m.ok) return { ok: true, action: "press-x-in-detail", moves: 0, direction: null, target: sel };
+    // 一致は既に見た**別の**候補 1 本(今の詳細は外れ)。閉じて開き直し、其処へ戻って押す(消去法ではなく、見た詳細が一致した行)。
+    return { ok: true, action: "close-detail", moves: 0, direction: null, target: sel, remaining: [], matched: false, final: true };
   }
 
   // 詳細が開いていない: 次に開く候補を選ぶ。
