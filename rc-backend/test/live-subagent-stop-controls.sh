@@ -33,6 +33,7 @@ want 1 "畳めていない = 1" -- 0 "kind=ok two_running=1 target_chosen=1 stop
 want 0 "撃ち直して畳めた(torn_retry=1)は緑のまま = 0" -- 0 "kind=ok two_running=1 target_chosen=1 stop_http=200 stopped=observed target_frozen=1 peer_running=1 torn_down=1 torn_retry=1 limited=not-limited"
 want 1 "殻の rc が非零 = 1" -- 1 "$OK"
 want 3 "利用上限の机 = 3(測っていない)" -- 0 "kind=ok two_running=1 target_chosen=1 stop_http=200 stopped=observed target_frozen=1 peer_running=1 torn_down=1 torn_retry=0 limited=limited"
+want 3 "上限を訊けなかった机(limited=unknown)も 3(訊けない緑を閉じたと言わない。Codex c3 #10)" -- 0 "kind=ok two_running=1 target_chosen=1 stop_http=200 stopped=observed target_frozen=1 peer_running=1 torn_down=1 torn_retry=0 limited=unknown"
 want 3 "机に届かない = 3(測っていない)" -- 1 "kind=ng step=probe"
 want 3 "同名 2 本が起きなかった殻(kind=ng step=activity)= 3" -- 1 "kind=ng step=activity"
 want 1 "空行 = 1(全欄 NG)" -- 0 ""

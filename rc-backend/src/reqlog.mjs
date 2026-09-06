@@ -59,7 +59,7 @@ export const ROOTS_ROUTE_RE = /^\/api\/roots\/(\d{1,3})\/(paths|new)$/;
  * subagent を名指して止める口(2026-09-06、対照表 #8 の後半 c3)。会話の道の下に 2 段(agentId / stop)が付くので
  * `SESSION_ROUTE_RE` には畳めない。agentId は転写の file 名(`agent-<id>.jsonl`)の id と同じ字種。
  */
-export const SUBAGENT_STOP_RE = /^\/api\/sessions\/([^/]+)\/subagents\/([A-Za-z0-9._-]{1,80})\/stop$/;
+export const SUBAGENT_STOP_RE = /^\/api\/sessions\/([^/]+)\/subagents\/([A-Za-z0-9_-]{1,128})\/stop$/;
 
 /**
  * 語彙 = 小文字で始まり、小文字/数字/ハイフン/下線だけ、24字まで。

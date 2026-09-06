@@ -19,7 +19,7 @@
 //      2 回目は親の会話への割り込みになる(測定 2026-09-06)。しかも描画は遅れるので、1 回打った後に閉じたのを
 //      **見ていない**限り 2 回目は打たない(古い描画を根拠にしない。Codex r5 #2)。見えなければ `escape-unverified`。
 //   7. 全体をペインの鍵の中で行う(電話の送信・割り込み・選択と直列)。鍵に入る前に pane と予算を検める(Codex r5 #6/#7)。
-import { classifyScreen, panelStateOf, composerText, composerIsEmpty } from "./inject.mjs";
+import { classifyScreen, panelStateOf, composerText, composerIsEmpty, overlayRegionOf } from "./inject.mjs";
 import { parsePanel, parseDetail } from "./panelmodel.mjs";
 import { planStop, verifySelection, sameShape, hasMaterial, rowDescription, STOP_REFUSAL, DEFAULT_MAX_MOVES } from "./panelstop.mjs";
 import { ESC_SETTLE_MS } from "./choice.mjs";
@@ -43,9 +43,27 @@ export const PANEL_BUDGET_MS = 2500;
 export const MAX_ROUNDS = 4;
 const TASKS = "/tasks";
 
-const isOverlay = (text) => { const s = panelStateOf(text); return s === "PANEL" || s === "DETAIL"; };
+/**
+ * 節が 1 つも無いパネル(最後の agent を止めた後の `Background` + footer だけの画面)。`panelStateOf` は節を要求するので
+ * PANEL と読まないが、overlay としては開いたまま = Escape で閉じる対象で、行数 0 は「減った」の証拠でもある。
+ */
+const emptyPanel = (text) => {
+  if (panelStateOf(text)) return false;
+  const lines = overlayRegionOf(text);
+  if (!lines) return false;
+  const bg = lines.findIndex((l) => l.trim() === "Background");
+  if (bg < 0) return false;
+  const rest = lines.slice(bg + 1);
+  const footer = rest.some((l) => /^\s*↑\/↓ to select/.test(l) || /Esc to close/.test(l));
+  const section = rest.some((l) => /^\s*(Shells|Local agents|Team: .+) \(\d+\)\s*$/.test(l));
+  return footer && !section;
+};
+const overlayKind = (text) => panelStateOf(text) || (emptyPanel(text) ? "PANEL-EMPTY" : null);
+const isOverlay = (text) => overlayKind(text) !== null;
 const hasShellRows = (panel) => (panel?.sections ?? []).some((s) => /^Shells\b/.test(String(s?.name ?? "")) && Array.isArray(s.rows) && s.rows.length > 0);
-const sameDetail = (a, b) => Boolean(a && b && a.agentType === b.agentType && a.description === b.description);
+/** 同じ詳細か: 型・説明文に加えて prompt の冒頭と道具列も(型と説明文だけでは同名の隣と見分けられない。Codex c3 #4)。 */
+const sameDetail = (a, b) => Boolean(a && b && a.agentType === b.agentType && a.description === b.description
+  && String(a.promptPrefix ?? "") === String(b.promptPrefix ?? "") && JSON.stringify(a.recentTools ?? []) === JSON.stringify(b.recentTools ?? []));
 
 /**
  * 目標の subagent を止める。戻りは常に閉じた形:
@@ -193,29 +211,53 @@ async function drive(inj, pane, target, { maxMoves, maxRounds, budgetMs, allowSh
       const fresh = cap();
       if (panelStateOf(fresh) !== "DETAIL" || !sameDetail(parseDetail(fresh), detail)) return bail("reflow", { why: "detail-changed-before-x" });
       type("x");
-      // 成功 = 同じ詳細が消えた: overlay が閉じた / パネルに戻って、目標と同じ文字列の running 行が**1 本減った**
-      // (同名の双子が居る時は「行が無い」では判れないので数で見る)。同じ詳細に留まったまま(数字が進んだだけ)は成功ではない。
+      // 成功 = **パネルで**目標と同じ文字列の running 行が 1 本減ったのを見た(同名の双子が居る時は「行が無い」では判れない
+      // ので数で見る)。x でパネルに戻ればその場で数え、overlay が閉じたなら /tasks を開き直して数える(「閉じた」だけでは
+      // 対象に結び付かない。Codex c3 #5)。同じ詳細に留まったまま(数字が進んだだけ)/ 入力欄以外の画面(許可確認 等)に
+      // 落ちたなら `unverified`。
       const targetText = plan2.target?.text ?? null;
       const runningSame = (p) => (p?.sections ?? []).filter((s) => !/^Shells\b/.test(s.name)).reduce((n, s) => n + s.rows.filter((r) => r.text === targetText && / \(running\)/.test(r.text)).length, 0);
       const before = runningSame(panel);
-      const stopped = (x) => {
-        const st = panelStateOf(x);
-        if (!st) return "closed";
-        if (st === "PANEL") {
-          const p = parsePanel(x);
-          return p && runningSame(p) < before ? "panel" : null;
-        }
-        return null;
+      const decreased = (x) => {
+        if (emptyPanel(x)) return before > 0 ? "panel" : null;          // 行が 1 本も残らないパネル(最後の agent を止めた)
+        const p = parsePanel(x); return p && runningSame(p) < before ? "panel" : null;
       };
-      const after = await poll(stopped);
-      if (!after.tag) {
+      const moved = (x) => {
+        const st = overlayKind(x);
+        if (st === "PANEL" || st === "PANEL-EMPTY") return decreased(x);
+        if (st === "DETAIL") return null;
+        return classifyScreen(x).state === "SENDABLE" ? "closed" : null;
+      };
+      let after = await poll(moved);
+      let stopObserved = after.tag === "panel" ? "panel" : null;
+      if (after.tag === "closed") {
+        // overlay が閉じた = 数えていない。開き直して数える(入力欄が空でなければ開かない = `not-sendable` ではなく unverified)。
+        const t = cap();
+        if (classifyScreen(t).state === "SENDABLE" && composerIsEmpty(t)) {
+          type(TASKS);
+          const echo = await poll((x) => (composerOf(x) === TASKS ? "echo" : null));
+          if (echo.tag) {
+            press("Enter");
+            const r = await poll((x) => { const k = overlayKind(x); return k === "PANEL" || k === "PANEL-EMPTY" ? "panel" : null; });
+            if (r.tag) {
+              const conf = await poll(decreased);
+              if (conf.tag) stopObserved = "reopened";
+            } else {
+              await retract();
+            }
+          } else {
+            await retract();
+          }
+        }
+      }
+      if (!stopObserved) {
         const c = await closeOverlay();
-        return refusal(c.uncertain ? "escape-unverified" : "unverified", { sent: true, why: c.uncertain ? "unverified" : null, keys, escapes, after: { screen: c.state, overlayClosed: c.closed } });
+        return refusal(c.uncertain ? "escape-unverified" : "unverified", { sent: true, why: c.uncertain ? "unverified" : (after.tag ?? "no-change"), keys, escapes, after: { screen: c.state, overlayClosed: c.closed } });
       }
       const c = await closeOverlay();
-      if (c.uncertain) return refusal("escape-unverified", { sent: true, why: "after-x", keys, escapes, after: { screen: c.state, overlayClosed: false, stopObserved: after.tag } });
+      if (c.uncertain) return refusal("escape-unverified", { sent: true, why: "after-x", keys, escapes, after: { screen: c.state, overlayClosed: false, stopObserved } });
       return { ok: true, stopped: "observed", reason: null, message: null, sent: true, keys, escapes, target: plan2.target,
-               after: { screen: c.state, overlayClosed: c.closed, stopObserved: after.tag } };
+               after: { screen: c.state, overlayClosed: c.closed, stopObserved } };
     }
     if (plan2.action === "close-detail") {
       examined.push({ flat: plan2.target.flat, detail });
