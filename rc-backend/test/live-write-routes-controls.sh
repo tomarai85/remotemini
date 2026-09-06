@@ -46,5 +46,8 @@ want 1 "終了コードが非 0 なら 1" -- 1 "$OK"
 if "$NODE" "$TOOL" --bogus-flag 2>&1 | grep -q 'usage:'; then PASS=$((PASS+1)); echo "PASS  知らない引数は usage で止まる"
 else FAIL=$((FAIL+1)); echo "FAIL  知らない引数で usage が出ない"; fi
 
+# ★2026-09-06: 似た欄名で通らない事(`includes("title_read=1")` は `title_read=10` にも当たっていた。completion 計器の対照が捕まえた)。
+want 1 "似た欄名(title_read=10)では通らない" -- 0 "kind=ok title_set=200 title_read=10 title_clear=200 archive_on=200 archive_seen=1 archive_off=200 torn_down=1 limited=not-limited"
+
 echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED 0 ---"
 [ "$FAIL" = 0 ]

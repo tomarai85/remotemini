@@ -37,12 +37,40 @@ the previous desk machine). So both launch paths are on lane B or on a missing f
   the row #32 live completion instrument, both of which need a session that produces activity.
 - Does not block: the existing phone pane until its next restart; friday's own `claude -p` jobs.
 
-## The change (proposed to Codex before applying; see the commit that lands it)
+## The change, and what Codex made of it
 
-`rc-claude` exports `CLAUDE_CODE_OAUTH_TOKEN` from the fleet pointer when the environment does not already
-carry one and the pointer resolves to a non-empty file, and unsets `ANTHROPIC_API_KEY` — the same discipline
-as `claude-work`. Machines without the pointer are untouched. The worker route's missing `claude-work` is a
-separate defect, recorded here and not fixed by this change.
+First draft: `rc-claude` exports the token itself. Codex (CRITICAL mode, with observed state) said the
+direction was right but the draft was a conditional no-go on four points, all adopted:
+
+1. Respecting a token already in the environment is only safe for a deliberate override (`cswap run`); a
+   phone launch inherits the tmux server's environment, which can carry a stale value → the pointer wins
+   when `RC_PHONE_LAUNCH=1`, the environment wins only for manual launches.
+2. Only `ANTHROPIC_API_KEY` was unset, but the official precedence is cloud-provider > `ANTHROPIC_AUTH_TOKEN`
+   > `ANTHROPIC_API_KEY` > apiKeyHelper > `CLAUDE_CODE_OAUTH_TOKEN` > keychain → both API env keys are unset
+   (billing must not silently leave the subscription); a selected cloud provider is refused, not hidden.
+3. Falling through to the known-broken keychain when the pointer exists but is unusable is fail-open → when
+   the pointer exists (file or symlink) and is empty / dangling / unreadable / not exactly one token, the
+   launcher exits 3 with a sentence, and `claude` is never started.
+4. `tr -d '[:space:]'` turns corruption into a valid value → one read, one line, no inner whitespace, sane
+   length bounds; no "repair".
+
+Codex's preferred final form was also taken: the credential decision lives in **one** launcher,
+`~/.claude/tools/claude-work` (git-synced to every fleet machine within 5 minutes), and `rc-claude` execs it.
+The desk's worker route still points at `~/fleet-tools/claude-work`; making `server.mjs` fall back to the
+synced launcher is the follow-up, not part of this change. Also noted by Codex: a setup-token is
+inference-only — the official Remote Control and claude.ai connectors cannot run on it; this desk does not
+use either.
+
+Tests: `~/.claude/tools/claude-work.test.sh` — 10 cases with a fake `claude` (export / passthrough / manual
+respects env / phone prefers pointer / empty → exit 3 / two lines → exit 3 / dangling → exit 3 / provider →
+exit 3 / through `rc-claude` with `--settings` / mutation control), 10/10.
+
+## Verified in production (09:41)
+
+After friday's sync-pull delivered both files (`claude-work` 5424 bytes at 09:40), the real path — a
+disposable session started by `disposable-session.mjs up` with its default launcher, no wrapper — came up
+**without** `Not logged in` and answered a one-line prompt with a real `⏺ pong` line in 9 seconds. Torn down
+(`down rc=0`). The long-lived phone pane was not touched; its next restart goes through the same launcher.
 
 ## Lesson
 

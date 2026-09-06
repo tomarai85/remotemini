@@ -74,6 +74,10 @@ const MJS_INSTRUMENTS = [
   //   使い捨ての会話の入力欄に下書きを置いてから電話の口を撃ち、409 `composer-busy` を見る。
   //   単体は偽の tmux に対する物なので、本番の TUI が同じ形を出すかは別の問いとして残る。
   "tools/live-composer-guard-check.mjs",
+  // ★2026-09-06(対照表 #32): 「完了の遷移」を使い捨ての会話で 1 件だけ起こし、本番の digest-notify が
+  //   其れを**記録して鳴らさない**事を見る。母集団が薄い(登録 3 本・動くのは 1 本)ので、計器が生きて
+  //   いる事と現象が無い事を分けるには、現象を起こすしかない。
+  "tools/live-completion-check.mjs",
 ];
 const SH_INSTRUMENTS = [
   "../ios/tools/live-send-check.sh",

@@ -58,8 +58,10 @@ export function verdict(rc, line) {
     ["after_clear=202", "下書きを消せば普通に送れる(壁を作っただけではない)"],
     ["torn_down=1", "使い捨てを畳めた(机に残していない)"],
   ];
+  // ★欄は丸ごと一致させる(2026-09-06: `includes("x=1")` は `x=10` にも当たる。家族の completion 計器の対照が捕まえた)。
+  const has = (k) => new RegExp("(^|\\s)" + k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(\\s|$)").test(s);
   for (const [k, why] of need) {
-    const ok = s.includes(k);
+    const ok = has(k);
     console.log(ok ? `  ok  : ${why}` : `  NG  : ${why} —— 観測できない(${k})`);
     if (!ok) fail = 1;
   }
