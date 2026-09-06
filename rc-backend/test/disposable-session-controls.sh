@@ -107,6 +107,20 @@ mk_sandbox
 run "$TOOL" down "rc-e2e-20260805110403" "$SID" --purge-transcript >/dev/null
 chk "⑬ 旗を渡した時だけ転写を消す"                          "$([ -f "$SB/projects/slug-x/$SID.jsonl" ] && echo 在 || echo 無)" "無"
 /bin/rm -rf "$SB"
+# ★2026-09-06: 死にかけの statusLine が登録簿を**書き戻す**競合。偽の書き戻しを 0.5 秒後に起こし、
+#   猶予(1.5 秒)の後の消し直しを測る。猶予 0 の写しでは書き戻しが残る(対照が実装を見ている証拠)。
+mk_sandbox
+( sleep 0.5; printf '%s\n' '{"pane":"%9"}' > "$SB/rc/panes/$SID.json" ) &
+RC_DOWN_GRACE_MS=1500 run "$TOOL" down "rc-e2e-20260805110403" "$SID" >/dev/null
+wait
+chk "⑰ ★猶予の間に書き戻された登録を消し直す"                "$([ -f "$SB/rc/panes/$SID.json" ] && echo 在 || echo 無)" "無"
+/bin/rm -rf "$SB"
+mk_sandbox
+( sleep 0.5; printf '%s\n' '{"pane":"%9"}' > "$SB/rc/panes/$SID.json" ) &
+RC_DOWN_GRACE_MS=0 run "$TOOL" down "rc-e2e-20260805110403" "$SID" >/dev/null
+wait
+chk "⑰-b 対照: 猶予 0 では書き戻しが残る(= ⑰ は猶予の再確認を測っている)" "$([ -f "$SB/rc/panes/$SID.json" ] && echo 在 || echo 無)" "在"
+/bin/rm -rf "$SB"
 
 echo
 echo "=== 信頼は読むだけ(与えない) ==="

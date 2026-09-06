@@ -144,6 +144,22 @@ phase done;    run "$ST" "$CL" "$SB/m0"
 chk "C0 動いていた→止まった の遷移が 1 行記録される" "1" "$(comp_lines "$CL")"
 chk "C0b 記録した行が3つの数を持つ" "1" "$(grep -c 'window_min=47.*assistant=9.*writes=3' "$CL" 2>/dev/null || echo 0)"
 chk "C0c 在席かどうかも持つ(3つ目の数)" "1" "$(grep -c 'presence_fresh=0' "$CL" 2>/dev/null || echo 0)"
+# ★2026-09-06: 仕事の長さ(動き始めの刻み → 止まった刻み)。`window_min` は遡り窓(常に一定)で長さではない。
+chk "C0d 記録した行が仕事の長さ span_s を持つ" "1" "$(grep -cE 'span_s=[0-9]+' "$CL" 2>/dev/null || echo 0)"
+
+# ── C9: span は**最初の**動いている刻みから数える(最後の刻みからではない)────────
+ST="$SB/s9.json"; printf '{}' > "$ST"; CL="$SB/c9.log"
+phase working; run "$ST" "$CL" "$SB/m9"
+sleep 2
+phase working; run "$ST" "$CL" "$SB/m9"
+phase done;    run "$ST" "$CL" "$SB/m9"
+SPAN="$(grep -oE 'span_s=[0-9]+' "$CL" 2>/dev/null | head -1 | cut -d= -f2)"
+chk "C9 動き始めから数える(2 刻み跨ぎで span_s >= 2)" "1" "$([ -n "$SPAN" ] && [ "$SPAN" -ge 2 ] && echo 1 || echo 0)"
+# 対照: 止まった後に再び動いて止まると、span は**新しい**動き始めから(前の分を足さない)
+phase working; run "$ST" "$CL" "$SB/m9"
+phase done;    run "$ST" "$CL" "$SB/m9"
+SPAN2="$(grep -oE 'span_s=[0-9]+' "$CL" 2>/dev/null | tail -1 | cut -d= -f2)"
+chk "C9b 2 回目の完了は新しい動き始めから数える(前回を足さない = span_s < 2)" "1" "$([ -n "$SPAN2" ] && [ "$SPAN2" -lt 2 ] && echo 1 || echo 0)"
 
 # ── C1: 遷移でなければ記録しない(止まった画面が続くだけでは完了ではない)────
 ST="$SB/s1.json"; printf '{}' > "$ST"; CL="$SB/c1.log"

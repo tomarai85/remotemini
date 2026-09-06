@@ -174,9 +174,19 @@ for line in open(feed):
     if (prev_att == "none" and attention == "input"
             and dg.get("complete") is True
             and (assistant_n > 0 or writes_n > 0)):
+        # ★仕事の長さ = **動いているのを最初に見た刻みから今まで**(2026-09-06、対照表 #32)。
+        #   `window_min` は digest の遡り窓(常に 60)で、設計書の数字 #2「窓の長さの分布」には
+        #   使えない事が本番の 1 行目で判った(`.harness/evidence-2026-09-06/completion-log-live.md`)。
+        #   刻みの粒度(150 s)でしか測れないので下限 0、上限は無い。`act_since` が無い旧記録は 0。
+        try:
+            act_since = int((prev_rec or {}).get("act_since") or now)
+        except Exception:
+            act_since = now
+        span_s = max(0, int(now) - act_since)
         completions.append({"sid": sid, "window_min": window_min,
                             "assistant": assistant_n, "writes": writes_n,
-                            "presence_fresh": 1 if presence_fresh else 0})
+                            "presence_fresh": 1 if presence_fresh else 0,
+                            "span_s": span_s})
 
     # 1. 対象の状態だけ。`unknown` は永久に不適格。
     if attention not in ("choice", "input"):
@@ -192,6 +202,9 @@ for line in open(feed):
         #   **既存の記録が在る時に `att` だけ**書き換え、`seen` は触らない(= 通常通り古びる)。
         if attention == "none":
             carried = dict(prev_rec or {})
+            # ★動き始めの刻みを持つ(連続する `none` の最初だけ更新。前の刻みも `none` なら据え置き)。
+            if prev_att != "none" or not carried.get("act_since"):
+                carried["act_since"] = now
             carried["att"] = attention
             carried["seen"] = now
             fresh[sid] = carried
@@ -258,8 +271,8 @@ if not dry:
         try:
             with open(comp_log, "a") as fh:
                 for c in completions:
-                    fh.write("%d\tcompletion\t%s\twindow_min=%d\tassistant=%d\twrites=%d\tpresence_fresh=%d\n"
-                             % (now, c["sid"], c["window_min"], c["assistant"], c["writes"], c["presence_fresh"]))
+                    fh.write("%d\tcompletion\t%s\twindow_min=%d\tassistant=%d\twrites=%d\tpresence_fresh=%d\tspan_s=%d\n"
+                             % (now, c["sid"], c["window_min"], c["assistant"], c["writes"], c["presence_fresh"], c["span_s"]))
         except Exception:
             pass   # 記録に失敗しても鳴らす側は止めない(此れは計測であって製品ではない)
 for a in alerts:
