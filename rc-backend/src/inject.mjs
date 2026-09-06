@@ -467,6 +467,13 @@ function joinedFooter(lines, from, stop, max = 3) {
  *   含むので、其処で押すのが一番危ない(設計文 2026-09-04)。
  * ★見る範囲は最後の `▔▔▔` の区切りより下だけ。区切りの下に composer が在れば overlay ではない。
  */
+/** 最後の `▔▔▔` の区切りより下の行(overlay が描かれる範囲)。区切りが無ければ null。`panelmodel.mjs` も同じ範囲を読む。 */
+export function overlayRegionOf(text) {
+  const all = String(text ?? "").split("\n");
+  for (let i = all.length - 1; i >= 0; i--) if (/^▔+\s*$/.test(all[i])) return all.slice(i + 1);
+  return null;
+}
+
 export function panelStateOf(text) {
   const all = String(text ?? "").split("\n");
   // ★overlay は**最後の `▔▔▔` の区切りより下**に描かれる(両機の fixture 10 枚: overlay の画面は区切りが
@@ -481,7 +488,7 @@ export function panelStateOf(text) {
   const bg = lines.findIndex((l) => l.trim() === "Background");
   if (bg >= 0) {
     const section = lines.slice(bg + 1).some((l) => PANEL_SECTION.test(l));
-    const fi = lines.findIndex((l, i) => i > bg && l.includes("↑/↓ to select"));
+    const fi = lines.findIndex((l, i) => i > bg && /^\s*↑\/↓ to select/.test(l));   // 行頭(字下げの後)から始まる物だけ
     const footer = fi >= 0 ? joinedFooter(lines, fi, /Esc to close/) : "";
     if (section && footer.includes("↑/↓ to select") && footer.includes("Esc to close")) return "PANEL";
   }
@@ -489,7 +496,7 @@ export function panelStateOf(text) {
   if (ti >= 0) {
     const counters = lines.slice(ti + 1, ti + 3).some((l) => l.includes("·") && l.includes("tokens"));
     const section = lines.slice(ti + 1).some((l) => l.trim() === "Progress" || l.trim() === "Prompt");
-    const fi = lines.findIndex((l, i) => i > ti && l.includes("← to go back"));
+    const fi = lines.findIndex((l, i) => i > ti && /^\s*← to go back/.test(l));
     const footer = fi >= 0 ? joinedFooter(lines, fi, /to close|stop all agents/) : "";
     if (counters && section && footer.includes("← to go back")) return "DETAIL";
   }
