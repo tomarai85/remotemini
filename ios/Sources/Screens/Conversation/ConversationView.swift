@@ -339,6 +339,17 @@ struct ConversationView: View {
                     }
                     .accessibilityIdentifier("conversation.diff.open")
                 }
+                // ★対照表 #8「半分その一」= 其の会話の下で何が走っているか(2026-09-05)。
+                //   止める方(`x` を押す)は別の段。此処は打鍵を1つも要らない読むだけの画面で、
+                //   遷移は diff と同じ push(このアプリに `.sheet` はどこにも無い)。
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        SubagentsView(viewModel: makeSubagentsViewModel())
+                    } label: {
+                        Image(systemName: "square.stack.3d.up")
+                    }
+                    .accessibilityIdentifier("conversation.subagents.open")
+                }
             }
             .task { await viewModel.load() }
             // Brief §2-b: the poll loop belongs to this screen, not to the app -- it
@@ -1537,6 +1548,13 @@ struct ConversationView: View {
         }
         #endif
         return DiffViewModel(baseURL: viewModel.baseURL, apiKey: viewModel.apiKey, sessionID: viewModel.sessionID)
+    }
+
+    /// `makeDiffViewModel` と同じ形。★fixture の差し替え口は**まだ持たない** ——
+    /// 此の画面の UI 検査を書く時に、あちらと同じ `…Factory` を足す。
+    /// 無い物を「在るが未使用」として置くと、走らない分岐が1つ増えるだけになる。
+    private func makeSubagentsViewModel() -> SubagentsViewModel {
+        SubagentsViewModel(baseURL: viewModel.baseURL, apiKey: viewModel.apiKey, sessionID: viewModel.sessionID)
     }
 
     private func failureView(message: String, identifier: String) -> some View {

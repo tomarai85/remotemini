@@ -370,6 +370,51 @@ export function rootItem(r, i) {
 }
 
 /**
+ * `GET /api/sessions/:id/subagents` の封筒(2026-09-04、対照表 #8「半分その一」)。
+ *
+ * ★`counts` は `null` を取りうる。数を書けば読み手は其の数を信じるので、
+ *   **信じてよい時にしか書かない**(digest.mjs の一線その1と同じ判断)。
+ *   `subagents/` が読めなかった時に `0` を出すと、走っている物が「静か」として届く。
+ *
+ * ★`directory` / `parent` を線に出すのは、`subagents: []` に**意味が3つ**在るから ——
+ *   本当に1本も居ない(`absent`)/ dir が読めなかった(`unreadable`)/ 居るが親の
+ *   終了記録が読めない(`parent:"unreadable"`、この時は各行が `state:"unknown"`)。
+ *   1つの空配列で3つを名乗ると、電話は一番都合の良い読み方(=「何も走っていない」)を
+ *   する。区別を線に載せて初めて、電話は正直な文面を選べる。
+ *
+ * ★`note` は電話にそのまま出せる英文。**机で決める** —— 空配列の意味を電話側で
+ *   組み立てさせると、机と電話で言葉が分かれて必ず片方だけ腐る(`requiresOwnerInput`
+ *   を `attentionOf` に寄せたのと同じ判断)。
+ */
+export function subagentsBody({ agents, directory, parent, truncated, counts }) {
+  return {
+    subagents: agents,
+    directory,
+    parent,
+    truncated: truncated === true,
+    counts: counts ?? null,
+    display: { note: subagentsNote({ agents, directory, parent, truncated }) },
+  };
+}
+
+/** 空配列・不完全を**英語の1文**にする。`agents` が空でも理由ごとに違う事を言う。 */
+export function subagentsNote({ agents, directory, parent, truncated }) {
+  if (directory === "unreadable") return "Could not read this session's subagent directory — there may be agents running.";
+  if (parent === "unreadable") return "Found subagents, but this session's transcript could not be read, so none of them can be told apart as finished or running.";
+  if (!agents || agents.length === 0) return "This session has no subagents.";
+  const running = agents.filter((a) => a.state === "running").length;
+  const stalled = agents.filter((a) => a.state === "stalled").length;
+  const unknown = agents.filter((a) => a.state === "unknown").length;
+  const parts = [`${agents.length} subagent${agents.length === 1 ? "" : "s"}`, `${running} working`];
+  // ★`stalled` は「死んだ」ではなく「最近 生きている証拠が無い」。文面でも断定しない
+  //   (subagents.mjs の `SUBAGENT_STALE_MS` の頭注 —— mtime は健康診断ではない)。
+  if (stalled) parts.push(`${stalled} with no recent sign of life`);
+  if (unknown) parts.push(`${unknown} could not be told`);
+  if (truncated) parts.push("list truncated");
+  return `${parts.join(", ")}.`;
+}
+
+/**
  * `GET /healthz` の封筒(DESIGN §7-P)。**認証の外に出る唯一の応答**。
  *
  * ★引数を分解して受ける = 時計も pid もここでは読まない。読むとハンドラが渡した値と
