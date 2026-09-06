@@ -47,6 +47,7 @@ import { buildListing, unreadableRow } from "../src/sessions.mjs";
 import { registryOnlySessions } from "../src/registry.mjs";
 import { sessionRow } from "../src/wire.mjs";
 import { looksLikeClaudePane } from "../src/inject.mjs";
+import { agentsSnapshot } from "../src/agentscache.mjs";
 
 const SWIFT_ROOT = join(REPO, "ios", "Sources");
 const NEED = [
@@ -174,6 +175,18 @@ const PATH_ITEMS = [
   { path: "src", kind: "dir" },
 ];
 
+// 2 本目の生存信号の観測部(2026-09-06)。**手で組んでいない** —— `agentsSnapshot` を
+// 実際に走らせた出力で、`ok:false` 側も同じ関数の返り値。写しを手で書くと、
+// 器の側の形が変わった日に入力だけが古いまま残り、「実行して出た鍵」の前提が崩れる。
+const AGENTS_CLI = {
+  ok: agentsSnapshot(
+    { agents: { ok: true, sessions: [{ sessionId: "1b5c9362-aaaa-bbbb-cccc-000000000001" }], dropped: 1 }, at: 1000, reason: null },
+    ["1b5c9362-aaaa-bbbb-cccc-000000000001", "1b5c9362-aaaa-bbbb-cccc-000000000002"],
+    2000,
+  ),
+  unreadable: agentsSnapshot({ agents: null, at: 0, reason: "timeout" }, [], 2000),
+};
+
 const CASES = {
   routeLabel: [
     [{ route: "tmux", screen: "CHOICE", limited: true }],
@@ -236,9 +249,14 @@ const CASES = {
   // 2026-09-02: 4 つ目の引数 = 差分の数。null 可だが、null だと `at: "diff"` の鍵が
   //   空になり「空の和」を一致と読む事になるので、側A の検体では値を入れて形を出す。
   sessionRow: ROWS.flatMap((r) => LIVES.map((l) => [r, l, undefined, { files: 1, added: 2, removed: 3 }])),
+  // 2026-09-06: 2 本目の生存信号(`agentsCli`)。★**読めた枝と読めなかった枝の両方**を通す ——
+  //   `ok:false` 側は配列が空になるので、片方だけだと `both` 等の鍵は出るのに
+  //   「読めなかった時も鍵が欠けない」という此の封筒の約束を一度も実行しないまま緑になる。
   sessionsBody: [
-    [{ sessions: ROWS.map((r) => sessionRow(r, LIVES[0], undefined, { files: 1, added: 2, removed: 3 })), scan: SCAN, paneFault: null }],
-    [{ sessions: [], scan: SCAN, paneFault: { reason: "tmux-unavailable", detail: "spawn tmux ENOENT" } }],
+    [{ sessions: ROWS.map((r) => sessionRow(r, LIVES[0], undefined, { files: 1, added: 2, removed: 3 })), scan: SCAN, paneFault: null,
+       agentsCli: AGENTS_CLI.ok }],
+    [{ sessions: [], scan: SCAN, paneFault: { reason: "tmux-unavailable", detail: "spawn tmux ENOENT" },
+       agentsCli: AGENTS_CLI.unreadable }],
   ],
   // ★`seq` 有り/無しの**両方**を通す。`gapItem` は無い時に鍵ごと生やさないので、
   //   片方しか通さないと「線に出る鍵」を測り損ねる(有り側が抜ければ電話は番号を失い、
@@ -403,7 +421,7 @@ const MODULE_OF = {
   unreadableRow: ["sessions", "src/sessions.mjs", "export function unreadableRow({ id, project, updatedAt, errorCode }) {"],
   registryOnlySessions: ["registry", "src/registry.mjs", "out.push("],
   sessionRow: ["wire", "src/wire.mjs"],
-  sessionsBody: ["wire", "src/wire.mjs", "export function sessionsBody({ sessions, scan, paneFault, publishedBuild, appBuild }) {"],
+  sessionsBody: ["wire", "src/wire.mjs", "export function sessionsBody({ sessions, scan, paneFault, publishedBuild, appBuild, agentsCli }) {"],
   // 引数を分解しない2本は既定の目印で本文に届く(`gapItem(why, seq)` / `withWho(entry)`)。
   gapItem: ["wire", "src/wire.mjs"],
   withWho: ["wire", "src/wire.mjs"],
@@ -698,7 +716,12 @@ const PAIRS = [
     swift: "SessionsResponse", builders: ["sessionsBody"], at: "",
     mode: "phone-subset",
     // `scan` は診断の観測値。電話は `display.scan` の1行しか描かない(web は生を使う)。
-    serverOnly: ["scan"],
+    // ★`agentsCli`(2026-09-06、2 本目の生存信号)。電話はまだ 1 鍵も読まない —— 読まないと
+    //   決めた訳ではなく、此の作業(机側)の対象外。机の側だけで先に線に出すのは、
+    //   ①「読めなかった」と「0 件」を分ける形が固まっている事を実測で確かめられる
+    //   ②電話が読み始める日に、鍵名の突き合わせが**既に此処に在る**、の 2 つの為。
+    //   電話が読み始めたら此の行から降ろす(`usageAgeSeconds` が辿った道)。
+    serverOnly: ["agentsCli", "scan"],
   },
   { swift: "SessionsResponse.OuterDisplay", builders: ["sessionsBody"], at: "display" },
   // §9-2(2026-08-16): 機体の名乗り。組むのは `sessionRow`(checkout の枝は

@@ -442,11 +442,12 @@ probe "測っていない型の名前が本物とズレる" "$TESTF" \
     '
   RecoveryCodeRenamed: '
 
-# ⑲ ★引数を分解する builder(`function f({ a, b })`)から明示の目印を外す。既定の目印の
+# ⑲ ★引数を分解する builder(`function f({ a, b })`)から明示の目印を外す。★錨は builder の**署名そのもの**なので、
+#    `sessionsBody` の引数が増えた日(2026-09-06 `agentsCli`)は此処も追従する —— 追従を忘れると門は UNMEASURED で止まる。既定の目印の
 #    直後に来る `{` は**引数の分解**なので、原文からは鍵が0件しか読めない —— ②は
 #    「原文に鍵が無い」と読んで静かに緑になる。0件を赤と言えているかを此処で測る。
 probe "引数を分解する builder の明示の目印が外れる" "$TESTF" \
-    'sessionsBody: ["wire", "src/wire.mjs", "export function sessionsBody({ sessions, scan, paneFault, publishedBuild, appBuild }) {"],' \
+    'sessionsBody: ["wire", "src/wire.mjs", "export function sessionsBody({ sessions, scan, paneFault, publishedBuild, appBuild, agentsCli }) {"],' \
     'sessionsBody: ["wire", "src/wire.mjs"],'
 
 # ⑳ ★封筒を純関数へ出した意味そのもの。ハンドラが直書きへ戻れば、11組の照合は

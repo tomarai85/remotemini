@@ -124,7 +124,62 @@ export function updateBuild(publishedBuild, appBuild) {
     : String(publishedBuild).trim();
 }
 
-export function sessionsBody({ sessions, scan, paneFault, publishedBuild, appBuild }) {
+/**
+ * `claude agents --json` の突き合わせを**人が読む1文**にする(2026-09-06)。
+ *
+ * ★文面を此処で組む理由は `paneFaultView` / `scanLine` と同じ —— 電話に語を組み立てさせない。
+ *   `both` / `onlyInRegistry` の数から文を作る規則が机と電話の 2 箇所に在ると、
+ *   片方だけ直した日に、同じ観測が 2 つの違う事を言う。
+ *
+ * ★**読めなかった時に数を言わない。** `ok:false` の配列は「0 件だった」ではなく
+ *   「訊けなかった」の入れ物なので、其処から「0 本を確認」という文を作ると、
+ *   静かな故障が正常の顔で帯に出る(`src/agentscache.mjs` が守っている線と同じ物)。
+ *   代わりに**理由の語を文に入れる** —— 診断はこの1文しか読まれない事が多い。
+ */
+export function agentsCliView(agentsCli) {
+  if (!agentsCli || agentsCli.ok !== true) {
+    const why = (agentsCli && typeof agentsCli.reason === "string" && agentsCli.reason) || "unreadable";
+    return {
+      note: `Claude's own session list could not be read (${why}), so this list can't say which desk sessions Claude still knows.`,
+    };
+  }
+  const confirmed = Array.isArray(agentsCli.both) ? agentsCli.both.length : 0;
+  const gone = Array.isArray(agentsCli.onlyInRegistry) ? agentsCli.onlyInRegistry.length : 0;
+  return {
+    note: `Claude's own session list confirms ${confirmed} of ${confirmed + gone} registered sessions; ${gone} it no longer knows.`,
+  };
+}
+
+/**
+ * 封筒に載せる `agentsCli` の1枚。**鍵は 1 つも欠かさない**。
+ *
+ * ★引数が無い / 形が違う時は「読めていない」へ倒す。呼び側が渡し忘れた時に
+ *   鍵ごと消えると、電話は「古いサーバ」と「読めなかった机」を見分けられない ——
+ *   `diffBody` の `reason` を成功時も `null` で必ず載せるのと同じ判断。
+ * ★`ok:false` なら配列は**空に固定**する。呼び側が何を入れて来ても此処で落とす =
+ *   「`ok:false` だけが『配列を読むな』を意味する」という約束を、封筒の側でも守る。
+ */
+export function agentsCliBody(agentsCli) {
+  // ★`ok:true` なのに配列が無い / 配列でない = 形の壊れた成功。空の配列で「0 本を確認」と
+  //   言わせない(Codex 2026-09-06)。読めていない側へ倒し、理由に `malformed` と書く。
+  const wellFormed = ["both", "onlyInRegistry", "onlyInCli"].every((k) => Array.isArray(agentsCli?.[k]));
+  const ok = agentsCli?.ok === true && wellFormed;
+  if (agentsCli?.ok === true && !wellFormed) agentsCli = { ...agentsCli, ok: false, reason: "malformed" };
+  const list = (v) => (ok && Array.isArray(v) ? [...v] : []);
+  const obs = {
+    ok,
+    reason: ok ? null : ((typeof agentsCli?.reason === "string" && agentsCli.reason) || "pending"),
+    at: typeof agentsCli?.at === "string" ? agentsCli.at : null,
+    ageMs: Number.isInteger(agentsCli?.ageMs) ? agentsCli.ageMs : null,
+    both: list(agentsCli?.both),
+    onlyInRegistry: list(agentsCli?.onlyInRegistry),
+    onlyInCli: list(agentsCli?.onlyInCli),
+    dropped: Number.isInteger(agentsCli?.dropped) ? agentsCli.dropped : 0,
+  };
+  return { ...obs, display: agentsCliView(obs) };
+}
+
+export function sessionsBody({ sessions, scan, paneFault, publishedBuild, appBuild, agentsCli }) {
   return {
     sessions,
     scan,
@@ -136,6 +191,10 @@ export function sessionsBody({ sessions, scan, paneFault, publishedBuild, appBui
     paneFault: paneFault
       ? { reason: paneFault.reason, detail: paneFault.detail, display: paneFaultView(paneFault.reason) }
       : null,
+    // ★2 本目の生存信号(2026-09-06)。1 本目(tmux のペインの画面)と**並べて**載せる。
+    //   置き換えではない —— 机の観測と CLI の観測は別々に壊れるので、片方が黙った時に
+    //   もう片方が残る事に価値が在る。此処では表示専用で、送信も経路も此の値では変えない。
+    agentsCli: agentsCliBody(agentsCli),
   };
 }
 
