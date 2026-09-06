@@ -1,0 +1,24 @@
+  general-purpose, both with the exact description "count slowly", and do NOT
+  pass a name. Each subagent has exactly one job: run the shell command sleep
+  12 with the Bash tool, ten times in a row as ten separate sequential Bash
+  tool calls (never in the background), then reply with the single word done.
+  Do not use teams, do not use SendMessage, do not read or write files. After
+  launching, wait silently for both results.
+
+⏺ 2 background agents launched (↓ to manage)
+   ├ count slowly
+   └ count slowly
+
+⏺ Both launched, running in background. Waiting for both to finish.
+
+✻ Waiting for 2 background agents to finish
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Background
+   2 active agents
+
+     Local agents (2)
+     count slowly (running) · Sonnet 5
+   ❯ count slowly (running) · Sonnet 5
+
+   ↑/↓ to select · Enter to view · f to foreground · x to stop · ctrl+x
+   ctrl+k to stop all agents · Esc to close

@@ -1,0 +1,24 @@
+
+⏺ Both launched, running in background. Waiting for both to finish.
+
+✻ Waiting for 2 background agents to finish
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   general-purpose › count slowly
+   2m 40s · 61.4k tokens · 10 tools · Sonnet 5
+
+   Progress
+     Bash(sleep 12)
+     Bash(sleep 12)
+     Bash(sleep 12)
+     Bash(sleep 12)
+   › Bash(sleep 12)
+
+   Prompt
+   Run the shell command `sleep 12` using the Bash tool, ten times in a row
+   as ten separate sequential Bash tool calls (never in the background, never
+   combined into one command). Do not use teams, do not use SendMessage, do
+   not read or write any files. After all ten calls complete, reply with the
+   si…
+
+   ← to go back · Esc/Enter/Space to close · x to stop · f to foreground ·
+   ctrl+x ctrl+k to stop all agents

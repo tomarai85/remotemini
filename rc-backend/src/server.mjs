@@ -39,8 +39,7 @@ import {
   looksLikeClaudePane,
   makeTmuxRunner,
   classifyScreen,
-  choiceViewOf,
-} from "./inject.mjs";
+  choiceViewOf, overlayOf } from "./inject.mjs";
 import { CHOICE_KEYS } from "./choice.mjs";
 import { makeKeyedMutex } from "./mutex.mjs";
 import { PaneRegistry, resolveSessionPane, registryOnlySessions } from "./registry.mjs";
@@ -495,7 +494,8 @@ function screenOf(pane) {
     // limited は state と独立に出す(送れるのに答えが返らない、が実在する)。
     // 電話から見た時「返事が来ない」と「上限に当たっている」は取る行動が全く違うので、
     // 理由の見える化そのものが機能。2026-08-02 edith 実測が出所。
-    const base = { screen: s.state, activity: s.activity, limited: s.limited };
+    // ★panel の 2 状態は線では `UNKNOWN` のまま + `overlay`(2026-09-06)。古い電話の挙動を変えない。
+    const base = { ...overlayOf(s.state), activity: s.activity, limited: s.limited };
     // 選択待ちの時だけ、メニューの中身と指紋を添える。電話はこの指紋を打鍵に添えて返すので、
     // **見た物と押す物が同じ**事がこの1本で担保される(`POST …/choice` の digest)。
     return s.state === "CHOICE" ? { ...base, choice: choiceViewOf(pane, text) } : base;
@@ -517,6 +517,11 @@ export const SEND_REFUSAL = {
     "The screen is waiting on a choice. Enter could approve or spend, so nothing was sent. Check the screen.",
   unknown:
     "No composer field found (starting up, a different screen, or the pane is gone). Failed safe — nothing was sent.",
+  // 2026-09-06: agent panel(`/tasks`)が開いている。Enter は行を開くので打たない。閉じ方まで書く(断りは直し方が要る)。
+  panel:
+    "The agent panel is open on the desk, so nothing was sent. Press Esc on the desk to close it, then send again.",
+  detail:
+    "An agent's detail view is open on the desk, so nothing was sent. Press Esc on the desk to close it, then send again.",
   "modal-appeared":
     "A choice screen appeared right after the text was typed. Enter was not pressed. Check the screen.",
   "composer-mismatch":

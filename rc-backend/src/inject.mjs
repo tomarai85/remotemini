@@ -401,7 +401,7 @@ export function menuAt(text) {
 /**
  * 画面から「今このペインに何をしてよいか」を決める。純関数。
  *
- * @returns {{state:"SENDABLE"|"CHOICE"|"UNKNOWN", activity:"observed"|"unknown",
+ * @returns {{state:"SENDABLE"|"CHOICE"|"PANEL"|"DETAIL"|"UNKNOWN", activity:"observed"|"unknown",
  *   activityFrom:("hint"|"spinner"|"hint+spinner"|null), composer:number, limited:boolean}}
  *   state        送信可否。**SENDABLE 以外は送らない**(fail-closed)
  *   activity     生成中を**観測できたか**。observed でないことは待機中を意味しない(M3)
@@ -429,9 +429,78 @@ export function classifyScreen(text) {
   if (s.trim() === "") return { state: "UNKNOWN", activity, activityFrom, composer: -1, limited };
   // メニューを最優先。ここを取りこぼすと Enter が課金や承認になる。
   if (menuAt(s)) return { state: "CHOICE", activity, activityFrom, composer: -1, limited };
+  // ★agent panel(`/tasks`)と其の詳細画面(2026-09-06、対照表 #8 の後半)。**行で**識別する ——
+  //   `Background` の見出し + 節の見出し(`Shells (N)` / `Local agents (N)` / `Team: … (N)`)+ 折り返しを繋いだ
+  //   footer(`↑/↓ to select` … `Esc to close`)の 3 つが揃った時だけ。footer の文だけでは識別しない(rc-claude の
+  //   経路では composer の hint が出ない事を 9/4 に測った —— overlay の footer は別物だが、規律は同じ)。
+  //   ★composer より**前**に見る: Jervis の panel 画面には転写の echo(`❯ ` で始まる行)が残っていて、
+  //   composer の探索が其れを拾えば「送れる」と読む。panel は送れない画面(押した Enter は行を開く)。
+  const overlay = panelStateOf(s);
+  if (overlay) return { state: overlay, activity, activityFrom, composer: -1, limited };
   const composer = findComposer(s);
   if (composer < 0) return { state: "UNKNOWN", activity, activityFrom, composer: -1, limited };
   return { state: "SENDABLE", activity, activityFrom, composer, limited };
+}
+
+/** panel の節の見出し。実測(2026-09-06)の 3 種。数は `(N)`。 */
+const PANEL_SECTION = /^\s*(Shells|Local agents|Team: .+) \(\d+\)\s*$/;
+
+/** 或る行から始めて、`stop` が出る行まで(最長 `max` 行)を 1 つの文に繋ぐ。80 桁で footer が 2 行に折り返す為。 */
+function joinedFooter(lines, from, stop, max = 3) {
+  const out = [];
+  for (let i = from; i < lines.length && out.length < max; i++) {
+    out.push(lines[i].trim());
+    if (stop.test(lines[i])) break;
+  }
+  return out.join(" ");
+}
+
+/**
+ * agent panel(`/tasks`)か其の詳細画面か。`"PANEL"` / `"DETAIL"` / null。
+ *
+ * PANEL  = `Background` だけの行 → 其の後に節の見出し(`Shells (N)` 等)→ `↑/↓ to select` から `Esc to close`
+ *          までを繋いだ footer。3 つ揃って初めて panel(1 つでも欠ければ null = 今までどおりの判定へ)。
+ * DETAIL = `<型> › <説明>` の題 → `·` と `tokens` を持つ数の行 → `Progress` か `Prompt` の行 →
+ *          `← to go back` から始まる footer。
+ *
+ * ★どちらも**画面に在る物**で決め、無い物(composer が無い)からは推測しない —— `UNKNOWN` は読めない画面も
+ *   含むので、其処で押すのが一番危ない(設計文 2026-09-04)。
+ * ★見る範囲は最後の `▔▔▔` の区切りより下だけ。区切りの下に composer が在れば overlay ではない。
+ */
+export function panelStateOf(text) {
+  const all = String(text ?? "").split("\n");
+  // ★overlay は**最後の `▔▔▔` の区切りより下**に描かれる(両機の fixture 10 枚: overlay の画面は区切りが
+  //   必ず 1 本、閉じた・走行中の画面には 0 本)。画面全体から語を拾うと、転写に panel の文が引用されただけの
+  //   画面を PANEL と読んで本物の composer を隠す(Codex 2026-09-06)。だから区切りの下だけを見る。
+  let sep = -1;
+  for (let i = all.length - 1; i >= 0; i--) if (/^▔+\s*$/.test(all[i])) { sep = i; break; }
+  if (sep < 0) return null;
+  const lines = all.slice(sep + 1);
+  // 区切りの下に本物の composer が在るなら、其の区切りは overlay の物ではない(引用された区切り)。
+  if (findComposer(lines.join("\n")) >= 0) return null;
+  const bg = lines.findIndex((l) => l.trim() === "Background");
+  if (bg >= 0) {
+    const section = lines.slice(bg + 1).some((l) => PANEL_SECTION.test(l));
+    const fi = lines.findIndex((l, i) => i > bg && l.includes("↑/↓ to select"));
+    const footer = fi >= 0 ? joinedFooter(lines, fi, /Esc to close/) : "";
+    if (section && footer.includes("↑/↓ to select") && footer.includes("Esc to close")) return "PANEL";
+  }
+  const ti = lines.findIndex((l) => /^\s*\S[^›\n]* › .+$/.test(l));
+  if (ti >= 0) {
+    const counters = lines.slice(ti + 1, ti + 3).some((l) => l.includes("·") && l.includes("tokens"));
+    const section = lines.slice(ti + 1).some((l) => l.trim() === "Progress" || l.trim() === "Prompt");
+    const fi = lines.findIndex((l, i) => i > ti && l.includes("← to go back"));
+    const footer = fi >= 0 ? joinedFooter(lines, fi, /to close|stop all agents/) : "";
+    if (counters && section && footer.includes("← to go back")) return "DETAIL";
+  }
+  return null;
+}
+
+/** 線に載せる形。panel の 2 状態は `UNKNOWN` のまま(古い電話の挙動を変えない)+ `overlay` で正体を足す。 */
+export function overlayOf(state) {
+  if (state === "PANEL") return { screen: "UNKNOWN", overlay: "panel" };
+  if (state === "DETAIL") return { screen: "UNKNOWN", overlay: "detail" };
+  return { screen: state, overlay: null };
 }
 
 /**
@@ -1040,7 +1109,10 @@ export class TmuxInjector {
     const before = this.capture(pane);
     const s = classifyScreen(before);
     if (s.state !== "SENDABLE") {
-      return { typed: 0, reason: s.state === "CHOICE" ? "choice" : "unknown" };
+      if (s.state === "CHOICE") return { typed: 0, reason: "choice" };
+      if (s.state === "PANEL") return { typed: 0, reason: "panel" };
+      if (s.state === "DETAIL") return { typed: 0, reason: "detail" };
+      return { typed: 0, reason: "unknown" };
     }
     const body = composerText(before);
     if (body === null || composerIsEmpty(before)) {
