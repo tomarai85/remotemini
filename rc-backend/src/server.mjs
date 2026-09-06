@@ -2188,7 +2188,7 @@ const server = createServer(async (req, res) => {
         if (idemHeld) idem.abandon(sendId);
         return json(res, 409, {
           error: SEND_REFUSAL[r.reason] || SEND_REFUSAL.unknown,
-          route: "tmux", pane, screen: r.state, reason: r.reason,
+          route: "tmux", pane, ...overlayOf(r.state), reason: r.reason,   // 409 の本文も線の形(panel → UNKNOWN + overlay)
         });
       }
 

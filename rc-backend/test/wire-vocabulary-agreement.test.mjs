@@ -180,7 +180,7 @@ const SERVER_ONLY = {
   // 2026-09-06(対照表 #8 の後半 a): agent panel と其の詳細画面の**画面の状態**。線には一度も出ない ——
   //   `overlayOf` が `screen: "UNKNOWN"` + `overlay: panel|detail` に言い換えてから載せる(古い電話の挙動を
   //   変えない為)。電話が分岐する材料は `overlay` の小文字であって、此の大文字の状態名ではない。
-  PANEL: "classifyScreen の内部状態。線では `overlayOf` が UNKNOWN + overlay:\"panel\" に言い換える",
+  PANEL: "classifyScreen の内部状態。線では `overlayOf` が UNKNOWN + overlay:\"panel\" に言い換える(status も 409 の本文も。\n    2026-09-06 の本番観測で 409 の本文だけ生の綴りが出ていたので同日に揃えた)",
   DETAIL: "同じく内部状態(panel の詳細画面)。線では UNKNOWN + overlay:\"detail\" に言い換える",
   AUTH_REQUIRED: "401 は status そのもので分岐が付く。電話は値を見ないと決めている(RecoveryCode の注釈)",
   NO_SUCH_ROUTE: "何処からも分岐しない。契約違反の診断としてしか利用者に届かない(同上)",
