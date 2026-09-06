@@ -48,7 +48,8 @@ export function verdict(rc, line) {
   for (const [k, why] of [["shape_status=1", "status に screen が在る"],
                           ["shape_diff=1", "diff に files が在る"],
                           ["shape_paths=1", "paths に paths が在る"]]) {
-    const ok = s.includes(k);
+    // ★欄は丸ごと一致(2026-09-06: `includes("x=1")` は `x=10` にも当たる。completion 計器の対照が捕まえた)。
+    const ok = new RegExp("(^|\\s)" + k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(\\s|$)").test(s);
     console.log(ok ? `  ok  : ${why}` : `  NG  : ${why.replace("在る", "無い")}(200 だが中身が噛み合わない)`);
     if (!ok) fail = 1;
   }

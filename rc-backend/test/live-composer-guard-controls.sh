@@ -46,5 +46,8 @@ want 1 "終了コードが非 0 なら 1" -- 1 "$OK"
 if "$NODE" "$TOOL" --bogus-flag 2>&1 | grep -q 'usage:'; then PASS=$((PASS+1)); echo "PASS  知らない引数は usage で止まる"
 else FAIL=$((FAIL+1)); echo "FAIL  知らない引数で usage が出ない"; fi
 
+# ★2026-09-06: 似た欄名で通らない事(`includes("message=1")` は `message=10` にも当たっていた。家族の completion 計器の対照が捕まえた)。
+want 1 "似た欄名(message=10)では通らない" -- 0 "kind=ok refused=409 reason=composer-busy message=10 draft_kept=1 after_clear=202 torn_down=1 limited=not-limited"
+
 echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED 0 ---"
 [ "$FAIL" = 0 ]

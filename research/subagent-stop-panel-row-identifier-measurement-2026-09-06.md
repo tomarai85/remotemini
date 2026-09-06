@@ -124,11 +124,24 @@ overlay (the next capture already showed the composer), so a second `Escape` wou
 The statusLine did not suppress any of the overlay's own text. VERDICT unchanged: **no identifier is rendered
 on either machine**; the rows for two same-description agents are byte-identical at 80 and 120 columns.
 
+## Limits of this measurement (Codex review, same day)
+
+Four runs on two builds are observations under those conditions, not invariants of the panel: the two-line
+footer wrap, the single-Escape closure of the overlay, and the shell row holding the initial selection were
+each seen once. The "Consequences" above are therefore policies chosen to be safe under what was seen — a
+shell row is refused because one was observed to take the selection, not because the panel is known to always
+put it there — and the two-level match (row text, then detail prompt prefix and recent tool calls against the
+on-disk transcript) is a heuristic for telling look-alike rows apart, not proof of identity: a prompt prefix
+can truncate before the distinguishing word and two agents can share a recent tool-call sequence. When the
+heuristic cannot separate candidates, the answer is "ambiguous", never a guess. Each of these needs its own
+fixture before the code that relies on it is written.
+
 ## Not measured here, and what would change the answer
 
 - The 5-row cap and its scroll hints (changelog) were not reached: the largest list driven had three rows
   (two agents plus a team lead, probe 1). A list of six or more agents is the next fixture to capture before
-  the selection-move bound is chosen.
+  the selection-move bound is chosen — a viewport can hide a duplicate row, reorder while scrolling, or move
+  the selection under an asynchronous update, and any of those would invalidate a row-level match.
 - Idle collapse (changelog: idle subagents collapse after 30 s) was not observed in the 30 s reopen because both
   agents were busy the whole time. It remains a reflow hazard and the "name disappears between render and
   press" refusal stays.

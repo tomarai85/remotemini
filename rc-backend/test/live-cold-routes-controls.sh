@@ -43,5 +43,8 @@ want 1 "終了コードが非 0 なら 1" -- 1 "$OK"
 if "$NODE" "$TOOL" --bogus-flag 2>&1 | grep -q 'usage:'; then PASS=$((PASS+1)); echo "PASS  知らない引数は usage で止まる"
 else FAIL=$((FAIL+1)); echo "FAIL  知らない引数で usage が出ない"; fi
 
+# ★2026-09-06: 似た欄名で通らない事(`includes("shape_status=1")` は `shape_status=10` にも当たっていた。completion 計器の対照が捕まえた)。
+want 1 "似た欄名(shape_status=10)では通らない" -- 0 "kind=ok status=200 diff=200 paths=200 shape_status=10 shape_diff=1 shape_paths=1 limited=not-limited"
+
 echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED 0 ---"
 [ "$FAIL" = 0 ]
