@@ -100,9 +100,18 @@ test("★読める本文に delivered が無いのは今まで通り ok(worker �
 });
 
 test("ワーカー経路の 202 も「送った」", () => {
-  const r = sendResult(202, { accepted: true, route: "worker", seq: 3 });
+  const r = sendResult(202, { accepted: true, route: "worker", seq: 3, spawn: "ready" });
   assert.equal(r.kind, "ok");
   assert.match(r.text, /worker/);
+  assert.equal(sendResult(202, { accepted: true, route: "worker", seq: 4, spawn: "reused" }).kind, "ok");
+});
+
+test("★ワーカー経路の 202 で受領が unconfirmed なら「送った」と描かず本文を残す(Codex 2026-09-06)", () => {
+  const r = sendResult(202, { accepted: true, route: "worker", seq: 3, spawn: "unconfirmed" });
+  assert.equal(r.kind, "warn");
+  assert.equal(r.keepText, true);
+  assert.match(r.text, /has not answered yet/);
+  assert.match(r.text, /may duplicate/);
 });
 
 test("★409 はサーバの文をそのまま出し、本文を消さない", () => {

@@ -3214,6 +3214,62 @@ try {
     await new Promise((r) => sv2.once("exit", r));
   }
 
+  // ---- 13-d. ★202 は子が起きた後(2026-09-06) ------------------------------------------------
+  //
+  // launcher が**在って実行もできる**のに起きられない形 = interpreter の無い shebang。Node の spawn は同期には
+  // 投げず非同期の `error`(ENOENT)で死ぬので、直す前は 202「Sent」の後に `worker_error` が流れていた。
+  // 3 本目のサーバを其の launcher で上げ、送信が 409 `spawn_failed` で**受け付けない**事、次に起きられる
+  // launcher(`exit 0`)へ差し替えた 4 本目で 202 が `spawn:"spawned"` を名乗る事を測る。
+  // ★3 本: interpreter の無い shebang(spawn の error)/ 起きた直後に exit 23(spawn 事象は来るが最初の行の前に死ぬ =
+  //   Codex 2026-09-06 が実 ChildProcess で再現した経路)/ init 行を 1 本吐いてから stdin を読む正常な子。
+  for (const [tag, body, want] of [
+    ["13-d-fail", "#!/no/such/interpreter\n", { status: 409, reason: "spawn_failed" }],
+    ["13-d-exit23", "#!/bin/sh\nexit 23\n", { status: 409, reason: "spawn_failed" }],
+    ["13-d-ok", "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"e2e-init\"}'\ncat >/dev/null\nexit 0\n", { status: 202, spawn: "ready" }],
+  ]) {
+    const launcher = join(SB, `${tag}-claude-work`);
+    writeFileSync(launcher, body, { mode: 0o755 });
+    const sv3 = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
+      env: { ...process.env, RC_PROJECTS_DIR: join(SB, "projects"), RC_CLAUDE_WORK: launcher,
+             RC_FLEET_ACCOUNT: fakeAcct, RC_KEY_DIR: join(SB, "keys"), RC_PORT: "0",
+             RC_PHONE_TRUST_FILE: TRUST_FILE, RC_E2E_CWD_LOG: CWD_LOG, RC_TMUX_BIN: fakeTmux },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let log3 = "";
+    sv3.stdout.on("data", (c) => (log3 += c));
+    sv3.stderr.on("data", (c) => (log3 += c));
+    let port3 = 0;
+    for (let i = 0; i < 60 && !port3; i++) {
+      await sleep(100);
+      const m = /listening on http:\/\/[^:\s]+:(\d+)/.exec(log3);
+      if (m) port3 = Number(m[1]);
+    }
+    check(`${tag} サーバが上がる`, port3 > 0, log3.slice(0, 200));
+    if (port3 > 0) {
+      const B3 = `http://127.0.0.1:${port3}`;
+      const r3 = await fetch(`${B3}/api/sessions/${SID1}/messages`, {
+        method: "POST", headers: H, body: JSON.stringify({ text: `hello via ${tag}`, sendId: `e2e-${tag}-1` }),
+      });
+      const j3 = await r3.json().catch(() => ({}));
+      if (want.status === 409) {
+        check(`13-d ★起きられない子への送信は 409 spawn_failed(202 の後で死なない)[${tag}]`,
+          r3.status === 409 && j3.accepted === false && j3.route === "worker" && j3.reason === "spawn_failed" && typeof j3.error === "string" && j3.error.length > 20,
+          `${r3.status} ${JSON.stringify(j3).slice(0, 220)}`);
+        // 受け付けていないので同じ sendId で撃ち直せる(idempotency の札を捨てている)
+        const r3b = await fetch(`${B3}/api/sessions/${SID1}/messages`, {
+          method: "POST", headers: H, body: JSON.stringify({ text: `hello via ${tag}`, sendId: `e2e-${tag}-1` }),
+        });
+        check("13-d 断った sendId は撃ち直しても 409 のまま(200 の再生にならない)", r3b.status === 409, String(r3b.status));
+      } else {
+        check("13-d ★最初の行を出した子への送信は 202 で spawn:\"ready\" を名乗る",
+          r3.status === 202 && j3.accepted === true && j3.route === "worker" && j3.spawn === "ready" && Number.isInteger(j3.seq),
+          `${r3.status} ${JSON.stringify(j3).slice(0, 220)}`);
+      }
+    }
+    sv3.kill("SIGKILL");
+    await new Promise((r) => sv3.once("exit", r));
+  }
+
   sseCtl.abort();
   await ssePromise;
 

@@ -778,6 +778,71 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertEqual(client.requestedLimits.count, 2, "the co-located gap must still trigger its own refetch")
     }
 
+    // MARK: - Worker route failure banner (2026-09-06)
+
+    func testAWorkerErrorEventRaisesTheBannerAndTheNextUserSentClearsIt() async throws {
+        let client = RecordingClient()
+        client.resultQueue = [.success(HistoryResponse(history: [e(.user, "a")], truncated: false))]
+        let vm = makeViewModel(client: client)
+        await vm.load()
+        XCTAssertNil(vm.latestWorkerError)
+
+        vm.applyPollStep(try readableStep("""
+        { "items": [ { "kind": "message", "seq": 3, "event": { "type": "worker_error", "error": "worker exited code=1 signal=none" } } ],
+          "screen": null, "queued": 0, "cursor": "w.7.3.0", "more": false }
+        """))
+        XCTAssertEqual(vm.latestWorkerError, "The desk's background worker failed: worker exited code=1 signal=none. Your last message may not have been delivered.")
+
+        vm.applyPollStep(try readableStep("""
+        { "items": [ { "kind": "message", "seq": 4, "event": { "type": "assistant", "message": { "role": "assistant" } } } ],
+          "screen": null, "queued": 0, "cursor": "w.7.4.0", "more": false }
+        """))
+        XCTAssertNotNil(vm.latestWorkerError, "a progress line does not clear the failure")
+
+        vm.applyPollStep(try readableStep("""
+        { "items": [ { "kind": "message", "seq": 5, "event": { "type": "user_sent", "text": "again" } } ],
+          "screen": null, "queued": 0, "cursor": "w.7.5.0", "more": false }
+        """))
+        XCTAssertNil(vm.latestWorkerError, "the desk accepted a new turn, so the old failure is no longer the latest word")
+    }
+
+    func testAStaleWorkerErrorAndAUserClearedDropDoNotRaiseTheBannerButAnAcceptedTmuxSendClearsIt() async throws {
+        let client = RecordingClient()
+        client.resultQueue = [.success(HistoryResponse(history: [e(.user, "a")], truncated: false))]
+        let vm = makeViewModel(client: client)
+        await vm.load()
+
+        // A late failure from a RETIRED child (desk marks it stale) says nothing about this turn.
+        vm.applyPollStep(try readableStep("""
+        { "items": [ { "kind": "message", "seq": 3, "event": { "type": "worker_error", "error": "killed", "stale": true } } ],
+          "screen": null, "queued": 0, "cursor": "w.7.3.0", "more": false }
+        """))
+        XCTAssertNil(vm.latestWorkerError, "a stale failure must not raise the banner")
+
+        // The person's own DELETE /queue comes back as user_dropped with reason user_cleared.
+        vm.applyPollStep(try readableStep("""
+        { "items": [ { "kind": "message", "seq": 4, "event": { "type": "user_dropped", "text": "later", "queuedSeq": 2, "reason": "user_cleared" } } ],
+          "screen": null, "queued": 0, "cursor": "w.7.4.0", "more": false }
+        """))
+        XCTAssertNil(vm.latestWorkerError, "a queue the person cleared is not a desk failure")
+
+        // A real failure raises it; a send accepted on the tmux route (keepText:false) retires it.
+        vm.applyPollStep(try readableStep("""
+        { "items": [ { "kind": "message", "seq": 5, "event": { "type": "worker_error", "error": "worker exited code=1 signal=none" } } ],
+          "screen": null, "queued": 0, "cursor": "w.7.5.0", "more": false }
+        """))
+        XCTAssertNotNil(vm.latestWorkerError)
+        vm.applySendOutcome(.display(ResultDisplay(kind: "ok", text: "Sent", keepText: false)), sentText: "again")
+        XCTAssertNil(vm.latestWorkerError, "an accepted send on any route retires the worker-failure banner")
+        // A kept-text (refused / unconfirmed) outcome does not.
+        vm.applyPollStep(try readableStep("""
+        { "items": [ { "kind": "message", "seq": 6, "event": { "type": "worker_error", "error": "again" } } ],
+          "screen": null, "queued": 0, "cursor": "w.7.6.0", "more": false }
+        """))
+        vm.applySendOutcome(.display(ResultDisplay(kind: "warn", text: "unconfirmed", keepText: true)), sentText: "x")
+        XCTAssertNotNil(vm.latestWorkerError, "a kept-text outcome is not an accepted send")
+    }
+
     // MARK: - §5-b branch 9: 401 stops the drive loop
 
     func testUnauthorizedStepStopsTheDriveLoopAndInvokesTheCallback() async {

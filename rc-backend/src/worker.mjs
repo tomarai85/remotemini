@@ -128,6 +128,7 @@ export class WorkerManager {
     this.now = now;
     this.ringCapacity = ringCapacity;
     this.workers = new Map(); // sessionId -> entry
+    this.lastSpawnError = new Map(); // sessionId -> 直前の spawn の `error`(entry が外れた後に口が読む)
     this.rings = new Map();   // sessionId -> EventRing(ワーカーより長生き)
     // H2(DESIGN §2.18-4〜6, §2.18-10)。注入なので unit では本物のファイルを触らない。
     this.heads = heads;                 // { read(ancestor)->string, write(ancestor, head) }
@@ -190,6 +191,36 @@ export class WorkerManager {
    * user turn を送る。ワーカーが無ければ spawn。busy なら queue。
    * 戻り値: 受理時点の seq(user_sent イベント)。
    */
+  /**
+   * 直前の `send` が起こした子の受領を待つ(2026-09-06)。戻りは
+   *   `{ status: "ready" | "reused" | "failed" | "unconfirmed", error }`。
+   *   ready        = 子が最初の stdout 行を出した(起きて番を受け取っている)
+   *   reused       = 既に起きている子へ書いた(待つ物が無い)
+   *   failed       = 最初の行より前に死んだ(`error` 事象 / 早い exit。`worker_error` は別に流れる)。口は 202 を返さない
+   *   unconfirmed  = 期限内に行も死も来なかった。**結果不明であって失敗ではない**(子は起きているかもしれない)。
+   *                  受領は未了のまま(次の send が同じ子に書けば、もう一度待つ)
+   * ★`spawn` 事象では確定しない(起きた直後に exit 23 で死ぬ launcher が 202 になる。Codex 2026-09-06)。
+   * ★`send` 自体は同期のまま(seq を先に採る)。待つのは口の仕事で、待たない呼び手(検査・旧経路)を壊さない。
+   */
+  async spawnAck(sessionId, { timeoutMs = 3000 } = {}) {
+    const e = this.workers.get(sessionId);
+    if (!e) {
+      const error = this.lastSpawnError.get(sessionId) ?? null;
+      return error ? { status: "failed", error } : { status: "reused", error: null };
+    }
+    // 此の send が子を起こしていない(既に居た子へ書いた)= 待つ物が無い。
+    if (!e.ackPending || !e.spawnAck) return { status: "reused", error: null };
+    let timer = null;
+    const timeout = new Promise((resolve) => { timer = this.setTimer(() => resolve({ status: "unconfirmed", error: null }), timeoutMs); });
+    try {
+      const r = await Promise.race([e.spawnAck, timeout]);
+      if (r.status !== "unconfirmed") e.ackPending = false;   // 受領は 1 回きり。次の send は reused
+      return r;
+    } finally {
+      if (timer) this.clearTimer(timer);
+    }
+  }
+
   send(sessionId, text, { onEvent, cwd, launcher } = {}) {
     // ★宛先は `_start` より**先に**登録する。spawn の途中で出る通知(同期の失敗など)も
     //   同じ口から出したい。旧実装は `_start` の後に `entry.onEvent` を代入していたので、
@@ -199,7 +230,9 @@ export class WorkerManager {
     if (!e) {
       // ★cwd の既定値をここで作らない。作った瞬間に「渡し忘れ」が観測できなくなる
       //   (`_openPlan` の第2引数を argv に写し忘れた H2 と同じ型)。
+      this.lastSpawnError.delete(sessionId);
       e = this._start(sessionId, cwd, launcher);
+      e.ackPending = true;   // 此の send が子を起こした = 口は `spawnAck` で受領を待つ
     }
     if (e.state === "busy") {
       // ★積む物が**文字列でなく物**なのは、`user_queued` の seq を持たせる為
@@ -322,6 +355,23 @@ export class WorkerManager {
     //   「もう死んだか」しか答えられず、「死ぬまで待つ」に使えない。割り込みが
     //   止まった事を名乗るには後者が要る。解決するのは `onDeath` の1箇所だけ。
     entry.exited = new Promise((resolve) => { entry._markExited = resolve; });
+    // ★spawn の受領(2026-09-06、対照表 #8 の隣の欠陥)。Node の spawn は無い path / 実行できない file でも
+    //   同期には投げず、非同期の `error` で死ぬ。送信の口は此の約束を待ってから 202 を返す —— 待たないと電話は
+    //   202「Sent」の後に `worker_error` を受け取る。`spawn` 事象が来れば spawned、`error` が来れば failed。
+    //   ★`spawn` 事象は「プロセスが起きた」までしか言わない —— launcher が直後に exit 23 / 127 で死ぬ経路が 202 に
+    //   なる(Codex 2026-09-06、実 ChildProcess で再現)。受領は**子の最初の stdout 行**(stream-json)で確定する =
+    //   `ready`。其の前に exit / error なら終了コードに関係なく `failed`(番を処理していない)。
+    entry.spawnAck = new Promise((resolve) => {
+      entry._ackReady = () => { if (entry.acked) return; entry.acked = "ready"; resolve({ status: "ready", error: null }); };
+      entry._ackFailed = (why) => {
+        if (entry.acked) return;
+        entry.acked = "failed";
+        const error = redact(String(why?.message || why));
+        this.lastSpawnError.set(sessionId, error);
+        resolve({ status: "failed", error });
+      };
+    });
+    entry.acked = null;
     this.workers.set(sessionId, entry);
 
     proc.stdout.on("data", (chunk) => {
@@ -337,6 +387,7 @@ export class WorkerManager {
     // 購読自体はバッファ詰まり防止として元から必要だったので、捨て先を尻尾に変えただけ。
     proc.stderr?.on?.("data", (chunk) => pushStderr(entry, chunk));
     proc.on("error", (err) => {
+      entry._ackFailed?.(err);
       this._emit(sessionId, {
         type: "worker_error",
         error: redact(String(err?.message || err)),
@@ -364,6 +415,8 @@ export class WorkerManager {
     const onDeath = (code, signal) => {
       if (entry.dead) return;
       entry.dead = true;
+      // 最初の行より前に死んだ = 番を処理していない(終了コード 0 でも)。口は 202 を返さない。
+      entry._ackFailed?.(`worker exited before its first line (code=${code} signal=${signal || "none"})`);
       // ★待っている割り込みを起こすのは**ここだけ**。`_retire` 側(SIGTERM を撃つ所)で
       //   解決すると「撃った事」を「死んだ事」として名乗る事になり、直そうとしている
       //   嘘をそのまま作り直す事になる。解決は死の観測点でしか行わない。
@@ -430,6 +483,7 @@ export class WorkerManager {
     } catch {
       return false; // NDJSON でない行(verbose の混入等)は流さない
     }
+    if (live) entry._ackReady?.();   // 子が最初の行を出した = 起きて番を受け取っている(受領はここで確定)
     this._commitHead(sessionId, entry, ev);
     this._emit(sessionId, ev);
     if (ev.type === "result" && live) {

@@ -68,5 +68,20 @@ session id: 01a0782e-6bf7-7be0-bf52-40e78c0086a0
 
 Pinned as tests: `test/panel-stop.test.mjs` (★ `Codex r4#n`) and `test/panel-model-wrapped-header.test.mjs`.
 
-## Round 5 — `codex-panelstop-review7.out` (planner + driver)
-(appended below when the run finishes)
+## Round 5 — `codex-panelstop-review7.out` (planner + driver) — VERDICT: FAIL (3 fatal, 5 serious)
+OpenAI Codex v0.144.3
+session id: 01a0783d-7b26-7022-a33d-421b98466f09
+
+All eight are about the driver (`src/panelstop-driver.mjs`, landed in `7522859` unwired) and its simulator.
+Dispositions are applied in the follow-up commit named in the "fix" column.
+
+| # | severity | finding | fix |
+|---|---|---|---|
+| 1 | FATAL | `/tasks` appended to existing composer text and submitted to the parent | require an empty composer before typing; echo must equal `/tasks` exactly; otherwise nothing is pressed and the leftover is retracted (Backspace × 6 only when the composer is exactly `/tasks`) |
+| 2 | FATAL | a stale frame after Escape led to a second Escape (= parent interrupt) | one Escape per operation unless a close was observed in between; an unobserved close returns `escape-unverified` (new closed reason) |
+| 3 | FATAL | agent finishes between the detail capture and `x`; the TUI is back on the panel with the marker on a shell row; `x` kills the shell | re-capture immediately before `x` (must still be the same detail); refuse `shell-row` when any shell row is present unless the caller opts in (`allowShells`); the residual race is a TUI input-state race and is named as a limit |
+| 4 | SERIOUS | any redraw (a counter tick) counted as "x worked" | success only when the same detail is gone (overlay closed or PANEL without that row still `(running)`); staying in the same detail = `unverified` |
+| 5 | SERIOUS | late redraws left `/tasks` in the composer or a panel open after a refusal | a grace poll before each refusal; leftover text retracted; a late panel is closed with the guarded Escape |
+| 6 | SERIOUS | `budgetMs: NaN` held the pane mutex forever | validated before entry, default on nonsense |
+| 7 | SERIOUS | an empty pane threw `MUTEX_KEY` | validated before entry → `no-pane` (new closed reason); any other mutex error → `pane-busy` |
+| 8 | SERIOUS | the simulator mutates state and renders it in the same step, so stale frames / input-vs-render divergence / animated redraws cannot be expressed | the simulator gains a frame lag (`lag` captures behind the input state) and a counter tick on detail frames; findings 2–5 are pinned with it |

@@ -203,6 +203,10 @@ final class ConversationViewModel: ObservableObject {
     /// simply holds the latest one until superseded by a newer gap (judgment call,
     /// noted in progress.md).
     @Published private(set) var latestGapNotice: String?
+    /// Worker-route failure sentence (2026-09-06): set by a `worker_error` /
+    /// `user_dropped` event line, cleared by the next `user_sent` (the desk accepted a
+    /// new turn, so the old failure is no longer the latest word).
+    @Published private(set) var latestWorkerError: String?
 
     /// 留守中に何が起きたか。**開いた時に1回だけ**取る(2026-08-26)。
     /// ★常設の状態帯には**しない** —— §9-4 の裁定「常設の状態帯は同時に1枠だけ」は
@@ -1138,6 +1142,11 @@ final class ConversationViewModel: ObservableObject {
             // `view.mjs` states as "読めない事は値ではない".
             if display.keepText == false {
                 clearSentText(sentText)
+                // An accepted send on ANY route retires the worker-failure banner: the
+                // desk took a new turn, so the old failure is no longer the latest word.
+                // (Only clearing on the worker's own `user_sent` left a red banner
+                // standing after a successful tmux-route send -- Codex 2026-09-06.)
+                latestWorkerError = nil
             }
             // ★★2026-09-02(対照表 #6):「送信が成功した」を此処でも `keepText`
             //   フィールドで読む -- `kind == "ok"` を直書きしない理由は3行上の doc と
@@ -2223,8 +2232,15 @@ final class ConversationViewModel: ObservableObject {
                     // 「見る物が増えた」以外の意味を持たない為。
                     tailToken += 1
                 }
-                // Worker-route `event` payloads decode but are not rendered this
-                // sprint (brief §1-b) -- nothing to apply.
+                // Worker-route `event` lines (2026-09-06): only the failures are
+                // rendered, as one banner sentence; `user_sent` clears it.
+                if let event = message.event, !event.isEmpty {
+                    if let notice = event.notice {
+                        latestWorkerError = notice
+                    } else if event.type == "user_sent" {
+                        latestWorkerError = nil
+                    }
+                }
             case .gap(let gap):
                 // Brief §4: whether a notice is DRAWN and whether `/history` is
                 // REFETCHED are two separate decisions -- refetch regardless of

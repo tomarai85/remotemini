@@ -350,6 +350,86 @@ enum PollItem: Decodable, Equatable {
 struct MessageItem: Decodable, Equatable {
     let entries: [HistoryEntry]?
     let seq: Int
+    /// The worker route's one raw NDJSON line (2026-09-06). Modeled now because the
+    /// desk can refuse or lose a background turn AFTER the phone saw 202 "Sent"
+    /// (`worker_error` on a spawn that died late, `user_dropped` when the child is
+    /// torn down with turns still queued) and nothing on the phone rendered either.
+    /// Optional: the tmux route never carries it, and a worker line whose shape is
+    /// not an object decodes as `nil` rather than failing the whole poll response.
+    /// Decoding stays synthesized on purpose: the wire-key ledger's mutation control
+    /// (`.harness/wire-key-agreement-controls.sh` ㉓) renames `entries` and expects
+    /// the ledger to go red, which only works while property names ARE the keys.
+    /// Tolerance for a malformed `event` therefore lives inside `WorkerEvent` itself.
+    let event: WorkerEvent?
+
+    init(entries: [HistoryEntry]?, seq: Int, event: WorkerEvent? = nil) {
+        self.entries = entries
+        self.seq = seq
+        self.event = event
+    }
+}
+
+/// One worker-route NDJSON line as the phone reads it. `type` is a `String`, not an
+/// enum, for the same reason every other wire vocabulary here is: a future desk word
+/// must not break decoding. Only the fields the phone renders are modeled.
+///
+/// A line that is not an object (array / primitive / null) decodes as an EMPTY event
+/// (`type == ""`) rather than failing the whole poll response: an old desk or a
+/// future shape must not make every worker-route poll undecodable.
+struct WorkerEvent: Decodable, Equatable {
+    let type: String
+    let error: String?
+    let reason: String?
+    let text: String?
+    /// Desk marks a late `worker_error` from a RETIRED child (`worker.mjs`,
+    /// `stale: this.workers.get(sessionId) !== entry`). A stale failure says nothing
+    /// about the turn the person just sent, so it never raises the banner (Codex
+    /// 2026-09-06).
+    let stale: Bool?
+
+    init(type: String, error: String? = nil, reason: String? = nil, text: String? = nil, stale: Bool? = nil) {
+        self.type = type
+        self.error = error
+        self.reason = reason
+        self.text = text
+        self.stale = stale
+    }
+
+    private enum CodingKeys: String, CodingKey { case type, error, reason, text, stale }
+
+    init(from decoder: Decoder) throws {
+        guard let container = try? decoder.container(keyedBy: CodingKeys.self) else {
+            self.init(type: "")
+            return
+        }
+        let type = (try? container.decodeIfPresent(String.self, forKey: .type)) ?? ""
+        let error = (try? container.decodeIfPresent(String.self, forKey: .error)) ?? nil
+        let reason = (try? container.decodeIfPresent(String.self, forKey: .reason)) ?? nil
+        let text = (try? container.decodeIfPresent(String.self, forKey: .text)) ?? nil
+        let stale = (try? container.decodeIfPresent(Bool.self, forKey: .stale)) ?? nil
+        self.init(type: type, error: error, reason: reason, text: text, stale: stale)
+    }
+
+    /// `true` when this line carries no information the phone can use.
+    var isEmpty: Bool { type.isEmpty }
+
+    /// The sentence the conversation screen shows for this event, or `nil` when the
+    /// event is not something the person needs to see: progress lines, `user_sent`,
+    /// a stale failure from a retired child, or a queue the person cleared themselves
+    /// (`user_dropped` with `reason == "user_cleared"` is the phone's own DELETE /queue
+    /// coming back, not a desk failure -- Codex 2026-09-06).
+    var notice: String? {
+        if stale == true { return nil }
+        switch type {
+        case "worker_error":
+            return "The desk's background worker failed: \(error ?? "unknown error"). Your last message may not have been delivered."
+        case "user_dropped":
+            if reason == "user_cleared" { return nil }
+            return "The desk dropped a queued message (\(reason ?? "worker gone")). Send it again when the desk is back."
+        default:
+            return nil
+        }
+    }
 }
 
 /// Brief §0-b③④⑥.

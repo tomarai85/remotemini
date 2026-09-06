@@ -80,6 +80,15 @@ export function sendResult(status, body) {
         keepText: true,
       };
     }
+    // worker 経路(2026-09-06): 机は子の最初の行を待ってから 202 を返す。期限内に来なければ `spawn:"unconfirmed"` =
+    // 結果不明。成功と描かず、本文を残す(撃ち直すと二重に届き得るので、其れも言う)。
+    if (b.spawn === "unconfirmed") {
+      return {
+        kind: "warn",
+        text: "The desk accepted it, but the background worker has not answered yet. Your text is kept — resending may duplicate it.",
+        keepText: true,
+      };
+    }
     return {
       kind: "ok",
       text: b.route === "worker" ? "Sent (worker)" : "Sent",
