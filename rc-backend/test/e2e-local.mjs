@@ -916,6 +916,10 @@ try {
     let hj = null;
     try { hj = JSON.parse(raw); } catch { /* 下の check が理由付きで落ちる */ }
     check("/healthz は JSON を返す", hj !== null && typeof hj === "object", raw.slice(0, 120));
+    // ★2026-09-06: worker 経路の launcher をどう決めたかは**起動 log**に出る(`/healthz` は 4 項のまま =
+    //   認証の外に机の配置を出さない)。e2e は RC_CLAUDE_WORK を明示しているので env で決まる。
+    check("起動 log が worker 経路の launcher を名指しする(env で指した物)",
+      svlog.includes(`worker 経路の launcher: ${fakeWork}(env)`), svlog.slice(-300));
 
     if (hj) {
       check("ok:true を名乗る", hj.ok === true, JSON.stringify(hj));
@@ -3165,6 +3169,49 @@ try {
     check("★陽性対照: 二重起動は listening を名乗らない", !dupLog.includes("listening"), dupLog.slice(0, 200));
     // 先に上がっている方は生きたまま = 後から来た方に道を譲らせない。
     check("★先に上がっている方は無傷", (await fetch(`${B}/api/sessions`, { headers: H })).ok);
+  }
+
+  // ---- 13-c. ★launcher が無い机は、背景の送信を**起動する前に**断る(2026-09-06) --------
+  //
+  // friday には `~/fleet-tools/claude-work` が無かった。Node の spawn は無い path でも同期には
+  // 投げず非同期の `error` で死ぬので、直す前は電話が 202「Sent」を受け取った後に
+  // `worker_error` を流されていた(其れを描く client は無い)。ここでは launcher を**無い path** に
+  // 指した 2 本目のサーバを ephemeral port で上げ、/healthz が理由を名乗り、SID1(ペインの無い会話)への
+  // 送信が 409 `launcher_missing` で**受け付けない**事を測る。
+  {
+    const missing = join(SB, "no-such-claude-work");
+    const sv2 = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
+      env: { ...process.env, RC_PROJECTS_DIR: join(SB, "projects"), RC_CLAUDE_WORK: missing,
+             RC_FLEET_ACCOUNT: fakeAcct, RC_KEY_DIR: join(SB, "keys"), RC_PORT: "0",
+             RC_PHONE_TRUST_FILE: TRUST_FILE, RC_E2E_CWD_LOG: CWD_LOG, RC_TMUX_BIN: fakeTmux },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let log2 = "";
+    sv2.stdout.on("data", (c) => (log2 += c));
+    sv2.stderr.on("data", (c) => (log2 += c));
+    let port2 = 0;
+    for (let i = 0; i < 60 && !port2; i++) {
+      await sleep(100);
+      const m = /listening on http:\/\/[^:\s]+:(\d+)/.exec(log2);
+      if (m) port2 = Number(m[1]);
+    }
+    check("13-c 2 本目のサーバが上がる(launcher が無くても起動は拒まない)", port2 > 0, log2.slice(0, 200));
+    if (port2 > 0) {
+      const B2 = `http://127.0.0.1:${port2}`;
+      const hz2 = await fetch(`${B2}/healthz`).then((r) => r.json()).catch(() => null);
+      check("13-c /healthz は 4 項のまま(launcher の事情を認証の外に出さない)",
+        hz2 && Object.keys(hz2).sort().join(",") === "ok,pid,uptime,version", JSON.stringify(hz2));
+      check("13-c 起動 log が launcher の不在を理由つきで一行で言う", /launcher が無い\(env-launcher-missing/.test(log2), log2.slice(0, 300));
+      const r2 = await fetch(`${B2}/api/sessions/${SID1}/messages`, {
+        method: "POST", headers: H, body: JSON.stringify({ text: "hello from a desk with no launcher", sendId: "e2e-launcher-missing-1" }),
+      });
+      const j2 = await r2.json().catch(() => ({}));
+      check("13-c ★ペインの無い会話への送信は 409 launcher_missing(202 の後で死なない)",
+        r2.status === 409 && j2.accepted === false && j2.route === "worker" && j2.reason === "launcher_missing" && typeof j2.error === "string" && j2.error.length > 20,
+        `${r2.status} ${JSON.stringify(j2).slice(0, 200)}`);
+    }
+    sv2.kill("SIGKILL");
+    await new Promise((r) => sv2.once("exit", r));
   }
 
   sseCtl.abort();
