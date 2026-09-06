@@ -463,8 +463,10 @@ MUT = [
  #   (`choice`)、一度で撮った1枚から組む形へ変わった為、探し文が本文に当たらなくなった。
  #   **欠陥は同じ** —— 分類器が見えている `limited` が電話へ渡らない。
  ("M78 サーバの応答から limited を落とす(分類器は見えているのに電話へ渡らない)", SRV,
-  '    const base = { screen: s.state, activity: s.activity, limited: s.limited };',
-  '    const base = { screen: s.state, activity: s.activity };'),
+  # ★2026-09-06: `screen` は `overlayOf` を通す形に変わった(panel の 2 状態を UNKNOWN + overlay に言い換える)。
+  #   欠陥は同じ —— 分類器が見えている `limited` が電話へ渡らない。
+  '    const base = { ...overlayOf(s.state), activity: s.activity, limited: s.limited };',
+  '    const base = { ...overlayOf(s.state), activity: s.activity };'),
 # ================= H1 の鍵まわり (2026-08-02 追加) =========================
 # ここから下は「同じ物理キーボードを2人で叩かない」を守る層。写し(git archive HEAD の
 # 複製)の上で先に測ってから入れた。写しでの結果 = 22件すべて検出 / 素通り 0。

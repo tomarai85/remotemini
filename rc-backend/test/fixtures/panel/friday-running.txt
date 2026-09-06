@@ -1,0 +1,24 @@
+  general-purpose, both with the exact description "count slowly", and do NOT
+  pass a name. Each subagent has exactly one job: run the shell command sleep
+  12 with the Bash tool, ten times in a row as ten separate sequential Bash
+  tool calls (never in the background), then reply with the single word done.
+  Do not use teams, do not use SendMessage, do not read or write files. After
+  launching, wait silently for both results.
+
+⏺ 2 background agents launched (↓ to manage)
+   ├ count slowly
+   └ count slowly
+
+⏺ Both launched, running in background. Waiting for both to finish.
+
+✻ Waiting for 2 background agents to finish
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  Sonnet 5 | /Users/athenas/Athenas [rc %56]
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+
+  ⏺ main
+  ◯ general-purpose  Sleeping 12 seconds, call 7/10    2m 32s · ↓ 61.3k tokens
+  ◯ general-purpose  Sleeping 12 seconds, seventh call 2m 30s · ↓ 61.2k tokens
