@@ -16,7 +16,9 @@ import { spawn as nodeSpawn, execFileSync, execFile } from "node:child_process";
 import { makeDiffCache } from "./gitdiff.mjs";
 import { promisify } from "node:util";
 import { buildListing, isPhoneVisible, readHistoryFromPath, readHistoryAround, entriesFromRecord, unreadableRow, readRawRecords, searchHistoryFromPath, permissionModeOf } from "./sessions.mjs";
-import { accountBody, diffBody, gapItem, healthzBody, historyBody, historySearchBody, historyAroundBody, messageItem, pathsBody, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, withWho, attachBody, attachFileBody, statusBodyTmux, statusBodyWorker } from "./wire.mjs";
+import { accountBody, diffBody, gapItem, healthzBody, historyBody, historySearchBody, historyAroundBody, messageItem, pathsBody, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, subagentsBody, withWho, attachBody, attachFileBody, statusBodyTmux, statusBodyWorker } from "./wire.mjs";
+// 会話の下の subagent を**ディスクだけ**から列挙する(対照表 #8 の半分その一)。打鍵はしない。
+import { readSubagentsFromPath } from "./subagents.mjs";
 import { completePaths, clampLimit as clampPathsLimit, PATHS_NO_CWD } from "./paths.mjs";
 // 差分を読む(対照表 #4)。git を撃つのは此の module だけで、撃つ動詞は `diff` のみ。
 import { readWorkingDiff } from "./sessiondiff.mjs";
@@ -1953,6 +1955,32 @@ const server = createServer(async (req, res) => {
           return json(res, 200, digestBody(d, attention, act));
         }
         return json(res, 500, { error: "TRANSCRIPT_UNREADABLE", errno: errnoOf(e) });
+      }
+    }
+
+    if (action === "subagents" && req.method === "GET") {
+      // ★引き先は `transcriptTarget()`(fork した会話は枝の file に書く)。子の dir は
+      //   親 file の**幹の隣**に生えるので、祖先を見ると枝で spawn した agent が消える。
+      const target = transcriptTarget();
+      // 転写がまだ無い会話(開いただけ = 登録簿にしか居ない)には子も居ない。
+      // ★之は `absent`(本当に居ない)であって `unreadable` ではない —— 読めなかったのでは
+      //   なく、読む物がまだ生まれていない。
+      if (!target) {
+        return json(res, 200, subagentsBody({
+          agents: [], directory: "absent", parent: "unscanned", truncated: false,
+          counts: { finished: 0, running: 0, stalled: 0, unknown: 0 },
+        }));
+      }
+      // ★`readSubagentsFromPath` は投げない設計(dir が無い / meta が壊れている /
+      //   親が読めない を全部**状態**として返す)。それでも try で包むのは、
+      //   予期しない fs の失敗で 500 を返すより、**読めなかったと名乗る 200** の方が
+      //   正しいから —— 空配列に落として「何も走っていない」と読ませる形だけは作らない。
+      try {
+        return json(res, 200, subagentsBody(readSubagentsFromPath(target)));
+      } catch (e) {
+        return json(res, 200, subagentsBody({
+          agents: [], directory: "unreadable", parent: "unscanned", truncated: false, counts: null,
+        }));
       }
     }
 

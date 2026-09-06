@@ -1825,6 +1825,64 @@ try {
   // `attach`(画像)は単体(test/attach.test.mjs)しか撃っていなかった —— HTTP 層(鍵・
   // pane への差し込み・偽 tmux の send-keys ログまで届くか)は attach-file が初めて測る。
   // pane は 10 の頭で確立済みの SID_READY(%10、入力欄が実在する)を再利用する。
+  // ★★対照表 #8「半分その一」= 走っている subagent の列挙(2026-09-04 新設、e2e は 09-05)。
+  //   単体は 16 本 緑だったが、**HTTP の口が繋がっているかは1件も測っていなかった** ——
+  //   `reqlog.mjs` の動詞表に載せ忘れると単体は全部緑のまま口だけ 404 を返す、という
+  //   此の repo が註に書いている型そのもの。だから最初に測るのは「404 でない」事。
+  {
+    const subagentsOf = (sid, headers) =>
+      fetch(`${B}/api/sessions/${sid}/subagents`, { headers: headers ?? H });
+
+    check("★鍵が無ければ subagents も 401", (await subagentsOf(SID_READY, {})).status === 401);
+
+    const rNone = await subagentsOf(SID_READY);
+    const jNone = await rNone.json();
+    check("★口が繋がっている(動詞表に載っている = 404 ではない)",
+      rNone.status === 200, `status=${rNone.status}`);
+    check("★子が1本も居ない会話は absent と名乗る(空配列に意味を3つ持たせない)",
+      Array.isArray(jNone.subagents) && jNone.subagents.length === 0
+        && jNone.directory === "absent" && typeof jNone.display?.note === "string",
+      JSON.stringify(jNone));
+
+    // 実物と同じ形の子を2本置く: 1本は親が completed を名乗る、1本は名乗らない。
+    const kidDir = join(PROJ, SID_READY, "subagents");
+    mkdirSync(kidDir, { recursive: true });
+    const kid = (id, type, desc) => {
+      writeFileSync(join(kidDir, `agent-${id}.meta.json`),
+        JSON.stringify({ agentType: type, description: desc }));
+      writeFileSync(join(kidDir, `agent-${id}.jsonl`),
+        JSON.stringify({ agentId: id, isSidechain: true, message: { model: "claude-opus-5", role: "assistant", content: [{ type: "text", text: "x" }] } }) + "\n");
+    };
+    kid("aaaa1111", "Explore", "終わった子");
+    kid("bbbb2222", "general-purpose", "走っている子");
+    // 親に「片方だけ終わった」記録を足す。**名乗られた事ではなく status を見る**契約。
+    const parentPath = join(PROJ, `${SID_READY}.jsonl`);
+    writeFileSync(parentPath, readFileSync(parentPath, "utf8") + "\n" + [
+      JSON.stringify({ type: "user", timestamp: new Date().toISOString(),
+        toolUseResult: { agentId: "aaaa1111", status: "completed" } }),
+      JSON.stringify({ type: "user", timestamp: new Date().toISOString(),
+        toolUseResult: { agentId: "bbbb2222", status: "async_launched" } }),
+    ].join("\n") + "\n");
+
+    const rTwo = await subagentsOf(SID_READY);
+    const jTwo = await rTwo.json();
+    const byId = Object.fromEntries((jTwo.subagents || []).map((a) => [a.agentId, a]));
+    check("★2本とも列挙される(1本だけ見る判定なら落ちる)",
+      rTwo.status === 200 && (jTwo.subagents || []).length === 2, JSON.stringify(jTwo));
+    check("★親が completed と言った子は finished",
+      byId.aaaa1111 && byId.aaaa1111.state === "finished", JSON.stringify(byId.aaaa1111));
+    check("★`async_launched` を『終わった』と読まない(起動の合図であって終了ではない)",
+      byId.bbbb2222 && byId.bbbb2222.state !== "finished", JSON.stringify(byId.bbbb2222));
+    check("★meta の 2 鍵が線に載る(agentType と description)",
+      byId.aaaa1111 && byId.aaaa1111.agentType === "Explore"
+        && byId.bbbb2222 && byId.bbbb2222.description === "走っている子", JSON.stringify(byId));
+    check("★数は書けた時だけ書く(counts が読めた回は合計が件数と一致)",
+      jTwo.counts && (jTwo.counts.finished + jTwo.counts.running + jTwo.counts.stalled + jTwo.counts.unknown) === 2,
+      JSON.stringify(jTwo.counts));
+
+    rmSync(kidDir, { recursive: true, force: true });
+  }
+
   {
     const attachFile = (sid, name, buf, headers) => fetch(
       `${B}/api/sessions/${sid}/attach-file?name=${encodeURIComponent(name)}`,

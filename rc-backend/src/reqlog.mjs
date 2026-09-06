@@ -43,7 +43,9 @@
 // ★`attach-file` は 2026-09-03(行 #23「非画像の添付」)に足した。`attach`(画像)の隣に
 //   handler を置いただけでは此処に載らず、上と同じ形で永久に 404 になる —— この表が
 //   handler の到達性を決める唯一の場所である事を、足す度に自分で踏んで確かめている。
-export const SESSION_ROUTE_RE = /^\/api\/sessions\/([^/]+)\/(history|messages|stream|poll|interrupt|status|choice|queue|title|archive|return-request|digest|attach|attach-file|diff|paths|new)$/;
+// ★`subagents` は 2026-09-04(対照表 #8「半分その一」= 列挙だけ、打鍵なし)に足した。
+//   `attach-file` の註と同じ形を踏まない為に、handler より先に此処へ載せる。
+export const SESSION_ROUTE_RE = /^\/api\/sessions\/([^/]+)\/(history|messages|stream|poll|interrupt|status|choice|queue|title|archive|return-request|digest|attach|attach-file|diff|paths|subagents|new)$/;
 
 /**
  * roots の道(2026-09-03、対照表 #11)。会話に**紐づかない** 2 本 = `/api/roots/<i>/paths` と

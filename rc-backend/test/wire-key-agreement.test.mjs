@@ -338,6 +338,21 @@ const CASES = {
     }],
     [{ files: [], truncated: false, totalBytes: 0, reason: "not_a_repo" }],
   ],
+  // 走っている subagent(#8「半分その一」、2026-09-05)。★**両枝**を通す:
+  //   読めた側(`subagents` が非空 = `subagents[]` と其の `display` の鍵を実行で出す唯一の道)と、
+  //   読めなかった側(`counts: null`)。片方だけだと入れ子の突き合わせが 0 件のまま走らない。
+  subagentsBody: [
+    [{
+      agents: [{
+        agentId: "a1b2c3", agentType: "Explore", description: "何かを調べる子",
+        model: "claude-opus-5", state: "running", reason: "no-result-active", meta: "read",
+        lastActivityIso: "2026-09-05T10:00:00.000Z", display: { state: "Working" },
+      }],
+      directory: "read", parent: "read", truncated: false,
+      counts: { finished: 0, running: 1, stalled: 0, unknown: 0 },
+    }],
+    [{ agents: [], directory: "unreadable", parent: "unscanned", truncated: false, counts: null }],
+  ],
   // 枝が1本しか無い唯一の builder。分岐が無い(`ok` は定数、残り3つは受けた値をそのまま)
   // ので、枝を増やしても出る鍵は1組しか無い —— ②が「原文に在るのに出ない鍵」で裏を取る。
   healthzBody: [[{ pid: 4242, uptime: 61, version: "abc1234" }]],
@@ -409,6 +424,7 @@ const MODULE_OF = {
   rootItem: ["wire", "src/wire.mjs"],
   diffBody: ["wire", "src/wire.mjs", "export function diffBody({ files, truncated, totalBytes, reason }) {"],
   healthzBody: ["wire", "src/wire.mjs", "export function healthzBody({ pid, uptime, version }) {"],
+  subagentsBody: ["wire", "src/wire.mjs", "export function subagentsBody({ agents, directory, parent, truncated, counts }) {"],
   // 第2引数を分解するので目印を明示する(既定の目印だと `{ raw = "" }` = **引数の分解**を
   // 本文と読んで、鍵が0件になる。②が其れを赤で捕まえるが、先に正しく書く)。
   accountBody: ["wire", "src/wire.mjs", "export function accountBody(parsed, { raw = \"\", usageByEmail = null, usageAgeSeconds = null } = {}) {"],
@@ -782,6 +798,15 @@ const PAIRS = [
   { swift: "DiffFile", builders: ["diffBody"], at: "files[]" },
   { swift: "DiffHunk", builders: ["diffBody"], at: "files[].hunks[]" },
   { swift: "DiffLine", builders: ["diffBody"], at: "files[].hunks[].lines[]" },
+  // ---- 走っている subagent(2026-09-05、対照表 #8「半分その一」)。電話の5つの型を
+  // `subagentsBody` の各段と組む(封筒 / subagents[] / 其の display / 封筒の display / counts)。
+  // ★`counts` は **null を取る**(読めなかった回に件数を書かない)。`mode` を緩めないのは、
+  //   null になるのは値であって鍵ではないから —— 鍵は常に在る。
+  { swift: "SubagentsBody", builders: ["subagentsBody"], at: "" },
+  { swift: "SubagentRow", builders: ["subagentsBody"], at: "subagents[]" },
+  { swift: "SubagentRowDisplay", builders: ["subagentsBody"], at: "subagents[].display" },
+  { swift: "SubagentsDisplay", builders: ["subagentsBody"], at: "display" },
+  { swift: "SubagentCounts", builders: ["subagentsBody"], at: "counts" },
   // ---- 生存信号(2026-08-09 / 監査 S8-26 の続き)
   // **完全一致**(`mode` 無し)。認証の外へ出る唯一の応答なので、電話が読まない鍵が
   // サーバ側に生える事を許さない —— `serverOnly` を1つでも認めた瞬間、
