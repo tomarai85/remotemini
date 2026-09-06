@@ -12,6 +12,8 @@
 import { overlayRegionOf, panelStateOf } from "./inject.mjs";
 
 const SECTION = /^\s*(Shells|Local agents|Team: .+?) \((\d+)\)\s*$/;
+const TEAM_HEAD_OPEN = /^\s*Team: \S/;
+const TEAM_HEAD_TAIL = /^\s*(\S.*?)\s*\((\d+)\)\s*$/;
 // ★footer は行頭(字下げの後)から始まる物だけ(Codex 2026-09-06: 本文に同じ語を含む行で一覧が途中で切れる)。
 const FOOTER_START = /^\s*↑\/↓ to select/;
 // ★選択の印は**3 桁目**の `❯ `(fixture: 選択行 `   ❯ …` / 非選択行は空白 5 つ)。字下げを無視すると、本文が
@@ -44,7 +46,9 @@ export function parsePanel(text) {
   const end = fi >= 0 ? fi : lines.length;
   const footer = fi >= 0 ? joinFooter(lines, fi, /Esc to close/) : "";
   // 数の行 = Background の下から最初の節の見出しまで(80 桁で折り返し得るので 1 行に限らない — Codex)。
-  let firstSection = lines.findIndex((l, i) => i > bg && i < end && SECTION.test(l));
+  const wrappedHead = (i) => TEAM_HEAD_OPEN.test(lines[i]) && i + 1 < end && TEAM_HEAD_TAIL.test(lines[i + 1] ?? "")
+    && !SELECTED.test(lines[i + 1]) && !lines[i + 1].includes(" · ");
+  let firstSection = lines.findIndex((l, i) => i > bg && i < end && (SECTION.test(l) || wrappedHead(i)));
   if (firstSection < 0) firstSection = end;
   const counts = lines.slice(bg + 1, firstSection).map((l) => l.trim()).filter(Boolean).join(" ") || null;
   const sections = [];
@@ -54,7 +58,17 @@ export function parsePanel(text) {
   for (let i = firstSection; i < end; i++) {
     const l = lines[i];
     if (!l.trim()) continue;
-    const m = SECTION.exec(l);
+    let m = SECTION.exec(l);
+    // 80 桁では長い `Team: <name> (N)` の見出しが 2 行に折り返す(Codex 所見 2026-09-06)。`Team:` で始まって
+    // `(N)` で終わらない行の次が `<残り> (N)` なら、見出しとして繋ぐ(項目の行ではないので rows に入れない)。
+    if (!m && TEAM_HEAD_OPEN.test(l) && i + 1 < end) {
+      const t = TEAM_HEAD_TAIL.exec(lines[i + 1] ?? "");
+      if (t && !SELECTED.test(lines[i + 1]) && !lines[i + 1].includes(" · ")) {
+        const head = l.trim();
+        m = [null, head + (head.endsWith("-") ? "" : " ") + t[1], t[2]];
+        i += 1;
+      }
+    }
     if (m) { cur = { name: m[1], count: Number(m[2]), rows: [] }; sections.push(cur); continue; }
     if (OVERFLOW.test(l)) { hints.push(l.trim()); continue; }
     if (!cur) continue;
