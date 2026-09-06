@@ -51,5 +51,22 @@ session id: 01a0781e-ba75-79b1-b511-023caf4c03a2
 
 Pinned as tests: `test/panel-stop.test.mjs` (★ `Codex r3#n`) and `test/panel-model-wrapped-header.test.mjs`.
 
-## Round 4 — `codex-panelstop-review6.out`
+## Round 4 — `codex-panelstop-review6.out` — VERDICT: FAIL (8 findings)
+OpenAI Codex v0.144.3
+session id: 01a0782e-6bf7-7be0-bf52-40e78c0086a0
+
+| # | severity | finding | disposition |
+|---|---|---|---|
+| 1 | FATAL | an examined candidate whose prompt was off-screen (`insufficient`) was counted as a non-match, so the other twin got pressed | verdicts are 3-valued (hit / miss / undecided); any undecided candidate → `ambiguous` |
+| 2 | SERIOUS | a detail with no `agentType` matched a typed target | `insufficient` |
+| 3 | SERIOUS | `planStop(null)` threw | non-object args → `not-a-panel` |
+| 4 | SERIOUS | `parseDetail` trimmed prompt lines, erasing leading spaces the matcher was told to respect | only the 3-space overlay indent is stripped |
+| 5 | SERIOUS | a long agent description wrapping to a second line became two fake rows | `parsePanel` merges a row that lacks the ` (<status>)` tail with its continuation (teammate `@name: status` rows exempt) |
+| 6 | SERIOUS | a wrapped detail title truncated the description and polluted the counters | title continuation lines (before the counters line) are joined into the description |
+| 7 | SERIOUS | Team headers wrapping to 3+ lines were not a panel | header span up to 4 lines in both `panelStateOf` and `parsePanel` |
+| 8 | SERIOUS | a truncated tool line ≥ 12 chars still "proved" identity | truncated tool lines are consistent-only: evidence for a sole live candidate, `insufficient` whenever a same-description sibling exists (`strict`) |
+
+Pinned as tests: `test/panel-stop.test.mjs` (★ `Codex r4#n`) and `test/panel-model-wrapped-header.test.mjs`.
+
+## Round 5 — `codex-panelstop-review7.out` (planner + driver)
 (appended below when the run finishes)
