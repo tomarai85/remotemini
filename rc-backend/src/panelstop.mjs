@@ -94,8 +94,9 @@ export function hasMaterial(target) {
  *    以上なら UI の省略なので、目標が其の長さに収まる筈なら丸ごと、収まらないなら先頭一致。
  *  - 道具: 詳細の直近の道具が目標の道具列の**末尾**と一致。行が `…` で切れていれば前方一致(`MIN_TOOL_PREFIX`)。
  */
-export function detailMatches(detail, target) {
+export function detailMatches(detail, target, { strict = true } = {}) {
   if (!detail || !target) return { ok: false, why: "no-detail" };
+  if (target.agentType && !detail.agentType) return { ok: false, why: "insufficient" };   // 型が読めない詳細は wildcard ではない
   if (target.agentType && detail.agentType && detail.agentType !== target.agentType) return { ok: false, why: "agentType" };
   if (target.description && detail.description !== target.description) return { ok: false, why: "description" };
   const wantP = typeof target.promptPrefix === "string" && target.promptPrefix.trim().length > 0;
@@ -124,8 +125,10 @@ export function detailMatches(detail, target) {
       if (shown === want) continue;
       if (!shown.endsWith("…")) return { ok: false, why: "tools" };
       const head = shown.slice(0, -1);
-      if (head.length < MIN_TOOL_PREFIX) return { ok: false, why: "insufficient" };
       if (!want.startsWith(head)) return { ok: false, why: "tools" };
+      // 切れた行は「矛盾しない」までで、同一の証明にはならない(隠れた末尾が違う別の agent と区別できない。Codex 所見)。
+      // 同名の候補が他に在る(strict)時は証拠にしない。単独の候補(机も 1 本と言う)では矛盾しない事で足りる。
+      if (strict || head.length < MIN_TOOL_PREFIX) return { ok: false, why: "insufficient" };
     }
   }
   return { ok: true, why: null };
@@ -159,7 +162,8 @@ function moveTo(rows, selectedFlat, flat, maxMoves) {
  * `examined` = `[{ flat, detail }]`(driver が見た詳細。flat は其の時の平らな位置)。`exclude` = 平らな位置の配列
  * (詳細を持たない除外。見た事にはなるが一致にはならない)。
  */
-export function planStop({ panel, detail = null, target, maxMoves = DEFAULT_MAX_MOVES, examined = [], exclude = [] } = {}) {
+export function planStop(args) {
+  const { panel, detail = null, target, maxMoves = DEFAULT_MAX_MOVES, examined = [], exclude = [] } = (args && typeof args === "object") ? args : {};
   if (!panel || panel.kind !== "panel") return { ok: false, reason: "not-a-panel" };
   if (!target || typeof target.description !== "string" || !target.description) return { ok: false, reason: "no-such-row" };
   if (target.live !== true) return { ok: false, reason: "no-such-row", why: "not-live" };
@@ -175,22 +179,35 @@ export function planStop({ panel, detail = null, target, maxMoves = DEFAULT_MAX_
   const seen = new Map();
   for (const f of Array.isArray(exclude) ? exclude : []) if (Number.isInteger(f)) seen.set(f, null);
   for (const e of Array.isArray(examined) ? examined : []) if (e && Number.isInteger(e.flat)) seen.set(e.flat, e.detail ?? null);
+  // 同名が複数なら厳密(切れた道具の行を証拠にしない)。見た詳細の判定は 3 値: 一致 / 外れ / 決められない(材料が
+  // 画面外だった)。「決められない」候補が 1 本でも残っていれば、他が一致しても押さない(Codex 所見: 外れと読むと
+  // 本当の目標を除外して隣を押す)。`exclude`(詳細無し)は driver が外した物なので「外れ」。
+  const strict = sameName.length > 1;
+  const verdictOf = (flat) => {
+    if (!seen.has(flat)) return "unseen";
+    const d = seen.get(flat);
+    if (d === null) return "miss";
+    const r = detailMatches(d, target, { strict });
+    return r.ok ? "hit" : r.why === "insufficient" ? "undecided" : "miss";
+  };
 
   if (detail) {
     // 詳細が開いている = 印の行の詳細。
     const sel = at(rows, selectedFlat);
     if (isShell(sel.section)) return { ok: false, reason: "shell-row" };
     if (!rowMatches(sel.text, target.description)) return { ok: false, reason: "mismatch", why: "row" };
-    const m = detailMatches(detail, target);
+    const m = detailMatches(detail, target, { strict });
     if (m.why === "insufficient") return { ok: false, reason: "ambiguous", why: m.why };
     if (sameName.length === 1) {
       return m.ok ? { ok: true, action: "press-x-in-detail", moves: 0, direction: null, target: sel } : { ok: false, reason: "mismatch", why: m.why };
     }
     // 同名が複数: 他の候補を全部見終わっていて、一致が此の 1 本だけの時に限って押す。
     const others = sameName.filter((c) => c.flat !== selectedFlat);
-    const unseen = others.filter((c) => !seen.has(c.flat));
+    const verdicts = others.map((c) => verdictOf(c.flat));
+    const unseen = others.filter((_, i) => verdicts[i] === "unseen");
     if (unseen.length > 0) return { ok: true, action: "close-detail", moves: 0, direction: null, target: sel, remaining: unseen.map((c) => c.flat), matched: m.ok };
-    const otherMatches = others.filter((c) => detailMatches(seen.get(c.flat), target).ok).length;
+    if (verdicts.includes("undecided")) return { ok: false, reason: "ambiguous", why: "insufficient" };
+    const otherMatches = verdicts.filter((v) => v === "hit").length;
     if (m.ok && otherMatches === 0) return { ok: true, action: "press-x-in-detail", moves: 0, direction: null, target: sel };
     if (m.ok || otherMatches > 0) return { ok: false, reason: otherMatches + (m.ok ? 1 : 0) >= 2 ? "ambiguous" : "mismatch", why: m.ok ? "duplicate" : m.why };
     return { ok: false, reason: "no-such-row", why: "none-matched" };
@@ -202,13 +219,15 @@ export function planStop({ panel, detail = null, target, maxMoves = DEFAULT_MAX_
     const mv = moveTo(rows, selectedFlat, only.flat, maxMoves);
     return mv.ok ? { ok: true, action: "open-detail", moves: mv.moves, direction: mv.direction, target: at(rows, only.flat), candidates: [only.flat] } : mv;
   }
-  const unseen = sameName.filter((c) => !seen.has(c.flat));
+  const verdicts = sameName.map((c) => verdictOf(c.flat));
+  const unseen = sameName.filter((_, i) => verdicts[i] === "unseen");
   if (unseen.length > 0) {
     const nextC = unseen[0];
     const mv = moveTo(rows, selectedFlat, nextC.flat, maxMoves);
     return mv.ok ? { ok: true, action: "open-detail", moves: mv.moves, direction: mv.direction, target: at(rows, nextC.flat), candidates: sameName.map((c) => c.flat), remaining: unseen.map((c) => c.flat) } : mv;
   }
-  const matches = sameName.filter((c) => detailMatches(seen.get(c.flat), target).ok);
+  if (verdicts.includes("undecided")) return { ok: false, reason: "ambiguous", why: "insufficient" };
+  const matches = sameName.filter((_, i) => verdicts[i] === "hit");
   if (matches.length === 0) return { ok: false, reason: "no-such-row", why: "none-matched" };
   if (matches.length > 1) return { ok: false, reason: "ambiguous", why: "duplicate" };
   const mv = moveTo(rows, selectedFlat, matches[0].flat, maxMoves);

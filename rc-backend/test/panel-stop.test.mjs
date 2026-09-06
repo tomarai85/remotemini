@@ -197,10 +197,12 @@ test("★目標が持つ材料は全部詳細側にも要る: prompt が画面�
 test("道具: 末尾一致。行が `…` で切れていれば前方一致(短い接頭辞は証拠にしない)、切れていなければ丸ごと一致", () => {
   const base = D({ recentTools: ["Bash(sleep 12 && echo very-long-arg…"] });
   const t = { description: "count slowly", recentTools: ["Read(x)", "Bash(sleep 12 && echo very-long-argument-that-was-cut)"] };
-  assert.equal(detailMatches(base, t).ok, true);
-  assert.equal(detailMatches({ ...base, recentTools: ["Bash(sleep 12 && echo very-long-arg"] }, t).why, "tools");
-  assert.equal(detailMatches({ ...base, recentTools: ["Bash(sleep 99)…"] }, t).why, "tools");
-  assert.equal(detailMatches({ ...base, recentTools: ["Bash(sl…"] }, t).why, "insufficient");
+  const loose = { strict: false };                                             // 単独候補の時だけ切れた行を認める
+  assert.equal(detailMatches(base, t, loose).ok, true);
+  assert.equal(detailMatches(base, t).why, "insufficient");                    // 既定(同名あり)は証拠にしない
+  assert.equal(detailMatches({ ...base, recentTools: ["Bash(sleep 12 && echo very-long-arg"] }, t, loose).why, "tools");
+  assert.equal(detailMatches({ ...base, recentTools: ["Bash(sleep 99)…"] }, t, loose).why, "tools");
+  assert.equal(detailMatches({ ...base, recentTools: ["Bash(sl…"] }, t, loose).why, "insufficient");
   assert.equal(detailMatches({ ...base, recentTools: ["Read(x)", "Bash(sleep 12 && echo very-long-argument-that-was-cut)"] }, { ...t, recentTools: ["Bash(sleep 12 && echo very-long-argument-that-was-cut)"] }).why, "tools");
   assert.deepEqual(detailMatches(parseDetail(fx("jervis-detail-open.txt")), { description: "count slowly" }), { ok: false, why: "insufficient" });
 });
@@ -263,6 +265,48 @@ test("★sameShape: 行の並びと文字列に加えて、節の数字・集計
   const after = { kind: "panel", counts: "2 active agents", hints: [], sections: [{ name: LA, count: 2, rows: [{ text: ROW, selected: true }, { text: ROW, selected: false }] }] };
   assert.equal(sameShape(before, after), false);
   assert.equal(sameShape(before, { ...before, sections: [{ ...before.sections[0], rows: before.sections[0].rows.map((r) => ({ ...r, selected: !r.selected })) }] }), true);
+});
+
+test("★見た候補が『決められない』(材料が画面外)なら、他が一致しても押さない(Codex r4#1)", () => {
+  const panel = parsePanel(fx("jervis-panel-down1.txt"));   // 印は flat 1
+  const t = { agentType: "general-purpose", description: "count slowly", promptPrefix: "shared prompt", recentTools: ["Read(/same)"], live: true, liveSameDescription: 2 };
+  const shown = D({ promptPrefix: "shared prompt", recentTools: ["Read(/same)"] });
+  const undecided = D({ promptPrefix: "", recentTools: ["Read(/same)"] });      // prompt が画面外
+  const a = closed(planStop({ panel, detail: shown, target: t, examined: [{ flat: 0, detail: undecided }] }));
+  assert.equal(a.reason, "ambiguous");
+  assert.equal(a.why, "insufficient");
+  // 詳細を閉じた後の集計でも同じ
+  const b = closed(planStop({ panel: parsePanel(fx("friday-panel-open.txt")), target: t, examined: [{ flat: 0, detail: undecided }, { flat: 1, detail: shown }] }));
+  assert.equal(b.reason, "ambiguous");
+  // 外れ(prompt が違う)なら押せる
+  const miss = D({ promptPrefix: "another prompt", recentTools: ["Read(/same)"] });
+  assert.equal(closed(planStop({ panel, detail: shown, target: t, examined: [{ flat: 0, detail: miss }] })).action, "press-x-in-detail");
+});
+
+test("★詳細に型が無ければ wildcard ではなく insufficient(Codex r4#2)", () => {
+  assert.equal(detailMatches(D({ agentType: null, promptPrefix: "unique prompt" }), { agentType: "general-purpose", description: "count slowly", promptPrefix: "unique prompt" }).why, "insufficient");
+  assert.equal(closed(planStop({ panel: one(), detail: D({ agentType: null, promptPrefix: PROMPT }), target: { ...SOLO, recentTools: [] } })).reason, "ambiguous");
+});
+
+test("★planStop(null) / planStop() は例外でなく not-a-panel(Codex r4#3)", () => {
+  assert.equal(closed(planStop(null)).reason, "not-a-panel");
+  assert.equal(closed(planStop()).reason, "not-a-panel");
+  assert.equal(closed(planStop("x")).reason, "not-a-panel");
+});
+
+test("★切れた道具の行は『矛盾しない』止まり: 同名が複数なら証拠にしない、単独候補なら足りる(Codex r4#8)", () => {
+  const common = "Bash(process --config /a/very/long/common/prefix/that-is-identical/up-to-the-terminal-cut/";
+  const d = D({ promptPrefix: "same prompt", recentTools: [common + "…"] });
+  const t = { agentType: "general-purpose", description: "count slowly", promptPrefix: "same prompt", recentTools: [common + "TARGET.json)"] };
+  assert.equal(detailMatches(d, t).why, "insufficient");                       // 既定 = strict
+  assert.equal(detailMatches(d, t, { strict: false }).ok, true);
+  assert.equal(detailMatches(d, { ...t, recentTools: ["Read(x)"] }, { strict: false }).why, "tools");
+  // 同名 2 本: 一方の詳細が切れた道具でしか一致しない → ambiguous
+  const panel = parsePanel(fx("jervis-panel-down1.txt"));
+  const p = closed(planStop({ panel, detail: d, target: { ...t, live: true, liveSameDescription: 2 }, examined: [{ flat: 0, detail: D({ promptPrefix: "other", recentTools: ["Read(x)"] }) }] }));
+  assert.equal(p.reason, "ambiguous");
+  // 単独候補(机も 1 本): 矛盾しないので押せる
+  assert.equal(closed(planStop({ panel: one(), detail: d, target: { ...t, live: true, liveSameDescription: 1 } })).action, "press-x-in-detail");
 });
 
 test("flatRows は節を跨いだ表示順(移動の数は此の並びで数える)", () => {

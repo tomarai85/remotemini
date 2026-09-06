@@ -490,8 +490,16 @@ export function panelStateOf(text) {
     // 節の見出し。80 桁では長い `Team: <name> (N)` が 2 行に折り返す(Codex 所見 2026-09-06)ので、
     // `Team:` で始まる行の次が `<残り> (N)` の形なら其れも見出しと数える(読み方は panelmodel.mjs と同じ)。
     const body = lines.slice(bg + 1);
-    const section = body.some((l, i) => PANEL_SECTION.test(l)
-      || (/^\s*Team: \S/.test(l) && /^\s*\S.*\(\d+\)\s*$/.test(body[i + 1] ?? "") && !/^ {3}❯ /.test(body[i + 1] ?? "") && !(body[i + 1] ?? "").includes(" · ")));
+    const wrappedTeam = (i) => {
+      if (!/^\s*Team: \S/.test(body[i]) || PANEL_SECTION.test(body[i])) return false;
+      for (let j = i + 1; j < body.length && j < i + 4; j++) {
+        const nx = body[j] ?? "";
+        if (!nx.trim() || /^ {3}❯ /.test(nx) || nx.includes(" · ") || PANEL_SECTION.test(nx) || /^\s*↓ \d+ more\s*$/.test(nx) || /^\s*↑\/↓ to select/.test(nx)) return false;
+        if (/^\s*\S.*\(\d+\)\s*$/.test(nx)) return true;
+      }
+      return false;
+    };
+    const section = body.some((l, i) => PANEL_SECTION.test(l) || wrappedTeam(i));
     const fi = lines.findIndex((l, i) => i > bg && /^\s*↑\/↓ to select/.test(l));   // 行頭(字下げの後)から始まる物だけ
     const footer = fi >= 0 ? joinedFooter(lines, fi, /Esc to close/) : "";
     if (section && footer.includes("↑/↓ to select") && footer.includes("Esc to close")) return "PANEL";
