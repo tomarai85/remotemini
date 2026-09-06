@@ -27,6 +27,8 @@ import { publishedBuild } from "./ota-published.mjs";
 import { headerBuild } from "./reqlog.mjs";
 import { parseFleetAccount, selectionMessage, selectionProblem } from "./account.mjs";
 import { parseCswapUsage, usageBackoffMs, usageRefreshDue } from "./usage.mjs";
+// 2 本目の生存信号(2026-09-06)。CLI 自身が名乗るセッション一覧を、tmux の画面の**隣**に置く。
+import { AGENTS_STALE_MS, AGENTS_TIMEOUT_MS, AGENTS_TTL_MS, agentsChildEnv, cliSeenFor, cliSeenIndex, makeAgentsCache, positiveMs } from "./agentscache.mjs";
 import { JsonlTail, formatPollCursor, pollDecision, resumeDecision } from "./tail.mjs";
 import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
@@ -81,6 +83,15 @@ const CLAUDE_WORK = process.env.RC_CLAUDE_WORK || join(HOME, "fleet-tools", "cla
 const TMUX_SESSION = process.env.RC_PHONE_SESSION || "work";
 const CLAUDE_LAUNCHER = process.env.RC_PHONE_CMD || join(HOME, ".local", "bin", "rc-claude");
 const FLEET_ACCOUNT = process.env.RC_FLEET_ACCOUNT || join(HOME, "fleet-tools", "fleet-account");
+// ★2 本目の生存信号が叩く CLI(2026-09-06)。起動時に 1 回だけ決める —— `TMUX_BIN` /
+//   `CLAUDE_LAUNCHER` と同じ作法で、要求ごとに環境を読み直す道を作らない。
+//   既定が素の `claude` なのは、机ごとに置き場が違う(homebrew / `.local/bin`)為で、
+//   解決は `agentsChildEnv` が組む PATH に任せる。
+//   ★ただし既定は **native install を名指し**する(2026-09-06、Codex が friday で再現): `/opt/homebrew/bin/claude`
+//   は 5 月の npm 版で `agents --json` を知らず(`unknown option`)、PATH 任せだと配備した瞬間に此の信号が
+//   `exit-1` で死ぬ。`~/.local/bin/claude` が在ればそれ、無ければ従来どおり PATH の `claude`。
+const CLAUDE_BIN = process.env.RC_CLAUDE_BIN
+  || (existsSync(join(HOME, ".local", "bin", "claude")) ? join(HOME, ".local", "bin", "claude") : "claude");
 /**
  * 添付の置き場。★同期の木の**外**に置く(deploy の `--delete` に巻き込まれない為)。
  * `~/.rc-backend/` は鍵と登録簿が既に住んでいる場所で、配備台本が明示的に触らない。
@@ -1278,6 +1289,29 @@ function usageForWire() {
   };
 }
 
+// ── 2 本目の生存信号(2026-09-06)────────────────────────────────────────────
+// 机はセッションの生死を tmux の画面から再構成している。CLI 自身も同じ事を口座全体で
+// read-only に公開しているので、**並べて**持つ。置き換えない —— 2 つは別々に壊れる
+// (tmux は locale や socket で、CLI は版の入れ替えで)から、片方が黙った時に
+// もう片方が残る事に価値が在る。
+//
+// ★一覧の応答は此の読みを**待たない**。`usageForWire` と同じ形(返してから測り直す)で、
+//   `claude` が固まった日にも一覧は同じ速さで返る。器と判定は `src/agentscache.mjs`
+//   (import しても listen しない場所)に在り、単体検査が直に呼ぶ。
+const agentsCache = makeAgentsCache({
+  exec: execFileAsync,
+  cmd: CLAUDE_BIN,
+  env: agentsChildEnv(),
+  // ★正の有限な ms だけ(`-1` を通すと要求のたびに子が立つ — Codex 2026-09-06)。
+  ttlMs: positiveMs(process.env.RC_AGENTS_TTL_MS, AGENTS_TTL_MS),
+  staleMs: positiveMs(process.env.RC_AGENTS_STALE_MS, AGENTS_STALE_MS),
+  timeoutMs: positiveMs(process.env.RC_AGENTS_TIMEOUT_MS, AGENTS_TIMEOUT_MS),
+  // ★黙って捨てない(口座の使用量で同じ形を踏んだ)。読めない状態が続く事は、
+  //   値が無い事と同じくらい報告に値する —— 帯には 1 文しか出ないので、
+  //   机の log が唯一の診断になる。頻度は TTL で頭打ち(既定 10 秒に 1 本)。
+  onError: (why) => console.error(`[rc-backend] claude のセッション一覧を読めない(${why})`),
+});
+
 async function readFleetAccount() {
   const { stdout } = await execFileAsync(FLEET_ACCOUNT, [], {
     encoding: "utf8", timeout: FLEET_ACCOUNT_TIMEOUT_MS, killSignal: "SIGKILL",
@@ -1346,6 +1380,13 @@ const server = createServer(async (req, res) => {
         : scopeParam === "archived" ? "archived" : "all";
       const limit = Math.max(0, Math.trunc(Number(url.searchParams.get("limit")) || 0));
       const registered = new Set(entries.map((e) => e.sessionId));
+      // 2 本目の生存信号。**待たない**(古ければ裏で測り直すだけ)ので、此の 1 行で
+      // 一覧の遅さは変わらない。突き合わせる台帳側の id は上の `registered` と同じ集合 ——
+      // 別の所で作り直すと、絞り(scope / 保管)の掛かった後の並びと突き合わせる事になり、
+      // 「机が知らない」の意味が要求ごとに変わる。
+      const agentsCli = agentsCache.read([...registered]);
+      // 行ごとの照合は Set で O(1)(行 × 台帳の積にしない — Codex 2026-09-06)。
+      const cliIdx = cliSeenIndex(agentsCli);
       // ★地図は走査の**前**に1回だけ読む(手順の1番目)。走査の中で会話ごとに読むと
       //   open が file 数だけ増える上、`only` を広げる判断が走査より後になって罠1 を踏む。
       const heads = headMap();
@@ -1393,7 +1434,10 @@ const server = createServer(async (req, res) => {
               returnRequestedAt: readReturnRequest(MIRROR_ROOT, checkoutId)?.at ?? null,
             }
           : { kind: "desk", checkoutId: null, returnRequestedAt: null };
-        return sessionRow(s, live, machine, diffCache.get(s.cwd));
+        // ★2 本目の信号を**行の居場所の隣**に置く(2026-09-06)。表示専用 ——
+        //   此の値で送信を断ったり経路を変えたりはしない。`null` = 言えない
+        //   (読めなかった / 古い / 台帳に居ない行)で、`false` とは別の意味。
+        return sessionRow(s, { ...live, cliSeen: cliSeenFor(cliIdx, s.id) }, machine, diffCache.get(s.cwd));
       });
       // 何本見て何本開いたかを毎回名乗る。★「速い」を主張する側が計器を持たないと、
       // 遅くなった時に「気のせい」で片付く(この置き換え自体、測って初めて見つかった)。
@@ -1420,6 +1464,9 @@ const server = createServer(async (req, res) => {
         //     build 105(今 配っている物)は帯の UI 自体を持たない(6e2a5a0 は 105 の 2h 後)。
         //     嘘の数字を出すより黙る方が良い。106 以降は名乗るので正しく出る。
         appBuild: headerBuild(req.headers["x-app-build"]),
+        // 文面は `wire.mjs` の `agentsCliView` が組む(「描くのは display」に揃える)。
+        // 此処は観測値を渡すだけ。
+        agentsCli,
       }));
     }
 
