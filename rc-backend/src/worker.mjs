@@ -190,7 +190,7 @@ export class WorkerManager {
    * user turn を送る。ワーカーが無ければ spawn。busy なら queue。
    * 戻り値: 受理時点の seq(user_sent イベント)。
    */
-  send(sessionId, text, { onEvent, cwd } = {}) {
+  send(sessionId, text, { onEvent, cwd, launcher } = {}) {
     // ★宛先は `_start` より**先に**登録する。spawn の途中で出る通知(同期の失敗など)も
     //   同じ口から出したい。旧実装は `_start` の後に `entry.onEvent` を代入していたので、
     //   起動中に出た物だけが静かにリング止まりになっていた。
@@ -199,7 +199,7 @@ export class WorkerManager {
     if (!e) {
       // ★cwd の既定値をここで作らない。作った瞬間に「渡し忘れ」が観測できなくなる
       //   (`_openPlan` の第2引数を argv に写し忘れた H2 と同じ型)。
-      e = this._start(sessionId, cwd);
+      e = this._start(sessionId, cwd, launcher);
     }
     if (e.state === "busy") {
       // ★積む物が**文字列でなく物**なのは、`user_queued` の seq を持たせる為
@@ -289,8 +289,10 @@ export class WorkerManager {
     return { fork: !head || undead, resumeId: head || sessionId, cwd };
   }
 
-  _start(sessionId, cwd) {
+  _start(sessionId, cwd, launcher = null) {
     const plan = this._openPlan(sessionId, cwd);
+    // ★起動する launcher は送信の口が**要求ごとに**決めて渡す(2026-09-06)。決めた時と起動する時の間を短くする。
+    if (launcher) plan.launcher = launcher;
     // ★`_spawn` が**同期で**投げたら、そのまま外へ出す。`this.workers.set` はこの下に在るので
     //   半端な entry は残らず、次の送信は素の初回として扱われる。握り潰して 202 を返さない。
     const proc = this._spawn(sessionId, plan);

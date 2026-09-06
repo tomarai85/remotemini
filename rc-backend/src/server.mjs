@@ -29,6 +29,7 @@ import { parseFleetAccount, selectionMessage, selectionProblem } from "./account
 import { parseCswapUsage, usageBackoffMs, usageRefreshDue } from "./usage.mjs";
 // 2 本目の生存信号(2026-09-06)。CLI 自身が名乗るセッション一覧を、tmux の画面の**隣**に置く。
 import { AGENTS_STALE_MS, AGENTS_TIMEOUT_MS, AGENTS_TTL_MS, agentsChildEnv, cliSeenFor, cliSeenIndex, makeAgentsCache, positiveMs } from "./agentscache.mjs";
+import { resolveLauncher } from "./launcher.mjs";
 import { JsonlTail, formatPollCursor, pollDecision, resumeDecision } from "./tail.mjs";
 import { MetaCache, readMetaFromPath } from "./listing.mjs";
 import { EventRing } from "./ring.mjs";
@@ -75,7 +76,19 @@ import { createIdemStore, validKey, IDEM_REFUSAL } from "./idem.mjs";
 
 const HOME = homedir();
 const PROJECTS_DIR = process.env.RC_PROJECTS_DIR || join(HOME, ".claude", "projects");
-const CLAUDE_WORK = process.env.RC_CLAUDE_WORK || join(HOME, "fleet-tools", "claude-work");
+// ★worker 経路の launcher は**決めてから**使う(2026-09-06、friday に `~/fleet-tools/` が無かった)。
+//   順序 = env > `~/fleet-tools/claude-work` > git 同期の `~/.claude/tools/claude-work`。無ければ
+//   `CLAUDE_WORK` は null で、送信の口が spawn の**前**に `launcher_missing` で断る(202 の後で
+//   `worker_error` に化けない)。決めた結果は起動 log と `/healthz` に載せる(配備の検証が読む)。
+//   ★決めるのは**要求ごと**(Codex 2026-09-06): 起動時の 1 回に固めると「後で消えた」が 202 の後の死に戻り、
+//   「後で同期で現れた」が再起動まで 409 に固まる。exists は安い。起動時は log に 1 行だけ出す。
+const resolveWorkerLauncher = () => resolveLauncher({ home: HOME });
+{
+  const l0 = resolveWorkerLauncher();
+  console.error(l0.path
+    ? `[rc-backend] worker 経路の launcher: ${l0.path}(${l0.source})`
+    : `[rc-backend] worker 経路の launcher が無い(${l0.reason}; tried ${l0.tried.join(", ")})— 背景の送信は launcher_missing で断る`);
+}
 // ★電話から新しい会話を始める時に使う(2026-08-31)。既定は `ensure-phone-window.sh` と
 //   **同じ値**にする —— 回復用の window と同じ入口で始めないと、登録簿(statusLine が書く)に
 //   載らない会話が生まれ、電話の一覧に出ない物を作る事になる。
@@ -698,7 +711,13 @@ const manager = new WorkerManager({
     // ★`|| HOME` を**書かない**(= 変異 W20)。書くと「会話の居場所で開く」という当てが
     //   無音で消え、$HOME で開いた子が別の場所を作業場所だと思い込む。
     //   cwd を持たない会話は route 側が 409 `cwd_unknown` で既に断っている。
-    return nodeSpawn(CLAUDE_WORK, [
+    // ★送信の口が決めた launcher を使う。無ければ決め直す。それでも無ければ**投げる**(同期)= 口の catch が
+    //   500 で表に出す。PATH の名前へ落ちる道は作らない(起動してから死ぬ = 202 の後の worker_error に戻る)。
+    const bin = plan.launcher || resolveWorkerLauncher().path;
+    // 語彙を増やさない(`code` を発明すると線の語彙台帳に「サーバにしか無い語」が生える)。素の Error =
+    // 口の catch の「握り潰さない」枝で 500 として表に出る。此処へ来るのは口が断り損ねた時だけ。
+    if (!bin) throw new Error("worker launcher missing (resolved null after the route's check)");
+    return nodeSpawn(bin, [
       "-p",
       ...(plan.fork ? ["--fork-session"] : []),
       "--resume", plan.resumeId,
@@ -2180,11 +2199,23 @@ const server = createServer(async (req, res) => {
           error: WORKER_REFUSAL[verdict],
         });
       }
+      // ★launcher が無ければ**起動する前**に断る(2026-09-06)。Node の spawn は無い path でも同期には
+      //   投げず非同期の `error` で死ぬので、此処で見ないと電話は 202「Sent」の後に `worker_error` を
+      //   受け取る —— 其れを描く client は無い。
+      const launcher = resolveWorkerLauncher();
+      if (!launcher.path) {
+        if (idemHeld) idem.abandon(sendId);
+        return json(res, 409, {
+          accepted: false, route: "worker", reason: "launcher_missing",
+          error: WORKER_REFUSAL.launcher_missing,
+        });
+      }
       let seq;
       try {
         seq = manager.send(sessionId, text, {
           onEvent: (s, d) => pushToSubscribers(sessionId, s, d),
           cwd: wcwd,
+          launcher: launcher.path,
         });
       } catch (e) {
         // 検査と spawn の間で dir が消えた(競合)。**202 を返してから死ぬより 409**。
