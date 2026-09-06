@@ -65,6 +65,21 @@ Tests: `~/.claude/tools/claude-work.test.sh` — 10 cases with a fake `claude` (
 respects env / phone prefers pointer / empty → exit 3 / two lines → exit 3 / dangling → exit 3 / provider →
 exit 3 / through `rc-claude` with `--settings` / mutation control), 10/10.
 
+## The worker route has the same hole, measured but not yet fixed (10:5x)
+
+- `rc-backend/src/server.mjs` resolves the worker launcher as `RC_CLAUDE_WORK || ~/fleet-tools/claude-work`;
+  friday's `com.fleet.rc-backend` plist sets `RC_FLEET_ACCOUNT` (to an in-repo script) but **not**
+  `RC_CLAUDE_WORK`, and `~/fleet-tools/` does not exist there. A phone send to a session with no open pane
+  therefore spawns a path that is not there.
+- Production impact so far: none observed — friday's request log has **0** `route=worker` sends. The two
+  pane-less sessions in today's list (`7c625b3e`, `848e9c4d`) are the ones that would hit it.
+- What the phone would see: `worker.mjs` turns the ENOENT into a `worker_error` poll event with `stale` and
+  `stderr` fields, but no client renders that type — `ios/Sources` has no `worker_error` handling and
+  `PollModels.swift` dispatches worker events generically — so the send would say "Sent" and then nothing.
+- Fix shape that matches the launcher work: resolve `~/fleet-tools/claude-work` first, else the git-synced
+  `~/.claude/tools/claude-work`, else refuse the send with a named reason *before* saying 202; and give the
+  phone a visible line for `worker_error`. Queued for the next plan; not part of this change.
+
 ## Verified in production (09:41)
 
 After friday's sync-pull delivered both files (`claude-work` 5424 bytes at 09:40), the real path — a

@@ -391,6 +391,21 @@ function cmdDown(session, sessionId, purgeTranscript = false) {
       say(`${p.replace(HOME, "~")}: ${stillThere ? "★まだ在る" : "不在を確認"}`);
       if (stillThere) bad = true;
     }
+    // ★消した直後の「不在」は、死にかけの会話の statusLine(~/.claude/tools の rc-pane-register、2 秒毎)が**書き戻す**前の
+    //   一瞬でしかない(2026-09-06 実測: e083612b は `down` が「不在を確認」と言った 1 秒後に mtime 09:47 で
+    //   復活し、本番の `onlyInRegistry` に残った)。だから猶予を置いてもう一度見る。猶予は env で 0 にできる
+    //   (対照は偽の書き戻しを 0.5 秒後に起こして、消し直しを測る)。
+    const grace = Number(process.env.RC_DOWN_GRACE_MS ?? 3000);
+    if (grace > 0) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, grace);
+      for (const p of [join(PANE_DIR, `${sessionId}.json`), join(HEADS_DIR, `${sessionId}.json`)]) {
+        if (!existsSync(p)) continue;
+        try { unlinkSync(p); } catch { bad = true; continue; }
+        const back = existsSync(p);
+        say(`${p.replace(HOME, "~")}: 猶予の間に書き戻されていた → ${back ? "★消し直せない" : "消し直した"}`);
+        if (back) bad = true;
+      }
+    }
   }
 
   // 転写(jsonl)の後始末。
