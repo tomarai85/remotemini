@@ -1,0 +1,55 @@
+[codex-quick started pid=46940 06:23:38 timeout=150s — background callers: wait on the pid, do not read the output early]
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work/rc-backend
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a07b9c-0ab2-7302-852f-144ca34328af
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Adversarial review, answer in <=20 lines: VERDICT (SHIP / DON'T SHIP) + numbered findings with the concrete failure each causes.
+
+System: a phone app lists a Claude Code session's subagents via a desk API (`GET /subagents`). Each row has `state` in {finished, running, stalled, unknown} derived from the parent transcript (a `completed` record wins), else from the agent transcript's mtime (running if written within 15 min, stalled otherwise). Yesterday's change added "the desk pressed x and saw the row vanish" as a memory that reported `finished` + reason `stopped-by-desk`; a reviewer objected that `finished` reads as successful completion.
+
+Change under review:
+1. A fifth state `stopped` (display "Stopped"), counted in `counts.stopped` (the counts object gains a key; the phone model declares it optional so older desks still decode).
+2. Two sources: (a) the parent transcript's `<task-notification>` with `<status>killed</status>` — measured on the production desk today: Claude Code 2.1.263 writes exactly this with summary 'Agent "…" was stopped by user' when the user (or the desk pressing x) stops an agent; natural completion writes `completed`; a killed background shell writes `failed` (ignored here). Reason `stopped-by-user`. (b) the desk's own memory of an observed stop while the agent transcript stays silent (+5 s grace), reason `stopped-by-desk`.
+3. Precedence: completed > killed > (parent unreadable → unknown) > desk memory > mtime. A killed agent can be resumed ("send it another message"), after which a later `completed` record makes it finished; the notification note says the same task-id may notify more than once.
+4. The listing note gains "N stopped". Display text for finished stays "Finished".
+
+Questions:
+- Precedence: completed beats killed regardless of order in the transcript (sets, not sequence). If an agent is killed AFTER completing (possible? e.g. resumed then killed again), the row would say finished. Is that a real hazard on this TUI, and what would the honest ordering be?
+- The parent scanner reads only the tail of the transcript (12 MiB budget). A killed notification older than the window is missed and the row falls back to mtime → stalled after 15 min. Acceptable?
+- Does adding a key to `counts` break any consumer you can think of besides a strict-decoding phone (which is now optional)?
+- Anything that makes `stopped` misleading: e.g. an agent the user stopped and then resumed, still running, whose last notification was `killed`?
+2026-09-07T11:23:39.800131Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T11:23:39.850224Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T11:23:40.371953Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+VERDICT: DON'T SHIP
+
+1. Set precedence is historically wrong. `completed → resume → killed` reports `finished`; multiple notifications per task ID make this a real hazard. The latest terminal notification must win.
+2. Resume is broken. After `killed → resume`, the old killed record keeps the row `stopped` while the agent is actively running. Agent activity newer than the terminal event must override it.
+3. Attribution is false. A desk-initiated stop also produces `<status>killed</status>`, so precedence selects `stopped-by-user`; `stopped-by-desk` is effectively hidden. Use `stopped` without actor unless independently known.
+4. Tail truncation converts a known terminal stop into `stalled`, falsely implying an unhealthy live agent. Persist/index terminal state, or report `unknown` when absence cannot be established from a truncated transcript.
+5. Compatibility risk is broader than `counts.stopped`: older clients with a closed `state` enum can fail decoding any row containing `stopped`. Roll out enum-tolerant clients before emitting the new state.
+6. Clients summing only the original four count fields will undercount rows even if JSON decoding succeeds.
+7. Parent unreadable outranking confirmed desk memory makes a directly observed stop become `unknown`; use the memory when valid, while marking its source/confidence.
+tokens used
+12,942
+VERDICT: DON'T SHIP
+
+1. Set precedence is historically wrong. `completed → resume → killed` reports `finished`; multiple notifications per task ID make this a real hazard. The latest terminal notification must win.
+2. Resume is broken. After `killed → resume`, the old killed record keeps the row `stopped` while the agent is actively running. Agent activity newer than the terminal event must override it.
+3. Attribution is false. A desk-initiated stop also produces `<status>killed</status>`, so precedence selects `stopped-by-user`; `stopped-by-desk` is effectively hidden. Use `stopped` without actor unless independently known.
+4. Tail truncation converts a known terminal stop into `stalled`, falsely implying an unhealthy live agent. Persist/index terminal state, or report `unknown` when absence cannot be established from a truncated transcript.
+5. Compatibility risk is broader than `counts.stopped`: older clients with a closed `state` enum can fail decoding any row containing `stopped`. Roll out enum-tolerant clients before emitting the new state.
+6. Clients summing only the original four count fields will undercount rows even if JSON decoding succeeds.
+7. Parent unreadable outranking confirmed desk memory makes a directly observed stop become `unknown`; use the memory when valid, while marking its source/confidence.
+rc=0

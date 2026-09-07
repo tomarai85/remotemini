@@ -482,7 +482,9 @@ export function subagentsNote({ agents, directory, parent, truncated }) {
   const running = agents.filter((a) => a.state === "running").length;
   const stalled = agents.filter((a) => a.state === "stalled").length;
   const unknown = agents.filter((a) => a.state === "unknown").length;
+  const stopped = agents.filter((a) => a.state === "stopped").length;
   const parts = [`${agents.length} subagent${agents.length === 1 ? "" : "s"}`, `${running} working`];
+  if (stopped) parts.push(`${stopped} stopped`);
   // ★`stalled` は「死んだ」ではなく「最近 生きている証拠が無い」。文面でも断定しない
   //   (subagents.mjs の `SUBAGENT_STALE_MS` の頭注 —— mtime は健康診断ではない)。
   if (stalled) parts.push(`${stalled} with no recent sign of life`);

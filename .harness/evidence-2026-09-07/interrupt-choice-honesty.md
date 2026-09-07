@@ -32,6 +32,16 @@ Reviewer(r11、APPROVE)が cited 行を全部照合: `overlayKindIn` は CHOICE 
 
 検査 198 緑(choice 7 / overlay 9 / inject / view)。
 
-## 5. 本番での確認
+## 5. 本番での確認(friday `17f92fd`、`live-interrupt-choice-run2.log`)= 0
 
-(下に追記)
+使い捨ての会話(idle)に `/model` を送ってモデルの選択メニュー(良性の CHOICE)を開き、`POST /interrupt`。
+
+| 欄 | 値 |
+|---|---|
+| 開く前 | `/status` = CHOICE、pane に "Select model … ❯ 2. Sonnet ✔ … Esc to cancel" |
+| 応答 | `interrupted:false`, `stopped:null`, `reason:"choice-open"`, waitedMs 0 |
+| 電話の文 | "A menu or permission prompt is open on the desk, so Stop pressed nothing: dismissing it from here would answer it. Resolve it on the Mac, or use the choice buttons for a menu." |
+| 後 | `/status` = CHOICE のまま、pane にメニューが**開いたまま**(Escape は打たれていない) |
+
+run1(`live-interrupt-choice-run1.log`)は机は同じ応答で、台本の文言照合が Codex #2 の前の文のままだった為の赤(台本を直して run2)。
+許可の確認(permission prompt)の形は本番の使い捨て会話が auto mode で出さないので、実画面 fixture の単体検査が担う。

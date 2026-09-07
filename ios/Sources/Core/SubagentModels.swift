@@ -44,6 +44,8 @@ struct SubagentCounts: Decodable, Equatable {
     let running: Int
     let stalled: Int
     let unknown: Int
+    /// 机が止めた / 利用者が止めた agent(2026-09-07、5 つ目の状態 `stopped`)。古い机は此の鍵を送らないので optional。
+    let stopped: Int?
 }
 
 struct SubagentRow: Decodable, Equatable, Identifiable {
@@ -54,7 +56,7 @@ struct SubagentRow: Decodable, Equatable, Identifiable {
     /// 呼んだ側が書いた1行の要約。**人が最初に読みたいのは之**。
     let description: String?
     let model: String?
-    /// `finished` / `running` / `stalled` / `unknown`。
+    /// `finished` / `running` / `stalled` / `unknown` / `stopped`(2026-09-07: 止められた agent。成功の完了と混ぜない)。
     /// ★`unknown` を `running` や `finished` に丸めない —— 「分からない」を「作業中」と
     ///   書くと、読み手には観測値と区別が付かない。表示語は `display.state` が持つ。
     let state: String
