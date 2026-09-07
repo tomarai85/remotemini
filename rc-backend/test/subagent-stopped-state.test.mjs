@@ -46,7 +46,7 @@ const notified = (id, status, summary) => ({
 const base = () => ({ agentId: "a1", done: new Set(), launched: new Set(["a1"]), coveredFrom: 0, parentState: "read", nowMs: NOW, staleMs: SUBAGENT_STALE_MS });
 
 test("語彙: stopped は 5 つ目の状態で、表示語は Stopped", () => {
-  assert.deepEqual(SUBAGENT_STATES, ["finished", "running", "stalled", "unknown", "stopped"]);
+  assert.deepEqual(SUBAGENT_STATES, ["finished", "running", "stalled", "unknown", "stopped", "failed"]);
   assert.equal(SUBAGENT_STATE_TEXT.stopped, "Stopped");
 });
 
@@ -78,7 +78,7 @@ test("一覧: killed の通知が在る agent は stopped / 'Stopped'、counts.s
   const a1 = r.agents.find((a) => a.agentId === "a1"), a2 = r.agents.find((a) => a.agentId === "a2");
   assert.equal(a1.state, "stopped"); assert.equal(a1.reason, "stopped-by-user"); assert.equal(a1.display.state, "Stopped");
   assert.equal(a2.state, "running");
-  assert.deepEqual(r.counts, { finished: 0, running: 1, stalled: 0, unknown: 0, stopped: 1 });
+  assert.deepEqual(r.counts, { finished: 0, running: 1, stalled: 0, unknown: 0, stopped: 1, failed: 0 });
 });
 
 test("一覧: 机の記憶からも stopped / stopped-by-desk。completed の通知は finished のまま(成功の完了と混ぜない)", () => {
@@ -88,10 +88,10 @@ test("一覧: 机の記憶からも stopped / stopped-by-desk。completed の通
   const a1 = r.agents.find((a) => a.agentId === "a1"), a2 = r.agents.find((a) => a.agentId === "a2");
   assert.deepEqual([a1.state, a1.reason, a1.display.state], ["stopped", "stopped-by-desk", "Stopped"]);
   assert.deepEqual([a2.state, a2.reason, a2.display.state], ["finished", "parent-completed", "Finished"]);
-  assert.deepEqual(r.counts, { finished: 1, running: 0, stalled: 0, unknown: 0, stopped: 1 });
+  assert.deepEqual(r.counts, { finished: 1, running: 0, stalled: 0, unknown: 0, stopped: 1, failed: 0 });
 });
 
-test("一覧: failed の通知は done にも killed にもならない(此の題の外 —— mtime で読む)", () => {
+test("一覧: 背景シェルの形の failed(`Background command …`)は agent の終端ではない —— mtime で読む(round 12: agent の failed は別の検査)", () => {
   const w = world({ parentLines: [launched("a1"), notified("a1", "failed", "Background command failed with exit code 144")], agents: [{ id: "a1", mtimeSecAgo: 5 }] });
   const a1 = readSubagentsFromPath(w.parent, { nowMs: NOW }).agents[0];
   assert.equal(a1.state, "running");
@@ -106,7 +106,7 @@ test("note: stopped は文に出る('1 stopped')、finished の数とは別", ()
 test("★否定対照: 空の counts の形にも stopped が在る(鍵が常に在る = 電話の台帳と一致)", () => {
   const w = world({ parentLines: [], agents: [] });
   const r = readSubagentsFromPath(w.parent, { nowMs: NOW });
-  assert.deepEqual(r.counts, { finished: 0, running: 0, stalled: 0, unknown: 0, stopped: 0 });
+  assert.deepEqual(r.counts, { finished: 0, running: 0, stalled: 0, unknown: 0, stopped: 0, failed: 0 });
 });
 
 test("電話の模型は stopped を optional で持つ(古い机の応答も読める)。ios/ が隣に無い写しの木では測らない", (t) => {

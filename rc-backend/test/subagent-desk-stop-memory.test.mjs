@@ -104,7 +104,7 @@ test("一覧: 机が止めた行は stopped / stopped-by-desk、display.state �
   const a1 = r.agents.find((a) => a.agentId === "a1"), a2 = r.agents.find((a) => a.agentId === "a2");
   assert.equal(a1.state, "stopped"); assert.equal(a1.reason, "stopped-by-desk"); assert.equal(a1.display.state, "Stopped");
   assert.equal(a2.state, "running"); assert.equal(a2.display.state, "Working");
-  assert.deepEqual(r.counts, { finished: 0, running: 1, stalled: 0, unknown: 0, stopped: 1 });
+  assert.deepEqual(r.counts, { finished: 0, running: 1, stalled: 0, unknown: 0, stopped: 1, failed: 0 });
 });
 
 test("一覧: 記憶が無ければ従来どおり Working(opts.deskStopped 省略 / Map でない物は無視)", () => {

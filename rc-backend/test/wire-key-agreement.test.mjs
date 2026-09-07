@@ -373,7 +373,7 @@ const CASES = {
         lastActivityIso: "2026-09-05T10:00:00.000Z", display: { state: "Working" },
       }],
       directory: "read", parent: "read", truncated: false,
-      counts: { finished: 0, running: 1, stalled: 0, unknown: 0, stopped: 0 },
+      counts: { finished: 0, running: 1, stalled: 0, unknown: 0, stopped: 0, failed: 0 },
     }],
     [{ agents: [], directory: "unreadable", parent: "unscanned", truncated: false, counts: null }],
   ],

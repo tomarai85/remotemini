@@ -115,7 +115,7 @@ export const SUBAGENT_SCAN_MAX = 12 * 1024 * 1024;
 const CHILD_TAIL_MAX = 64 * 1024;
 
 /** 状態語。電話が分岐に使うので、増やす時は電話側と一緒に。 */
-export const SUBAGENT_STATES = ["finished", "running", "stalled", "unknown", "stopped"];
+export const SUBAGENT_STATES = ["finished", "running", "stalled", "unknown", "stopped", "failed"];
 
 /**
  * 電話にそのまま出せる英文。★`unknown` を `running` や `finished` に丸めない ——
@@ -128,6 +128,9 @@ export const SUBAGENT_STATE_TEXT = {
   unknown: "Could not tell",
   // ★止められた agent(2026-09-07、Codex #9): 成功の完了(finished)と混ぜない。源は親転写の `killed` か机の観測。
   stopped: "Stopped",
+  // ★失敗した agent(2026-09-07 round 12): 親転写の `<status>failed</status>`(例 "Agent … failed: Agent terminated early due to an API
+  //   error")。Jervis の転写 8158 completed / 470 failed のうち 42 が agent の失敗(残りは背景シェル)。成功の完了と混ぜない。
+  failed: "Failed",
 };
 
 /**
@@ -152,7 +155,11 @@ function completionsIn(records) {
     if (tur && typeof tur === "object" && typeof tur.agentId === "string") {
       // ★`status` を見る。名乗られた事自体は起動の証拠にしかならない(頭注)。
       if (tur.status === "completed") terminal.set(tur.agentId, { status: "completed", ts: tsOf(JSON.stringify(rec)) });
-      else launched.add(tur.agentId);
+      else {
+        launched.add(tur.agentId);
+        // ★終端の後の起動の記録 = 再開した(Codex failed-state #4/#5: 時刻の推定でなく親転写の記録で再開を読む)。終端を捨てる。
+        terminal.delete(tur.agentId);
+      }
     }
     // 背後起動の agent は `<task-notification>` の user 行で終わる。
     const content = rec && rec.message && rec.message.content;
@@ -162,16 +169,22 @@ function completionsIn(records) {
         launched.add(id[1]);
         if (/<status>completed<\/status>/.test(content)) terminal.set(id[1], { status: "completed", ts: tsOf(JSON.stringify(rec)) });
         if (/<status>killed<\/status>/.test(content)) terminal.set(id[1], { status: "killed", ts: tsOf(JSON.stringify(rec)) });
+        // ★`failed` は id で agent に束ねる(Codex 2026-09-07 failed-state #1-#3): 一覧の行は `agent-<id>.jsonl` が在る id だけなので、
+        //   背景シェル(`Background command … failed`)や Monitor の failed は id が agent の転写と重ならず、行にならない。summary の文で
+        //   選ぶと文言の変更や偽装で外れるので、文は読まない。
+        if (/<status>failed<\/status>/.test(content)) terminal.set(id[1], { status: "failed", ts: tsOf(JSON.stringify(rec)) });
       }
     }
   }
   const done = new Set();
   const killed = new Map();   // agentId → 通知の時刻(ms)。時刻が読めなければ null
+  const failed = new Map();   // 同上(agent の失敗)
   for (const [id, t] of terminal) {
     if (t.status === "completed") done.add(id);
     else if (t.status === "killed") killed.set(id, Number.isFinite(t.ts) ? t.ts : null);
+    else if (t.status === "failed") failed.set(id, Number.isFinite(t.ts) ? t.ts : null);
   }
-  return { done, launched, killed };
+  return { done, launched, killed, failed };
 }
 
 function parseLine(ln) {
@@ -222,9 +235,9 @@ function scanParent(path, opts = {}) {
       const o = parseLine(ln);
       if (o) records.push(o);
     }
-    const { done, launched, killed } = completionsIn(records);
+    const { done, launched, killed, failed } = completionsIn(records);
     // 先頭まで届いたなら、どんなに古い子でも「見えていた」= covered。
-    return { done, launched, killed, coveredFrom: r.reachedStart ? -Infinity : (Number.isFinite(oldest) ? oldest : Infinity) };
+    return { done, launched, killed, failed, coveredFrom: r.reachedStart ? -Infinity : (Number.isFinite(oldest) ? oldest : Infinity) };
   } finally {
     closeSync(fd);
   }
@@ -304,12 +317,14 @@ export function readSubagentsFromPath(transcriptPath, opts = {}) {
   let done = new Set();
   let launched = new Set();
   let killed = new Map();
+  let failed = new Map();
   let coveredFrom = Infinity;
   try {
     const s = scanParent(transcriptPath, opts);
     done = s.done;
     launched = s.launched;
     killed = s.killed;
+    failed = s.failed;
     coveredFrom = s.coveredFrom;
   } catch {
     // ★親が読めない = **何が終わったか一つも知らない**。ここで `running` にも
@@ -345,6 +360,7 @@ export function readSubagentsFromPath(transcriptPath, opts = {}) {
     const { state, reason } = stateOf({
       agentId, done, launched, coveredFrom, lastActivityMs, parentState, nowMs, staleMs,
       killedAt: killed.has(agentId) ? (killed.get(agentId) ?? true) : null,
+      failedAt: failed.has(agentId) ? (failed.get(agentId) ?? true) : null,
       deskStoppedAt: deskStopped.has(agentId) ? deskStopped.get(agentId) : null,
     });
 
@@ -384,7 +400,7 @@ export function subagentDirFor(transcriptPath) {
  *   3. 子の最終書き込みが親の走査窓より古い → `unknown`(予算の外なので分けられない)。
  *   4. ここまで来たら「終了の記録は**本当に**無い」。あとは mtime で running/stalled。
  */
-export function stateOf({ agentId, done, launched, coveredFrom, lastActivityMs, parentState, nowMs, staleMs, killedAt = null, deskStoppedAt = null }) {
+export function stateOf({ agentId, done, launched, coveredFrom, lastActivityMs, parentState, nowMs, staleMs, killedAt = null, deskStoppedAt = null, failedAt = null }) {
   // 順位(2026-09-07、Codex stopped-state の後): 親転写の最後の終端が completed > 転写が読めない → unknown > 机の観測(親が読めなくても
   // 独立の観測)> 親が読めない → unknown > 親転写の killed > 走査の予算 > mtime。
   if (done.has(agentId)) return { state: "finished", reason: "parent-completed" };
@@ -402,6 +418,9 @@ export function stateOf({ agentId, done, launched, coveredFrom, lastActivityMs, 
   //   mtime で読む(Codex #2)。通知の時刻が読めない(`true`)時は転写の動きで反証できないので、通知を信じる。
   if (killedAt === true) return { state: "stopped", reason: "stopped-by-user" };
   if (Number.isFinite(killedAt) && lastActivityMs <= killedAt + DESK_STOP_GRACE_MS) return { state: "stopped", reason: "stopped-by-user" };
+  // ★親転写の最後の終端が failed(agent の失敗)。killed と同じく再開できるので、通知の後に転写が動いていれば mtime で読む。
+  if (failedAt === true) return { state: "failed", reason: "agent-failed" };
+  if (Number.isFinite(failedAt) && lastActivityMs <= failedAt + DESK_STOP_GRACE_MS) return { state: "failed", reason: "agent-failed" };
   // 起動の記録を窓の中で見ていれば、其の子の一生は窓に収まっている ——
   // 終了は起動より後にしか書かれないので、無い事を言い切ってよい。
   const covered = launched.has(agentId) || lastActivityMs >= coveredFrom;
@@ -412,7 +431,7 @@ export function stateOf({ agentId, done, launched, coveredFrom, lastActivityMs, 
 }
 
 function empty() {
-  return { finished: 0, running: 0, stalled: 0, unknown: 0, stopped: 0 };
+  return { finished: 0, running: 0, stalled: 0, unknown: 0, stopped: 0, failed: 0 };
 }
 
 function tally(agents) {
