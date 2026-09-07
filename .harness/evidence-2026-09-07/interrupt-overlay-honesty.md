@@ -47,6 +47,16 @@
 
 検査 +2(TOCTOU で verified / 認識できない overlay で unverified・印が増えれば verified)。全 191 緑。
 
-## 5. 本番での確認
+## 5. 本番での確認(friday `b7ada08`、`live-interrupt-overlay-run1.log`)= 0
 
-(下に追記)
+使い捨ての会話(idle)に `/tasks` を送って空パネルを開き(pane の撮影で "No tasks currently running" を確認)、`POST /interrupt`。
+
+| 欄 | 値 |
+|---|---|
+| 応答 | `interrupted:false`, `stopped:"overlay-closed"`, `reason:"panel-empty"`, waitedMs 102 |
+| 電話の文 | "Closed the agent panel on the desk; nothing was interrupted. Tap Stop again to interrupt the conversation, or stop one agent from Running." |
+| 画面 | 2 秒後に SENDABLE、overlay 無し(撮影で composer を確認) |
+| 対照(overlay 無しの pane に interrupt) | 従来どおり `stopped:null`, `reason:"not-in-flight"`("Nothing was running to stop") |
+
+detail overlay が開いた形(09:13 の実物)は、driver の修正(`d079666`)以降 机が自分では残さなくなったので、本番では空パネルで確かめた。
+detail / panel の形は実画面 fixture の単体検査(`interrupt-overlay-honesty.test.mjs`)が担う。
