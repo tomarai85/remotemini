@@ -1,0 +1,16 @@
+  ..  : mode=shell tmux=rc-e2e-202609070906522769418449141970322 sid=e3a427ed-7ea1-4492-9849-19c70f743241
+  ..  : send HTTP 202 (0s)
+  ..  : running=1 (10s)
+  ..  : background shell alive=1 (nonce 847595)
+  ..  : shells on panel = ["sleep 240.847595 (running)"]
+  ..  : stop HTTP 409 stopped=false reason=shells-present sent=false keys=["-l /tasks","Enter","Escape"] escapes=1 after={"screen":"SENDABLE","overlayClosed":true,"shells":["sleep 240.847595 (running)"]} (12s)
+  ..  : agent 178005->195339->200389 shell alive=1 (42s)
+  ..  : shell killed by pid pattern, alive now=0 (46s)
+  ..  : retry HTTP 409 stopped=false reason=panel-did-not-open keys=["-l /tasks","Enter"] after={"screen":"DETAIL","overlay":"DETAIL","retracted":false,"leftover":""} (51s)
+  ..  : after retry target 200389->203949->207509 (82s)
+セッション rc-e2e-202609070906522769418449141970322: 不在を確認
+~/.rc-backend/panes/e3a427ed-7ea1-4492-9849-19c70f743241.json: 不在を確認
+転写: 退避した(~/.claude/projects-attic/rc-e2e/e3a427ed-7ea1-4492-9849-19c70f743241.jsonl)—— 読めるが製品の一覧には出ない
+殻の出力: kind=ok mode=shell one_running=1 shell_seen=1 stop_http=409 reason=shells-present sent=0 pressed_none=1 shell_row_seen=1 agent_running=1 shell_alive=1 retry_http=409 retry_stopped=false retry_reason=panel-did-not-open target_frozen=0 torn_down=1 torn_retry=0 limited=not-limited
+=== 判定 ===
+赤(1)
