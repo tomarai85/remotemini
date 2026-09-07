@@ -21,7 +21,7 @@
 //   7. 全体をペインの鍵の中で行う(電話の送信・割り込み・選択と直列)。鍵に入る前に pane と予算を検める(Codex r5 #6/#7)。
 import { classifyScreen, panelStateOf, composerText, composerIsEmpty, overlayRegionOf } from "./inject.mjs";
 import { parsePanel, parseDetail } from "./panelmodel.mjs";
-import { planStop, verifySelection, sameShape, hasMaterial, rowDescription, STOP_REFUSAL, DEFAULT_MAX_MOVES } from "./panelstop.mjs";
+import { planStop, planDirectDetail, verifySelection, sameShape, hasMaterial, rowDescription, rowMatches, STOP_REFUSAL, DEFAULT_MAX_MOVES } from "./panelstop.mjs";
 import { ESC_SETTLE_MS } from "./choice.mjs";
 import { MUTEX_BUSY, MUTEX_ABORTED } from "./mutex.mjs";
 
@@ -142,81 +142,10 @@ async function drive(inj, pane, target, { maxMoves, maxRounds, budgetMs, allowSh
     const { after: more = {}, ...rest } = extra;
     return refusal(reason, { ...rest, keys, escapes, after: { screen: c.state, overlayClosed: c.closed, ...more } });
   };
-  /** 入力欄に `/tasks` が残っていれば Backspace で消す(入力欄が丁度 `/tasks` の時だけ)。 */
-  const retract = async () => {
-    const t = cap();
-    if (composerOf(t) !== TASKS) return { retracted: false, leftover: composerOf(t) };
-    for (let i = 0; i < TASKS.length; i++) press("BSpace");
-    const r = await poll((x) => (composerIsEmpty(x) ? "empty" : null));
-    return { retracted: Boolean(r.tag), leftover: r.tag ? "" : composerOf(r.text) };
-  };
-
-  /** パネルを出す。既に開いていれば其れを使う。詳細が開いていれば(誰かが開いた)1 回閉じてから。 */
-  const openPanel = async () => {
-    let t = cap();
-    let st = panelStateOf(t);
-    if (st === "DETAIL") {
-      const c = await closeOverlay();
-      if (!c.closed) return { refusal: refusal(c.uncertain ? "escape-unverified" : "not-sendable", { why: "detail-stuck", keys, escapes, after: { screen: c.state } }) };
-      t = cap(); st = panelStateOf(t);
-    }
-    if (st === "PANEL") return { panel: parsePanel(t), opened: false };
-    const s = classifyScreen(t);
-    if (s.state !== "SENDABLE") return { refusal: refusal("not-sendable", { why: s.state, keys, escapes, after: { screen: s.state } }) };
-    if (!composerIsEmpty(t)) return { refusal: refusal("not-sendable", { why: "composer-not-empty", keys, escapes, after: { screen: s.state, composer: composerOf(t).slice(0, 80) } }) };
-    type(TASKS);
-    let echo = await poll((x) => (composerOf(x) === TASKS ? "echo" : null));
-    if (!echo.tag) echo = await poll((x) => (composerOf(x) === TASKS ? "echo" : null));   // 遅い描画の猶予をもう一度
-    if (!echo.tag) {
-      const r = await retract();
-      return { refusal: refusal("panel-did-not-open", { why: "no-echo", keys, escapes, after: { screen: classifyScreen(cap()).state, retracted: r.retracted, leftover: r.leftover } }) };
-    }
-    press("Enter");
-    let r = await poll((x) => (panelStateOf(x) === "PANEL" ? "panel" : null));
-    if (!r.tag) r = await poll((x) => (panelStateOf(x) === "PANEL" ? "panel" : null));   // 猶予をもう一度
-    if (!r.tag) {
-      const rt = await retract();
-      return { refusal: refusal("panel-did-not-open", { why: "no-panel", keys, escapes, after: { screen: classifyScreen(cap()).state, overlay: panelStateOf(cap()), retracted: rt.retracted, leftover: rt.leftover } }) };
-    }
-    return { panel: parsePanel(r.text), opened: true };
-  };
-
-  const examined = [];
-  let shape = null;
-  for (let round = 0; round < maxRounds; round++) {
-    const op = await openPanel();
-    if (op.refusal) return op.refusal;
-    let panel = op.panel;
-    if (shape && !sameShape(shape, panel)) return bail("reflow", { why: "reopened-panel-differs" });
-    shape = panel;
-    // ★断りの根拠をそのまま載せる: パネルに見えたシェル行の本文(最大 8 行・各 160 字)。live 計器は此処に自分の nonce を探し、
-    //   「TUI が**此の**シェルの行を出していた」を机の言葉でなく行の本文で確かめる(Codex 2026-09-07 #3/#5)。
-    if (!allowShells && hasShellRows(panel)) return bail("shells-present", { after: { shells: shellRowTexts(panel) } });
-    const plan = planStop({ panel, target, maxMoves, examined });
-    if (!plan.ok) return bail(plan.reason, { why: plan.why ?? null });
-    if (plan.action !== "open-detail") return bail("reflow", { why: `unexpected-plan:${plan.action}` });
-
-    // 印を動かす。1 打ごとに「印が動いた」を見る。
-    for (let i = 0; i < plan.moves; i++) {
-      const before = parsePanel(cap());
-      const from = before?.selected ? `${before.selected.section}#${before.selected.index}` : null;
-      press(plan.direction === "up" ? "Up" : "Down");
-      const r = await poll((x) => { const p = parsePanel(x); const now = p?.selected ? `${p.selected.section}#${p.selected.index}` : null; return p && now && now !== from ? "moved" : null; });
-      if (!r.tag) return bail("reflow", { why: "move-not-observed" });
-    }
-    panel = parsePanel(cap());
-    if (!panel) return bail("reflow", { why: "panel-gone" });
-    const v = verifySelection(panel, plan.target);
-    if (!v.ok) return bail(v.reason, { why: "before-enter" });
-
-    press("Enter");
-    const d = await poll((x) => (panelStateOf(x) === "DETAIL" ? "detail" : null));
-    if (!d.tag) return bail("detail-did-not-open", {});
-    const detail = parseDetail(d.text);
-    const plan2 = planStop({ panel, detail, target, maxMoves, examined });
-    if (!plan2.ok) return bail(plan2.reason, { why: plan2.why ?? null });
-
-    if (plan2.action === "press-x-in-detail") {
+  /** 一致した詳細で x を押し、**パネルで**目標の running 行が減ったのを見る。`before` = 押す前の本数、`isTarget` = 数える行の条件。 */
+  const countRunning = (p, isTarget) => (p?.sections ?? []).filter((s) => !/^Shells\b/.test(s.name)).reduce((n, s) => n + s.rows.filter((r) => isTarget(r) && / \(running\)/.test(r.text)).length, 0);
+  const pressX = async ({ detail, before, isTarget, planTarget }) => {
+    {
       // 打つ直前にもう一度撮る。同じ詳細が映っていなければ打たない(撮った後に終わってパネルへ戻った隙間)。
       const fresh = cap();
       if (panelStateOf(fresh) !== "DETAIL" || !sameDetail(parseDetail(fresh), detail)) return bail("reflow", { why: "detail-changed-before-x" });
@@ -225,9 +154,7 @@ async function drive(inj, pane, target, { maxMoves, maxRounds, budgetMs, allowSh
       // ので数で見る)。x でパネルに戻ればその場で数え、overlay が閉じたなら /tasks を開き直して数える(「閉じた」だけでは
       // 対象に結び付かない。Codex c3 #5)。同じ詳細に留まったまま(数字が進んだだけ)/ 入力欄以外の画面(許可確認 等)に
       // 落ちたなら `unverified`。
-      const targetText = plan2.target?.text ?? null;
-      const runningSame = (p) => (p?.sections ?? []).filter((s) => !/^Shells\b/.test(s.name)).reduce((n, s) => n + s.rows.filter((r) => r.text === targetText && / \(running\)/.test(r.text)).length, 0);
-      const before = runningSame(panel);
+      const runningSame = (p) => countRunning(p, isTarget);
       const decreased = (x) => {
         if (emptyPanel(x)) return before > 0 ? "panel" : null;          // 行が 1 本も残らないパネル(最後の agent を止めた)
         const p = parsePanel(x); return p && runningSame(p) < before ? "panel" : null;
@@ -266,8 +193,103 @@ async function drive(inj, pane, target, { maxMoves, maxRounds, budgetMs, allowSh
       }
       const c = await closeOverlay();
       if (c.uncertain) return refusal("escape-unverified", { sent: true, why: "after-x", keys, escapes, after: { screen: c.state, overlayClosed: false, stopObserved } });
-      return { ok: true, stopped: "observed", reason: null, message: null, sent: true, keys, escapes, target: plan2.target,
+      return { ok: true, stopped: "observed", reason: null, message: null, sent: true, keys, escapes, target: planTarget,
                after: { screen: c.state, overlayClosed: c.closed, stopObserved } };
+    }
+  };
+  /** 入力欄に `/tasks` が残っていれば Backspace で消す(入力欄が丁度 `/tasks` の時だけ)。 */
+  const retract = async () => {
+    const t = cap();
+    if (composerOf(t) !== TASKS) return { retracted: false, leftover: composerOf(t) };
+    for (let i = 0; i < TASKS.length; i++) press("BSpace");
+    const r = await poll((x) => (composerIsEmpty(x) ? "empty" : null));
+    return { retracted: Boolean(r.tag), leftover: r.tag ? "" : composerOf(r.text) };
+  };
+
+  /** パネルを出す。既に開いていれば其れを使う。詳細が開いていれば(誰かが開いた)1 回閉じてから。 */
+  const openPanel = async () => {
+    let t = cap();
+    let st = panelStateOf(t);
+    if (st === "DETAIL") {
+      const c = await closeOverlay();
+      if (!c.closed) return { refusal: refusal(c.uncertain ? "escape-unverified" : "not-sendable", { why: "detail-stuck", keys, escapes, after: { screen: c.state } }) };
+      t = cap(); st = panelStateOf(t);
+    }
+    if (st === "PANEL") return { panel: parsePanel(t), opened: false };
+    const s = classifyScreen(t);
+    if (s.state !== "SENDABLE") return { refusal: refusal("not-sendable", { why: s.state, keys, escapes, after: { screen: s.state } }) };
+    if (!composerIsEmpty(t)) return { refusal: refusal("not-sendable", { why: "composer-not-empty", keys, escapes, after: { screen: s.state, composer: composerOf(t).slice(0, 80) } }) };
+    type(TASKS);
+    let echo = await poll((x) => (composerOf(x) === TASKS ? "echo" : null));
+    if (!echo.tag) echo = await poll((x) => (composerOf(x) === TASKS ? "echo" : null));   // 遅い描画の猶予をもう一度
+    if (!echo.tag) {
+      const r = await retract();
+      return { refusal: refusal("panel-did-not-open", { why: "no-echo", keys, escapes, after: { screen: classifyScreen(cap()).state, retracted: r.retracted, leftover: r.leftover } }) };
+    }
+    press("Enter");
+    const kindOf = (x) => { const k = overlayKind(x); return k === "PANEL" ? "panel" : k === "DETAIL" ? "detail" : k === "PANEL-EMPTY" ? "empty" : null; };
+    let r = await poll(kindOf);
+    if (!r.tag) r = await poll(kindOf);   // 猶予をもう一度
+    if (!r.tag) {
+      const rt = await retract();
+      return { refusal: refusal("panel-did-not-open", { why: "no-panel", keys, escapes, after: { screen: classifyScreen(cap()).state, overlay: panelStateOf(cap()), retracted: rt.retracted, leftover: rt.leftover } }) };
+    }
+    // ★task が 1 本だけの時、/tasks は一覧を**飛ばして其の詳細に直行する**(実機 friday 2.1.263、2026-09-07 に 3/3 再現。
+    //   `.harness/evidence-2026-09-07/repro-shell-kill-screens.log`、fixture `friday-detail-direct.txt`)。一覧は無いが詳細は
+    //   在るので、照合して押す道へ(planDirectDetail)。★task が 0 本なら「No tasks currently running」の空パネル = 目標は
+    //   もう居ない。どちらも**開いた overlay は閉じてから**返す(以前は `panel-did-not-open` で断り、開けた詳細を残していた)。
+    if (r.tag === "detail") return { detail: parseDetail(r.text), opened: true };
+    if (r.tag === "empty") return { refusal: await bail("no-such-row", { why: "panel-empty" }) };
+    return { panel: parsePanel(r.text), opened: true };
+  };
+
+  const examined = [];
+  let shape = null;
+  for (let round = 0; round < maxRounds; round++) {
+    const op = await openPanel();
+    if (op.refusal) return op.refusal;
+    if (op.detail) {
+      // 一覧を飛ばして詳細に直行した = パネルの task は此の 1 本。計画は planDirectDetail、押す条件は同じ(厳密な一致だけ)。
+      // 数える相手は「説明文が目標で running の行」(一覧を見ていないので行の本文全体は知らない)。
+      const plan1 = planDirectDetail({ detail: op.detail, target });
+      if (!plan1.ok) return bail(plan1.reason, { why: plan1.why ?? null });
+      const isTarget = (r) => rowMatches(r.text, target.description) && / \(running\)/.test(r.text);
+      return pressX({ detail: op.detail, before: 1, isTarget, planTarget: plan1.target });
+    }
+    let panel = op.panel;
+    if (shape && !sameShape(shape, panel)) return bail("reflow", { why: "reopened-panel-differs" });
+    shape = panel;
+    // ★断りの根拠をそのまま載せる: パネルに見えたシェル行の本文(最大 8 行・各 160 字)。live 計器は此処に自分の nonce を探し、
+    //   「TUI が**此の**シェルの行を出していた」を机の言葉でなく行の本文で確かめる(Codex 2026-09-07 #3/#5)。
+    if (!allowShells && hasShellRows(panel)) return bail("shells-present", { after: { shells: shellRowTexts(panel) } });
+    const plan = planStop({ panel, target, maxMoves, examined });
+    if (!plan.ok) return bail(plan.reason, { why: plan.why ?? null });
+    if (plan.action !== "open-detail") return bail("reflow", { why: `unexpected-plan:${plan.action}` });
+
+    // 印を動かす。1 打ごとに「印が動いた」を見る。
+    for (let i = 0; i < plan.moves; i++) {
+      const before = parsePanel(cap());
+      const from = before?.selected ? `${before.selected.section}#${before.selected.index}` : null;
+      press(plan.direction === "up" ? "Up" : "Down");
+      const r = await poll((x) => { const p = parsePanel(x); const now = p?.selected ? `${p.selected.section}#${p.selected.index}` : null; return p && now && now !== from ? "moved" : null; });
+      if (!r.tag) return bail("reflow", { why: "move-not-observed" });
+    }
+    panel = parsePanel(cap());
+    if (!panel) return bail("reflow", { why: "panel-gone" });
+    const v = verifySelection(panel, plan.target);
+    if (!v.ok) return bail(v.reason, { why: "before-enter" });
+
+    press("Enter");
+    const d = await poll((x) => (panelStateOf(x) === "DETAIL" ? "detail" : null));
+    if (!d.tag) return bail("detail-did-not-open", {});
+    const detail = parseDetail(d.text);
+    const plan2 = planStop({ panel, detail, target, maxMoves, examined });
+    if (!plan2.ok) return bail(plan2.reason, { why: plan2.why ?? null });
+
+    if (plan2.action === "press-x-in-detail") {
+      const targetText = plan2.target?.text ?? null;
+      const isTarget = (r) => r.text === targetText;
+      return pressX({ detail, before: countRunning(panel, isTarget), isTarget, planTarget: plan2.target });
     }
     if (plan2.action === "close-detail") {
       examined.push({ flat: plan2.target.flat, detail });
@@ -280,4 +302,4 @@ async function drive(inj, pane, target, { maxMoves, maxRounds, budgetMs, allowSh
   return bail("too-many-rounds", {});
 }
 
-export { rowDescription };
+export { rowDescription, emptyPanel };

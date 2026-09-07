@@ -246,6 +246,34 @@ export function planStop(args) {
  *  - 印が別の位置 → `mismatch`
  * 同名が複数在っても、位置が一致して初めて ok(文字列だけでは通さない)。成功の戻りに `reason` は無い。
  */
+/**
+ * `/tasks` が一覧を飛ばして**詳細に直行した**時の計画(2026-09-07、実機 friday 2.1.263 で 3/3 再現: task が 1 本だけの時)。
+ * 一覧が無いので候補は「今映っている 1 本」だけ。押す条件は同じ —— 詳細が目標と厳密に一致した時だけ。
+ *   - 一致(prompt 冒頭と道具列)→ `press-x-in-detail`
+ *   - 材料が画面外で決められない → `ambiguous`(insufficient)
+ *   - 机が同名の生存を 2 本以上と言い、prompt で区別できない(promptPrefix 無し)→ `ambiguous`(twin: 映っている 1 本が
+ *     どちらか判らない)。prompt が在って厳密に一致したなら、隣が終わっていても其れは目標
+ *   - 一致しない → `no-such-row`(唯一の候補が外れ = 目標はもう居ない)
+ * 戻りの `target` は driver が後で数える為の形(section は "direct"、text は説明文 + (running))。
+ */
+export function planDirectDetail(args) {
+  const { detail, target } = (args && typeof args === "object") ? args : {};
+  if (!detail || detail.kind !== "detail") return { ok: false, reason: "not-a-panel", why: "no-detail" };
+  if (!target || typeof target.description !== "string" || !target.description) return { ok: false, reason: "no-such-row" };
+  if (target.live !== true) return { ok: false, reason: "no-such-row", why: "not-live" };
+  if (!hasMaterial(target)) return { ok: false, reason: "ambiguous", why: "insufficient" };
+  const known = target.liveSameDescription;
+  if (!Number.isInteger(known) || known < 1) return { ok: false, reason: "ambiguous", why: "unknown-siblings" };
+  if (detail.description !== target.description) return { ok: false, reason: "no-such-row", why: "description" };
+  const hasPrompt = typeof target.promptPrefix === "string" && target.promptPrefix.trim().length > 0;
+  if (known > 1 && !hasPrompt) return { ok: false, reason: "ambiguous", why: "twin-without-prompt" };
+  const m = detailMatches(detail, target, { strict: known > 1 });
+  if (m.why === "insufficient") return { ok: false, reason: "ambiguous", why: m.why };
+  if (!m.ok) return { ok: false, reason: "no-such-row", why: m.why };
+  const sel = { section: "direct", index: 0, flat: 0, text: `${target.description} (running)` };
+  return { ok: true, action: "press-x-in-detail", moves: 0, direction: null, target: sel, direct: true };
+}
+
 export function verifySelection(panel, expected) {
   if (!panel || panel.kind !== "panel") return { ok: false, reason: "not-a-panel" };
   if (!expected || typeof expected.text !== "string" || !Number.isInteger(expected.flat)

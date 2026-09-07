@@ -63,7 +63,7 @@ function detailScreen(prompt, elapsed = 30) {
  *    agent が終わってパネル(印はシェル行)へ戻る)
  */
 function sim({ agents, sel = 0, composer = "", xEffect = "panel", lag = 0, tick = false, ignoreMoves = false, neverOpenPanel = false,
-               neverOpenDetail = false, reflowOnReopen = false, noEcho = false, finishAfterDetailCaptures = 0 } = {}) {
+               neverOpenDetail = false, reflowOnReopen = false, noEcho = false, finishAfterDetailCaptures = 0, directDetail = false } = {}) {
   const st = { mode: "composer", typed: composer, sel, agents: agents.map((a) => ({ ...a })), opens: 0, log: [], xPressed: 0, stoppedFlat: null,
                staleLeft: 0, staleFrame: null, elapsed: 30, detailCaptures: 0, captures: 0 };
   const flatRows = () => [...st.agents.filter((a) => a.shell), ...st.agents.filter((a) => !a.shell)];
@@ -96,7 +96,7 @@ function sim({ agents, sel = 0, composer = "", xEffect = "panel", lag = 0, tick 
         if (xEffect !== "none") { st.agents.splice(st.agents.indexOf(flatRows()[st.sel]), 1); st.sel = 0; st.mode = xEffect === "close" ? "composer" : "panel"; }
       } else if (st.mode === "panel" && key === "x") { st.log[st.log.length - 1].shellKilled = Boolean(flatRows()[st.sel]?.shell); st.xPressed++; }
     } else if (key === "Enter") {
-      if (st.mode === "composer" && st.typed.trim() === "/tasks") { st.typed = ""; if (!neverOpenPanel) { st.mode = "panel"; st.opens++; if (reflowOnReopen && st.opens > 1) { st.sel = 0; st.agents.push({ text: "late (running) · Sonnet 5", prompt: "late" }); } } }
+      if (st.mode === "composer" && st.typed.trim() === "/tasks") { st.typed = ""; if (!neverOpenPanel) { st.mode = (directDetail && flatRows().length === 1 && !flatRows()[0].shell) ? "detail" : "panel"; st.opens++; if (reflowOnReopen && st.opens > 1) { st.sel = 0; st.agents.push({ text: "late (running) · Sonnet 5", prompt: "late" }); } } }
       else if (st.mode === "panel" && !neverOpenDetail) st.mode = "detail";
     } else if (key === "Down") { if (st.mode === "panel" && !ignoreMoves) st.sel = Math.min(st.sel + 1, flatRows().length - 1); }
     else if (key === "Up") { if (st.mode === "panel" && !ignoreMoves) st.sel = Math.max(st.sel - 1, 0); }
@@ -367,4 +367,64 @@ test("★ペインの鍵が塞がっていれば pane-busy(何も打たない)",
 test("composerText の対照: 模型の入力欄は本物の読み手で読める", () => {
   assert.equal(composerText(typed(COMPOSER, "/tasks")), "/tasks");
   assert.equal(composerText(COMPOSER), "");
+});
+
+// ── /tasks が一覧を飛ばして詳細に直行する(実機 2.1.263、task が 1 本だけの時。2026-09-07 に 3/3 再現)────────────────
+// ★以前の driver は此処で `panel-did-not-open` と断り、**開けた詳細を残していた**(次の送信を塞ぐ)。
+test("★直行した詳細が目標と一致 → x を押し、空パネルで減少を読む(stopObserved=panel)。開いた overlay は閉じる", async () => {
+  const s = sim({ agents: [{ text: ROW, prompt: PROMPT }], directDetail: true });
+  const r = closedResult(await stopSubagent(inj(s), "%1", T()));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.stopped, "observed");
+  assert.equal(r.after.stopObserved, "panel");
+  assert.deepEqual(r.keys, ["-l /tasks", "Enter", "-l x", "Escape"], "一覧の移動も 2 回目の Enter も無い");
+  assert.equal(s.st.xPressed, 1);
+  assert.equal(s.st.mode, "composer");
+  assert.equal(r.target.section, "direct");
+});
+
+test("★直行した詳細で x が overlay ごと閉じる形 → /tasks を開き直し、空パネルで数える(stopObserved=reopened)", async () => {
+  const s = sim({ agents: [{ text: ROW, prompt: PROMPT }], directDetail: true, xEffect: "close" });
+  const r = closedResult(await stopSubagent(inj(s), "%1", T()));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.after.stopObserved, "reopened");
+  assert.equal(r.keys.filter((k) => k === "-l /tasks").length, 2);
+  assert.equal(s.st.mode, "composer");
+});
+
+test("★直行した詳細が目標の prompt と違う → no-such-row(唯一の候補が外れ)。x は押さず、詳細は閉じる", async () => {
+  const s = sim({ agents: [{ text: ROW, prompt: OTHER }], directDetail: true });
+  const r = closedResult(await stopSubagent(inj(s), "%1", T()));
+  assert.equal(r.reason, "no-such-row");
+  assert.equal(r.why, "prompt");
+  assert.equal(r.escapes, 1, "開けた詳細は閉じてから断る");
+  assert.equal(s.st.xPressed, 0);
+  assert.equal(s.st.mode, "composer");
+});
+
+test("★直行した詳細 + 机は同名 2 本が生存 + prompt で区別できない → ambiguous(映っている 1 本がどちらか判らない)", async () => {
+  const s = sim({ agents: [{ text: ROW, prompt: PROMPT }], directDetail: true });
+  const r = closedResult(await stopSubagent(inj(s), "%1", T({ promptPrefix: "", liveSameDescription: 2 })));
+  assert.equal(r.reason, "ambiguous");
+  assert.equal(r.why, "twin-without-prompt");
+  assert.equal(s.st.xPressed, 0);
+  assert.equal(r.escapes, 1);
+});
+
+test("★直行した詳細 + 机は同名 2 本 + prompt が厳密に一致 → 押す(隣が終わっていても映っているのは目標)", async () => {
+  const s = sim({ agents: [{ text: ROW, prompt: PROMPT }], directDetail: true });
+  const r = closedResult(await stopSubagent(inj(s), "%1", T({ liveSameDescription: 2 })));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(s.st.xPressed, 1);
+});
+
+test("★/tasks が空パネル(No tasks currently running)→ no-such-row(why=panel-empty)。overlay は閉じる、x は無い", async () => {
+  const s = sim({ agents: [] });
+  const r = closedResult(await stopSubagent(inj(s), "%1", T()));
+  assert.equal(r.reason, "no-such-row");
+  assert.equal(r.why, "panel-empty");
+  assert.equal(r.escapes, 1);
+  assert.equal(s.st.xPressed, 0);
+  assert.equal(s.st.mode, "composer");
+  assert.equal(r.after.overlayClosed, true);
 });
