@@ -44,7 +44,10 @@ body option was removed after Codex named it a bypass). Sessions that use `run_i
 never exercised.
 
 Measured 2026-09-07 08:5x on Jervis (`~/.claude/projects/*/*.jsonl`, parent transcripts modified in the last 14 days,
-newest 120): 17,843 Bash tool calls, 956 with `run_in_background:true` (5.4%), in 8 of the 120 sessions. So the
+newest 120): 17,843 Bash tool calls, 956 with `run_in_background:true` (5.4%), in 8 of the 120 sessions (ad hoc grep).
+Re-measured with the committed tool `rc-backend/tools/bash-background-prevalence-check.mjs` (JSON-exact counting,
+`test/bash-background-prevalence-check.test.mjs` 5/5): `days=14 files=120 bash=17814 bg=964 bg_pct=5.4 sessions_bg=8`;
+`days=30 files=300 bash=17873 bg=966 bg_pct=5.4 sessions_bg=10`. So the
 refusal bites only while such a shell is alive and only in a minority of sessions; it is a real limit, not a dead
 feature. Whether the default flips (allow shells, rely on the re-capture right before `x`) is a safety-default change
 and goes through a Codex consult first — proposed to round 8, not decided here.
