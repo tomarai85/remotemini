@@ -108,7 +108,16 @@ currently running」の空パネル(節が無い)。
 
 - 机の `POST /interrupt` は overlay(詳細)が開いている時も Escape を打つ。今回は overlay を閉じた上で「stopped: verified」を返した
   (親の生成が同時に終わった可能性と、Escape が生成を切った可能性を分けていない)。overlay が開いている時の interrupt の意味は未整理。
+  ★r9 の Planner が此れを「interrupt が subagent を止めたと偽った」と読んで題にし、Reviewer が REJECT_FALSE(系譜の主張が偽 +
+  原因を言い過ぎ)。**正しい残余**(Reviewer の note): `#interruptExclusive` は pane の busy/quiet の印しか見ず「subagent」の概念が無く、
+  固定の文 "Stopped (generation confirmed stopped)." は**どの生成**が止まったかを言わない。overlay が走行中の subagent を見せている
+  時に其の文は誤解を招く。次の題にするなら: overlay が見えている時の interrupt は「overlay を閉じた」と名乗り、生成の判定を言わない。
 - 使い捨て会話は Tom の hooks(stop hooks 0/2)を走らせる。計器の時間に数秒足す。
+- ★候補(r9 の CRITIC lens「電話の利用者は何を見るか」): 止めた直後、電話の一覧の行は最長 **15 分**「Working」のまま
+  (`rc-backend/src/subagents.mjs` の `SUBAGENT_STALE_MS = 15 min`、転写の mtime だけで生死を読む)。電話は `stoppedHere` で
+  Stop ボタンを隠し、帯が「Stopped」と言う(`SubagentsViewModel.tapStop` の注記「止めた直後は行がまだ running に見える」)。
+  机は x を押してパネルで行が減ったのを**見ている**のだから、其の観測を一覧に反映できる: session ごとの「机が止めた agent」を
+  覚え、転写が終了を言うまで `state: finished`(reason `stopped-by-desk`)で返す。信号 = 帯と行が 15 分間 矛盾する。
 
 ## 5. Codex(直行した詳細の道、`codex-direct-detail.out`、DON'T SHIP)と処置
 

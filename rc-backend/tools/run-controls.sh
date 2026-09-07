@@ -703,6 +703,7 @@ LOCAL_CTLS=(
     test/live-subagent-stop-shell-row-controls.sh   # ★2026-09-07。同じ計器の `--mode shell`(shells-present の断りが本物で、agent もシェルも生きている)。
     test/live-subagent-stop-empty-panel-controls.sh # ★2026-09-07。同じ計器の `--mode single`(最後の 1 本を止めて空パネルを減少と読み、画面が SENDABLE に戻る)。
     test/device-ui-subagent-stop-controls.sh # ★2026-09-07。対照表 #8 の後半 c4: 電話の停止ボタンの単体 2 class を砂場で回し、変異 2 本(構えを外す / 409 を失敗と読む)で検査が噛む事を測る(xcodebuild ×3)。
+    test/device-ui-subagents-note-controls.sh # ★2026-09-07。対照表 #8 の後半の限界 2: 電話が机の 1 文(見えない物の開示)をそのまま描く検査を砂場で回し、変異 2 本(電話が文を組む / 識別子を変える)で検査が噛む事を測る(xcodebuild ×3)。
     test/live-completion-log-controls.sh # ★2026-09-06。対照表 #32: 完了の遷移を使い捨ての会話で 1 件起こし、
                                      # 本番の digest-notify が**記録して鳴らさない**事を見る live 計器の判定を
                                      # 全通り撃つ(14 通り)。`no_alert=0` を緑と読まない事と、

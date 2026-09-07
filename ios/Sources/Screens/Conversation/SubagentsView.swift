@@ -11,6 +11,13 @@ import SwiftUI
 ///
 /// 遷移は `DiffView` と同じ push(このアプリに `.sheet` はどこにも無い)。
 struct SubagentsView: View {
+    /// 机の 1 文を**そのまま**描く(綴りで組み直さない)。机の一覧は背景シェルとチームの一員を見ないので、其れを名乗る文も
+    /// 机が `display.note` に畳む(対照表 #8 の後半の限界 2、2026-09-07)。view body の中に置くと検査から触れないので
+    /// 静的関数に持ち上げてある。検査 = `SubagentsBlindSpotNoteTests`、対照 = `device-ui-subagents-note-controls.sh`。
+    static func noteText(_ body: SubagentsBody) -> String { body.display.note }
+    /// `subagents.note` の識別子。検査が同じ字を要求する。
+    static let noteAccessibilityID = "subagents.note"
+
     @StateObject private var viewModel: SubagentsViewModel
 
     init(viewModel: @autoclosure @escaping () -> SubagentsViewModel) {
@@ -64,10 +71,10 @@ struct SubagentsView: View {
                 // ★机が決めた1文を**そのまま**出す。空配列には意味が3つ在り(本当に居ない /
                 //   dir が読めない / 終わったかを知らない)、其の見分けは机が既に済ませて
                 //   `display.note` に畳んである。電話が綴りで組み直すと、同じ判断が2箇所に散る。
-                Text(body.display.note)
+                Text(SubagentsView.noteText(body))
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("subagents.note")
+                    .accessibilityIdentifier(SubagentsView.noteAccessibilityID)
 
                 // 直前の停止の結果(成功 / 机の断りの文)。机の文をそのまま。
                 if let notice = viewModel.stopNotice {
