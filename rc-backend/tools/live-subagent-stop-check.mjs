@@ -128,15 +128,17 @@ async function main(argv) {
     // 目標 = 転写に sleep 13 を含む方。転写の置き場は机側で探す(projects/<slug>/<sid>/subagents/agent-<id>.jsonl)。
     const dir = sh(`ls -d ~/.claude/projects/*/${sid}/subagents 2>/dev/null | head -1`);
     if (!dir) throw fail("transcript", "subagent transcript dir not found on the desk");
-    // 目標 = 転写に `sleep 13` が在って `sleep 12` が**無い**方が丁度 1 本(両方に出る / どちらにも出ないなら選ばない。Codex c3 #10)。
+    // 目標 = 転写で `sleep 13` の行数が `sleep 12` より多い方、peer = 其の逆、が**丁度 1 本ずつ**(Codex c3 #10 の後の実測
+    //   2026-09-07: 親が書く subagent の prompt には両方の語が出る事が在るので「含む/含まない」では選べない。道具呼び出しの行が
+    //   片方に偏る事で見分ける。同数 / 逆転が無い / 2 本とも同じ側なら選ばない)。
     const ids = running.map((a) => a.agentId);
-    const has = (id, word) => { try { return sh(`grep -c '${word}' '${dir}/agent-${id}.jsonl' 2>/dev/null || echo 0`) !== "0"; } catch { return false; } };
-    const only13 = ids.filter((id) => has(id, "sleep 13") && !has(id, "sleep 12"));
-    const only12 = ids.filter((id) => has(id, "sleep 12") && !has(id, "sleep 13"));
-    const target = only13.length === 1 ? only13[0] : null;
-    const peer = only12.length === 1 ? only12[0] : null;
+    const count = (id, word) => { try { const v = sh(`grep -c '${word}' '${dir}/agent-${id}.jsonl' 2>/dev/null || echo 0`); return Number(/^\d+$/.test(v) ? v : 0); } catch { return 0; } };
+    const lean = ids.map((id) => ({ id, d: count(id, "sleep 13") - count(id, "sleep 12") }));
+    const more13 = lean.filter((x) => x.d > 0), more12 = lean.filter((x) => x.d < 0);
+    const target = more13.length === 1 ? more13[0].id : null;
+    const peer = more12.length === 1 ? more12[0].id : null;
     parts.push(`target_chosen=${target && peer && target !== peer ? 1 : 0}`);
-    console.log(`  ..  : target=${target} peer=${peer} (only13=${only13.length} only12=${only12.length})`);
+    console.log(`  ..  : target=${target} peer=${peer} (${lean.map((x) => `${x.id.slice(0, 8)}:${x.d > 0 ? "+" : ""}${x.d}`).join(" ")})`);
     if (!target || !peer || target === peer) throw fail("choose", "could not tell the two subagents apart by prompt");
 
     // 大きさは stat が答えた時だけ数字(失敗を 0 に丸めると「凍った」に化ける)。
