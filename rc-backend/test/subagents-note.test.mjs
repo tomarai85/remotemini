@@ -9,7 +9,10 @@
 //   見えない物の列挙を重ねると何が読めないのかが濁る。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { subagentsBody, subagentsNote } from "../src/wire.mjs";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { subagentsBody, subagentsNote, SUBAGENTS_BLIND_SPOT } from "../src/wire.mjs";
 
 const DISCLOSE = /Background shells and teammates are not listed here/;
 const running = (id) => ({ agentId: id, description: "count slowly", state: "running" });
@@ -55,4 +58,10 @@ test("封筒の display.note を通っても同じ文が届く(電話は此れ�
 test("★否定対照: 文を外した note では此の検査が赤になる(検査が何かを測っている証拠)", () => {
   const bare = "1 subagent, 1 working.";
   assert.doesNotMatch(bare, DISCLOSE);
+});
+
+test("★机と電話は同じ文を持つ: 電話の検査(SubagentsBlindSpotNoteTests)が wire.mjs の SUBAGENTS_BLIND_SPOT を其の字で要求する", () => {
+  const swift = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "ios", "Tests", "Screens", "Conversation", "SubagentsBlindSpotNoteTests.swift"), "utf8");
+  assert.ok(swift.includes(SUBAGENTS_BLIND_SPOT), "電話の検査に机の文が無い(片方だけ変えた)");
+  assert.ok(DISCLOSE.test(SUBAGENTS_BLIND_SPOT), "此の検査の正規表現が机の文と合っていない");
 });
