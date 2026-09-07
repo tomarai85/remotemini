@@ -1,0 +1,75 @@
+[codex-quick started pid=90463 05:31:40 timeout=150s — background callers: wait on the pid, do not read the output early]
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work/rc-backend
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a07b6c-7754-7703-b0cd-191e1c0fd629
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Adversarial review of two small desk-side changes to a phone-controlled Claude Code desk (tmux-driven TUI). Answer in <=25 lines: VERDICT (SHIP / DON'T SHIP) + numbered findings with the concrete failure each causes.
+
+Change A — interrupt honesty when an overlay is open. `POST /api/sessions/:id/interrupt` sends Escape to the pane and verifies the generation stopped by watching interrupt marks / spinner. Measured 2026-09-07 on Claude Code 2.1.263: if the `/tasks` agent panel or its detail overlay is open, one Escape only closes the overlay; the generation (and the subagent shown) keeps running, yet the desk answered "Stopped (generation confirmed stopped)." New behavior: before pressing, classify the screen; if an overlay is visible (`panel` / `detail` / `panel-empty`, detected from the region below the last `▔` separator with no composer), press Escape once, poll until no overlay is visible, and return `stopped:"overlay-closed", reason:<kind>` (phone text: "Closed the agent panel on the desk; nothing was interrupted. Tap Stop again to interrupt."); if the overlay does not disappear within the budget, return `stopped:"unverified", reason:"overlay-stuck"`. `interrupted` is true only for `verified`, unchanged. Screens without an overlay take the old path unchanged.
+
+Change B — listing reflects a desk-confirmed stop. `GET /api/sessions/:id/subagents` derives each subagent's state from its transcript mtime (running / stalled after 15 min / finished when the parent transcript records completion). After the desk stops a subagent through the panel (`x` pressed and the panel row observed to disappear), the row still read "Working" for up to 15 minutes. New: an in-process memory (transcript path -> agentId -> time) records desk-observed stops; the listing reports `finished` with reason `stopped-by-desk` (display "Stopped") while the agent transcript has not been written after the stop time plus a 5 s grace; if the transcript moved later, the memory is ignored and mtime rules again. Parent-recorded completion outranks the memory. Entries expire after 60 min; the memory dies with the desk process.
+
+Questions:
+- A: can an overlay be misdetected (false positive) on a screen where Escape WOULD interrupt a generation, so we now under-report a real stop? Or the reverse: overlay present but undetected?
+- A: after the overlay closes, the user must tap again; is there a state where the second Escape is harmful (e.g. it now interrupts the parent when the user only wanted the panel closed)?
+- B: can `stopped-by-desk` be reported for an agent that is actually running (transcript writes are buffered/delayed beyond 5 s; agent that writes nothing while sleeping)?
+- B: is "finished" the right state word when the desk stopped it, given counts and phone filters?
+2026-09-07T10:31:42.005443Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T10:31:42.034340Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T10:31:42.344610Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+VERDICT: DON'T SHIP as-is.
+
+1. A false positive: normal generation output can match “below last `▔`, no composer”; Escape really interrupts, but API reports only `overlay-closed`, under-reporting a real stop.
+
+2. A false negative: cropped/resized/stale panels, changed separators, or a visible background composer can evade detection; Escape merely closes the overlay, then the old verifier can again falsely claim interruption.
+
+3. A TOCTOU race: the overlay may close between classification and Escape; that Escape then reaches the generating parent, while the response says nothing was interrupted.
+
+4. A second-tap hazard: after closing a subagent panel, Stop targets the parent generation, not necessarily the subagent the user intended to stop. The phone copy must state that explicitly.
+
+5. A should verify both postconditions: overlay disappeared and generation state did not transition to interrupted. Otherwise use `unverified`, not `overlay-closed`.
+
+6. B can falsely report “Stopped”: row disappearance confirms only UI removal, while kill delivery may fail or race; a quiet/sleeping agent can keep running without transcript writes.
+
+7. B’s 5-second grace does not solve delayed/buffered writes; it creates a window where a live agent is shown as terminal until a later write invalidates the memory.
+
+8. B risks state flapping: `Stopped` can revert to `Working` after a delayed write, confusing counts, filters, and users.
+
+9. `finished` is the wrong state if consumers interpret it as successful completion. Use a distinct terminal state such as `stopped`/`cancelled`; otherwise every count and filter must key on `reason`, which is fragile.
+
+10. Ship after replacing screen-shape inference with stronger overlay identity, handling the classification/send race, and representing desk stops as provisional `stopping` until process-level or authoritative transcript confirmation.
+tokens used
+12,594
+VERDICT: DON'T SHIP as-is.
+
+1. A false positive: normal generation output can match “below last `▔`, no composer”; Escape really interrupts, but API reports only `overlay-closed`, under-reporting a real stop.
+
+2. A false negative: cropped/resized/stale panels, changed separators, or a visible background composer can evade detection; Escape merely closes the overlay, then the old verifier can again falsely claim interruption.
+
+3. A TOCTOU race: the overlay may close between classification and Escape; that Escape then reaches the generating parent, while the response says nothing was interrupted.
+
+4. A second-tap hazard: after closing a subagent panel, Stop targets the parent generation, not necessarily the subagent the user intended to stop. The phone copy must state that explicitly.
+
+5. A should verify both postconditions: overlay disappeared and generation state did not transition to interrupted. Otherwise use `unverified`, not `overlay-closed`.
+
+6. B can falsely report “Stopped”: row disappearance confirms only UI removal, while kill delivery may fail or race; a quiet/sleeping agent can keep running without transcript writes.
+
+7. B’s 5-second grace does not solve delayed/buffered writes; it creates a window where a live agent is shown as terminal until a later write invalidates the memory.
+
+8. B risks state flapping: `Stopped` can revert to `Working` after a delayed write, confusing counts, filters, and users.
+
+9. `finished` is the wrong state if consumers interpret it as successful completion. Use a distinct terminal state such as `stopped`/`cancelled`; otherwise every count and filter must key on `reason`, which is fragile.
+
+10. Ship after replacing screen-shape inference with stronger overlay identity, handling the classification/send race, and representing desk stops as provisional `stopping` until process-level or authoritative transcript confirmation.
+rc=0

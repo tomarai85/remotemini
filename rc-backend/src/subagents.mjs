@@ -65,6 +65,38 @@ import { nodeIo, readLinesBackward, TAIL_MAX, LINE_CAP_MAX } from "./listing.mjs
 export const SUBAGENT_STALE_MS = 15 * 60 * 1000;
 
 /**
+ * 机が止めたのを見た後、転写に最後の数行が書かれる猶予。実測(2026-09-07 friday、single run1 / shell run4)では x の直後から
+ * 転写のサイズは 1 byte も動かなかったので 5 秒は十分に広い。此れを超えて書かれたら「止まっていない」と読む。
+ */
+export const DESK_STOP_GRACE_MS = 5_000;
+/** 机の記憶の寿命。此れを過ぎれば mtime の 3 値に戻る(親が終了を記録すれば其方が先に勝つ)。 */
+export const DESK_STOP_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * 「机が止めた agent」の記憶(session の転写 path → agentId → 止めた時刻)。プロセス内だけ。
+ * 電話の一覧は転写の mtime で生死を読むので、止めた直後も最長 SUBAGENT_STALE_MS の間「Working」のままだった
+ * (帯は Stopped と言うのに行は Working = 15 分の矛盾)。机は x を押してパネルで行が減ったのを見ているので、其の観測を一覧に返す。
+ */
+export class DeskStopMemory {
+  #m = new Map();
+  record(key, agentId, atMs = Date.now()) {
+    if (typeof key !== "string" || typeof agentId !== "string") return;
+    if (!this.#m.has(key)) this.#m.set(key, new Map());
+    this.#m.get(key).set(agentId, atMs);
+  }
+  /** `readSubagentsFromPath` の `opts.deskStopped` にそのまま渡せる Map(期限切れは落とす)。無ければ空の Map。 */
+  for(key, nowMs = Date.now()) {
+    const inner = this.#m.get(key);
+    if (!inner) return new Map();
+    for (const [id, at] of inner) if (nowMs - at > DESK_STOP_TTL_MS) inner.delete(id);
+    if (inner.size === 0) this.#m.delete(key);
+    return new Map(inner);
+  }
+  forget(key, agentId) { this.#m.get(key)?.delete(agentId); }
+  get size() { let n = 0; for (const inner of this.#m.values()) n += inner.size; return n; }
+}
+
+/**
  * 1回の応答で返す子の数の上限。teams は1セッションで数十本 spawn しうるので、
  * dir の中身をそのまま全部読むと file descriptor と時間が青天井になる。
  * ★超えた事は `truncated` で必ず名乗る(黙って切ると「これで全部」に化ける)。
@@ -229,6 +261,8 @@ function modelOf(path, opts = {}) {
 export function readSubagentsFromPath(transcriptPath, opts = {}) {
   const nowMs = opts.nowMs ?? Date.now();
   const staleMs = opts.staleMs ?? SUBAGENT_STALE_MS;
+  // 机が止めたのを見た agent(agentId → 止めた時刻 ms)。`DeskStopMemory.for(key)` の形。無ければ空。
+  const deskStopped = opts.deskStopped instanceof Map ? opts.deskStopped : new Map();
   const dir = subagentDirFor(transcriptPath);
 
   let names;
@@ -293,6 +327,7 @@ export function readSubagentsFromPath(transcriptPath, opts = {}) {
 
     const { state, reason } = stateOf({
       agentId, done, launched, coveredFrom, lastActivityMs, parentState, nowMs, staleMs,
+      deskStoppedAt: deskStopped.has(agentId) ? deskStopped.get(agentId) : null,
     });
 
     return {
@@ -304,7 +339,8 @@ export function readSubagentsFromPath(transcriptPath, opts = {}) {
       reason,
       meta: metaState,
       lastActivityIso: lastActivityMs === null ? null : new Date(lastActivityMs).toISOString(),
-      display: { state: SUBAGENT_STATE_TEXT[state] },
+      // ★机が止めた行は「Finished」でなく「Stopped」と出す(利用者が押した結果を、利用者の言葉で)。
+      display: { state: reason === "stopped-by-desk" ? "Stopped" : SUBAGENT_STATE_TEXT[state] },
     };
   });
 
@@ -331,10 +367,16 @@ export function subagentDirFor(transcriptPath) {
  *   3. 子の最終書き込みが親の走査窓より古い → `unknown`(予算の外なので分けられない)。
  *   4. ここまで来たら「終了の記録は**本当に**無い」。あとは mtime で running/stalled。
  */
-export function stateOf({ agentId, done, launched, coveredFrom, lastActivityMs, parentState, nowMs, staleMs }) {
+export function stateOf({ agentId, done, launched, coveredFrom, lastActivityMs, parentState, nowMs, staleMs, deskStoppedAt = null }) {
   if (done.has(agentId)) return { state: "finished", reason: "parent-completed" };
   if (parentState !== "read") return { state: "unknown", reason: "parent-unreadable" };
   if (lastActivityMs === null) return { state: "unknown", reason: "transcript-unreadable" };
+  // ★机が此の agent を止めたのを**見ている**(x を押してパネルで行が減った)なら、其の観測は mtime より強い。
+  //   ただし転写が止めた後も動いていれば(猶予 DESK_STOP_GRACE_MS を超えて書かれた)、止まっていない = 記憶を捨てて mtime で読む。
+  //   終了の記録(done)は此れより上で勝つ(観測値の順位: 転写の終了記録 > 机の観測 > mtime)。2026-09-07、対照表 #8 の残余。
+  if (Number.isFinite(deskStoppedAt) && lastActivityMs <= deskStoppedAt + DESK_STOP_GRACE_MS) {
+    return { state: "finished", reason: "stopped-by-desk" };
+  }
   // 起動の記録を窓の中で見ていれば、其の子の一生は窓に収まっている ——
   // 終了は起動より後にしか書かれないので、無い事を言い切ってよい。
   const covered = launched.has(agentId) || lastActivityMs >= coveredFrom;
