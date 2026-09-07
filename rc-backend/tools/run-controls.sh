@@ -335,6 +335,7 @@ LOCAL_CTLS=(
                                      # ★据えた初回に1件捕まえた: `--days` を値無しで渡すと
                                      # `shift 2` が失敗して $# が減らず**無限ループ**した
     test/commit-suite-gate-controls.sh # commit の直前に単体の一式を回す門
+    test/commit-suite-gate-watchdog-controls.sh # ★2026-09-07(gate-41)。一式が終わらない時に門が時間で「測れなかった」と名乗り、process 木を残して子を殺す事を測る(hang / 緑 / 遅い緑 / 既定値)。
                                      # (`tools/commit-suite-gate.sh`)。偽の一式を差すので
                                      # 本物の `npm test` は回さない。実測1秒未満。
                                      # ★本体が守るのは「rc は 0 なのに落ちた検査が在る」形と
