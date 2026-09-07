@@ -12,7 +12,10 @@ struct RootView: View {
         NavigationStack {
             Group {
                 #if DEBUG
-                if let fixtureState = SessionsListingFactory.fixtureState {
+                if let screen = ScreenFixture.current {
+                    // ★画面台帳の fixture(2026-09-07): 之まで fixture の無かった 4 画面を根に据えて撮る。製品の経路は変えない。
+                    screenFixtureView(screen)
+                } else if let fixtureState = SessionsListingFactory.fixtureState {
                     // RemoteMiniUITests path (brief §5-b): bypasses Key-entry and
                     // `AppState` entirely -- the fixture needs no stored credential
                     // and must never touch the Keychain.
@@ -83,6 +86,10 @@ struct RootView: View {
             //   何をする物で何故 要るかは `MainThreadHog` の doc に全文。
             //   `.task` は main actor 上で走るので、占有は必ず main run loop に載る。
             MainThreadHog.startIfRequested()
+            if let screen = ScreenFixture.current {
+                print("root flow:fixture state:\(screen.rawValue)")
+                return
+            }
             if let fixtureState = SessionsListingFactory.fixtureState {
                 // Sprint 2 DoD diagnostic line -- same convention as Sprint 1's
                 // `KeyEntryViewModel.swift` `print("healthz ok:...")` line, grepped
@@ -108,6 +115,26 @@ struct RootView: View {
         .onOpenURL { deepLink.handle($0) }
         .environmentObject(deepLink)
     }
+
+    #if DEBUG
+    /// 画面台帳の 4 画面。一覧の fixture と同じ材料(fixture の account / 保管庫 / 会話)を使う。
+    @ViewBuilder
+    private func screenFixtureView(_ screen: ScreenFixture) -> some View {
+        switch screen {
+        case .subagentsRunning, .subagentsMixed, .subagentsEmpty:
+            SubagentsView(viewModel: SubagentsViewModel(client: SubagentsListingFixture(state: screen), baseURL: Self.fixtureBaseURL, apiKey: "ui-fixture-key", sessionID: "fixture-session"))
+        case .diffSample, .diffClean:
+            DiffView(viewModel: DiffViewModel(client: DiffListingFixture(state: screen), baseURL: Self.fixtureBaseURL, apiKey: "ui-fixture-key", sessionID: "fixture-session"),
+                     comments: ConversationViewModel(clients: .fixture(state: .threeRoles), draftStore: InMemoryDraftStore(), baseURL: Self.fixtureBaseURL, apiKey: "ui-fixture-key", sessionID: "fixture-session", title: "fixture session", onUnauthorized: {}))
+        case .settingsNormal:
+            SettingsView(accountViewModel: Self.fixtureAccountViewModel(), baseURL: Self.fixtureBaseURL,
+                         listViewModel: ListViewModel(client: SessionsListingFixture(state: .normal), baseURL: Self.fixtureBaseURL, apiKey: "ui-fixture-key", onUnauthorized: {}, snoozeStore: InMemoryUpdateSnooze()),
+                         archiveDeps: .init(apiKey: "ui-fixture-key", lister: ArchivedListingFixture(), archiver: ArchiveFixture()))
+        case .archivedSample:
+            ArchivedListView(baseURL: Self.fixtureBaseURL, apiKey: "ui-fixture-key", lister: ArchivedListingFixture(), archiver: ArchiveFixture())
+        }
+    }
+    #endif
 
     @ViewBuilder
     private var normalFlow: some View {
