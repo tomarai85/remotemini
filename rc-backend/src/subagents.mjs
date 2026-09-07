@@ -115,7 +115,7 @@ export const SUBAGENT_SCAN_MAX = 12 * 1024 * 1024;
 const CHILD_TAIL_MAX = 64 * 1024;
 
 /** 状態語。電話が分岐に使うので、増やす時は電話側と一緒に。 */
-export const SUBAGENT_STATES = ["finished", "running", "stalled", "unknown"];
+export const SUBAGENT_STATES = ["finished", "running", "stalled", "unknown", "stopped"];
 
 /**
  * 電話にそのまま出せる英文。★`unknown` を `running` や `finished` に丸めない ——
@@ -126,6 +126,8 @@ export const SUBAGENT_STATE_TEXT = {
   running: "Working",
   stalled: "No sign of life recently",
   unknown: "Could not tell",
+  // ★止められた agent(2026-09-07、Codex #9): 成功の完了(finished)と混ぜない。源は親転写の `killed` か机の観測。
+  stopped: "Stopped",
 };
 
 /**
@@ -137,13 +139,19 @@ const AGENT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 /** 親の転写のうち、agentId を名乗る `toolUseResult` から**終了だけ**を拾う。 */
 function completionsIn(records) {
-  const done = new Set();
+  // ★終端の記録は id ごとに**最後の物が勝つ**(records はファイルの並び = 古い順)。止められた agent は再開でき、再開して完了
+  //   すれば completed が後に書かれる。逆(完了 → 再開 → 停止)も在りうる(Codex 2026-09-07 stopped-state #1)。集合で持つと
+  //   歴史を失うので、終端は id → { status, ts } で持ち、`done` / `killed` は其処から導く。
+  const terminal = new Map();
   const launched = new Set();
+  // ★`<status>killed</status>` = Claude Code 自身が「stopped by user」と書く停止(本番 friday 2026-09-07 の attic 転写 2 本で実測、
+  //   `.harness/evidence-2026-09-07/subagent-stop-cause-binding-verdict.md`)。以前は `completed` しか読まず、止めた agent は mtime で
+  //   running のままだった。★`failed` は此処では読まない(背景シェルの失敗の形。agent の failed は別の題)。
   for (const rec of records) {
     const tur = rec && rec.toolUseResult;
     if (tur && typeof tur === "object" && typeof tur.agentId === "string") {
       // ★`status` を見る。名乗られた事自体は起動の証拠にしかならない(頭注)。
-      if (tur.status === "completed") done.add(tur.agentId);
+      if (tur.status === "completed") terminal.set(tur.agentId, { status: "completed", ts: tsOf(JSON.stringify(rec)) });
       else launched.add(tur.agentId);
     }
     // 背後起動の agent は `<task-notification>` の user 行で終わる。
@@ -152,11 +160,18 @@ function completionsIn(records) {
       const id = /<task-id>([^<]+)<\/task-id>/.exec(content);
       if (id) {
         launched.add(id[1]);
-        if (/<status>completed<\/status>/.test(content)) done.add(id[1]);
+        if (/<status>completed<\/status>/.test(content)) terminal.set(id[1], { status: "completed", ts: tsOf(JSON.stringify(rec)) });
+        if (/<status>killed<\/status>/.test(content)) terminal.set(id[1], { status: "killed", ts: tsOf(JSON.stringify(rec)) });
       }
     }
   }
-  return { done, launched };
+  const done = new Set();
+  const killed = new Map();   // agentId → 通知の時刻(ms)。時刻が読めなければ null
+  for (const [id, t] of terminal) {
+    if (t.status === "completed") done.add(id);
+    else if (t.status === "killed") killed.set(id, Number.isFinite(t.ts) ? t.ts : null);
+  }
+  return { done, launched, killed };
 }
 
 function parseLine(ln) {
@@ -207,9 +222,9 @@ function scanParent(path, opts = {}) {
       const o = parseLine(ln);
       if (o) records.push(o);
     }
-    const { done, launched } = completionsIn(records);
+    const { done, launched, killed } = completionsIn(records);
     // 先頭まで届いたなら、どんなに古い子でも「見えていた」= covered。
-    return { done, launched, coveredFrom: r.reachedStart ? -Infinity : (Number.isFinite(oldest) ? oldest : Infinity) };
+    return { done, launched, killed, coveredFrom: r.reachedStart ? -Infinity : (Number.isFinite(oldest) ? oldest : Infinity) };
   } finally {
     closeSync(fd);
   }
@@ -288,11 +303,13 @@ export function readSubagentsFromPath(transcriptPath, opts = {}) {
   let parentState = "read";
   let done = new Set();
   let launched = new Set();
+  let killed = new Map();
   let coveredFrom = Infinity;
   try {
     const s = scanParent(transcriptPath, opts);
     done = s.done;
     launched = s.launched;
+    killed = s.killed;
     coveredFrom = s.coveredFrom;
   } catch {
     // ★親が読めない = **何が終わったか一つも知らない**。ここで `running` にも
@@ -327,6 +344,7 @@ export function readSubagentsFromPath(transcriptPath, opts = {}) {
 
     const { state, reason } = stateOf({
       agentId, done, launched, coveredFrom, lastActivityMs, parentState, nowMs, staleMs,
+      killedAt: killed.has(agentId) ? (killed.get(agentId) ?? true) : null,
       deskStoppedAt: deskStopped.has(agentId) ? deskStopped.get(agentId) : null,
     });
 
@@ -339,8 +357,7 @@ export function readSubagentsFromPath(transcriptPath, opts = {}) {
       reason,
       meta: metaState,
       lastActivityIso: lastActivityMs === null ? null : new Date(lastActivityMs).toISOString(),
-      // ★机が止めた行は「Finished」でなく「Stopped」と出す(利用者が押した結果を、利用者の言葉で)。
-      display: { state: reason === "stopped-by-desk" ? "Stopped" : SUBAGENT_STATE_TEXT[state] },
+      display: { state: SUBAGENT_STATE_TEXT[state] },
     };
   });
 
@@ -367,16 +384,24 @@ export function subagentDirFor(transcriptPath) {
  *   3. 子の最終書き込みが親の走査窓より古い → `unknown`(予算の外なので分けられない)。
  *   4. ここまで来たら「終了の記録は**本当に**無い」。あとは mtime で running/stalled。
  */
-export function stateOf({ agentId, done, launched, coveredFrom, lastActivityMs, parentState, nowMs, staleMs, deskStoppedAt = null }) {
+export function stateOf({ agentId, done, launched, coveredFrom, lastActivityMs, parentState, nowMs, staleMs, killedAt = null, deskStoppedAt = null }) {
+  // 順位(2026-09-07、Codex stopped-state の後): 親転写の最後の終端が completed > 転写が読めない → unknown > 机の観測(親が読めなくても
+  // 独立の観測)> 親が読めない → unknown > 親転写の killed > 走査の予算 > mtime。
   if (done.has(agentId)) return { state: "finished", reason: "parent-completed" };
-  if (parentState !== "read") return { state: "unknown", reason: "parent-unreadable" };
   if (lastActivityMs === null) return { state: "unknown", reason: "transcript-unreadable" };
-  // ★机が此の agent を止めたのを**見ている**(x を押してパネルで行が減った)なら、其の観測は mtime より強い。
-  //   ただし転写が止めた後も動いていれば(猶予 DESK_STOP_GRACE_MS を超えて書かれた)、止まっていない = 記憶を捨てて mtime で読む。
-  //   終了の記録(done)は此れより上で勝つ(観測値の順位: 転写の終了記録 > 机の観測 > mtime)。2026-09-07、対照表 #8 の残余。
+  // ★机が此の agent を止めたのを**見ている**(x を押してパネルで行が減った)なら、其の観測は mtime より強く、親の転写に依らない
+  //   (Codex #7: 親が読めないだけで観測した停止を unknown にしない)。ただし転写が止めた後も動いていれば(猶予 DESK_STOP_GRACE_MS を
+  //   超えて書かれた)、止まっていない = 記憶を捨てる。机が止めたのなら親転写の killed も同じ事を言う —— 其の時は机の観測が reason を
+  //   決める(`stopped-by-desk`。Codex #3: 机の停止を「利用者」に隠さない)。
   if (Number.isFinite(deskStoppedAt) && lastActivityMs <= deskStoppedAt + DESK_STOP_GRACE_MS) {
-    return { state: "finished", reason: "stopped-by-desk" };
+    return { state: "stopped", reason: "stopped-by-desk" };
   }
+  if (parentState !== "read") return { state: "unknown", reason: "parent-unreadable" };
+  // ★親転写の最後の終端が killed = 利用者(Mac の鍵盤、または机の x で記憶が無い / 切れた時)が止めた。mtime より上。
+  //   ★止められた agent は**再開できる**(通知の note)。通知より後(猶予を超えて)に転写が動いていれば再開した = killed を捨てて
+  //   mtime で読む(Codex #2)。通知の時刻が読めない(`true`)時は転写の動きで反証できないので、通知を信じる。
+  if (killedAt === true) return { state: "stopped", reason: "stopped-by-user" };
+  if (Number.isFinite(killedAt) && lastActivityMs <= killedAt + DESK_STOP_GRACE_MS) return { state: "stopped", reason: "stopped-by-user" };
   // 起動の記録を窓の中で見ていれば、其の子の一生は窓に収まっている ——
   // 終了は起動より後にしか書かれないので、無い事を言い切ってよい。
   const covered = launched.has(agentId) || lastActivityMs >= coveredFrom;
@@ -387,7 +412,7 @@ export function stateOf({ agentId, done, launched, coveredFrom, lastActivityMs, 
 }
 
 function empty() {
-  return { finished: 0, running: 0, stalled: 0, unknown: 0 };
+  return { finished: 0, running: 0, stalled: 0, unknown: 0, stopped: 0 };
 }
 
 function tally(agents) {
