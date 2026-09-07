@@ -1,9 +1,13 @@
 import SwiftUI
 
-/// 其の会話の下で何が走っているかを電話で見る画面(対照表 #8「半分その一」、2026-09-05)。
-/// 公式の remote control の言い方では「the device shows any subagents and workflows the
-/// session already has running in the background」。**止める方(`x` を押す)は別の段**で、
-/// 此処は打鍵を1つも要らない読むだけの画面(`research/subagent-stop-panel-design-2026-09-04.md`)。
+/// 其の会話の下で何が走っているかを電話で見る画面(対照表 #8「半分その一」、2026-09-05)と、
+/// 名指した 1 本を止める(「半分その二」、2026-09-06)。公式の remote control の言い方では
+/// 「the device shows any subagents and workflows the session already has running in the background.
+/// Stop one of them from the device, and Claude Code stops that task on your machine」。
+///
+/// 止めるのは机の仕事(`research/subagent-stop-panel-design-2026-09-04.md`)。電話は id を名指し、
+/// 机がパネルを開いて詳細で照合してから `x` を押す。電話は**画面の行の位置を送らない**。
+/// ボタンは 2 段(構える → 同じ行をもう一度)。取り消せない操作を指の滑りで送らない。
 ///
 /// 遷移は `DiffView` と同じ push(このアプリに `.sheet` はどこにも無い)。
 struct SubagentsView: View {
@@ -65,8 +69,25 @@ struct SubagentsView: View {
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("subagents.note")
 
+                // 直前の停止の結果(成功 / 机の断りの文)。机の文をそのまま。
+                if let notice = viewModel.stopNotice {
+                    Text(notice)
+                        .font(.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(.thinMaterial))
+                        .accessibilityIdentifier("subagents.stopNotice")
+                }
+
                 ForEach(body.subagents) { row in
-                    SubagentRowCard(row: row)
+                    SubagentRowCard(
+                        row: row,
+                        stoppable: viewModel.canStop(row),
+                        armed: viewModel.armed == row.agentId,
+                        stopping: viewModel.stopping == row.agentId,
+                        busy: viewModel.stopping != nil,
+                        onStop: { Task { await viewModel.tapStop(row) } }
+                    )
                 }
             }
             .padding()
@@ -74,36 +95,67 @@ struct SubagentsView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("subagents.list")
+        // 一覧の余白をタップしたら構えを解く(取り消せない操作は、意図が続いている間だけ 2 回目を受ける)。
+        .onTapGesture { viewModel.disarm() }
     }
 }
 
 /// 1本ぶんの札。**要約を主役にする** —— 人が最初に読みたいのは種別ではなく
 /// 「何をさせている物か」で、其れは呼んだ側が書いた `description` に在る。
+/// 走っている行だけ「Stop」を持つ(止める物が無い行にボタンを置かない)。
 private struct SubagentRowCard: View {
     let row: SubagentRow
+    let stoppable: Bool
+    let armed: Bool
+    let stopping: Bool
+    let busy: Bool
+    let onStop: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(row.description ?? row.agentType ?? row.agentId)
-                .font(.callout)
-                .accessibilityIdentifier("subagents.row.title")
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(row.description ?? row.agentType ?? row.agentId)
+                    .font(.callout)
+                    .accessibilityIdentifier("subagents.row.title")
 
-            HStack(spacing: 8) {
-                // ★状態の言葉は机が持つ(`display.state`)。電話は `state` の綴りで
-                //   分岐せず描くだけ —— `unknown` を「作業中」に丸める道を作らない。
-                Text(row.display.state)
-                    .accessibilityIdentifier("subagents.row.state")
-                if let type = row.agentType {
-                    Text(type)
+                HStack(spacing: 8) {
+                    // ★状態の言葉は机が持つ(`display.state`)。電話は `state` の綴りで
+                    //   分岐せず描くだけ —— `unknown` を「作業中」に丸める道を作らない。
+                    Text(row.display.state)
+                        .accessibilityIdentifier("subagents.row.state")
+                    if let type = row.agentType {
+                        Text(type)
+                    }
+                    if let model = row.model {
+                        Text(model)
+                    }
                 }
-                if let model = row.model {
-                    Text(model)
-                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // ★止めるボタンは「走っていて、此の画面で止めていない」行だけ(`viewModel.canStop`)。之は「描くか」の
+            //   分岐であって、状態の言葉の言い換えではない(言葉は上の `display.state` が机の物をそのまま出す)。
+            //   id は構えても変えない(UI 検査が参照を持ち越せる。研究レビュー 2026-09-07)—— 構えは value で言う。
+            if stoppable {
+                Button(action: onStop) {
+                    if stopping {
+                        ProgressView()
+                            .frame(minWidth: 44, minHeight: 44)
+                    } else {
+                        Text(armed ? "Confirm stop" : "Stop")
+                            .font(.callout)
+                            .tapTarget()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(armed ? .red : .secondary)
+                .disabled(busy)
+                .accessibilityIdentifier("subagents.row.stop")
+                .accessibilityValue(stopping ? "stopping" : armed ? "armed" : "idle")
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(.thinMaterial))
         .accessibilityElement(children: .contain)

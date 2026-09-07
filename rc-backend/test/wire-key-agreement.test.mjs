@@ -360,6 +360,11 @@ const CASES = {
   // 走っている subagent(#8「半分その一」、2026-09-05)。★**両枝**を通す:
   //   読めた側(`subagents` が非空 = `subagents[]` と其の `display` の鍵を実行で出す唯一の道)と、
   //   読めなかった側(`counts: null`)。片方だけだと入れ子の突き合わせが 0 件のまま走らない。
+  // 2026-09-06(対照表 #8 の後半 c4): 止める口の封筒。成功(200)と断り(409)は同じ形なので**両枝**を通す。
+  subagentStopBody: [
+    [{ agentId: "a6de70ba039382014", description: "count slowly", out: { ok: true, stopped: "observed", sent: true, keys: ["-l /tasks", "Enter", "Enter", "-l x", "Escape"], escapes: 1, after: { screen: "SENDABLE", overlayClosed: true, stopObserved: "panel" } } }],
+    [{ agentId: "a6de70ba039382014", description: null, out: { ok: false, reason: "ambiguous", message: "More than one running agent has this exact description. Nothing was pressed.", sent: false, keys: [], escapes: 0 } }],
+  ],
   subagentsBody: [
     [{
       agents: [{
@@ -444,6 +449,7 @@ const MODULE_OF = {
   diffBody: ["wire", "src/wire.mjs", "export function diffBody({ files, truncated, totalBytes, reason }) {"],
   healthzBody: ["wire", "src/wire.mjs", "export function healthzBody({ pid, uptime, version }) {"],
   subagentsBody: ["wire", "src/wire.mjs", "export function subagentsBody({ agents, directory, parent, truncated, counts }) {"],
+  subagentStopBody: ["wire", "src/wire.mjs", "export function subagentStopBody({ agentId, description, out }) {"],
   // 第2引数を分解するので目印を明示する(既定の目印だと `{ raw = "" }` = **引数の分解**を
   // 本文と読んで、鍵が0件になる。②が其れを赤で捕まえるが、先に正しく書く)。
   accountBody: ["wire", "src/wire.mjs", "export function accountBody(parsed, { raw = \"\", usageByEmail = null, usageAgeSeconds = null } = {}) {"],
@@ -827,6 +833,9 @@ const PAIRS = [
   // `subagentsBody` の各段と組む(封筒 / subagents[] / 其の display / 封筒の display / counts)。
   // ★`counts` は **null を取る**(読めなかった回に件数を書かない)。`mode` を緩めないのは、
   //   null になるのは値であって鍵ではないから —— 鍵は常に在る。
+  // 2026-09-06(対照表 #8 の後半 c4): 止める口の封筒。`keys`/`after` は診断値で電話は描かない。
+  { swift: "SubagentStopBody", builders: ["subagentStopBody"], at: "", mode: "phone-subset", serverOnly: ["keys", "after"] },
+  { swift: "SubagentStopTarget", builders: ["subagentStopBody"], at: "target" },
   { swift: "SubagentsBody", builders: ["subagentsBody"], at: "" },
   { swift: "SubagentRow", builders: ["subagentsBody"], at: "subagents[]" },
   { swift: "SubagentRowDisplay", builders: ["subagentsBody"], at: "subagents[].display" },
@@ -1170,5 +1179,9 @@ test("`phone-subset` の宣言が、緩める言い訳になっていない", ()
     ["DigestEnvelope.Digest", "DigestEnvelope.Digest.Window",
      "AttachClient.Envelope", "SessionsResponse", "SessionRow", "PollResponse",
      "StatusEnvelope",
-     "MessageItem", "GapItem", "TranscriptSearchResponse", "AccountClient.Wire"]);
+     "MessageItem", "GapItem", "TranscriptSearchResponse",
+     // ★2026-09-06(対照表 #8 の後半 c4): 止める口の封筒。`keys`(打った列)と `after`(着地した画面)は机の
+     //   診断値で、電話は描かない —— 電話が描くのは `stopped` / `error` / `target` だけ。
+     "SubagentStopBody",
+     "AccountClient.Wire"]);
 });

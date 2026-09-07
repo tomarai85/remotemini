@@ -3280,9 +3280,11 @@ try {
   ]) {
     const launcher = join(SB, `${tag}-claude-work`);
     writeFileSync(launcher, body, { mode: 0o755 });
+    // ★受領の期限を長めに(8 s)。`exit 23` は普通 ms で死ぬが、同じ機で xcodebuild が回っていると子の起動〜exit が
+    //   3 s を超えて `unconfirmed`(202)に化け、此の検査が揺れた(2026-09-07 実測)。期限は本番では 3 s のまま。
     const sv3 = spawn(process.execPath, [join(ROOT, "src", "server.mjs")], {
       env: { ...process.env, RC_PROJECTS_DIR: join(SB, "projects"), RC_CLAUDE_WORK: launcher,
-             RC_FLEET_ACCOUNT: fakeAcct, RC_KEY_DIR: join(SB, "keys"), RC_PORT: "0",
+             RC_FLEET_ACCOUNT: fakeAcct, RC_KEY_DIR: join(SB, "keys"), RC_PORT: "0", RC_WORKER_SPAWN_ACK_MS: "8000",
              RC_PHONE_TRUST_FILE: TRUST_FILE, RC_E2E_CWD_LOG: CWD_LOG, RC_TMUX_BIN: fakeTmux },
       stdio: ["ignore", "pipe", "pipe"],
     });

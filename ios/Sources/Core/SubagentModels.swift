@@ -74,3 +74,45 @@ struct SubagentRowDisplay: Decodable, Equatable {
     /// `Working` / `Finished` / `No sign of life recently` / `Could not tell`。
     let state: String
 }
+
+/// `POST /api/sessions/<id>/subagents/<agentId>/stop` の本文(対照表 #8「半分その二」、2026-09-06)。
+/// 200 も 409 も同じ形。`stopped` は机では `"observed"` か `false` で来る —— 電話は「止まったのを机が見た」の
+/// 一点だけを読み、`Bool` に畳む。`reason` は閉じた語彙だが電話は分岐に使わない(文は `error` が運ぶ)。
+struct SubagentStopBody: Decodable, Equatable {
+    let stopped: Bool
+    let reason: String?
+    let error: String?
+    let sent: Bool
+    let escapes: Int
+    let target: SubagentStopTarget?
+
+    private enum CodingKeys: String, CodingKey { case stopped, reason, error, sent, escapes, target }
+
+    init(stopped: Bool, reason: String?, error: String?, sent: Bool, escapes: Int, target: SubagentStopTarget?) {
+        self.stopped = stopped
+        self.reason = reason
+        self.error = error
+        self.sent = sent
+        self.escapes = escapes
+        self.target = target
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let s = try? c.decodeIfPresent(String.self, forKey: .stopped) {
+            stopped = (s == "observed")
+        } else {
+            stopped = (try? c.decodeIfPresent(Bool.self, forKey: .stopped)) ?? false
+        }
+        reason = try c.decodeIfPresent(String.self, forKey: .reason)
+        error = try c.decodeIfPresent(String.self, forKey: .error)
+        sent = (try? c.decodeIfPresent(Bool.self, forKey: .sent)) ?? false
+        escapes = (try? c.decodeIfPresent(Int.self, forKey: .escapes)) ?? 0
+        target = try? c.decodeIfPresent(SubagentStopTarget.self, forKey: .target)
+    }
+}
+
+struct SubagentStopTarget: Decodable, Equatable {
+    let agentId: String
+    let description: String?
+}
