@@ -11,7 +11,7 @@ round 10 は机が止めた agent を `finished` + reason `stopped-by-desk` で�
   Mac の鍵盤からの停止も拾う。★止められた agent は**再開できる**(通知の note)ので、通知の後(猶予 5 s を超えて)に転写が動いていれば
   再開した = killed を捨てて mtime で読む。通知の時刻が読めない時は通知を信じる。
 - 源 (b) 机の観測(`DeskStopMemory`)= reason `stopped-by-desk`(round 10 の形、state だけ `stopped` へ)。
-- 順位: completed > (親が読めない → unknown) > killed > 机の観測 > mtime。`failed`(背景シェルの失敗の形)は読まない。
+- 順位(Codex の後の最終形): 親転写の最後の終端が completed > 転写が読めない → unknown > 机の観測(親に依らない)> 親が読めない → unknown > killed(時刻で再開を見抜く)> 走査の予算 > mtime。`failed`(背景シェルの失敗の形)は読まない。
 - 電話: `SubagentCounts.stopped: Int?`(古い机の応答も読める)。display は其のまま描くので画面の変更なし。
 - 台帳: `wire-key-agreement` の counts の specimen に `stopped`。既存の counts の期待値 4 箇所に `stopped: 0`。
 
@@ -31,6 +31,16 @@ round 10 は机が止めた agent を `finished` + reason `stopped-by-desk` で�
 
 検査 85 緑(stopped-state 16 / desk-stop-memory 11 / subagents 16 / 台帳 / note / liveness)。e2e fail 0。iOS: 対照 3/3(model を含めてコンパイル)。
 
-## 4. 本番での確認
+## 4. 本番での確認(friday `0ac6775`、`live-stopped-state-run1.log`)= 0
 
-(下に追記)
+使い捨ての会話で subagent 1 本を起こし、親が静かになってから `POST /subagents/<id>/stop`(200 observed)。
+
+| 欄 | 値 |
+|---|---|
+| 直後の一覧 | `state:"stopped"`, `reason:"stopped-by-desk"`, `display.state:"Stopped"`, `counts.stopped: 1`(finished 0) |
+| note | "1 subagent, 0 working, 1 stopped. Background shells and teammates are not listed here." |
+| 10 秒後 | 同じ(揺れない) |
+| 畳んだ後の親転写 | `<status>killed</status>` が 2 件(同じ task-id が 2 回 notify する = 通知の note のとおり) |
+
+round 10 の「止めた直後 15 分 Working」は本番で消えた。reason は机の観測が先(`stopped-by-desk`)、机の記憶が無い停止(Mac の鍵盤)は
+親転写の killed で `stopped-by-user` になる(単体で検査、本番では机の x しか撃てないので未観測)。
