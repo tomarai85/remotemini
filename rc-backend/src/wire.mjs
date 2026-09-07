@@ -478,7 +478,7 @@ export function subagentsBody({ agents, directory, parent, truncated, counts }) 
 export function subagentsNote({ agents, directory, parent, truncated }) {
   if (directory === "unreadable") return "Could not read this session's subagent directory — there may be agents running.";
   if (parent === "unreadable") return "Found subagents, but this session's transcript could not be read, so none of them can be told apart as finished or running.";
-  if (!agents || agents.length === 0) return "This session has no subagents.";
+  if (!agents || agents.length === 0) return `This session has no subagents. ${SUBAGENTS_BLIND_SPOT}`;
   const running = agents.filter((a) => a.state === "running").length;
   const stalled = agents.filter((a) => a.state === "stalled").length;
   const unknown = agents.filter((a) => a.state === "unknown").length;
@@ -488,8 +488,14 @@ export function subagentsNote({ agents, directory, parent, truncated }) {
   if (stalled) parts.push(`${stalled} with no recent sign of life`);
   if (unknown) parts.push(`${unknown} could not be told`);
   if (truncated) parts.push("list truncated");
-  return `${parts.join(", ")}.`;
+  return `${parts.join(", ")}. ${SUBAGENTS_BLIND_SPOT}`;
 }
+/**
+ * ★此の一覧が**見えない物**を毎回名乗る(2026-09-07、対照表 #8 の後半の限界 2)。源は `subagents/agent-*.jsonl` だけなので、
+ *   `/tasks` パネルに並ぶ背景シェル(`run_in_background` の Bash)とチームの一員は此処に出ない。文が名乗らない限り
+ *   電話は「一覧 = パネルの全部」と読む。読めない 2 枝には足さない(其処は既に「読めない」と言っている)。
+ */
+export const SUBAGENTS_BLIND_SPOT = "Background shells and teammates are not listed here.";
 
 /**
  * `GET /healthz` の封筒(DESIGN §7-P)。**認証の外に出る唯一の応答**。

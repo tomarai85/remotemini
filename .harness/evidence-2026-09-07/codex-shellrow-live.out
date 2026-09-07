@@ -1,0 +1,66 @@
+[codex-quick started pid=60263 03:53:03 timeout=150s — background callers: wait on the pid, do not read the output early]
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work/rc-backend
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a07b12-2b84-7f91-9a2f-b132fce1b5c7
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Review a live-measurement design. Answer in <=25 lines: VERDICT (SHIP / DON'T SHIP) + numbered findings, each with what would fool the measurement.
+
+Context: a phone app stops one Claude Code subagent by driving the TUI's /tasks panel over tmux (open panel, move to the row, open detail, press x). Ruling 2026-09-07 (Codex DON'T SHIP on flipping it): when a background shell row is on the panel, the desk REFUSES with reason `shells-present` and presses nothing, because x acts on the current focus and a late redraw could put the cursor on the shell row and kill the shell. This task proves the ruling on the production desk, with a disposable Claude Code session (tmux `rc-e2e-<n>`), never touching real conversations.
+
+Measurement (`live-subagent-stop-check.mjs --mode shell`):
+1. Prompt the disposable session: run `sleep 240` via Bash with run_in_background:true, then launch one subagent "count slowly" that runs `sleep 12` ten times sequentially.
+2. Poll GET /subagents until exactly one running "count slowly".
+3. shell_seen = `pgrep -f 'sleep [2]40'` on the desk finds a process.
+4. POST /subagents/<id>/stop {} -> record stop_http, reason, sent.
+5. Two intervals (settle/2 each): the target's transcript size must grow across both (agent_running=1); the shell must still be alive after (shell_alive=1).
+6. Tear down the disposable session; kill leftover `sleep 240`.
+Green needs ALL: shell_seen=1 one_running=1 stop_http=409 reason=shells-present sent=0 agent_running=1 shell_alive=1 torn_down=1; limited desk -> 3 (unmeasured); setup failure -> 3.
+
+Questions:
+- Does this prove "refusal is real and nothing was pressed", or only "the desk said no"? What extra observation would separate them (e.g. the panel captured before/after, key log)?
+- pgrep on `sleep 240` proves a process exists, not that it belongs to this session or that the TUI shows a shell row. Is that a hole worth closing, and how cheaply?
+- agent_running by transcript growth across two intervals of ~15 s with `sleep 12` steps: false-negative risk?
+- Anything that makes the 409 trivially true (e.g. the desk refusing for an unrelated reason that the field check would not distinguish)?
+2026-09-07T08:53:04.787013Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T08:53:04.909156Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T08:53:04.913845Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+VERDICT: DON'T SHIP
+
+1. It proves only “desk returned refusal and both workloads survived,” not “nothing was pressed.” A harmless/misdirected `x` would fool it. Add request-correlated logging at the tmux key-dispatch boundary showing zero emitted keys; panel captures alone are insufficient.
+
+2. `pgrep -f 'sleep [2]40'` is not session-specific. Another process would fool `shell_seen` and `shell_alive`. Launch with a unique nonce/PID file and verify that exact PID belongs to the disposable tmux session.
+
+3. It never proves `/tasks` displayed that shell row. A detached process plus an unrelated `shells-present` decision would fool it. Capture and parse the panel before POST, requiring the nonce-bearing shell row and target row.
+
+4. Transcript growth is a fragile liveness signal. Tool buffering, delayed writes, or one long Bash invocation could falsely fail despite a running agent. Use a frequent nonce-scoped heartbeat plus authoritative running status.
+
+5. The 409 can be trivially green if `shells-present` is returned for any shell globally, stale state, or a broad fail-closed branch. A different session’s shell would fool it.
+
+6. Add a matched disposable control: remove the verified shell, repeat stop, and require the target to stop with `sent=1`. Without this, the test never proves the refusal is specifically shell-triggered or that the stop path works.
+tokens used
+12,933
+VERDICT: DON'T SHIP
+
+1. It proves only “desk returned refusal and both workloads survived,” not “nothing was pressed.” A harmless/misdirected `x` would fool it. Add request-correlated logging at the tmux key-dispatch boundary showing zero emitted keys; panel captures alone are insufficient.
+
+2. `pgrep -f 'sleep [2]40'` is not session-specific. Another process would fool `shell_seen` and `shell_alive`. Launch with a unique nonce/PID file and verify that exact PID belongs to the disposable tmux session.
+
+3. It never proves `/tasks` displayed that shell row. A detached process plus an unrelated `shells-present` decision would fool it. Capture and parse the panel before POST, requiring the nonce-bearing shell row and target row.
+
+4. Transcript growth is a fragile liveness signal. Tool buffering, delayed writes, or one long Bash invocation could falsely fail despite a running agent. Use a frequent nonce-scoped heartbeat plus authoritative running status.
+
+5. The 409 can be trivially green if `shells-present` is returned for any shell globally, stale state, or a broad fail-closed branch. A different session’s shell would fool it.
+
+6. Add a matched disposable control: remove the verified shell, repeat stop, and require the target to stop with `sent=1`. Without this, the test never proves the refusal is specifically shell-triggered or that the stop path works.
+rc=0
