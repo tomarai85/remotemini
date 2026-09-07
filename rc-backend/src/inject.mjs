@@ -1424,9 +1424,15 @@ export class TmuxInjector {
     //   2026-09-07 09:13: 詳細が開いた pane に interrupt → overlay が閉じ、subagent は走り続けたのに "generation confirmed
     //   stopped" と答えた)。此の関数は生成の印しか見ておらず「どの生成」も知らない。overlay が見えていたら、打った Escape が
     //   何をしたか(overlay を閉じた)を其のまま名乗り、生成の判定は言わない。閉じたのを見ていなければ其れも名乗る。
+    // ★選択画面(許可の確認 / メニュー)が出ている pane には Escape を**打たない**(2026-09-07 round 11)。其処での Escape は
+    //   メニューへの答え(許可なら「断る」)であって割り込みではない —— 電話は許可の確認に答えない(対照表 #17 の裁定)し、
+    //   良性のメニューに答える口は指紋つきの `choice` 経路だけ。此処は何も押さず、其の旨を名乗る。
+    //   ★順序: overlay(panel / detail / 空パネル)の判定を**先に**見る —— 其方が chrome(Background・節・footer)を要求する分だけ
+    //     厳しく、パネルの行が番号の形に見えても選択画面と取り違えない(Codex 2026-09-07 #6)。
     const preOverlay = overlayKindIn(pre);
     const marks0 = interruptMarksIn(pre);
     const done0 = doneMarksIn(pre);
+    if (!preOverlay && classifyScreen(pre).state === "CHOICE") return { stopped: null, reason: "choice-open", waited: 0 };
     if (preOverlay) {
       this.tmux.run(["send-keys", "-t", pane, "Escape"]);
       // ★撮ってから打つまでの隙間に overlay が自分で閉じていれば、此の Escape は親の生成に届く(Codex 2026-09-07 #3)。
