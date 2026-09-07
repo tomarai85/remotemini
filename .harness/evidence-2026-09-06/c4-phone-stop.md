@@ -41,4 +41,10 @@ conversation with a running subagent, Running → Stop → Confirm stop.
 The driver refuses any panel that contains a shell row unless `allowShells` is set, and the route never sets it (the
 body option was removed after Codex named it a bypass). Sessions that use `run_in_background` Bash therefore get a
 `shell-row` refusal instead of a stop. Both production runs used disposable conversations with no shells, so this was
-never exercised. Measured next (see the parity row) before deciding whether the default flips.
+never exercised.
+
+Measured 2026-09-07 08:5x on Jervis (`~/.claude/projects/*/*.jsonl`, parent transcripts modified in the last 14 days,
+newest 120): 17,843 Bash tool calls, 956 with `run_in_background:true` (5.4%), in 8 of the 120 sessions. So the
+refusal bites only while such a shell is alive and only in a minority of sessions; it is a real limit, not a dead
+feature. Whether the default flips (allow shells, rely on the re-capture right before `x`) is a safety-default change
+and goes through a Codex consult first — proposed to round 8, not decided here.
