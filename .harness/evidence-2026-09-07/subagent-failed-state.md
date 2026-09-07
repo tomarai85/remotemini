@@ -8,12 +8,13 @@ to an API error … (ENOTFOUND)`)。
 
 ## 2. 処置
 - `SUBAGENT_STATES` に `failed`(表示 "Failed")、`counts.failed`、note に "N failed"。電話は `SubagentCounts.failed: Int?`。
-- `completionsIn`: `<status>failed</status>` で summary が `Agent "…" failed` の形の物だけ終端 `failed`(背景シェル `Background command …
-  failed` / Monitor `Monitor "…" script failed` は読まない)。最後の終端が勝つ(completed ↔ failed の両方向を検査)。
-- `stateOf`: killed の次に failed(`agent-failed`)。再開の守りは killed と同じ(通知の後 + 5 s を超えて転写が動けば mtime)。
+- `completionsIn`: `<status>failed</status>` を id で agent に束ねる(Codex の後の最終形): 一覧の行は `agent-<id>.jsonl` が在る id だけなので、
+  背景シェル / Monitor の failed は行にならない。summary の文は読まない。最後の終端が勝つ(completed ↔ failed の両方向を検査)。
+  終端の後に起動の記録(`async_launched`)が在れば再開 = 終端を捨てる。
+- `stateOf`: killed の次に failed(`agent-failed`)。mtime の猶予(通知の後 + 5 s を超えて転写が動けば mtime)も残す。
 - 台帳と既存の期待値に `failed: 0`。
 
-検査 `test/subagent-failed-state.test.mjs`(8、否定対照 = シェル / Monitor の形は読まない)。既存 + 台帳 緑。
+検査 `test/subagent-failed-state.test.mjs`(9、否定対照 = 別 id の failed は行にも数にも出ない / 再開)。既存 + 台帳 緑。
 
 ## 3. Codex(`codex-failed-state.out`、DON'T SHIP、9 所見)と処置
 
