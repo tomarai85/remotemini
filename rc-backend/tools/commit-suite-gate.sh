@@ -58,10 +58,52 @@ trap '/bin/rm -f "$OUT" 2>/dev/null' EXIT INT TERM HUP
 #   `test/sessiondiff.test.mjs` の実 git 検査が `.git/config` を `bare = true` に書き換え、
 #   主 worktree の `git status` が死んだ。検査側も剥ぐが、次に書く人が知らなくて済む様に
 #   門の側でも剥ぐ。剥ぐのは一式の子だけで、門の他の段(staged の読み取り)は触らない。
+# ★watchdog(2026-09-07、gate-41): 一式が**終わらない**事が在った —— `node --test` の runner が生きたまま子が idle(kevent、0% CPU)で
+#   20 分以上、出力も止まったまま(`.harness/evidence-2026-09-07/gate-41-hang-diagnosis.md`)。上限が無いと commit は永遠に止まり、
+#   何が止まっているかも残らない。此処では**時間で測れなかったと名乗る**(exit 2、緑でも赤でもない)。名乗る前に止まっている process 木を
+#   出力に残し、子は殺す(残すと次の commit の `mutation-run-live` が「木が動いている」で止まる)。継ぎ目 `SUITE_WATCHDOG_S`(既定 600 s
+#   = 実測の一式の上限 5 分の 2 倍、Codex 2026-09-07 #8。対照は 2 s で撃つ)。★値は 1〜7200 の整数だけ(Codex #7: 0 や壊れた値で
+#   即時 timeout / 算術エラー / 事実上の無効化を起こさない)。外れた値は既定に戻し、其の旨を出力に残す。
+SUITE_WATCHDOG_S="${SUITE_WATCHDOG_S:-600}"
+case "$SUITE_WATCHDOG_S" in
+    ''|*[!0-9]*) echo "commit-suite-gate: SUITE_WATCHDOG_S='$SUITE_WATCHDOG_S' は整数ではない → 既定 600 s"; SUITE_WATCHDOG_S=600 ;;
+esac
+if [ "$SUITE_WATCHDOG_S" -lt 1 ] || [ "$SUITE_WATCHDOG_S" -gt 7200 ]; then
+    echo "commit-suite-gate: SUITE_WATCHDOG_S=$SUITE_WATCHDOG_S は 1〜7200 の外 → 既定 600 s"; SUITE_WATCHDOG_S=600
+fi
 (
     for v in $(/usr/bin/env | /usr/bin/grep -oE '^GIT_[A-Za-z_]+'); do unset "$v"; done
     eval "$SUITE_CMD"
-) > "$OUT" 2>&1
+) > "$OUT" 2>&1 &
+suite_pid=$!
+descendants() { # descendants <pid> → 子孫の pid を深さ優先で(自分は含めない)
+    local p c
+    for c in $(/usr/bin/pgrep -P "$1" 2>/dev/null); do echo "$c"; descendants "$c"; done
+}
+elapsed=0
+while kill -0 "$suite_pid" 2>/dev/null; do
+    if [ "$elapsed" -ge "$SUITE_WATCHDOG_S" ]; then
+        # 締切と終了の競合(Codex #6): 最後の poll の後に終わっていれば、それは終わった一式。殺さず wait へ。
+        if ! kill -0 "$suite_pid" 2>/dev/null; then break; fi
+        echo "commit-suite-gate: ★一式が ${SUITE_WATCHDOG_S}s で終わらない = **測れていない**(緑ではない)"
+        echo "  止まっている process 木(pid ppid %cpu stat etime command):"
+        for pid in "$suite_pid" $(descendants "$suite_pid"); do
+            /bin/ps -o pid=,ppid=,%cpu=,stat=,etime=,command= -p "$pid" 2>/dev/null | /usr/bin/cut -c1-160 | /usr/bin/sed 's/^/    /'
+        done
+        echo "  出た物の末尾:"
+        /usr/bin/tail -8 "$OUT" | /usr/bin/sed 's/^/    /'
+        # 子孫から先に殺す(runner を先に殺すと子が孤児で残る)。TERM → 2 秒 → 木を**取り直して** KILL(Codex #2: TERM の間に
+        # 生まれた子を逃さない / 消えた pid を再利用した無関係の process を撃たない)。setsid で抜けた物は此の再帰では見えない(残余)。
+        for pid in $(descendants "$suite_pid" | /usr/bin/sort -rn) "$suite_pid"; do kill -TERM "$pid" 2>/dev/null; done
+        /bin/sleep 2
+        for pid in $(descendants "$suite_pid" | /usr/bin/sort -rn) "$suite_pid"; do kill -KILL "$pid" 2>/dev/null; done
+        wait "$suite_pid" 2>/dev/null
+        exit 2
+    fi
+    /bin/sleep 1
+    elapsed=$((elapsed + 1))
+done
+wait "$suite_pid"
 suite_rc=$?
 
 tests_line="$(/usr/bin/grep -E '^# tests [0-9]+$' "$OUT" | /usr/bin/tail -1)"

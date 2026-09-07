@@ -1,0 +1,58 @@
+[codex-quick started pid=91370 07:18:36 timeout=150s — background callers: wait on the pid, do not read the output early]
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work/rc-backend
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a07bce-5c42-7ec3-96f1-d12920575c80
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Adversarial review of a shell change, answer in <=20 lines: VERDICT (SHIP / DON'T SHIP) + numbered findings with the concrete failure each causes.
+
+Context: a git pre-commit gate script (bash, macOS, `set -uo pipefail`, no -e) runs the repo's unit suite as `( unset GIT_*; eval "$SUITE_CMD" ) > "$OUT" 2>&1` and then parses `# tests N` / `# fail N` lines from $OUT; exit 0 = green, 1 = red, 2 = "could not measure" (the hook stops the commit on any non-zero). Yesterday the suite (`npm test` = `node --test 'test/**/*.test.mjs'`, 95 files, process-per-file, default concurrency = CPU count 15) hung for 20+ minutes: the runner alive, one child idle in kevent at 0% CPU, output stalled. No timeout existed anywhere.
+
+Change: the suite subshell now runs in the background; the script polls `kill -0 $suite_pid` every 1 s; after `SUITE_WATCHDOG_S` (env, default 900) it prints a "did not finish = not measured" line, dumps `ps -o pid,ppid,%cpu,stat,etime,command` for the subshell and all its descendants (found recursively with `pgrep -P`), tails $OUT, then kills descendants first (deepest first) with TERM, sleeps 2 s, then KILL, waits the subshell, and exits 2. Otherwise it `wait`s the subshell and uses its exit code as before. Controls (fake SUITE_CMD scripts, no real suite): hang (`sleep 999.<nonce>` with watchdog 2 s → exit 2, message, the sleep named in the dump, the sleep process gone afterwards), fast green → 0, 1-second green with watchdog 10 → 0, default value present in the script.
+
+Questions:
+- Killing order / orphans: with `node --test` the runner spawns children; if the runner dies first, do children get reparented and survive? Does deepest-first TERM then KILL cover it? Any process the recursion cannot see (setsid / new process group)?
+- `pgrep -P` recursion in bash on macOS: any pitfall (pgrep matching itself, races as processes exit, empty output) that makes the dump or the kill miss?
+- Backgrounding the subshell changes signal/`wait` semantics under `set -uo pipefail` (no -e): can `wait "$suite_pid"` return a wrong code (e.g. 127/143) or hang if the subshell was killed by the watchdog?
+- Is 900 s the right default given the suite normally takes 3-5 min and the gate also runs iOS controls elsewhere (not in this script)? What would you set and why?
+- Anything that turns a legitimately slow green run into a false "not measured", or a hung run into a false green?
+2026-09-07T12:18:37.629949Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T12:18:37.952909Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T12:18:38.855256Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+VERDICT: DON'T SHIP
+
+1. PPID recursion is only a snapshot. A child that forks during traversal, reparents after its parent exits, or uses `setsid` can escape, leaving an orphan after the hook exits.
+2. Deepest-first TERM reduces Node worker reparenting risk, but KILL must rebuild the tree; reusing the original PID list can miss new children and risks signaling reused PIDs.
+3. `pgrep -P` does not normally match itself; empty output/exit 1 is harmless without `-e`. Process-exit races must still make `ps`/`kill` failures non-fatal.
+4. `wait "$suite_pid"` returns the real status normally; 143/137 after TERM/KILL is expected. 127 means it was already waited or is no longer this shell’s child. Capture it as `wait "$pid"; rc=$?`, not through `! wait`.
+5. KILLing the subshell guarantees `wait` itself will not hang; redirected output is a file, so surviving descendants cannot hold a pipe open.
+6. There is a deadline race: the suite may finish between the last poll and timeout handling, producing a false exit 2. Recheck liveness immediately before diagnostics/killing.
+7. Validate `SUITE_WATCHDOG_S` as a bounded positive decimal; malformed, zero, or huge values can cause immediate timeout, arithmetic errors, or effectively disable protection.
+8. Set the default to 600s: twice the normal 5-minute ceiling. 900s technically works but leaves developers blocked 10–12 unnecessary minutes; unrelated iOS controls should not influence it.
+9. A normal `node --test` run should not become false green, but detached workers or parsing a stale/non-truncated `$OUT` could. Ensure `$OUT` is newly created/truncated per run.
+10. Add a test where a child spawns another child during TERM and verify every process is gone; the current controls do not cover the primary failure mode.
+tokens used
+13,674
+VERDICT: DON'T SHIP
+
+1. PPID recursion is only a snapshot. A child that forks during traversal, reparents after its parent exits, or uses `setsid` can escape, leaving an orphan after the hook exits.
+2. Deepest-first TERM reduces Node worker reparenting risk, but KILL must rebuild the tree; reusing the original PID list can miss new children and risks signaling reused PIDs.
+3. `pgrep -P` does not normally match itself; empty output/exit 1 is harmless without `-e`. Process-exit races must still make `ps`/`kill` failures non-fatal.
+4. `wait "$suite_pid"` returns the real status normally; 143/137 after TERM/KILL is expected. 127 means it was already waited or is no longer this shell’s child. Capture it as `wait "$pid"; rc=$?`, not through `! wait`.
+5. KILLing the subshell guarantees `wait` itself will not hang; redirected output is a file, so surviving descendants cannot hold a pipe open.
+6. There is a deadline race: the suite may finish between the last poll and timeout handling, producing a false exit 2. Recheck liveness immediately before diagnostics/killing.
+7. Validate `SUITE_WATCHDOG_S` as a bounded positive decimal; malformed, zero, or huge values can cause immediate timeout, arithmetic errors, or effectively disable protection.
+8. Set the default to 600s: twice the normal 5-minute ceiling. 900s technically works but leaves developers blocked 10–12 unnecessary minutes; unrelated iOS controls should not influence it.
+9. A normal `node --test` run should not become false green, but detached workers or parsing a stale/non-truncated `$OUT` could. Ensure `$OUT` is newly created/truncated per run.
+10. Add a test where a child spawns another child during TERM and verify every process is gone; the current controls do not cover the primary failure mode.
+rc=0
