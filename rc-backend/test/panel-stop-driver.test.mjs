@@ -233,6 +233,8 @@ test("★シェル行が在るパネルは既定で断る(shells-present = 行�
   assert.equal(r.escapes, 1, "開いたパネルは閉じてから断る");
   assert.equal(s.st.mode, "composer");
   assert.equal(s.st.xPressed, 0);
+  assert.deepEqual(r.after.shells, ["sleep 300 (running)"], "断りの根拠 = 見えたシェル行の本文を after に載せる(live 計器が nonce を探す)");
+  assert.equal(r.after.overlayClosed, true, "after の既存の鍵は畳んでも残る");
   const s2 = sim({ agents: [{ text: "sleep 300 (running)", prompt: "", shell: true }, { text: "sleep 301 (running)", prompt: "", shell: true }, { text: ROW, prompt: PROMPT }] });
   const r2 = closedResult(await stopSubagent(inj(s2), "%1", T(), { allowShells: true }));
   assert.equal(r2.ok, true);

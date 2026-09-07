@@ -65,6 +65,8 @@ const emptyPanel = (text) => {
 const overlayKind = (text) => panelStateOf(text) || (emptyPanel(text) ? "PANEL-EMPTY" : null);
 const isOverlay = (text) => overlayKind(text) !== null;
 const hasShellRows = (panel) => (panel?.sections ?? []).some((s) => /^Shells\b/.test(String(s?.name ?? "")) && Array.isArray(s.rows) && s.rows.length > 0);
+const shellRowTexts = (panel) => (panel?.sections ?? []).filter((s) => /^Shells\b/.test(String(s?.name ?? ""))).flatMap((s) => (Array.isArray(s.rows) ? s.rows : []))
+  .map((r) => String(r?.text ?? "").trim().slice(0, 160)).slice(0, 8);
 /** 同じ詳細か: 型・説明文に加えて prompt の冒頭と道具列も(型と説明文だけでは同名の隣と見分けられない。Codex c3 #4)。 */
 const sameDetail = (a, b) => Boolean(a && b && a.agentType === b.agentType && a.description === b.description
   && String(a.promptPrefix ?? "") === String(b.promptPrefix ?? "") && JSON.stringify(a.recentTools ?? []) === JSON.stringify(b.recentTools ?? []));
@@ -136,7 +138,9 @@ async function drive(inj, pane, target, { maxMoves, maxRounds, budgetMs, allowSh
   const bail = async (reason, extra = {}) => {
     const c = await closeOverlay();
     if (c.uncertain) return refusal("escape-unverified", { why: reason, keys, escapes, sent: extra.sent === true, after: { screen: c.state, overlayClosed: false } });
-    return refusal(reason, { ...extra, keys, escapes, after: { screen: c.state, overlayClosed: c.closed } });
+    // ★`extra.after` は `after` に**畳む**(上書きしない)。断りの根拠(例: 見えたシェル行)を診断欄に残す為。
+    const { after: more = {}, ...rest } = extra;
+    return refusal(reason, { ...rest, keys, escapes, after: { screen: c.state, overlayClosed: c.closed, ...more } });
   };
   /** 入力欄に `/tasks` が残っていれば Backspace で消す(入力欄が丁度 `/tasks` の時だけ)。 */
   const retract = async () => {
@@ -185,7 +189,9 @@ async function drive(inj, pane, target, { maxMoves, maxRounds, budgetMs, allowSh
     let panel = op.panel;
     if (shape && !sameShape(shape, panel)) return bail("reflow", { why: "reopened-panel-differs" });
     shape = panel;
-    if (!allowShells && hasShellRows(panel)) return bail("shells-present", {});
+    // ★断りの根拠をそのまま載せる: パネルに見えたシェル行の本文(最大 8 行・各 160 字)。live 計器は此処に自分の nonce を探し、
+    //   「TUI が**此の**シェルの行を出していた」を机の言葉でなく行の本文で確かめる(Codex 2026-09-07 #3/#5)。
+    if (!allowShells && hasShellRows(panel)) return bail("shells-present", { after: { shells: shellRowTexts(panel) } });
     const plan = planStop({ panel, target, maxMoves, examined });
     if (!plan.ok) return bail(plan.reason, { why: plan.why ?? null });
     if (plan.action !== "open-detail") return bail("reflow", { why: `unexpected-plan:${plan.action}` });
