@@ -30,4 +30,15 @@ the truth, the row stays honest about what the desk knows.
 
 ## OTA
 
-(appended below)
+`ios/tools/adhoc-ota.sh` from a clean tree at `589eafd` (2026-09-07 ~08:4x): build number **160**, Ad Hoc signed,
+bundle + manifest placed on friday under the fixed bookmark
+`https://desk.tailnet.example:9443/ota/d5b3b2832b919beb7ee0b087/` (`.approved-build` recorded on the desk;
+`ota-c4.log`). The real-device tap is the one act left that only Tom can do: open the bookmark, install 160, open a
+conversation with a running subagent, Running → Stop → Confirm stop.
+
+## Limit found by the post-run critic (2026-09-07)
+
+The driver refuses any panel that contains a shell row unless `allowShells` is set, and the route never sets it (the
+body option was removed after Codex named it a bypass). Sessions that use `run_in_background` Bash therefore get a
+`shell-row` refusal instead of a stop. Both production runs used disposable conversations with no shells, so this was
+never exercised. Measured next (see the parity row) before deciding whether the default flips.

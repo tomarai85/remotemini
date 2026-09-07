@@ -50,6 +50,23 @@ What the real TUI did, now measured (it had only been modelled before):
   decreasing and only then called it observed); one guarded Escape closed the panel;
 - the stopped agent's transcript stopped growing at once; the peer kept appending (`sleep 12` × 10 in progress).
 
+## Production measurement, run 3 — friday, 2026-09-07 08:12 (desk `0ad44c9`, the c3b code)
+
+Run 2 aborted at "choose" (exit 3, not measured): the stricter target choice (contains `sleep 13` and not `sleep 12`)
+matched neither transcript, because the parent writes both words into each subagent's prompt. The instrument now
+picks by the DIFFERENCE of line counts (tool calls dominate). Run 3 (`live-subagent-stop-run3.log`):
+
+```
+running=2 (21s) → target=a096d7e1231c1f931 (+1) peer=aa016263e4a7f9a46 (−1)
+stop HTTP 200 stopped=observed after={"screen":"SENDABLE","overlayClosed":true,"stopObserved":"panel"}
+keys=[…14 keys, the same "see both, return to the seen match" shape as run 1…] escapes=3 (24s)
+target 178328→180837→180837→180837 (frozen across both intervals)   peer 180249→181747→195456→200506 (growing in both)
+kind=ok … → 閉じた(0)
+```
+
+So the c3b hardening (first-line/return-to-match planner, empty-panel handling, tail-side tools, no-body route) stops
+the right agent on the real TUI too, and the success is now bound to the panel's row count, not to "the overlay closed".
+
 ## Codex adversarial review of c3 (`codex-c3-review.out`) — VERDICT: FAIL (6 fatal, 5 serious)
 OpenAI Codex v0.144.3
 session id: 01a0787f-1562-7250-8a62-4fbd7b2b7d8b
