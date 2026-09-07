@@ -144,6 +144,8 @@ export function interruptResult(status, body) {
       // ★2026-09-07: agent panel(`/tasks`)か其の詳細が開いていた時、Escape は overlay を閉じるだけで生成には届かない。
       //   「止めた」と言わず、何をしたか(閉じた)と次に何をすべきか(もう一度)を言う。閉じたのを見ていなければ其れも。
       // ★もう一度押すと止まるのは**会話の生成**であって、パネルが見せていた agent ではない(Codex 2026-09-07 #4)。其れを言う。
+      // ★選択画面が出ている時は何も押していない(2026-09-07 round 11)。Escape はメニューへの答えになるので、電話からは打たない。
+      if (b.stopped === null && b.reason === "choice-open") return { kind: "warn", text: "A menu or permission prompt is open on the desk, so Stop pressed nothing: dismissing it from here would answer it. Resolve it on the Mac, or use the choice buttons for a menu." };
       if (b.stopped === "overlay-closed") return { kind: "warn", text: "Closed the agent panel on the desk; nothing was interrupted. Tap Stop again to interrupt the conversation, or stop one agent from Running." };
       if (b.stopped === "unverified" && b.reason === "overlay-stuck") return { kind: "warn", text: "An agent panel is open on the desk and did not close; nothing was interrupted. Check the screen." };
       if (b.stopped === "unverified" && b.reason === "overlay-unknown") return { kind: "warn", text: "The desk went quiet after Escape, but the composer was hidden before, so this may have only closed an overlay. Check the screen." };
