@@ -474,6 +474,30 @@ export function overlayRegionOf(text) {
   return null;
 }
 
+/**
+ * task が 0 本の `/tasks` = 「Background / No tasks currently running / footer」で節が無い(実機 2.1.263、fixture
+ * `friday-panel-empty.txt`)。`panelStateOf` は節を要求するので null になる —— 其れを此処で拾う。
+ * 元は panelstop-driver.mjs に居た(2026-09-06)。割り込みも「overlay が見えているか」を知る必要が出たので(2026-09-07)此処へ。
+ */
+export function emptyPanelIn(text) {
+  if (panelStateOf(text)) return false;
+  const lines = overlayRegionOf(text);
+  if (!lines) return false;
+  const bg = lines.findIndex((l) => l.trim() === "Background");
+  if (bg < 0) return false;
+  const rest = lines.slice(bg + 1);
+  const footer = rest.some((l) => /^\s*↑\/↓ to select/.test(l) || /Esc to close/.test(l));
+  const section = rest.some((l) => /^\s*(Shells|Local agents|Team: .+) \(\d+\)\s*$/.test(l));
+  return footer && !section;
+}
+/** 割り込みが Escape を打つ前に見る overlay の種類。`"panel"` / `"detail"` / `"panel-empty"` / null。 */
+export function overlayKindIn(text) {
+  const st = panelStateOf(text);
+  if (st === "PANEL") return "panel";
+  if (st === "DETAIL") return "detail";
+  return emptyPanelIn(text) ? "panel-empty" : null;
+}
+
 export function panelStateOf(text) {
   const all = String(text ?? "").split("\n");
   // ★overlay は**最後の `▔▔▔` の区切りより下**に描かれる(両機の fixture 10 枚: overlay の画面は区切りが
@@ -1396,8 +1420,26 @@ export class TmuxInjector {
     // (実際に化けて、鍵を外しても順序が変わらなくなった)。動いていたかの取りこぼしは
     // **押した後の枠で拾い直す**(下の armed)ので、遅らせる必要が無い。
     const pre = this.capture(pane);
+    // ★agent panel(`/tasks`)か其の詳細が開いている時、Escape は**overlay を閉じる**だけで生成には届かない(実機 friday
+    //   2026-09-07 09:13: 詳細が開いた pane に interrupt → overlay が閉じ、subagent は走り続けたのに "generation confirmed
+    //   stopped" と答えた)。此の関数は生成の印しか見ておらず「どの生成」も知らない。overlay が見えていたら、打った Escape が
+    //   何をしたか(overlay を閉じた)を其のまま名乗り、生成の判定は言わない。閉じたのを見ていなければ其れも名乗る。
+    const preOverlay = overlayKindIn(pre);
     const marks0 = interruptMarksIn(pre);
     const done0 = doneMarksIn(pre);
+    if (preOverlay) {
+      this.tmux.run(["send-keys", "-t", pane, "Escape"]);
+      // ★撮ってから打つまでの隙間に overlay が自分で閉じていれば、此の Escape は親の生成に届く(Codex 2026-09-07 #3)。
+      //   其の時は `Interrupted` の印が増えるので、印を先に見て其方を名乗る(嘘の「閉じただけ」にしない)。
+      const gone = await this.pollScreen(pane, (t) => (interruptMarksIn(t) > marks0 ? "stopped" : overlayKindIn(t) ? null : "closed"), { budgetMs: this.interruptBudgetMs });
+      if (gone.tag === "stopped") return { stopped: "verified", reason: null, waited: gone.waited };
+      if (gone.tag === "closed") return { stopped: "overlay-closed", reason: preOverlay, waited: gone.waited };
+      return { stopped: "unverified", reason: "overlay-stuck", waited: gone.waited };
+    }
+    // ★入力欄が見えていない画面(認識できない overlay)では「静かになった」を止まりの根拠にしない(Codex #2/#5)。overlay は
+    //   入力欄を隠すので、Escape で overlay が閉じて spinner も同時に消えると、旧来の判定は「止めた」と言ってしまう
+    //   (2026-09-07 09:13 の実物)。印(`Interrupted` の行)が増えた時だけは何が映っていようと本物。
+    const preComposer = composerText(pre) !== null;
     const preInFlight = classifyScreen(pre).activity === "observed";
 
     this.tmux.run(["send-keys", "-t", pane, "Escape"]);
@@ -1430,12 +1472,17 @@ export class TmuxInjector {
       // 1 枚で「止まっている」とは言えない。`PRE_FRAMES` 枚(≈800ms)見て何も出なければ
       // 止める対象は無かったと名乗る。
       if (!armed) return ++idle >= PRE_FRAMES ? "idle" : null;
-      return ++quiet >= QUIET_FRAMES ? "stopped" : null;
+      return ++quiet >= QUIET_FRAMES ? "quiet" : null;
     };
     const seen = await this.pollScreen(pane, decide, { budgetMs: this.interruptBudgetMs });
 
     if (seen.tag === "stopped") {
       return { stopped: "verified", reason: null, waited: seen.waited };
+    }
+    if (seen.tag === "quiet") {
+      // 印は出ていないが進行の印が消えて戻らない(出力前の割り込み = 番ごと巻き戻る)。入力欄が見えていた画面でだけ止まりと言う。
+      if (preComposer) return { stopped: "verified", reason: null, waited: seen.waited };
+      return { stopped: "unverified", reason: "overlay-unknown", waited: seen.waited };
     }
     if (seen.tag === "already-done") {
       // Escape は送ってあるが、止めたのはこちらではない。そう名乗る。

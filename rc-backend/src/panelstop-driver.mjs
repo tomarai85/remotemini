@@ -19,7 +19,7 @@
 //      2 回目は親の会話への割り込みになる(測定 2026-09-06)。しかも描画は遅れるので、1 回打った後に閉じたのを
 //      **見ていない**限り 2 回目は打たない(古い描画を根拠にしない。Codex r5 #2)。見えなければ `escape-unverified`。
 //   7. 全体をペインの鍵の中で行う(電話の送信・割り込み・選択と直列)。鍵に入る前に pane と予算を検める(Codex r5 #6/#7)。
-import { classifyScreen, panelStateOf, composerText, composerIsEmpty, overlayRegionOf } from "./inject.mjs";
+import { classifyScreen, panelStateOf, composerText, composerIsEmpty, emptyPanelIn } from "./inject.mjs";
 import { parsePanel, parseDetail } from "./panelmodel.mjs";
 import { planStop, planDirectDetail, verifySelection, sameShape, hasMaterial, rowDescription, rowMatches, STOP_REFUSAL, DEFAULT_MAX_MOVES } from "./panelstop.mjs";
 import { ESC_SETTLE_MS } from "./choice.mjs";
@@ -51,17 +51,8 @@ const TASKS = "/tasks";
  * 節が 1 つも無いパネル(最後の agent を止めた後の `Background` + footer だけの画面)。`panelStateOf` は節を要求するので
  * PANEL と読まないが、overlay としては開いたまま = Escape で閉じる対象で、行数 0 は「減った」の証拠でもある。
  */
-const emptyPanel = (text) => {
-  if (panelStateOf(text)) return false;
-  const lines = overlayRegionOf(text);
-  if (!lines) return false;
-  const bg = lines.findIndex((l) => l.trim() === "Background");
-  if (bg < 0) return false;
-  const rest = lines.slice(bg + 1);
-  const footer = rest.some((l) => /^\s*↑\/↓ to select/.test(l) || /Esc to close/.test(l));
-  const section = rest.some((l) => /^\s*(Shells|Local agents|Team: .+) \(\d+\)\s*$/.test(l));
-  return footer && !section;
-};
+/** 空パネル(節の無い `/tasks`)。本体は inject.mjs の `emptyPanelIn`(割り込みも同じ判定を使う、2026-09-07)。 */
+const emptyPanel = (text) => emptyPanelIn(text);
 const overlayKind = (text) => panelStateOf(text) || (emptyPanel(text) ? "PANEL-EMPTY" : null);
 const isOverlay = (text) => overlayKind(text) !== null;
 const hasShellRows = (panel) => (panel?.sections ?? []).some((s) => /^Shells\b/.test(String(s?.name ?? "")) && Array.isArray(s.rows) && s.rows.length > 0);

@@ -18,7 +18,10 @@ import { promisify } from "node:util";
 import { buildListing, isPhoneVisible, readHistoryFromPath, readHistoryAround, entriesFromRecord, unreadableRow, readRawRecords, searchHistoryFromPath, permissionModeOf } from "./sessions.mjs";
 import { accountBody, diffBody, gapItem, healthzBody, historyBody, historySearchBody, historyAroundBody, messageItem, pathsBody, pollBodyTmux, pollBodyWorker, sessionRow, sessionsBody, subagentsBody, withWho, attachBody, attachFileBody, statusBodyTmux, statusBodyWorker } from "./wire.mjs";
 // 会話の下の subagent を**ディスクだけ**から列挙する(対照表 #8 の半分その一)。打鍵はしない。
-import { readSubagentsFromPath } from "./subagents.mjs";
+import { readSubagentsFromPath, DeskStopMemory } from "./subagents.mjs";
+// ★机が止めたのを見た subagent の記憶(転写 path → agentId → 時刻)。一覧が其れを `finished`(stopped-by-desk)で返す。
+//   プロセス内だけ(再起動で消える = mtime の 3 値に戻るだけ。嘘にはならない)。2026-09-07、対照表 #8 の残余。
+const deskStops = new DeskStopMemory();
 import { completePaths, clampLimit as clampPathsLimit, PATHS_NO_CWD } from "./paths.mjs";
 // 差分を読む(対照表 #4)。git を撃つのは此の module だけで、撃つ動詞は `diff` のみ。
 import { readWorkingDiff } from "./sessiondiff.mjs";
@@ -2059,7 +2062,7 @@ const server = createServer(async (req, res) => {
       //   予期しない fs の失敗で 500 を返すより、**読めなかったと名乗る 200** の方が
       //   正しいから —— 空配列に落として「何も走っていない」と読ませる形だけは作らない。
       try {
-        return json(res, 200, subagentsBody(readSubagentsFromPath(target)));
+        return json(res, 200, subagentsBody(readSubagentsFromPath(target, { deskStopped: deskStops.for(target) })));
       } catch (e) {
         return json(res, 200, subagentsBody({
           agents: [], directory: "unreadable", parent: "unscanned", truncated: false, counts: null,
@@ -2091,6 +2094,8 @@ const server = createServer(async (req, res) => {
       try { built = buildStopTarget(target, stopAgentId); } catch { built = { ok: false, reason: "unreadable", message: TARGET_REFUSAL.unreadable }; }
       if (!built.ok) return refuse(built.reason, built.message);
       const out = await stopSubagent(injector, r.pane, built.target);
+      // ★観測した停止だけ覚える(x を押してパネルで行が減った = `stopped:"observed"`)。`unverified`(押したが見えていない)は覚えない。
+      if (out.ok && out.stopped === "observed") deskStops.record(target, stopAgentId, Date.now());
       return json(res, out.ok ? 200 : 409, subagentStopBody({ agentId: stopAgentId, description: built.target.description, out }));
     }
 

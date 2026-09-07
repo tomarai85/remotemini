@@ -9,7 +9,7 @@
 //   見えない物の列挙を重ねると何が読めないのかが濁る。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { subagentsBody, subagentsNote, SUBAGENTS_BLIND_SPOT } from "../src/wire.mjs";
@@ -60,8 +60,12 @@ test("★否定対照: 文を外した note では此の検査が赤になる(�
   assert.doesNotMatch(bare, DISCLOSE);
 });
 
-test("★机と電話は同じ文を持つ: 電話の検査(SubagentsBlindSpotNoteTests)が wire.mjs の SUBAGENTS_BLIND_SPOT を其の字で要求する", () => {
-  const swift = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "ios", "Tests", "Screens", "Conversation", "SubagentsBlindSpotNoteTests.swift"), "utf8");
+test("★机と電話は同じ文を持つ: 電話の検査(SubagentsBlindSpotNoteTests)が wire.mjs の SUBAGENTS_BLIND_SPOT を其の字で要求する", (t) => {
+  // ★`ios/` は rc-backend の隣に居る時だけ読める。対照の砂場(copied-tree / mutation-freeze)は rc-backend だけを写すので、
+  //   其処では**測らない**と名乗って skip する(赤にも緑にも丸めない)。本物の木では必ず読める = 此の skip は砂場でしか出ない。
+  const swiftPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "ios", "Tests", "Screens", "Conversation", "SubagentsBlindSpotNoteTests.swift");
+  if (!existsSync(swiftPath)) { t.skip("ios/ is not beside rc-backend (copied tree): the cross-pin is measured only in the real tree"); return; }
+  const swift = readFileSync(swiftPath, "utf8");
   assert.ok(swift.includes(SUBAGENTS_BLIND_SPOT), "電話の検査に机の文が無い(片方だけ変えた)");
   assert.ok(DISCLOSE.test(SUBAGENTS_BLIND_SPOT), "此の検査の正規表現が机の文と合っていない");
 });

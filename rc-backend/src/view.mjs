@@ -141,6 +141,12 @@ export function interruptResult(status, body) {
     //   画素から推し量る tmux より強い観測ができる。撮れないのは画面であって、死は分かる。
     //   下の二択が残っているのは worker の為ではなく、**`stopped` を載せない古いサーバ**の為。
     if (Object.prototype.hasOwnProperty.call(b, "stopped")) {
+      // ★2026-09-07: agent panel(`/tasks`)か其の詳細が開いていた時、Escape は overlay を閉じるだけで生成には届かない。
+      //   「止めた」と言わず、何をしたか(閉じた)と次に何をすべきか(もう一度)を言う。閉じたのを見ていなければ其れも。
+      // ★もう一度押すと止まるのは**会話の生成**であって、パネルが見せていた agent ではない(Codex 2026-09-07 #4)。其れを言う。
+      if (b.stopped === "overlay-closed") return { kind: "warn", text: "Closed the agent panel on the desk; nothing was interrupted. Tap Stop again to interrupt the conversation, or stop one agent from Running." };
+      if (b.stopped === "unverified" && b.reason === "overlay-stuck") return { kind: "warn", text: "An agent panel is open on the desk and did not close; nothing was interrupted. Check the screen." };
+      if (b.stopped === "unverified" && b.reason === "overlay-unknown") return { kind: "warn", text: "The desk went quiet after Escape, but the composer was hidden before, so this may have only closed an overlay. Check the screen." };
       if (b.stopped === "verified") return { kind: "ok", text: "Stopped (generation confirmed stopped)." };
       // ★2026-08-03 追加。Escape を押した時には番が自力で終わっていた場合。
       //   画面の見え方は「止まった」と同じ(スピナーが消える)ので、これを verified に
