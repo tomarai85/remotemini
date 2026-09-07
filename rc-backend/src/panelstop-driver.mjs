@@ -170,7 +170,9 @@ async function drive(inj, pane, target, { maxMoves, maxRounds, budgetMs, allowSh
       if (after.tag === "closed") {
         // overlay が閉じた = 数えていない。開き直して数える(入力欄が空でなければ開かない = `not-sendable` ではなく unverified)。
         const t = cap();
-        if (classifyScreen(t).state === "SENDABLE" && composerIsEmpty(t)) {
+        const sc = classifyScreen(t);
+        // ★開き直す前も同じ veto: spinner が見えている入力欄には打たない(Codex 2026-09-07 direct-detail #3)。
+        if (sc.state === "SENDABLE" && sc.activity !== "observed" && composerIsEmpty(t)) {
           type(TASKS);
           const echo = await poll((x) => (composerOf(x) === TASKS ? "echo" : null));
           if (echo.tag) {
@@ -218,6 +220,10 @@ async function drive(inj, pane, target, { maxMoves, maxRounds, budgetMs, allowSh
     if (st === "PANEL") return { panel: parsePanel(t), opened: false };
     const s = classifyScreen(t);
     if (s.state !== "SENDABLE") return { refusal: refusal("not-sendable", { why: s.state, keys, escapes, after: { screen: s.state } }) };
+    // ★親が生成中(spinner が見えている)なら打たない。state は SENDABLE のままなので activity で見る。run3(2026-09-07 09:27)は
+    //   親の手番の終わり際に /tasks を打ち、文字が消えて `panel-did-not-open` になった —— 生成中の入力欄に打った文字は
+    //   TUI が queue として扱う(送信の経路と同じ判断: 生成中は打たない)。
+    if (s.activity === "observed") return { refusal: refusal("not-sendable", { why: "in-flight", keys, escapes, after: { screen: s.state, activityFrom: s.activityFrom ?? null } }) };
     if (!composerIsEmpty(t)) return { refusal: refusal("not-sendable", { why: "composer-not-empty", keys, escapes, after: { screen: s.state, composer: composerOf(t).slice(0, 80) } }) };
     type(TASKS);
     let echo = await poll((x) => (composerOf(x) === TASKS ? "echo" : null));

@@ -1,0 +1,12 @@
+  ..  : mode=single tmux=rc-e2e-202609070932530889522284046661078 sid=2f132bb6-ec37-46de-abd5-846744a5d5a4
+  ..  : send HTTP 202 (0s)
+  ..  : running=1 (10s)
+  ..  : parent quiet for 12s (27s)
+  ..  : stop HTTP 200 stopped=observed reason=- sent=true keys=["-l /tasks","Enter","-l x","-l /tasks","Enter","Escape"] escapes=1 after={"screen":"SENDABLE","overlayClosed":true,"stopObserved":"reopened"} (29s)
+  ..  : target 183403->183403->183403 screen=SENDABLE overlay=null (60s)
+セッション rc-e2e-202609070932530889522284046661078: 不在を確認
+~/.rc-backend/panes/2f132bb6-ec37-46de-abd5-846744a5d5a4.json: 不在を確認
+転写: 退避した(~/.claude/projects-attic/rc-e2e/2f132bb6-ec37-46de-abd5-846744a5d5a4.jsonl)—— 読めるが製品の一覧には出ない
+殻の出力: kind=ok mode=single one_running=1 stop_http=200 stopped=observed observed_via=reopened target_frozen=1 screen_after=SENDABLE torn_down=1 torn_retry=0 limited=not-limited
+=== 判定 ===
+閉じた(0)
