@@ -1,0 +1,13 @@
+  ..  : tmux=rc-e2e-202609070812395412572944203022523 sid=598b1a8a-eec6-46b4-9030-03129c39c014
+  ..  : send HTTP 202 (0s)
+  ..  : running=2 (21s)
+  ..  : target=a096d7e1231c1f931 peer=aa016263e4a7f9a46 (a096d7e1:+1 aa016263:-1)
+  ..  : stop HTTP 200 stopped=observed reason=- keys=["-l /tasks","Enter","Enter","Escape","-l /tasks","Enter","Down","Enter","Escape","-l /tasks","Enter","Enter","-l x","Escape"] escapes=3 after={"screen":"SENDABLE","overlayClosed":true,"stopObserved":"panel"} (24s)
+  ..  : target 178328->180837->180837->180837 peer 180249->181747->195456->200506 (55s)
+セッション rc-e2e-202609070812395412572944203022523: 不在を確認
+~/.rc-backend/panes/598b1a8a-eec6-46b4-9030-03129c39c014.json: 不在を確認
+転写: 退避した(~/.claude/projects-attic/rc-e2e/598b1a8a-eec6-46b4-9030-03129c39c014.jsonl)—— 読めるが製品の一覧には出ない
+殻の出力: kind=ok two_running=1 target_chosen=1 stop_http=200 stopped=observed target_frozen=1 peer_running=1 torn_down=1 torn_retry=0 limited=not-limited
+=== 判定 ===
+閉じた(0)
+rc=0
