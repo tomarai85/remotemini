@@ -119,6 +119,17 @@ async function main(argv) {
   const getJson = async (path) => { const r = await fetch(`${url}${path}`, { headers: H }); let j = null; try { j = await r.json(); } catch { j = null; } return { status: r.status, json: j }; };
   const postJson = async (path, body) => { const r = await fetch(`${url}${path}`, { method: "POST", headers: H, body: JSON.stringify(body) }); const text = await r.text(); let j = null; try { j = JSON.parse(text); } catch { j = null; } return { status: r.status, json: j, text }; };
   const parts = [`mode=${mode}`];
+  // ★期待外れの時は**画面を撮って log に残す**(読むだけ: tmux capture-pane、pane id は /status から)。run3(2026-09-07)で
+  //   `panel-did-not-open` が鍵列 1 打で出たが、画面が無くて原因が読めなかった。使い捨ての会話なので撮って良い。
+  const screenOf = async (label) => {
+    try {
+      const st = await getJson(`/api/sessions/${sid}/status`);
+      const pane = st.json?.pane;
+      if (!pane) { console.log(`  --  : screen ${label}: no pane in /status`); return; }
+      const t = sh(`LC_ALL=en_US.UTF-8 /opt/homebrew/bin/tmux capture-pane -p -t '${pane}' -S -40 2>&1`);
+      console.log(`===== screen ${label} (pane ${pane}, status ${st.json?.screen}/${st.json?.overlay ?? "-"}) =====\n${t}\n===== /screen ${label} =====`);
+    } catch (e) { console.log(`  --  : screen ${label}: capture failed: ${String(e && e.message).slice(0, 120)}`); }
+  };
   const t0 = Date.now();
   const stamp = () => `${Math.round((Date.now() - t0) / 1000)}s`;
   const fail = (step, msg) => Object.assign(new Error(msg), { step });
@@ -151,6 +162,18 @@ async function main(argv) {
 
     const dir = sh(`ls -d ~/.claude/projects/*/${sid}/subagents 2>/dev/null | head -1`);
     if (!dir) throw fail("transcript", "subagent transcript dir not found on the desk");
+    // ★親が静かになるまで待つ(single / shell): 親の転写の mtime が 10 秒以上動かない = 親の手番(起動の返事、hooks)が終わった。
+    //   run3(2026-09-07 09:27)は親の手番の終わり際(hooks 実行中)に /tasks を打ち、echo が消えて `panel-did-not-open` になった。
+    //   電話の利用者が其の瞬間に押す事は在り得るが、其れは driver の別の題(spinner 中の composer を SENDABLE と読む)。
+    //   此の計器は裁定を**静かな机**で測る。最長 90 秒。
+    if (mode !== "twin") {
+      const parentFile = `${dir.replace(/\/subagents$/, "")}.jsonl`;
+      const quietFor = () => { const v = sh(`stat -f %m '${parentFile}' 2>/dev/null || echo 0`); const m = Number(/^\d+$/.test(v) ? v : 0); return m ? Math.floor(Date.now() / 1000) - m : 0; };
+      const until = Date.now() + 90_000;
+      let q = quietFor();
+      while (q < 10 && Date.now() < until) { await sleep(3000); q = quietFor(); }
+      console.log(`  ..  : parent quiet for ${q}s (${stamp()})`);
+    }
     const size = (id) => { const v = sh(`stat -f %z '${dir}/agent-${id}.jsonl' 2>/dev/null || echo ERR`); if (!/^\d+$/.test(v)) throw fail("stat", `stat failed for ${id}: ${v}`); return Number(v); };
     const ids = running.map((a) => a.agentId);
     let target = null, peer = null;
@@ -195,6 +218,8 @@ async function main(argv) {
       if (mode === "single") parts.push(`observed_via=${String(st.json?.after?.stopObserved ?? "none")}`);
     }
     console.log(`  ..  : stop HTTP ${st.status} stopped=${stopped} reason=${st.json?.reason ?? "-"} sent=${st.json?.sent} keys=${JSON.stringify(st.json?.keys ?? [])} escapes=${st.json?.escapes ?? "-"} after=${JSON.stringify(st.json?.after ?? null)} (${stamp()})`);
+    const expectedFirst = mode === "shell" ? (st.status === 409 && st.json?.reason === "shells-present") : st.status === 200;
+    if (!expectedFirst) await screenOf("after-first-stop");
 
     const t1 = size(target), p1 = peer ? size(peer) : 0;
     await sleep(Math.max(5, settleSec / 2) * 1000);
@@ -232,6 +257,7 @@ async function main(argv) {
       parts.push(`retry_stopped=${rt?.json?.stopped === "observed" ? "observed" : String(rt?.json?.stopped ?? "none")}`);
       if (rt && rt.status !== 200) parts.push(`retry_reason=${String(rt.json?.reason ?? "none")}`);
       console.log(`  ..  : retry HTTP ${rt?.status} stopped=${rt?.json?.stopped} reason=${rt?.json?.reason ?? "-"} keys=${JSON.stringify(rt?.json?.keys ?? [])} after=${JSON.stringify(rt?.json?.after ?? null)} (${stamp()})`);
+      if (rt?.status !== 200) await screenOf("after-retry");
       const r1 = size(target);
       await sleep(Math.max(5, settleSec / 2) * 1000);
       const rMid = size(target);

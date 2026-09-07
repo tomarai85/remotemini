@@ -19,3 +19,14 @@ detail view opened, then closed. Do not edit these files by hand — they are ev
 | `friday-running.txt` | friday | 80x24 | 2.1.263 | before opening the panel |
 
 No file contains an account email (the start banner had scrolled off before these captures).
+
+## Added 2026-09-07 (disposable session on friday, 120x40 tmux, Claude Code 2.1.263)
+
+Captured by `repro-shell-kill-v2.mjs` (screens log: `.harness/evidence-2026-09-07/repro-shell-kill-screens.log`).
+One subagent `count slowly` plus a background shell `sleep 240.<nonce>` in the parent; the shell was killed from outside.
+
+| file | screen |
+|---|---|
+| `friday-panel-empty.txt` | idle session, `/tasks` with zero tasks: `Background` / `No tasks currently running` / footer, no section header. `panelStateOf` = null; the driver's `emptyPanel` recognises it |
+| `friday-detail-direct.txt` | after the shell died only one task remained and `/tasks` opened **straight into its detail** (no list): `general-purpose › count slowly`, counters, Progress, Prompt, detail footer with `x to stop · f to foreground`. Note the parent was mid-turn above the separator (`Wrangling… (running stop hooks…)`) |
+| `friday-running-spinner.txt` | composer visible while the parent generates (`✶ Wrangling… (4s · thinking with xhigh effort)`): `classifyScreen` = SENDABLE with `activity: observed` (`activityFrom: spinner`). The stop driver refuses to type into this screen (`not-sendable`, why `in-flight`) |

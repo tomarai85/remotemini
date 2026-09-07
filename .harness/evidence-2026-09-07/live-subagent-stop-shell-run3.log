@@ -1,0 +1,16 @@
+  ..  : mode=shell tmux=rc-e2e-202609070926532966114411384722785 sid=32e432c9-63ba-4908-bf50-16496f799aa8
+  ..  : send HTTP 202 (0s)
+  ..  : running=1 (21s)
+  ..  : background shell alive=1 (nonce 388060)
+  ..  : shells on panel = []
+  ..  : stop HTTP 409 stopped=false reason=panel-did-not-open sent=false keys=["-l /tasks"] escapes=0 after={"screen":"UNKNOWN","retracted":false,"leftover":""} (26s)
+  ..  : agent 182061->198710->202270 shell alive=1 (57s)
+  ..  : shell killed by pid pattern, alive now=0 (60s)
+  ..  : retry HTTP 409 stopped=false reason=not-sendable keys=[] after={"screen":"UNKNOWN"} (60s)
+  ..  : after retry target 202270->205830->209390 (91s)
+セッション rc-e2e-202609070926532966114411384722785: 不在を確認
+~/.rc-backend/panes/32e432c9-63ba-4908-bf50-16496f799aa8.json: 不在を確認
+転写: 退避した(~/.claude/projects-attic/rc-e2e/32e432c9-63ba-4908-bf50-16496f799aa8.jsonl)—— 読めるが製品の一覧には出ない
+殻の出力: kind=ok mode=shell one_running=1 shell_seen=1 stop_http=409 reason=panel-did-not-open sent=0 pressed_none=1 shell_row_seen=0 agent_running=1 shell_alive=1 retry_http=409 retry_stopped=false retry_reason=not-sendable target_frozen=0 torn_down=1 torn_retry=0 limited=not-limited
+=== 判定 ===
+赤(1)

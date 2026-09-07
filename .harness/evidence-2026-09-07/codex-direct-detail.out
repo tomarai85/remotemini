@@ -1,0 +1,59 @@
+[codex-quick started pid=98618 04:33:47 timeout=150s — background callers: wait on the pid, do not read the output early]
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work/rc-backend
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a07b37-7590-7110-920b-86850e5aacc4
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Adversarial review of a TUI-driving change. Answer in <=25 lines: VERDICT (SHIP / DON'T SHIP) + numbered findings with the concrete failure each one causes.
+
+System: a phone app stops one Claude Code subagent by driving the `/tasks` panel over tmux: type `/tasks`, Enter, move the cursor to the row, Enter opens a detail view (type › description, counters, recent tool calls, prompt prefix), press `x` only if the detail matches the target strictly (description + prompt prefix + tool tail), then verify on the panel that the running row count for that target decreased; close the overlay with Escape only when an overlay is visible.
+
+Measured today on Claude Code 2.1.263 (3/3): when exactly ONE task is on the panel, `/tasks` skips the list and opens straight into that task's detail (footer "← to go back · Esc/Enter/Space to close · x to stop"). With zero tasks it shows "Background / No tasks currently running" (no sections). Pressing `x` in a directly-opened detail closes the whole overlay (no list to return to).
+
+Change made:
+1. After `/tasks`+Enter the driver accepts PANEL, DETAIL, or EMPTY. EMPTY -> refuse `no-such-row` (overlay closed first). DETAIL -> `planDirectDetail`: refuse unless description equals target and `detailMatches(strict = desk counts >1 live same-description)` passes; if the desk counts >1 live same-description siblings and the target has no distinct prompt prefix -> refuse `ambiguous`. If it matches: re-capture right before pressing, require the same detail, press `x`, then observe: if the overlay closed, type `/tasks` again (only if composer is empty), require PANEL or EMPTY, and count = decreased when the target's running rows < before (before = 1); EMPTY counts as decreased. Close with Escape.
+2. Entry: if the screen is SENDABLE but a spinner is visible (`activity: observed`), refuse `not-sendable` (typing during generation queues text). Previously the driver typed anyway and once lost the text at a turn boundary.
+
+Questions:
+- In the direct-detail case there is no list; can `x` land on something other than the shown task (e.g. a background shell that finished between the listing and the keypress, or a task that replaced it)? What re-check would close that?
+- "before = 1" is assumed from the fact that the TUI skipped the list. Is that a safe inference, or can the TUI open a detail directly for other reasons?
+- The reopen-to-count step types `/tasks` into the composer after the stop; is there a state where that text is consumed as a message to the model?
+- Is `activity: observed` (spinner glyph on screen) sufficient as an in-flight signal, or do you know a state where a generation runs with no spinner?
+2026-09-07T09:33:48.340844Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T09:33:48.756525Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T09:33:49.136420Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+VERDICT: DON'T SHIP
+
+1. Content equality is not identity. A finished task can be replaced by a sibling with identical description/prompt/tool tail; `x` may stop the replacement. Re-capture does not eliminate the final TOCTOU race. Require an immutable task ID plus `running` status immediately before an ID-bound stop; otherwise refuse direct-detail stops.
+
+2. `before = 1` is not justified. The measurement proves “one task → DETAIL,” not “DETAIL → one task.” Remembered selection, transitions, filters, or other UI behavior could also open DETAIL. Obtain an explicit pre-stop count or treat the state as unverifiable.
+
+3. Reopening via typed `/tasks` is unsafe. Composer emptiness is only a snapshot; a turn can resume before typing or Enter, causing the text to queue or become a model message. Require authoritative idle/input-mode checks immediately before typing and Enter, plus confirmation that `/tasks` is recognized as a command.
+
+4. Spinner presence is a useful veto, but spinner absence is not proof of idleness. Redraw gaps, obscured UI, tool/permission waits, or alternate activity states can leave generation active without the glyph. Use an authoritative turn/input-state signal.
+
+5. Row-count decrease is not identity- or cause-bound. Natural completion between checks can make `EMPTY` look like a successful stop while `x` was a no-op or targeted something else. Verify a stop acknowledgment or disappearance of the same immutable task ID.
+tokens used
+13,526
+VERDICT: DON'T SHIP
+
+1. Content equality is not identity. A finished task can be replaced by a sibling with identical description/prompt/tool tail; `x` may stop the replacement. Re-capture does not eliminate the final TOCTOU race. Require an immutable task ID plus `running` status immediately before an ID-bound stop; otherwise refuse direct-detail stops.
+
+2. `before = 1` is not justified. The measurement proves “one task → DETAIL,” not “DETAIL → one task.” Remembered selection, transitions, filters, or other UI behavior could also open DETAIL. Obtain an explicit pre-stop count or treat the state as unverifiable.
+
+3. Reopening via typed `/tasks` is unsafe. Composer emptiness is only a snapshot; a turn can resume before typing or Enter, causing the text to queue or become a model message. Require authoritative idle/input-mode checks immediately before typing and Enter, plus confirmation that `/tasks` is recognized as a command.
+
+4. Spinner presence is a useful veto, but spinner absence is not proof of idleness. Redraw gaps, obscured UI, tool/permission waits, or alternate activity states can leave generation active without the glyph. Use an authoritative turn/input-state signal.
+
+5. Row-count decrease is not identity- or cause-bound. Natural completion between checks can make `EMPTY` look like a successful stop while `x` was a no-op or targeted something else. Verify a stop acknowledgment or disappearance of the same immutable task ID.
+rc=0

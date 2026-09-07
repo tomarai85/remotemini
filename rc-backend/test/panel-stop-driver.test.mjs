@@ -63,12 +63,13 @@ function detailScreen(prompt, elapsed = 30) {
  *    agent が終わってパネル(印はシェル行)へ戻る)
  */
 function sim({ agents, sel = 0, composer = "", xEffect = "panel", lag = 0, tick = false, ignoreMoves = false, neverOpenPanel = false,
-               neverOpenDetail = false, reflowOnReopen = false, noEcho = false, finishAfterDetailCaptures = 0, directDetail = false } = {}) {
+               neverOpenDetail = false, reflowOnReopen = false, noEcho = false, finishAfterDetailCaptures = 0, directDetail = false, composerScreen = null,
+               composerScreenAfterX = null } = {}) {
   const st = { mode: "composer", typed: composer, sel, agents: agents.map((a) => ({ ...a })), opens: 0, log: [], xPressed: 0, stoppedFlat: null,
                staleLeft: 0, staleFrame: null, elapsed: 30, detailCaptures: 0, captures: 0 };
   const flatRows = () => [...st.agents.filter((a) => a.shell), ...st.agents.filter((a) => !a.shell)];
   const render = () => {
-    if (st.mode === "composer") return st.typed ? typed(COMPOSER, st.typed) : COMPOSER;
+    if (st.mode === "composer") { const base = (st.xPressed > 0 && composerScreenAfterX) ? composerScreenAfterX : (composerScreen ?? COMPOSER); return st.typed ? typed(base, st.typed) : base; }
     if (st.mode === "panel") return panelScreen(flatRows(), st.sel);
     return detailScreen(flatRows()[st.sel].prompt, tick ? st.elapsed++ : 30);
   };
@@ -427,4 +428,32 @@ test("★/tasks が空パネル(No tasks currently running)→ no-such-row(why=p
   assert.equal(s.st.xPressed, 0);
   assert.equal(s.st.mode, "composer");
   assert.equal(r.after.overlayClosed, true);
+});
+
+// ── 親が生成中(spinner が見えている)の入力欄には打たない(2026-09-07 run3: 手番の終わり際に /tasks を打って文字が消えた)──
+test("★spinner が見えている入力欄(実画面 friday-running-spinner)には /tasks を打たない = not-sendable(why=in-flight)、打鍵ゼロ", async () => {
+  const s = sim({ agents: [{ text: ROW, prompt: PROMPT }], composerScreen: fx("friday-running-spinner.txt") });
+  const r = closedResult(await stopSubagent(inj(s), "%1", T()));
+  assert.equal(r.reason, "not-sendable");
+  assert.equal(r.why, "in-flight");
+  assert.equal(r.after.activityFrom, "spinner");
+  assert.deepEqual(r.keys, []);
+  assert.equal(r.escapes, 0);
+});
+
+test("★対照: 同じ実機の静かな画面(friday-running = 待機中、spinner 無し)なら打つ", async () => {
+  const s = sim({ agents: [{ text: ROW, prompt: PROMPT }, { text: "other (running) · Sonnet 5", prompt: OTHER }], composerScreen: fx("friday-running.txt") });
+  const r = closedResult(await stopSubagent(inj(s), "%1", T()));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.keys[0], "-l /tasks");
+});
+
+test("★x で overlay が閉じた後、親の spinner が見えていれば /tasks を開き直さない = unverified(sent:true)、2 度目の /tasks は無い", async () => {
+  const s = sim({ agents: [{ text: ROW, prompt: PROMPT }], directDetail: true, xEffect: "close", composerScreenAfterX: fx("friday-running-spinner.txt") });
+  const r = closedResult(await stopSubagent(inj(s), "%1", T()));
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "unverified");
+  assert.equal(r.sent, true);
+  assert.equal(r.keys.filter((k) => k === "-l /tasks").length, 1, "開き直しの /tasks は打たない");
+  assert.equal(s.st.xPressed, 1);
 });
