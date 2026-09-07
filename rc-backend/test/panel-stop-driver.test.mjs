@@ -225,11 +225,13 @@ test("★x の直前の再確認は prompt と道具列も比べる(型と説明
   assert.equal(s.st.xPressed, 0);
 });
 
-test("★シェル行が在るパネルは既定で断る(shell-row / shells-present)。allowShells で進める", async () => {
+test("★シェル行が在るパネルは既定で断る(shells-present = 行動可能な文。2026-09-07 の裁定、Codex DON'T SHIP on flipping)。allowShells で進める", async () => {
   const s = sim({ agents: [{ text: "sleep 300 (running)", prompt: "", shell: true }, { text: ROW, prompt: PROMPT }] });
   const r = closedResult(await stopSubagent(inj(s), "%1", T()));
-  assert.equal(r.reason, "shell-row");
-  assert.equal(r.why, "shells-present");
+  assert.equal(r.reason, "shells-present");
+  assert.match(r.message, /Wait for the shell to finish/);
+  assert.equal(r.escapes, 1, "開いたパネルは閉じてから断る");
+  assert.equal(s.st.mode, "composer");
   assert.equal(s.st.xPressed, 0);
   const s2 = sim({ agents: [{ text: "sleep 300 (running)", prompt: "", shell: true }, { text: "sleep 301 (running)", prompt: "", shell: true }, { text: ROW, prompt: PROMPT }] });
   const r2 = closedResult(await stopSubagent(inj(s2), "%1", T(), { allowShells: true }));

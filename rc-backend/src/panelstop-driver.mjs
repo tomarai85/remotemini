@@ -29,6 +29,10 @@ import { MUTEX_BUSY, MUTEX_ABORTED } from "./mutex.mjs";
 export const DRIVER_REFUSAL = {
   "no-pane": "This conversation has no open pane on the desk, so nothing can be pressed.",
   "pane-busy": "The desk is busy with another action on this conversation. Nothing was pressed.",
+  // ★2026-09-07 裁定(Codex: DON'T SHIP on flipping): シェル行が在るパネルでは押さない。`x` は id ではなく**今の焦点**に効くので、
+  //   詳細を撮った後に agent が終わってパネルへ戻れば、印はシェル行に乗り、x はシェルを殺す —— 直前の再撮影も確率を下げるだけで
+  //   閉じない。実セッションの 5.4% の Bash が背景で走る(8/120 セッション)ので、断りは「何が起きたか・どうすれば通るか」を言う。
+  "shells-present": "A background shell is running under this conversation, and the desk will not press stop while a shell row is on the panel (a late redraw could kill the shell instead). Wait for the shell to finish, or stop it from the desk, then try again. Nothing was pressed.",
   "not-sendable": "The desk is not at an empty prompt (a menu, a permission prompt, another overlay, or text already typed), so the agent panel was not opened. Nothing was pressed.",
   "panel-did-not-open": "The desk did not show the agent panel after /tasks. Nothing else was pressed.",
   "detail-did-not-open": "The desk did not open the agent's detail view. The stop key was not pressed.",
@@ -181,7 +185,7 @@ async function drive(inj, pane, target, { maxMoves, maxRounds, budgetMs, allowSh
     let panel = op.panel;
     if (shape && !sameShape(shape, panel)) return bail("reflow", { why: "reopened-panel-differs" });
     shape = panel;
-    if (!allowShells && hasShellRows(panel)) return bail("shell-row", { why: "shells-present" });
+    if (!allowShells && hasShellRows(panel)) return bail("shells-present", {});
     const plan = planStop({ panel, target, maxMoves, examined });
     if (!plan.ok) return bail(plan.reason, { why: plan.why ?? null });
     if (plan.action !== "open-detail") return bail("reflow", { why: `unexpected-plan:${plan.action}` });

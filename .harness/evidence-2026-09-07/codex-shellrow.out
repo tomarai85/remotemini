@@ -1,0 +1,41 @@
+[codex-quick started pid=58201 03:36:06 timeout=150s — background callers: wait on the pid, do not read the output early]
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a07b02-a888-7b51-9da4-231a5318e45c
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Judge ONE safety-default decision. Answer with SHIP or DON'T SHIP in the first line, then the strongest objection, then (if SHIP) the minimum guard you require. Under 350 words. Everything you need is inline; do not read files.
+
+Context: a phone app stops one Claude Code subagent by driving the desk's `/tasks` panel over tmux: open panel → move the marker → open the row's detail → verify prompt+tools → press `x`. The panel can also list background shells (`Shells (N)` section, rows like `sleep 300 (running)`); pressing `x` on a shell row kills that shell. The marker may sit on a shell row initially and, if the target agent finishes between the detail capture and the `x` keystroke, the TUI returns to the panel with the marker back on the first row (a shell). The driver already: re-captures the screen immediately before `x` and presses only if the SAME detail (type, description, prompt prefix, tool list) is still displayed; refuses when the marker is on a shell row; counts a success only when the panel later shows the target's running row count decreased by one.
+
+Current default (from an adversarial review that called the race fatal): if the panel contains ANY shell row, the driver refuses `shell-row` and nothing is pressed. There is no client-controllable override (a body flag was removed as a bypass). Measured prevalence on the owner's machine (14 days, 120 recent parent transcripts): 5.4% of Bash tool calls run in the background; 8 of 120 sessions use them; over 30 days, 10 of 300. So the refusal triggers only while such a shell is alive and only in ~3-7% of sessions — but those are the heaviest, most-automated sessions, exactly where a phone stop is wanted.
+
+Proposed change: allow the stop when shell rows are present, relying on (a) the pre-`x` re-capture (window: one capture-pane + one send-keys, a few ms) and (b) the post-`x` verification (if the row count did not decrease, report `unverified`, never retry). Residual risk: in the ms window the TUI could reflow to the panel and `x` would kill a background shell (a restartable process; the phone gets `unverified`, not a false success). The alternative keeps a hard refusal that makes the feature unusable in the sessions that matter most.
+
+Question: is flipping the default acceptable, and if so what is the minimum additional guard (e.g., refuse only when the marker's INITIAL position is a shell row, or require the shell section to be non-adjacent to the target row, or a second capture 50 ms later before `x`)?
+2026-09-07T08:36:08.652838Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T08:36:08.659537Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T08:36:09.356005Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+DON'T SHIP
+
+Strongest objection: post-`x` verification detects failure but cannot prevent or undo killing the wrong shell. The operation remains an unavoidable TOCTOU race because `x` acts on current UI focus, not a stable target identity.
+
+Initial marker position, row adjacency, and a second capture only reduce probability; none closes the race. Flip the default only after `x` can be bound atomically to the verified agent ID, or shell rows cannot receive destructive input through this flow.
+tokens used
+12,264
+DON'T SHIP
+
+Strongest objection: post-`x` verification detects failure but cannot prevent or undo killing the wrong shell. The operation remains an unavoidable TOCTOU race because `x` acts on current UI focus, not a stable target identity.
+
+Initial marker position, row adjacency, and a second capture only reduce probability; none closes the race. Flip the default only after `x` can be bound atomically to the verified agent ID, or shell rows cannot receive destructive input through this flow.
+rc=0
