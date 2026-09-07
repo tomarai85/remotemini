@@ -1,0 +1,55 @@
+[codex-quick started pid=96950 07:30:42 timeout=150s — background callers: wait on the pid, do not read the output early]
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work/rc-backend
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a07bd9-7060-7a31-8ed9-887e84efb675
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Adversarial review, answer in <=20 lines: VERDICT (SHIP / DON'T SHIP) + numbered findings with the concrete failure each causes.
+
+System: a phone app lists a Claude Code session's subagents via a desk API. Row `state` ∈ {finished, running, stalled, unknown, stopped}; terminal outcomes come from the parent transcript's `<task-notification>` records (`<status>completed</status>` → finished; `<status>killed</status>` → stopped, with a resume guard: if the agent transcript was written after the notification + 5 s, the notification is ignored and mtime rules); the latest terminal record per task-id wins; a desk-observed stop is remembered separately.
+
+Change under review: a sixth state `failed` (display "Failed", `counts.failed`, phone model optional) from `<status>failed</status>` notifications, read ONLY when the summary has the agent shape `Agent "…" failed` (measured on this machine: 470 failed notifications, 42 agent-shaped like `Agent "X" failed: Agent terminated early due to an API error … (ENOTFOUND)`; the rest are `Background command … failed with exit code N` for shells and `Monitor "…" script failed` for monitors, which share the notification format but are not agents). Precedence: completed > (transcript unreadable → unknown) > desk-observed stop > (parent unreadable → unknown) > killed > failed > scan budget > mtime. Same resume guard as killed. The note says "N failed".
+
+Questions:
+- Is filtering by the summary text `Agent "` robust? What breaks it (localized/changed wording in a newer Claude Code, an agent description containing the string, a shell whose command text starts with `Agent "`)? Would matching on the task-id being a known agent id (from the launch record / the agent transcript directory) be strictly better, and is there a case where the id is unknown?
+- A failed agent that the user resumes and that then runs: the guard uses transcript mtime; is a 5 s grace enough given that a resumed agent's first write may come later than 5 s after the notification? (Same question applies to killed, already shipped.)
+- Does "failed" deserve its own state, or should it fold into `stopped`/`finished` with a reason? Consider counts consumers and the phone (state is an open string there).
+- Anything that turns a still-running agent into a false `failed`?
+2026-09-07T12:30:43.556532Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T12:30:43.580334Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-07T12:30:44.183941Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+VERDICT: DON'T SHIP
+
+1. Summary-text classification is brittle: localization or wording changes create false negatives; unanchored matching lets crafted agent descriptions or shell commands create false `failed`.
+2. Match task-id against known agent IDs first. It is more reliable but not complete: IDs may be unknown when launch records are missing/pruned, scans are budget-limited, transcripts are deleted, or parsing fails.
+3. Use a strictly anchored summary parser only as a fallback with additional agent evidence; never rely on substring `Agent "`.
+4. The 5 s mtime guard is unsafe. A resumed agent is falsely `failed` until its first write, and a write within the grace window may leave it falsely failed indefinitely.
+5. Replace timing inference with attempt/generation identity or authoritative live-running evidence. This also fixes the already-shipped `killed` race.
+6. Still-running false failures arise from resume-before-write, buffered writes, coarse/skewed mtimes, reused task IDs, and summary spoofing.
+7. `failed` deserves its own terminal state: folding it into `finished` is incorrect, while `stopped` destroys failure semantics. Include a structured reason.
+8. Make `counts.failed` additive/optional with default `0`; otherwise exhaustive count consumers can crash or miscompute totals.
+9. Apply “latest terminal record wins” before state precedence; otherwise an older `completed` can mask a newer `failed`.
+tokens used
+12,881
+VERDICT: DON'T SHIP
+
+1. Summary-text classification is brittle: localization or wording changes create false negatives; unanchored matching lets crafted agent descriptions or shell commands create false `failed`.
+2. Match task-id against known agent IDs first. It is more reliable but not complete: IDs may be unknown when launch records are missing/pruned, scans are budget-limited, transcripts are deleted, or parsing fails.
+3. Use a strictly anchored summary parser only as a fallback with additional agent evidence; never rely on substring `Agent "`.
+4. The 5 s mtime guard is unsafe. A resumed agent is falsely `failed` until its first write, and a write within the grace window may leave it falsely failed indefinitely.
+5. Replace timing inference with attempt/generation identity or authoritative live-running evidence. This also fixes the already-shipped `killed` race.
+6. Still-running false failures arise from resume-before-write, buffered writes, coarse/skewed mtimes, reused task IDs, and summary spoofing.
+7. `failed` deserves its own terminal state: folding it into `finished` is incorrect, while `stopped` destroys failure semantics. Include a structured reason.
+8. Make `counts.failed` additive/optional with default `0`; otherwise exhaustive count consumers can crash or miscompute totals.
+9. Apply “latest terminal record wins” before state precedence; otherwise an older `completed` can mask a newer `failed`.
+rc=0

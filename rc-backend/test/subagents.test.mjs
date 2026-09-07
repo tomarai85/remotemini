@@ -89,7 +89,7 @@ test("★親が終了を記録した子は finished(mtime が古くても観測�
   assert.equal(a.reason, "parent-completed");
   // 999 分放置されていても stalled に落ちない = mtime より親の記録が上位、を名指しで押さえる。
   assert.equal(r.counts.stalled, 0);
-  assert.deepEqual(r.counts, { finished: 1, running: 0, stalled: 0, unknown: 0, stopped: 0 });
+  assert.deepEqual(r.counts, { finished: 1, running: 0, stalled: 0, unknown: 0, stopped: 0, failed: 0 });
 });
 
 test("★起動を名乗るだけの記録は終了ではない(async_launched を finished と読まない)", () => {
@@ -173,7 +173,7 @@ test("★終了1本と作業中1本が同時に居る(先頭しか見ない判�
   assert.equal(byId(r, "arun2").state, "running");
   // ★数で押さえる —— 片方の verdict を両方へ配る実装(全部 finished / 全部 running)は
   //   上の2行だけだと片方が緑のままになりうるが、此の1行では必ず落ちる。
-  assert.deepEqual(r.counts, { finished: 1, running: 1, stalled: 0, unknown: 0, stopped: 0 });
+  assert.deepEqual(r.counts, { finished: 1, running: 1, stalled: 0, unknown: 0, stopped: 0, failed: 0 });
 });
 
 // ── 読めない物 ──────────────────────────────────────────────────────────────
@@ -208,7 +208,7 @@ test("★subagents/ が無い = absent。空配列だが『読めなかった』
   assert.deepEqual(r.agents, []);
   assert.equal(r.directory, "absent");
   // ★`absent` の時だけ counts を出してよい —— 「本当に 0 本」を観測できているので。
-  assert.deepEqual(r.counts, { finished: 0, running: 0, stalled: 0, unknown: 0, stopped: 0 });
+  assert.deepEqual(r.counts, { finished: 0, running: 0, stalled: 0, unknown: 0, stopped: 0, failed: 0 });
 });
 
 test("★親の転写が読めない時、生死は unknown(running にも finished にも倒さない)", () => {
@@ -227,7 +227,7 @@ test("★親の転写が読めない時、生死は unknown(running にも finis
   assert.equal(a.display.state, "Could not tell");
   // ★mtime が新しくても running と言わない。「終わったかどうかを知らない」が正しい答えで、
   //   `running` は「まだ終わっていない」という**知り得ない主張**になる。
-  assert.deepEqual(r.counts, { finished: 0, running: 0, stalled: 0, unknown: 1, stopped: 0 });
+  assert.deepEqual(r.counts, { finished: 0, running: 0, stalled: 0, unknown: 1, stopped: 0, failed: 0 });
 });
 
 test("★親の走査予算の外に居る子は unknown(『見付からない』を『無い』と読まない)", () => {
