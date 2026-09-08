@@ -36,6 +36,10 @@ struct DiffView: View {
 
     var body: some View {
         content
+            // ★段の切替に溶暗(2026-09-07、案 F)。棚卸し: 此の画面はアニメーションが 1 つも無く、
+            //   読込 → 一覧 / 失敗 が 1 フレームで丸ごと入れ替わっていた(内容が全部変わるので、切替が見えないと
+            //   「同じ画面が別の物になった」に見える)。値駆動 —— `phase` が変わった時だけ。
+            .animation(.easeInOut(duration: 0.2), value: viewModel.phase)
             .background(RCBackdrop())
             .navigationTitle("Diff")
             .navigationBarTitleDisplayMode(.inline)
