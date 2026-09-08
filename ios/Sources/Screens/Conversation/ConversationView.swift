@@ -1062,7 +1062,11 @@ struct ConversationView: View {
             //   `/compact` は会話を畳む破壊的な操作なので、尚更 確認の余地を残す。
             //
             // ★出すのは移動中に効く 3 つだけ。一覧にすると探す物になる。
-            if viewModel.composerEnabled {
+            // ★出すのは要る時だけ(2026-09-07、案 H)。之まで入力欄が使える限り**常に**出ていたので、文章を打っている間も
+            //   1 段を占め、下の 2 つ(引数 / パスの候補)と重なると 3 段になった(棚卸し (a))。
+            //   入力欄が空か、`/` で始めた時だけ = 「今から命令を打つ」と分かる時だけ出す。
+            if viewModel.composerEnabled,
+               viewModel.draft.isEmpty || viewModel.draft.hasPrefix("/") {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(["/compact", "/context", "/model"], id: \.self) { cmd in

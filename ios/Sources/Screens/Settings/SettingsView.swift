@@ -22,6 +22,8 @@ struct SettingsView: View {
     var archiveDeps: ArchiveDeps? = nil
     /// 机が引っ越した時に、束の種を蒔き直す口。nil = 出さない(fixture の面に本物の口を残さない)。
     var onReseed: (() async -> Void)? = nil
+    /// 計器の欄を開いているか(案 G。既定は閉じたまま)。
+    @State private var showInstruments = false
 
     struct ArchiveDeps {
         let apiKey: String
@@ -35,7 +37,18 @@ struct SettingsView: View {
             archiveSection
             connectionSection
             if let list = listViewModel {
-                instrumentsSection(list)
+                // ★診断は畳む(2026-09-07、案 G)。此の欄は自分の脚注で「普段は無視してよい」と言っているのに、
+                //   常設で画面の場所を取り、口座や接続と同じ強さで並んでいた。既定は閉じ、要る日だけ開く。
+                Section {
+                    DisclosureGroup(isExpanded: $showInstruments) {
+                        instrumentsBody(list)
+                    } label: {
+                        Text("Instruments")
+                            .accessibilityIdentifier("settings.instruments.toggle")
+                    }
+                } footer: {
+                    Text("For debugging on a bad day. Safe to ignore normally.")
+                }
             }
         }
         .rcThemedSurface()
@@ -365,9 +378,10 @@ struct SettingsView: View {
 
     // MARK: - 計器(一覧から移って来た走査行と鮮度。§9-4「計器は別画面」)
 
+    /// 計器の中身だけ(囲みは呼び側の `DisclosureGroup`。案 G)。
     @ViewBuilder
-    private func instrumentsSection(_ list: ListViewModel) -> some View {
-        Section {
+    private func instrumentsBody(_ list: ListViewModel) -> some View {
+        Group {
             if let scan = list.phase.scanLine {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Scan")
@@ -391,12 +405,9 @@ struct SettingsView: View {
                         .accessibilityIdentifier("settings.freshness")
                 }
             }
-        } header: {
-            Text("Instruments")
-        } footer: {
-            Text("For debugging on a bad day. Safe to ignore normally.")
         }
     }
+
 
     /// `https://host:8787/` → `host:8787`。view body から出した純関数なのは
     /// `BuildInfo.displayRev` と同じ理由 —— 画面の規則なのに検査から触れなくなる。
