@@ -182,15 +182,39 @@ final class JumpEntersDetachedModeTests: XCTestCase {
 
     /// ★送信は必ず先に live へ戻る(設計レビュー 2026-09-04)。戻らずに送ると、文は末尾へ着くのに
     ///   画面は転写の途中を写したままで、「送ったのに出ない」に見える。
-    func testSendingWhileDetachedReturnsToLiveFirst() async {
+    ///
+    /// ★2026-09-08 に**測っている物を直した**。以前は `await vm.send()` で送信を待ち切ってから
+    ///   `isDetached == false` を見ていた —— 之は終わった後の姿しか見ないので、`backToLive` を
+    ///   机の応答の**後ろ**へ動かしても緑のままだった。つまり名前が主張する "First" を
+    ///   一度も測っていない(順序の検査の顔をした、状態の検査)。書き込みの作り物は
+    ///   60 秒返らない(`WriteFixture.hold`)ので、其の間が「要求が飛んでいる最中」そのもの:
+    ///   飛んでいる間に戻っている事を見れば、順序が直接測れる。
+    ///   ★副産物として此の 1 本が 60 秒 -> 1 秒未満になる(門の毎回の costs から 60 秒消える)。
+    func testSendingWhileDetachedReturnsToLiveBeforeTheRequestResolves() async {
         let desk = DeepDesk()
         let vm = makeVM(desk)
         _ = await vm.jump(to: deepHit())
         XCTAssertTrue(vm.isDetached)
         vm.draft = "hello"
-        await vm.send()
-        XCTAssertFalse(vm.isDetached, "離脱したまま送っている")
+
+        let sending = Task { await vm.send() }
+        await waitUntil { !vm.isDetached }
+        // 送信はまだ返っていない(作り物は 60 秒保持する)。其の時点で窓が閉じている事。
+        XCTAssertFalse(sending.isCancelled)
+        XCTAssertFalse(vm.isDetached, "★応答が返る前に live へ戻っていない = 戻りが送信の後ろに居る")
         XCTAssertEqual(vm.detachedExits, ["send"], "送信での離脱解除が記録されていない")
+
+        sending.cancel()
+        await sending.value
+    }
+
+    /// 条件が満たされるまで待つ(上限つき)。満たされなければ其の儘 assert が落ちる。
+    private func waitUntil(_ limit: Duration = .seconds(3), _ cond: @MainActor () -> Bool) async {
+        let deadline = ContinuousClock.now.advanced(by: limit)
+        while ContinuousClock.now < deadline {
+            if cond() { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
     }
 
     /// 錨が消えている時は窓を開かず、**接続失敗とは違う文言**を出す。
