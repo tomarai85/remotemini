@@ -1674,9 +1674,10 @@ const server = createServer(async (req, res) => {
       let body;
       try {
         body = JSON.parse(await readBody(req));
-      } catch {
-        // 語彙は messages 道の "text required" と同じ流儀(小文字の英語句)。
-        // 新しい大文字コードを鋳造すると wire-vocabulary の門が正しく止める(実測 2026-08-16)。
+      } catch (e) {
+        // ★上限超えを 400 に潰さない(2026-09-08 の掃引)。他の 7 口は `tooLarge` を通り、其処が 413 を返した上で
+        //   `res.on("finish")` で socket を落とす —— 之を飛ばすと、読み切っていない本文が次の要求の頭に残りうる。
+        if (e instanceof BodyTooLarge) return tooLarge(req, res, e);
         return json(res, 400, { error: "title required" });
       }
       if (body.title === null) {
@@ -1716,7 +1717,10 @@ const server = createServer(async (req, res) => {
       let body;
       try {
         body = JSON.parse(await readBody(req));
-      } catch {
+      } catch (e) {
+        // ★上限超えを 400 に潰さない(2026-09-08 の掃引)。他の 7 口は `tooLarge` を通り、其処が 413 を返した上で
+        //   `res.on("finish")` で socket を落とす —— 之を飛ばすと、読み切っていない本文が次の要求の頭に残りうる。
+        if (e instanceof BodyTooLarge) return tooLarge(req, res, e);
         return json(res, 400, { error: "archived required" });
       }
       if (typeof body.archived !== "boolean") {
@@ -2166,6 +2170,21 @@ const server = createServer(async (req, res) => {
       //   ★毎回読み直す。プロセスに抱えると、Tom が規則を足しても再起動まで効かない
       //     —— 「書いたのに効かない」はこの repo が何度も踏んだ型。
       const loaded = loadRules(DENY_FILE);
+      // ★fail-closed(2026-09-08 の掃引)。`loadRules` は読めない / 壊れた / 規則を落とした事を `error` と `skipped` で
+      //   言うのに、此処は `rules` しか読んでいなかった —— 壊れた `deny.json` は**規則 0 本**として通り、
+      //   「電話が何を送っても効く唯一の層」が黙って外れる(誰にも見えない)。守れないと分かった時は送らせない。
+      //   `ENOENT`(未設定)は `error: null` なので此処には来ない —— 規則が無い事と、規則を読めない事は別。
+      if (loaded.error || loaded.skipped > 0) {
+        if (idemHeld) idem.abandon(sendId);
+        return json(res, 409, {
+          error: loaded.error
+            ? `The desk cannot read its keystroke-deny rules (${loaded.error}), so it will not type anything. Fix deny.json on the Mac.`
+            : `The desk dropped ${loaded.skipped} malformed keystroke-deny rule(s), so it will not type anything. Fix deny.json on the Mac.`,
+          reason: "deny-rules-unusable",
+          rule: null,
+          route: "tmux",
+        });
+      }
       const hit = checkDeny(text, loaded.rules);
       if (hit.denied) {
         // 予約を外す。外さないと、規則を直した後も同じ鍵で打てないままになる。
