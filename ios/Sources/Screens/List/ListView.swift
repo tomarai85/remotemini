@@ -354,9 +354,9 @@ struct ListView: View {
                 // `UnreachableBanner`'s doc. Keeps its own a11y id in ADDITION to the
                 // component's `shared.unreachable`, because Sprint 2's tests and the
                 // §5-2 screen table both refer to `list.unreachable` by name.
-                UnreachableBanner(
-                    failures: viewModel.reachability.consecutiveFailures,
-                    context: .list,
+                // ★机との間の異常は 1 つの形(2026-09-08、案 D。`RCConnectivityBanner`)。
+                RCConnectivityBanner(
+                    stage: .unreachable(failures: viewModel.reachability.consecutiveFailures, onList: true),
                     identifier: "list.unreachable"
                 )
                 if let sessions = priorSessions {
