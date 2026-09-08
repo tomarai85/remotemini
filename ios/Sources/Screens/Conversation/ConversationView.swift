@@ -976,10 +976,20 @@ struct ConversationView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
                     .id(u.id)
             }
-            // ★停止は「止める対象」の隣(2026-09-07、案 B)。入力欄の常設 4 アイコンから外し、机が動いている時だけ
-            //   状態の行の右端に出す —— 押せない停止ボタンが常に見えている状態を無くす。識別子は元のまま。
-            let showsStop = viewModel.deskIsWorking == true || viewModel.isInterrupting
-            if notices.state != nil || showsStop {
+            // ★停止は「止める対象」の隣(2026-09-07、案 B)。入力欄の常設 4 アイコンから外し、状態の行の右端へ移した。
+            //   識別子は元のまま。
+            //
+            // ★★2026-09-08 に 2 つ直した(UI 検査が赤で見つけた。単体だけ回して緑と言っていた私の落ち度):
+            //   (1) 「机が動いている時だけ出す」は**能力の後退**だった。移す前の停止は常に描かれていて、
+            //       押せるかは `canInterrupt` が決めていた —— 「いつでも干渉できる」は 2026-08-29 の裁定で、
+            //       淡くするのは見た目だけ、と其の場に書いてある。選択待ちの間(`deskIsWorking == false`)に
+            //       ボタンごと消えるので、**選択が出たまま固まった時に止める手段が画面から無くなっていた**。
+            //   (2) 的が 30pt しか無かった(`.tapTarget()` を落とした)。下限は 44pt で、其れを測る検査が在る。
+            //       止まらない机を止める操作は、一番急いでいる時に押す物なので的を縮めてはいけない。
+            // 行を描く条件: 状態が在る / 理由が落ちて来ている / **止められる**。
+            // ★最後の一つを外さない事(2026-09-08) —— 止める操作は此の行の中に居るので、
+            //   行を描かない = 止める手段が画面から消える。
+            if notices.state != nil || !notices.suppressed.isEmpty || viewModel.canInterrupt || viewModel.isInterrupting {
                 HStack(spacing: 8) {
                     Button {
                         withAnimation(.snappy(duration: 0.22)) { showDeskState.toggle() }
@@ -993,7 +1003,7 @@ struct ConversationView: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
-                            if notices.stateDetail.count > 1 {
+                            if notices.stateDetail.count > 1 || !notices.suppressed.isEmpty {
                                 Image(systemName: showDeskState ? "chevron.up" : "chevron.down")
                                     .font(.system(size: 8, weight: .semibold))
                                     .foregroundStyle(.tertiary)
@@ -1003,27 +1013,32 @@ struct ConversationView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.plain)
-                    .disabled(notices.stateDetail.count <= 1)
+                    // ★開く物が在る時だけ押せる。理由が席を失って落ちて来た時も「在る」に数える
+                    //   (2026-09-08) —— 数えないと、理由が入っているのに行が押せない = 読めない。
+                    .disabled(notices.stateDetail.count <= 1 && notices.suppressed.isEmpty)
                     .accessibilityIdentifier("conversation.deskState")
 
-                    if showsStop {
-                        Button {
-                            Task { await viewModel.interrupt() }
-                        } label: {
-                            Group {
-                                if viewModel.isInterrupting {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Image(systemName: "stop.circle").font(.system(size: 18))
-                                }
+                    Button {
+                        Task { await viewModel.interrupt() }
+                    } label: {
+                        // ★`Group` で束ねて `.tapTarget()` を**内側**に当てる(X2-3)。枝ごとに当てると、
+                        //   飛んでいる間の `ProgressView` に付け忘れた時に「押し直しを止めたい局面でだけ
+                        //   的が縮む」が起きる。
+                        Group {
+                            if viewModel.isInterrupting {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "stop.circle").font(.system(size: 18))
                             }
-                            .frame(width: 30, height: 30)
                         }
-                        .disabled(!viewModel.canInterrupt)
-                        .accessibilityLabel("Interrupt")
-                        .accessibilityIdentifier("conversation.interruptButton")
-                        .transition(.opacity.combined(with: .scale(scale: 0.85)))
+                        .tapTarget()
+                        // ★見た目だけで状態を語る(2026-08-29)。押せる範囲は変えない —— 机が動いていると
+                        //   **判った**時だけ濃く、止まっていると**判った**時は淡く、判らない時は中間。
+                        .opacity(viewModel.deskIsWorking == false ? 0.45 : 1)
                     }
+                    .disabled(!viewModel.canInterrupt)
+                    .accessibilityLabel("Interrupt")
+                    .accessibilityIdentifier("conversation.interruptButton")
                 }
                 if showDeskState {
                     VStack(alignment: .leading, spacing: 2) {
@@ -1034,9 +1049,24 @@ struct ConversationView: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
+                        // ★急ぎの席を取れなかった「出来ない理由」(2026-09-08)。落とさずに此処へ出す ——
+                        //   押せない control の説明が消えると、説明の無い死んだボタンが残る。
+                        //   1 行に畳まない(理由は読ませる為の文で、状態の目盛りではない)。
+                        ForEach(notices.suppressed, id: \.id) { r in
+                            Text(r.text)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier(r.id)
+                        }
                     }
                     .padding(.leading, 11)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    // ★入れ物に識別子を付けるなら `children: .contain` を必ず添える(X2-3)。
+                    //   付けないと中の識別子が畳まれ、XCUITest からも VoiceOver からも届かない ——
+                    //   9/8 に此処で実際に踏んだ(理由を展開へ落としたのに、開いても見えなかった)。
+                    //   同じ形を `RCConnectivityBanner` が既に持っている。
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("conversation.deskStateDetail")
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
@@ -1181,17 +1211,22 @@ struct ConversationView: View {
                 //   常設の 4 アイコンのうち 2 つが「後で使うかもしれない道具」で、入力欄の幅を毎回削っていた。
                 //   停止は此処から外し、状態の行(止める対象の隣)へ移した。識別子は 3 つとも元のまま。
                 Menu {
+                    // ★名前は畳む前の物を残す(2026-09-08)。項目の**見出し**は短く(「Photo」「File」)、
+                    //   読み上げの名前は前と同じ全文にする —— VoiceOver で「File」とだけ言われても、
+                    //   何の file なのかが判らない。検査も此の名前を錨にしている。
                     Button {
                         showPhotoPicker = true
                     } label: {
                         Label("Photo", systemImage: "photo.on.rectangle")
                     }
+                    .accessibilityLabel("Attach a photo")
                     .accessibilityIdentifier("conversation.attachButton")
                     Button {
                         showFileImporter = true
                     } label: {
                         Label("File", systemImage: "doc.badge.plus")
                     }
+                    .accessibilityLabel("Attach a text file")
                     .accessibilityIdentifier("conversation.attachFileButton")
                 } label: {
                     Image(systemName: attachBusy ? "hourglass" : "plus.circle")
@@ -1358,6 +1393,15 @@ struct ConversationView: View {
         }
     }
 
+    /// 詳細の行の識別子。時刻を持つ 2 段(遅れている / 応答が確認できない)だけ、畳む前と同じ名前で残す。
+    /// 「届かない」段の詳細は時刻を持たないので付けない(無い物に名前を付けると、在ると読まれる)。
+    private func connectivityDetailIdentifier(_ stage: Connectivity.Stage) -> String? {
+        switch stage {
+        case .unreachable: return nil
+        case .lagging, .noResponse: return "conversation.lastReadableAt"
+        }
+    }
+
     /// 手当ては「応答が確認できない」段だけ。★2 つのボタンは**何をするか**で名乗る(案 C と同じ) ——
     /// 「Retry」「Re-read」は同じ衝動の 2 択に見えて、実際は別の事をする(止まった poll を今すぐ回す / 転写を丸ごと取り直す)。
     private func connectivityActions(_ stage: Connectivity.Stage) -> [RCConnectivityBanner.Action] {
@@ -1376,6 +1420,9 @@ struct ConversationView: View {
             RCConnectivityBanner(
                 stage: stage,
                 identifier: connectivityIdentifier(stage),
+                // ★時刻を持つ 2 段は、其の行を独立した要素として残す(2026-09-08)。
+                //   `TapTargetUITests` は此の識別子が届くかどうかで「入れ物が中身を畳んでいないか」を測る。
+                detailIdentifier: connectivityDetailIdentifier(stage),
                 actions: connectivityActions(stage)
             )
         } else {

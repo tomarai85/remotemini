@@ -201,7 +201,9 @@ final class ConversationViewModelTests: XCTestCase {
     /// itself would still produce a passing call count.
     private final class RecordingChoiceClient: ChoiceSending {
         var attemptQueue: [ChoiceAttempt] = []
-        private(set) var calls: [(key: String, digest: String)] = []
+        /// ★`confirm` も控える(2026-09-08)。危険な確認は「送ったか」だけでなく
+        ///   **確定の指紋を載せて送ったか**が要件で、載せ忘れはサーバが断る形になる。
+        private(set) var calls: [(key: String, digest: String, confirm: String?)] = []
         var deliveryDelay: Duration = .zero
         /// ★2026-08-08(§2.56): 割り込み側と同じ複製。`choose()` は
         /// `inFlightChoiceKey = key` を置いてから await するので、ここが
@@ -215,7 +217,7 @@ final class ConversationViewModelTests: XCTestCase {
             baseURL: URL, apiKey: String, sessionID: String, key: String, digest: String,
             confirm: String?
         ) async -> ChoiceAttempt {
-            calls.append((key: key, digest: digest))
+            calls.append((key: key, digest: digest, confirm: confirm))
             if let whileInFlight {
                 await MainActor.run { whileInFlight() }
                 probeCount += 1
@@ -1065,6 +1067,20 @@ final class ConversationViewModelTests: XCTestCase {
           "head": ["Do you want to proceed?"],
           "options": [{ "n": 1, "label": "Yes" }, { "n": 2, "label": "No" }],
           "buttons": [{ "key": "1", "label": "1. Yes" }, { "key": "2", "label": "2. No" }]
+        }
+        """
+    }
+
+    /// 危険な確認(`risk.tier == "danger"`)。1 タップ目は**構えるだけ**でサーバへ行かない。
+    private func dangerChoiceJSON(digest: String = "d-danger") -> String {
+        """
+        {
+          "show": true, "reason": "", "digest": "\(digest)",
+          "head": ["Delete the build directory recursively?"],
+          "options": [{ "n": 1, "label": "Yes" }, { "n": 2, "label": "No" }],
+          "buttons": [{ "key": "1", "label": "1. Yes" }, { "key": "2", "label": "2. No" }],
+          "risk": { "tier": "danger", "notice": "This action is hard to undo.",
+                    "signals": [{ "id": "recursive-delete", "why": "ファイルを再帰的に消します" }], "version": 1 }
         }
         """
     }
@@ -2108,7 +2124,122 @@ final class ConversationViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isChoosing)
     }
 
-    /// A key that is not in `buttons` is refused before any request. Unreachable through
+    // MARK: 読み直しの追い越し(2026-09-08 の掃引 #2)
+
+    /// 遅い応答を返す机。**何本目の呼び出しか**で待ち時間と応答を変えられる ——
+    /// 「先に始まった方が後に返る」を作る為の道具。
+    private final class SlowThenFastDesk: HistoryFetching, @unchecked Sendable {
+        var responses: [Result<HistoryResponse, SessionsFetchError>] = []
+        var delays: [Duration] = []
+        private(set) var callCount = 0
+
+        func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
+            let i = callCount
+            callCount += 1
+            if i < delays.count, delays[i] > .zero { try? await Task.sleep(for: delays[i]) }
+            return i < responses.count ? responses[i] : .failure(.unreachable)
+        }
+
+        func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async -> Result<TranscriptSearchResponse, SessionsFetchError> {
+            XCTFail("this test's view model was not expected to search the transcript")
+            return .failure(.unreachable)
+        }
+        func around(baseURL: URL, apiKey: String, sessionID: String, anchor: String, limit: Int) async -> Result<HistoryAroundResponse, SessionsFetchError> {
+            XCTFail("this test's view model was not expected to read an anchored window")
+            return .failure(.unreachable)
+        }
+    }
+
+    /// ★先に始まった読み直しの応答が、後から始まった読み直しの結果を**上書きしない**事。
+    ///
+    /// 何が問題だったか(2026-09-08 の掃引): `performResync` は 6 箇所から呼ばれるのに、
+    /// 世代も直列化も無かった —— 自動 3 本(隙間の検出 / 復帰 / 停滞)と、押せる回数に
+    /// 制限の無いボタン「読み直す」。遅い方が後に返ると `history` を丸ごと古い写しへ戻し、
+    /// `live` も空にする = **画面が時間を遡り、間に届いた行が消える**。
+    func testASlowResyncDoesNotOverwriteTheOneThatStartedAfterIt() async {
+        let desk = SlowThenFastDesk()
+        desk.responses = [
+            .success(HistoryResponse(history: [e(.assistant, "最初")], truncated: false)),
+            .success(HistoryResponse(history: [e(.assistant, "古い行")], truncated: false)),
+            .success(HistoryResponse(history: [e(.assistant, "新しい行")], truncated: false)),
+        ]
+        // 1 本目の読み直しだけ遅い。之が「先に始まって後に返る」形。
+        desk.delays = [.zero, .milliseconds(400), .zero]
+        let vm = makeViewModel(client: desk)
+        await vm.load()
+
+        vm.rereadNow()          // 遅い方(古い行)
+        vm.rereadNow()          // 速い方(新しい行)
+        try? await Task.sleep(for: .milliseconds(900))
+
+        XCTAssertEqual(desk.callCount, 3, "錨: 読み直しが 2 本とも机へ行っていない")
+        XCTAssertEqual(vm.entries.map(\.text), ["新しい行"],
+                       "★古い応答が新しい転写を上書きした(画面が時間を遡り、間の行が消える)")
+    }
+
+    // MARK: 危険な確認の二段構え(2026-09-08 の掃引で見つけた、電話から答えられない形)    // MARK: 危険な確認の二段構え(2026-09-08 の掃引で見つけた、電話から答えられない形)
+
+    /// ★1 タップ目は**構えるだけ** —— サーバへ行かないので、「送信中」を名乗ってはいけない。
+    ///
+    /// 何が壊れていたか(2026-09-08、独立した 2 本の掃引が同じ所を指した): `inFlightChoiceKey` を
+    /// 構える枝より**前**で立てていた。降ろすのは応答を受ける `applyChoiceAttempt` だけなので、
+    /// 送らない道では永久に降りない。結果 `isChoosing` が立ちっぱなしになり、
+    /// `choiceEnabled` が false に落ちて**カードの全ボタンが伏せられる** ——
+    /// 「もう一度押して確定」の文が、二度と押せないボタンを指す。
+    /// 画面を出入りしても 1 タップ目が同じ所へ戻るので、危険な確認は**構造的に**答えられなかった。
+    func testTheFirstTapOnADangerCardArmsItAndLeavesTheCardPressable() async throws {
+        let choiceClient = RecordingChoiceClient()
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: dangerChoiceJSON()
+        )
+
+        await vm.choose(key: "1")
+
+        XCTAssertEqual(choiceClient.callCount, 0, "構えるだけの tap がサーバへ行った")
+        XCTAssertFalse(vm.isChoosing, "送っていないのに『送信中』を名乗っている")
+        XCTAssertTrue(vm.choiceEnabled, "★2 タップ目が押せない = 危険な確認に電話から答えられない")
+        XCTAssertNotNil(vm.dangerNotice, "構えた事を人に言っていない")
+    }
+
+    /// 2 タップ目が本当に送る(構えが「答えられなくする」だけの物になっていない事)。
+    func testTheSecondTapOnADangerCardSendsWithTheConfirmation() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [
+            ChoiceAttempt(outcome: .display(ResultDisplay(kind: "ok", text: "送りました", keepText: nil)),
+                          serverDigest: nil)
+        ]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: dangerChoiceJSON(digest: "d-danger")
+        )
+
+        await vm.choose(key: "1")
+        await vm.choose(key: "1")
+
+        XCTAssertEqual(choiceClient.callCount, 1)
+        XCTAssertEqual(choiceClient.calls.first?.key, "1")
+        XCTAssertEqual(choiceClient.calls.first?.confirm, "d-danger", "確定の指紋を載せずに送った")
+        XCTAssertFalse(vm.isChoosing, "応答を受けたのに『送信中』が残っている")
+        XCTAssertNil(vm.dangerNotice, "送った後も構えの文が残っている")
+    }
+
+    /// ★否定対照: 危険でないカードは 1 タップで行く(上の 2 件が「常に構える」を見ていない証拠)。
+    func testABenignCardStillGoesOnTheFirstTap() async throws {
+        let choiceClient = RecordingChoiceClient()
+        choiceClient.attemptQueue = [
+            ChoiceAttempt(outcome: .display(ResultDisplay(kind: "ok", text: "送りました", keepText: nil)),
+                          serverDigest: nil)
+        ]
+        let vm = try await loadedViewModel(
+            screen: "CHOICE", choiceClient: choiceClient, choiceJSON: benignChoiceJSON()
+        )
+
+        await vm.choose(key: "1")
+
+        XCTAssertEqual(choiceClient.callCount, 1)
+        XCTAssertNil(choiceClient.calls.first?.confirm, "危険でないのに確定を要求している")
+    }
+
+    /// A key that is not in `buttons` is refused before any request. Unreachable through    /// A key that is not in `buttons` is refused before any request. Unreachable through
     /// the UI today -- every button is drawn from `buttons` -- which is exactly why it
     /// is asserted: the day a second caller appears, the failure this prevents is an
     /// unoffered keystroke reaching a prompt the server declined to expose.

@@ -39,7 +39,10 @@ struct RootView: View {
                         accountViewModel: Self.fixtureAccountViewModel(),
                         baseURL: Self.fixtureBaseURL,
                         apiKey: "ui-fixture-key",
-                        renamer: RenameFixture(),
+                        // ★断る面へ切り替えられる(`RC_UI_RENAME_FIXTURE=rejected`、2026-09-08)。
+                        //   口が**呼ばれた事**を画面から見える形にする為 —— 成功する fixture では
+                        //   「呼ばれなかった」と「呼ばれて成功した」が同じ画面になる。
+                        renamer: RenameFixture.fromEnvironment() ?? RenameFixture(),
                         archiver: ArchiveFixture(),
                         // ★roots の口も fixture(対照表 #11)。`RC_UI_ROOTS_FIXTURE` が名乗らなければ
                         //   sample に落とす —— 本物の `RootsClient` には落とさない(上と同じ規約)。

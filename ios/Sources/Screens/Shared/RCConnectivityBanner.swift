@@ -8,6 +8,13 @@ import SwiftUI
 struct RCConnectivityBanner: View {
     let stage: Connectivity.Stage
     let identifier: String
+    /// 詳細の行に別の識別子を付ける(既定 = 付けない)。
+    /// ★2026-09-08 に足した。畳む前の会話の帯では「Last confirmed <時刻>」が
+    ///   `conversation.lastReadableAt` を持つ**独立した要素**で、`TapTargetUITests` は
+    ///   「入れ物が中身を畳んでいないか」を其の識別子が届くかどうかで測っていた。
+    ///   1 本に畳んだ時に文ごと `detail` へ溶かしてしまい、識別子が消えて検査が赤になった ——
+    ///   **測っていたのは畳みの解除**なので、識別子を消すのは検査を殺す事と同じだった。
+    var detailIdentifier: String? = nil
     /// 段が `noResponse` の時だけ出す手当て(会話の「今すぐ確認」「読み直す」)。無ければ出さない。
     var actions: [Action] = []
 
@@ -26,6 +33,7 @@ struct RCConnectivityBanner: View {
             Text(message.detail)
                 .font(.caption)
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier(detailIdentifier ?? "\(identifier).detail")
             if !actions.isEmpty {
                 HStack(spacing: 16) {
                     ForEach(actions) { a in

@@ -73,6 +73,26 @@ struct RenameFixture: SessionRenaming {
     func rename(baseURL: URL, apiKey: String, sessionID: String, title: String?) async -> RenameOutcome {
         outcome
     }
+
+    /// ★`RC_UI_RENAME_FIXTURE=rejected` で「机が断った」面にする(2026-09-08)。
+    ///
+    /// 何の為か: 名前を変える口が**呼ばれたかどうか**は、成功する fixture では画面から見えない
+    /// (成功 = 一覧を読み直すだけで、fixture の一覧は同じ行を返す)。断る面にすると、
+    /// 呼ばれた時だけ「Can't rename」の帯が出る —— つまり**呼ばれなかった事**を検査が掴める。
+    /// 之が要る理由は実際に踏んだから: alert の button が `Task { … }` を積むだけなのに、
+    /// SwiftUI が閉じる時に対象を nil へ戻していて、`Task` の本体が `guard let` で黙って
+    /// return していた。押しても何も起きない —— 画面は閉じるので、成功と見分けが付かなかった。
+    /// ★`#if DEBUG` で囲う。`ui-fixture-absence-control.sh` は「審査に出す Release バイナリの
+    ///   文字列表に fixture の env 名が 1 件も無い」を strings で直に測る —— 環境変数 1 つで
+    ///   固定データ画面へ落ちない事の唯一の保証で、compiler の意図ではなく**生成された物**を見る。
+    ///   其の走査は今 `RC_UI_FIXTURE` だけを探すので此の名前は素通りするが、素通りする事を
+    ///   根拠に外へ置かない(検査の穴は、規約が緩い事の証明ではない)。
+    #if DEBUG
+    static func fromEnvironment() -> RenameFixture? {
+        guard ProcessInfo.processInfo.environment["RC_UI_RENAME_FIXTURE"] == "rejected" else { return nil }
+        return RenameFixture(outcome: .rejected)
+    }
+    #endif
 }
 
 // MARK: - 保管(§9-1)

@@ -32,6 +32,14 @@ enum ComposerNotices {
         let stateHeadline: String?
         /// 展開した時に出す内訳(state と同じ材料を行に分けた物)。
         let stateDetail: [String]
+        /// 急ぎの席を**取れなかった理由**(2026-09-08)。捨てずに、状態の行を開いた時に出す。
+        ///
+        /// ★何故要るか: 急ぎは 1 本だけ、という案 A の規則は正しいが、其の 1 本が
+        ///   「入力できない理由」だと**押せない停止ボタンの理由**が画面から消える ——
+        ///   説明の無い死んだボタンが残る。`ConversationUITests` が其れを測っていて赤になった。
+        ///   規則: **席を失った理由は消えず、展開の側に落ちる**(順位を決める事と、
+        ///   情報を捨てる事は別)。
+        let suppressed: [Urgent]
     }
 
     /// 画面が持っている値をそのまま渡す。**順番はこの関数が決める**。
@@ -71,15 +79,23 @@ enum ComposerNotices {
     ) -> Plan {
         let detail = stateLine(deskWorking: deskWorking, currentTool: currentTool, waitingOnYou: waitingOnYou,
                                runtime: runtime, permissionMode: permissionMode, digest: digest, digestUrges: digestUrges)
+        let top = urgent(limited: limited, composerDisabled: composerDisabled, interruptDisabled: interruptDisabled,
+                         send: send, interrupt: interrupt, choice: choice, queue: queue, attach: attach,
+                         sendInFlight: sendInFlight, interruptInFlight: interruptInFlight, choiceInFlight: choiceInFlight,
+                         digest: digest, digestUrges: digestUrges)
+        // 「出来ない理由」だけは席を失っても残す —— 押せない control の説明が消えると、
+        // 説明の無い死んだボタンが画面に残る。答え(banner)と進行中は時間で消える物なので落とさない。
+        let reasons: [Urgent] = [
+            composerDisabled.map { Urgent(id: "conversation.composerDisabledReason", text: $0, tone: .warn) },
+            interruptDisabled.map { Urgent(id: "conversation.interruptDisabledReason", text: $0, tone: .warn) },
+        ].compactMap { $0 }
         return Plan(
-            urgent: urgent(limited: limited, composerDisabled: composerDisabled, interruptDisabled: interruptDisabled,
-                           send: send, interrupt: interrupt, choice: choice, queue: queue, attach: attach,
-                           sendInFlight: sendInFlight, interruptInFlight: interruptInFlight, choiceInFlight: choiceInFlight,
-                           digest: digest, digestUrges: digestUrges),
+            urgent: top,
             // ★材料が 1 つも無ければ nil。空文字を返すと画面が「空の 1 行」を描く。
             state: detail.isEmpty ? nil : detail.joined(separator: " · "),
             stateHeadline: detail.first,
-            stateDetail: detail)
+            stateDetail: detail,
+            suppressed: reasons.filter { $0.id != top?.id })
     }
 
     // MARK: - 急ぎ(最大 1 本)
@@ -92,10 +108,22 @@ enum ComposerNotices {
     ) -> Urgent? {
         // 1. 上限 —— 送れないので他の何より先。
         if let limited { return Urgent(id: "conversation.limitedNotice", text: limited, tone: .error) }
-        // 2. 出来ない理由。入力の方が割り込みより上(打てない方が困る)。
+        // 2. 今飛んでいる操作。
+        //
+        // ★★2026-09-08 に此処へ上げた(UI 検査 `InFlightUITests` が赤で見つけた)。元は 5 番目で、
+        //   「出来ない理由」の下に居た —— だが**出来ない理由は、飛んでいる操作が作っている事が多い**。
+        //   実測: 選択肢の鍵を押すと `isChoosing` が立って入力欄が伏せられ、其の「入力できません」が
+        //   「送っています…」を押し退けた。結果、打鍵が飛んでいる間、画面は灰色になるだけで**無言**
+        //   (§2.56 が名指しで禁じている形)。
+        //   規則: **送れない事実 > 今飛んでいる操作 > 出来ない理由 > 直前の答え > 留守の要約**。
+        //   「今」は「なぜ」より先、「なぜ」は「さっき」より先。
+        if let choiceInFlight { return Urgent(id: "conversation.choiceInFlightNotice", text: choiceInFlight, tone: .warn) }
+        if let interruptInFlight { return Urgent(id: "conversation.interruptInFlightNotice", text: interruptInFlight, tone: .warn) }
+        if let sendInFlight { return Urgent(id: "conversation.sendInFlightNotice", text: sendInFlight, tone: .warn) }
+        // 3. 出来ない理由。入力の方が割り込みより上(打てない方が困る)。
         if let composerDisabled { return Urgent(id: "conversation.composerDisabledReason", text: composerDisabled, tone: .warn) }
         if let interruptDisabled { return Urgent(id: "conversation.interruptDisabledReason", text: interruptDisabled, tone: .warn) }
-        // 3. 操作の答え。**失敗が先**(失敗は行動を要求し、成功は確認でしかない)。
+        // 4. 操作の答え。**失敗が先**(失敗は行動を要求し、成功は確認でしかない)。
         //    同じ tone の中の順は「利用者が直前に押した可能性の高い順」= 選択 → 割り込み → 送信 → queue → 添付。
         let answers: [(String, SendBanner?)] = [
             ("conversation.choiceBanner", choice),
@@ -111,12 +139,8 @@ enum ComposerNotices {
                 if let attach { return Urgent(id: "conversation.attachNotice", text: attach, tone: .warn) }
             }
         }
-        // 4. 留守中の要約が「見てくれ」と言っている時。
+        // 5. 留守中の要約が「見てくれ」と言っている時。
         if digestUrges, let digest, !digest.isEmpty { return Urgent(id: "conversation.awayDigest", text: digest, tone: .warn) }
-        // 5. 進行中。
-        if let choiceInFlight { return Urgent(id: "conversation.choiceInFlightNotice", text: choiceInFlight, tone: .warn) }
-        if let interruptInFlight { return Urgent(id: "conversation.interruptInFlightNotice", text: interruptInFlight, tone: .warn) }
-        if let sendInFlight { return Urgent(id: "conversation.sendInFlightNotice", text: sendInFlight, tone: .warn) }
         // 6. 成功の確認(最後)。
         for (id, banner) in answers where banner?.tone == .ok {
             if let banner { return Urgent(id: id, text: banner.text, tone: .ok) }
@@ -149,5 +173,7 @@ enum ComposerNotices {
 
 extension ComposerNotices.Plan {
     /// 何も出さない(入力欄の上が空)か。
-    var isEmpty: Bool { urgent == nil && (state == nil || state?.isEmpty == true) }
+    /// ★展開に落ちた理由も「言う事が在る」に数える(2026-09-08) —— 数えないと、理由を
+    ///   持っているのに面ごと畳まれて、其の理由へ辿り着く道が無くなる。
+    var isEmpty: Bool { urgent == nil && (state == nil || state?.isEmpty == true) && suppressed.isEmpty }
 }
