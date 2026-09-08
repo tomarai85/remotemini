@@ -1,5 +1,5 @@
 #!/bin/bash
-# controls-for: ios/Sources/Screens/Conversation/ConversationViewModel.swift ios/Sources/Screens/Conversation/ConversationView.swift ios/Tests/Screens/Conversation/ConversationViewModelTests.swift ios/Tests/Screens/Conversation/ConversationViewTests.swift
+# controls-for: ios/Sources/Screens/Conversation/ConversationViewModel.swift ios/Sources/Screens/Conversation/ConversationView.swift ios/Tests/Screens/Conversation/ConversationViewModelTests.swift ios/Tests/Screens/Conversation/ConversationViewTests.swift ios/Tests/Screens/Conversation/JumpEntersDetachedModeTests.swift
 #
 # 「飛んでいる間」の**文**と、押した鍵の**印**の負の対照(DESIGN §2.56)。
 # 割り込みと打鍵が要求を投げてから返事が来るまでの最大30秒、画面が何を言うか —— その
@@ -39,9 +39,16 @@
 #        鈍い変異で、打鍵に関わる他の検査も同時に赤くなる(`inFlightChoiceKey` が
 #        二度と nil に戻らないので `choiceEnabled` が永久に偽)。だから主張は
 #        「的の検査**だけ**が赤」ではなく「的の検査が赤の中に居る」。
+#   M6 live へ戻るのを送信の**後ろ**へ回す    -> 「返る前に戻っている」検査が赤
+#      ★2026-09-08 追加。順序の検査は**終わった後の姿**からは作れない、の的。
+#        以前の `…ReturnsToLiveFirst` は `await vm.send()` を待ち切ってから
+#        `isDetached == false` を見ていたので、戻りを応答の後ろへ動かしても緑だった ——
+#        名前が "First" と言っているのに順序を一度も測っていない。今は要求が
+#        飛んでいる最中に見る(書き込みの作り物は 60 秒返らない)。M6 は呼び出しを
+#        **消さず遅らせる**ので、消す変異でしか赤くならない検査とは区別が付く。
 #
-# 費用(隠さない): xcodebuild を6回(基準1 + 変異5)。ただし **UI 検査ではなく単体**を
-#   2 class だけ(`-only-testing`)撃つので、姉家族の
+# 費用(隠さない): xcodebuild を7回(基準1 + 変異6)。ただし **UI 検査ではなく単体**を
+#   3 class だけ(`-only-testing`)撃つので、姉家族の
 #   `ios/tools/list-return-refresh-control.sh`(約8分)や
 #   `ios/tools/conversation-ui-control.sh`(約3.6分)より軽い。実測値は
 #   `rc-backend/tools/run-controls.sh` の登録行に書く。
@@ -101,6 +108,17 @@ WANT_CHO=testTheChoiceInFlightStageSaysSomethingRatherThanGoingGrey
 WANT_SEC=testTheTwoNewInFlightSentencesAreBuiltFromTheRealTimeout
 WANT_SPIN=testOnlyThePressedKeySpins
 WANT_CLEAR=testTheChoiceInFlightLineIsGoneEvenOnThePathThatReportsNothing
+WANT_SENDFIRST=testSendingWhileDetachedReturnsToLiveBeforeTheRequestResolves
+
+# ★撃つ class の一覧は**1箇所**に持つ(2026-09-08、実際に踏んで足した)。
+#   走らせる側(`-only-testing`)と読み取る側(`extract` の探し文)が別々に一覧を
+#   持っていたので、3本目の class を走らせる側にだけ足した瞬間に
+#   「走っているのに読めない」= 基準で緑にならない、という測っていない形になった。
+#   log には `passed` と出ているのに対照は UNMEASURED を返す —— 手で揃える一覧が
+#   2つ在る限り、いつか片方が古くなる。派生させれば原理的にずれない。
+CLASSES=(ConversationViewModelTests ConversationViewTests JumpEntersDetachedModeTests)
+ONLY=(); for c in "${CLASSES[@]}"; do ONLY+=(-only-testing:"RemoteMiniTests/$c"); done
+CLASS_RE="$(IFS='|'; printf '%s' "${CLASSES[*]}")"
 
 ORIG="$WORK/orig"
 mkdir -p "$ORIG"
@@ -236,8 +254,7 @@ run_unit_once() { # $1 = log path -> rc を印字
       xcodebuild -project RemoteMini.xcodeproj -scheme RemoteMini -configuration Debug \
         -sdk iphonesimulator -destination "platform=iOS Simulator,name=$SIM_NAME" \
         -derivedDataPath "$MS_ROOT/build" \
-        -only-testing:RemoteMiniTests/ConversationViewModelTests \
-        -only-testing:RemoteMiniTests/ConversationViewTests test ) >"$log" 2>&1 || rc=$?
+        "${ONLY[@]}" test ) >"$log" 2>&1 || rc=$?
     printf '%s' "$rc"
 }
 
@@ -256,9 +273,11 @@ run_unit() { # $1 = log path -> rc を印字
 }
 
 # ★module 名まで付けた形で探す事。log の行は `-[RemoteMiniTests.ConversationViewModelTests …]`
-#   で、class 名だけで grep すると 2 class を跨いだ時に取りこぼす。
+#   で、class 名だけで grep すると class を跨いだ時に取りこぼす。
+#   探し文の class 部は `$CLASS_RE`(= `$CLASSES` から派生)。此処に名前を直書きすると、
+#   走らせる側との一覧が2つになって必ずずれる(上の註)。
 extract() { # $1 = log, $2 = passed|failed
-    grep -oE "Test Case '-\[RemoteMiniTests\.(ConversationViewModelTests|ConversationViewTests) [a-zA-Z0-9_]+\]' $2" "$1" \
+    grep -oE "Test Case '-\[RemoteMiniTests\.($CLASS_RE) [a-zA-Z0-9_]+\]' $2" "$1" \
         | sed -E "s/^.*Tests ([a-zA-Z0-9_]+)\].*$/\1/" | sort -u | tr '\n' ' '
 }
 passed_tests() { extract "$1" passed; }
@@ -282,7 +301,7 @@ if [ "$rc" -ne 0 ]; then
     exit 2
 fi
 BASE_PASSED="$(passed_tests "$BASE_LOG")"
-for w in "$WANT_INT" "$WANT_CHO" "$WANT_SEC" "$WANT_SPIN" "$WANT_CLEAR"; do
+for w in "$WANT_INT" "$WANT_CHO" "$WANT_SEC" "$WANT_SPIN" "$WANT_CLEAR" "$WANT_SENDFIRST"; do
     if ! has "$BASE_PASSED" "$w"; then
         un "基準で的の検査が緑になっていない: $w"
         echo "    (基準の緑は $(printf '%s' "$BASE_PASSED" | wc -w | tr -d ' ') 本。全文: $BASE_LOG)"
@@ -290,7 +309,7 @@ for w in "$WANT_INT" "$WANT_CHO" "$WANT_SEC" "$WANT_SPIN" "$WANT_CLEAR"; do
         exit 2
     fi
 done
-ok "基準: 的の検査が5本とも緑(この走行の緑は全部で $(printf '%s' "$BASE_PASSED" | wc -w | tr -d ' ') 本)"
+ok "基準: 的の検査が6本とも緑(この走行の緑は全部で $(printf '%s' "$BASE_PASSED" | wc -w | tr -d ' ') 本)"
 
 # ---- 変異 M1: 割り込みの文が出なくなる ----------------------------------------
 # 三項をやめて常に nil。窓の中で観測する検査だけが赤くなり、文言を組み立てる
@@ -317,6 +336,15 @@ mutate_m4() {
 # ---- 変異 M5: 答えが出ても待ちの文が消えない ----------------------------------
 mutate_m5() {
     /usr/bin/sed -i '' '/func applyChoiceAttempt/,/^    }$/ { /^        inFlightChoiceKey = nil$/d; }' "$VM"
+}
+# ---- 変異 M6: live へ戻るのが送信の**後ろ**へ回る --------------------------------
+# 呼び出しは消さない。**遅らせる**だけ —— 之が的。消す変異なら「終わった後の姿」を
+# 見る検査でも捕まるが、順序だけが崩れた版は終わった後の姿が正しいので捕まらない。
+# 待ちは検査の上限(3 秒)より長くする。値そのものに意味は無く、
+# 「観測する瞬間にはまだ戻っていない」が作れればよい。
+mutate_m6() {
+    /usr/bin/sed -i '' \
+        's|^        if detached.isOpen { await backToLive(reason: "send") }$|        if detached.isOpen { try? await Task.sleep(for: .seconds(6)); await backToLive(reason: "send") }|' "$VM"
 }
 
 probe() { # $1=名前 $2=変異する関数 $3=変異が当たる file $4=赤くなるべき検査 $5=(任意)緑のままであるべき検査
@@ -367,6 +395,7 @@ probe M2-choice-sentence-gone    mutate_m2 "$VM" "$WANT_CHO"  "$WANT_SPIN"
 probe M3-seconds-hardcoded       mutate_m3 "$VM" "$WANT_SEC"
 probe M4-every-key-spins         mutate_m4 "$CV" "$WANT_SPIN" "$WANT_CHO"
 probe M5-waiting-sentence-stays  mutate_m5 "$VM" "$WANT_CLEAR"
+probe M6-return-to-live-is-late  mutate_m6 "$VM" "$WANT_SENDFIRST"
 
 # ---- 復元の確認(想定ではなく観測する) ---------------------------------------
 # 此処は trap が走る**前**なので、戻っていなければ此処で言える。
