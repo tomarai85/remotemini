@@ -1260,8 +1260,16 @@ final class ConversationViewModel: ObservableObject {
         isVerifyingSend = true
         defer { isVerifyingSend = false }
 
-        guard await performResync() else {
+        switch await performResync() {
+        case .applied:
+            break
+        case .unreachable:
             sendBanner = SendBanner(locallyWorded: Self.sendStillUnreachableText, tone: .warn)
+            return
+        case .superseded:
+            // 届いてはいるが、此の読み直しの結果は捨てられた = **此の本文について何も言えない**。
+            // 「まだ届かない」に寄せるのは、観測より強い主張(通信のせいにする嘘)。
+            sendBanner = SendBanner(locallyWorded: Self.sendCannotTellText, tone: .warn)
             return
         }
 
@@ -1287,11 +1295,18 @@ final class ConversationViewModel: ObservableObject {
     private func verifyByRereading(
         interrupted: Bool
     ) async -> String {
-        let resynced = await performResync()
-        if !resynced {
+        switch await performResync() {
+        case .unreachable:
             return interrupted
                 ? "Still unreachable. Whether it stopped is unknown."
                 : "Still unreachable. Whether the key landed is unknown."
+        case .superseded:
+            // 追い越された = 読めたが此の読み直しの記録は使われていない。通信のせいにしない。
+            return interrupted
+                ? "Whether it stopped is unknown. A newer re-read replaced this one."
+                : "Whether the key landed is unknown. A newer re-read replaced this one."
+        case .applied:
+            break
         }
         return interrupted
             ? "Whether it stopped is unknown. The desk history was re-read — what's above is the re-read record."
@@ -1499,7 +1514,6 @@ final class ConversationViewModel: ObservableObject {
         guard card.buttons.contains(where: { $0.key == key }) else { return }
 
         let sentDigest = card.digest
-        inFlightChoiceKey = key
         choiceBanner = nil
 
         // ★危険な画面は1タップで通さない(2026-08-26)。構えていなければ、
@@ -1512,6 +1526,15 @@ final class ConversationViewModel: ObservableObject {
             dangerNotice = visibleChoice?.risk.notice ?? "This action is hard to undo."
             return
         }
+        // ★「飛んでいる」の印は**本当に送る事が決まってから**立てる(2026-09-08)。
+        //   之まで此の代入は上の構える枝より前に在り、構えるだけの tap でも立っていた ——
+        //   印を降ろすのは応答を受けた `applyChoiceAttempt` **だけ**なので、送っていない
+        //   道では永久に降りない。結果、危険な確認は電話から**構造的に答えられなかった**:
+        //   1 回目の tap で全ボタンが `!isChoosing` で伏せられ、押した鍵の脇で spinner が
+        //   回り続け、「もう一度押して確定」という文が押せないボタンを指し続ける。
+        //   画面を出入りしても、次の 1 回目の tap が同じ所へ戻る。
+        //   規則: **観測より強い事を言わない**(送っていないのに「送信中」と描かない)。
+        inFlightChoiceKey = key
         let confirmValue = isDanger ? currentDigest : nil
         defer { disarmDanger() }
 
@@ -2274,6 +2297,17 @@ final class ConversationViewModel: ObservableObject {
         lastReadableAt = meter.lastReadableAt
     }
 
+    /// 読み直しの結末。**「届かなかった」と「後から始まった読み直しに追い越された」を混ぜない**
+    /// (2026-09-08 の掃引)。前者は通信の話、後者は順番の話で、直す先も、人へ言う文も違う。
+    enum ResyncOutcome { case applied, unreachable, superseded }
+
+    /// 読み直しの世代。開く前に控えて、応答が返った時に**まだ自分が最新か**を見る。
+    /// ★之が無い間、`performResync` は 6 箇所から呼ばれて誰も直列化していなかった ——
+    ///   自動(隙間の検出 / 復帰 / 停滞)3 本と、押せる回数に制限の無いボタン「読み直す」。
+    ///   遅い方が後に返ると、**古い転写が新しい転写を上書きし** `live` も空にするので、
+    ///   画面が時間を遡り、間に届いた行が消える。
+    private var resyncToken = 0
+
     /// Shared by gap-driven refetch (§4 point 3), N4 (background -> foreground), and
     /// the one-per-episode auto-recovery (§3-c) -- all three are explicitly "the same
     /// procedure" (brief §1-a item 5 / §3-c). Refetches `/history` at the current
@@ -2285,7 +2319,9 @@ final class ConversationViewModel: ObservableObject {
     /// 自体が失敗した時に「今の机には出ていません」と言うと、見ていない物を言う事に
     /// なるから。既存の3経路は `@discardableResult` で今まで通り。
     @discardableResult
-    private func performResync() async -> Bool {
+    private func performResync() async -> ResyncOutcome {
+        resyncToken &+= 1
+        let token = resyncToken
         let result = await client.fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: currentLimit)
         guard case .success(let response) = result else {
             // No distinct UI state is specified for "the resync's own /history call
@@ -2293,8 +2329,11 @@ final class ConversationViewModel: ObservableObject {
             // `history` currently holds, and the still-running poll loop's next
             // successful response keeps merging against it. Noted as a judgment call
             // in progress.md.
-            return false
+            return .unreachable
         }
+        // ★自分より後に始まった読み直しが在るなら、此の応答は**古い**。捨てる。
+        //   捨てた事を `unreachable` と名乗らない —— 机には届いている。
+        guard token == resyncToken else { return .superseded }
         history = response.history
         truncated = response.truncated
         live = []
@@ -2302,7 +2341,7 @@ final class ConversationViewModel: ObservableObject {
         // 戻って来た人が最初に見るべきは一番下。
         tailToken += 1
         await pollLoop?.resetForResync()
-        return true
+        return .applied
     }
 
     /// N4: background -> foreground. Same procedure as any other resync (see

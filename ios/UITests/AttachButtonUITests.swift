@@ -48,19 +48,25 @@ final class AttachButtonUITests: XCTestCase {
         }
         anyRow.tap()
 
-        let attach = app.buttons["conversation.attachButton"]
-        XCTAssertTrue(attach.waitForExistence(timeout: 15),
-                      "会話画面に写真ボタンが無い")
-        XCTAssertTrue(attach.isHittable, "写真ボタンが在るのに押せない位置に居る")
+        // ★2026-09-07(案 B)に添付は `+` の 1 つへ畳んだ。会話の面に常設で居るのは入口の方で、
+        //   写真は其れを開いた後に出る。「常設の物が押せる位置に在る」「送信と離れている」は
+        //   入口について測り、「写真が居てピッカーを開く」は開いた後に測る。
+        let menu = app.descendants(matching: .any).matching(identifier: "conversation.attachMenu").firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 15), "会話画面に添付の入口が無い")
+        XCTAssertTrue(menu.isHittable, "添付の入口が在るのに押せない位置に居る")
 
         // ★送信ボタンと**離れている**事。片手持ちの誤タップが常態なので、
-        //   この2つが近いと「送るつもりが写真」「写真のつもりが送信」が起きる。
+        //   この2つが近いと「送るつもりが添付」「添付のつもりが送信」が起きる。
         let send = app.buttons["conversation.sendButton"]
         if send.exists {
-            let gap = abs(attach.frame.midX - send.frame.midX)
-            XCTAssertGreaterThan(gap, 100, "写真ボタンと送信ボタンが近すぎる(\(gap)pt)")
+            let gap = abs(menu.frame.midX - send.frame.midX)
+            XCTAssertGreaterThan(gap, 100, "添付の入口と送信ボタンが近すぎる(\(gap)pt)")
         }
 
+        menu.tap()
+
+        let attach = app.descendants(matching: .any).matching(identifier: "conversation.attachButton").firstMatch
+        XCTAssertTrue(attach.waitForExistence(timeout: 10), "開いた添付の中に写真が無い")
         attach.tap()
 
         // 写真ピッカーは別プロセス(PHPickerViewController)。**アプリ側の要素では出ない**ので
@@ -93,13 +99,19 @@ extension AttachButtonUITests {
         attachScreenshot(app, name: "01-sessions")
 
         row.tap()
-        let attach = app.buttons["conversation.attachButton"]
-        XCTAssertTrue(attach.waitForExistence(timeout: 15))
+        // ★案 B(2026-09-07)以降、会話の面に常設で居るのは添付の**入口**。写真は其れを開いた後。
+        let menu = app.descendants(matching: .any).matching(identifier: "conversation.attachMenu").firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 15))
         attachScreenshot(app, name: "02-conversation-with-attach-button")
+
+        menu.tap()
+        let attach = app.descendants(matching: .any).matching(identifier: "conversation.attachButton").firstMatch
+        XCTAssertTrue(attach.waitForExistence(timeout: 10))
+        attachScreenshot(app, name: "03-attach-menu-open")
 
         attach.tap()
         Thread.sleep(forTimeInterval: 3)
-        attachScreenshot(app, name: "03-photo-picker")
+        attachScreenshot(app, name: "04-photo-picker")
     }
 
     private func attachScreenshot(_ app: XCUIApplication, name: String) {

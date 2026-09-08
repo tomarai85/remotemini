@@ -68,8 +68,18 @@ struct ListView: View {
     @State private var initialWaitStartedAt = Date()
     @State private var renameTarget: SessionRow?
     @State private var renameText = ""
+    /// ★`isPresented` は**素の Bool**、対象は `presenting:` で渡す(2026-09-08、`DiffView` が
+    ///   2026-09-03 に同じ形で踏んで直した物を此方へも持って来た)。
+    ///   `renameTarget != nil` から派生させた Binding を使うと、alert の button を押した瞬間に
+    ///   SwiftUI が閉じる為に `false` を書き戻し、其の setter が `renameTarget = nil` を実行する。
+    ///   button の action は `Task { … }` を**積むだけ**で、本体は次の main actor の番に走る ——
+    ///   其の時には対象が既に nil なので `guard let target` で黙って return していた。
+    ///   = 「保存」も「MacBook へ戻す」も、閉じるだけで**何も起きない**(机の口を一度も叩かない)。
+    @State private var renameAlertShown = false
     @State private var renameNotice: String?
     @State private var returnTarget: SessionRow?
+    /// 同上(確認 dialog 側)。
+    @State private var returnDialogShown = false
     @State private var returnNotice: String?
     /// 新しい会話を始めた後の一文。★「始めました」で終わらせない —— 一覧に出るまで
     ///   間が在るので、其の間を黙ると押した人は「効かなかった」と読んで二度押しする。
@@ -409,6 +419,7 @@ struct ListView: View {
                 Button {
                     renameText = row.displayTitle
                     renameTarget = row
+                    renameAlertShown = true
                 } label: {
                     Label("Rename", systemImage: "pencil")
                 }
@@ -446,6 +457,7 @@ struct ListView: View {
                 if row.isCheckout {
                     Button {
                         returnTarget = row
+                        returnDialogShown = true
                     } label: {
                         Label("Return to MacBook…", systemImage: "arrow.uturn.backward.circle")
                     }
@@ -461,6 +473,7 @@ struct ListView: View {
                 if row.isCheckout {
                     Button {
                         returnTarget = row
+                        returnDialogShown = true
                     } label: {
                         Label("Return", systemImage: "arrow.uturn.backward.circle")
                     }
@@ -493,15 +506,12 @@ struct ListView: View {
         .scrollContentBackground(.hidden)
         .opacity(grayedOut ? 0.5 : 1)
         .disabled(grayedOut)
-        .alert("Rename", isPresented: Binding(
-            get: { renameTarget != nil },
-            set: { if !$0 { renameTarget = nil } }
-        )) {
+        .alert("Rename", isPresented: $renameAlertShown, presenting: renameTarget) { target in
             TextField("Name (1–60 characters)", text: $renameText)
-            Button("Save") { Task { await submitRename(clear: false) } }
-            Button("Clear name", role: .destructive) { Task { await submitRename(clear: true) } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
+            Button("Save") { Task { await submitRename(target, clear: false) } }
+            Button("Clear name", role: .destructive) { Task { await submitRename(target, clear: true) } }
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+        } message: { _ in
             Text("Sets this session's name in the list. Clearing it restores the automatic title.")
         }
         .alert("Can't rename", isPresented: Binding(
@@ -512,13 +522,11 @@ struct ListView: View {
         } message: {
             Text(renameNotice ?? "")
         }
-        .confirmationDialog("Return to MacBook", isPresented: Binding(
-            get: { returnTarget != nil },
-            set: { if !$0 { returnTarget = nil } }
-        ), titleVisibility: .visible) {
-            Button("Queue the return") { Task { await submitReturnRequest() } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
+        .confirmationDialog("Return to MacBook", isPresented: $returnDialogShown,
+                            titleVisibility: .visible, presenting: returnTarget) { target in
+            Button("Queue the return") { Task { await submitReturnRequest(target) } }
+            Button("Cancel", role: .cancel) { returnTarget = nil }
+        } message: { _ in
             Text("This only queues a request. The work returns when the MacBook is next open, and only after its safety checks (e.g. conflicts with local edits) pass.")
         }
         .alert("Return request", isPresented: Binding(
@@ -534,8 +542,9 @@ struct ListView: View {
 
     /// alert の「保存」/「名前を外す」から。成功 = 一覧を読み直す(名前はサーバの台帳が正本。
     /// 手元の行を書き換えて済ませると、次の取得で黙って戻る形の嘘になる)。
-    private func submitRename(clear: Bool) async {
-        guard let target = renameTarget else { return }
+    /// ★対象は**引数で受け取る**(2026-09-08)。`@State` から読み直すと、alert が閉じる時に
+    ///   書き戻された nil を読んで黙って何もしない。
+    private func submitRename(_ target: SessionRow, clear: Bool) async {
         renameTarget = nil
         let title = clear ? nil : renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !clear, title?.isEmpty != false || (title?.count ?? 0) > 60 {
@@ -568,8 +577,7 @@ struct ListView: View {
     }
 
     /// §9-2: 「MBP へ戻す」の**依頼**。確認を挟む(取り返しに手間の掛かる操作)。
-    private func submitReturnRequest() async {
-        guard let target = returnTarget else { return }
+    private func submitReturnRequest(_ target: SessionRow) async {
         returnTarget = nil
         switch await returner.requestReturn(baseURL: baseURL, apiKey: apiKey, sessionID: target.id) {
         case .requested(_, let already):

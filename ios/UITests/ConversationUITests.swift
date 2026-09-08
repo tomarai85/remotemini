@@ -196,8 +196,18 @@ final class ConversationUITests: XCTestCase {
         )
         // The other half of the same pair: when it is not usable, the screen says so
         // rather than leaving a dead button unexplained.
+        //
+        // ★2026-09-08: 理由の**在り処**が変わった(案 A で急ぎは 1 本だけになり、此の面では
+        //   「入力できない理由」が席を取る)。理由は捨てられず、状態の行を開くと出る ——
+        //   此の検査は「説明が在る」を測る物なので、1 タップ分だけ追う。
+        //   開いても無い = 説明の無い死んだボタン = 元の赤。
         if !interruptUsable {
-            XCTAssertTrue(element(app, "conversation.interruptDisabledReason").exists)
+            let row = element(app, "conversation.deskState")
+            XCTAssertTrue(row.waitForExistence(timeout: 5), "状態の行が無い(理由の在り処ごと消えている)")
+            XCTAssertTrue(row.isEnabled, "理由が落ちて来ているのに状態の行が開けない")
+            row.tap()
+            XCTAssertTrue(element(app, "conversation.interruptDisabledReason").waitForExistence(timeout: 5),
+                          "開いても理由が無い = 説明の無い死んだボタン")
         }
     }
 

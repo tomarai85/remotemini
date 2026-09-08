@@ -74,9 +74,30 @@ final class ComposerNoticesTests: XCTestCase {
         XCTAssertEqual(q.urgent?.text, "i")
     }
 
-    func testInFlightBeatsSuccessButLosesToFailure() {
+    /// ★2026-09-08 に規則が変わった。元は「飛んでいる操作は失敗に負ける」と此処で固定していたが、
+    /// `InFlightUITests` が製品で赤を出した —— 選択肢の鍵を押すと入力欄が伏せられ、其の「入力できません」が
+    /// 「送っています…」を押し退けて、**打鍵が飛んでいる間 画面が無言**になっていた(§2.56 が禁じる形)。
+    /// 新しい規則: **送れない事実 > 今飛んでいる操作 > 出来ない理由 > 直前の答え**。
+    /// 「今」は「なぜ」より先、「なぜ」は「さっき」より先 —— 直前の答えは、利用者が既に押し直した後の話。
+    func testInFlightBeatsWhatAlreadyHappened() {
         XCTAssertEqual(plan(send: banner("Sent.", .ok), sendInFlight: "Sending…").urgent?.id, "conversation.sendInFlightNotice")
-        XCTAssertEqual(plan(send: banner("Could not send.", .error), sendInFlight: "Sending…").urgent?.id, "conversation.sendBanner")
+        XCTAssertEqual(plan(send: banner("Could not send.", .error), sendInFlight: "Sending…").urgent?.id,
+                       "conversation.sendInFlightNotice", "押し直した後も古い失敗を見せ続けていた")
+        // 上限だけは飛んでいる操作より先(そもそも届かない)。
+        XCTAssertEqual(plan(limited: "Usage limit reached on the desk.", sendInFlight: "Sending…").urgent?.id,
+                       "conversation.limitedNotice")
+    }
+
+    /// ★実測した形そのもの(`InFlightUITests.testChoiceInFlightSpinsOnlyTheKeyThatWasPressed`)。
+    /// 鍵を押した瞬間に `isChoosing` が立ち、入力欄が伏せられ、其の理由が文になる —— 其れは
+    /// **押した操作が作った理由**なので、押した操作の答えを隠してはいけない。
+    func testTheReasonCausedByTheKeypressDoesNotSilenceTheKeypress() {
+        let p = plan(composerDisabled: "Waiting on a choice. Text can't be sent",
+                     choiceInFlight: "Answering…")
+        XCTAssertEqual(p.urgent?.id, "conversation.choiceInFlightNotice")
+        // 否定対照: 飛んでいる物が無ければ、同じ理由が出る(此の検査が理由を消していない証拠)。
+        XCTAssertEqual(plan(composerDisabled: "Waiting on a choice. Text can't be sent").urgent?.id,
+                       "conversation.composerDisabledReason")
     }
 
     func testSuccessIsShownWhenNothingElseIs() {
@@ -120,6 +141,41 @@ final class ComposerNoticesTests: XCTestCase {
         let q = plan(deskWorking: false, digest: "3 files changed while you were away", digestUrges: false)
         XCTAssertNil(q.urgent)
         XCTAssertEqual(q.state, "Idle · 3 files changed while you were away")
+    }
+
+    /// ★2026-09-08。順位を決める事と、情報を捨てる事は別 —— 席を失った「出来ない理由」は
+    /// 消えずに展開の側へ落ちる。落とすと、押せない control の説明が画面から消える
+    /// (`ConversationUITests` が赤で見つけた形)。
+    func testAReasonThatLosesTheUrgentSlotFallsIntoTheDetail() {
+        let p = plan(composerDisabled: "Waiting on a choice. Text can't be sent",
+                     interruptDisabled: "On a confirmation screen, v1 does not interrupt from the phone")
+        XCTAssertEqual(p.urgent?.id, "conversation.composerDisabledReason")
+        XCTAssertEqual(p.suppressed.map(\.id), ["conversation.interruptDisabledReason"],
+                       "席を取れなかった理由が消えている")
+        // 勝った方は二重に出さない。
+        XCTAssertFalse(p.suppressed.contains { $0.id == "conversation.composerDisabledReason" })
+    }
+
+    /// 否定対照: 理由が 1 本だけなら、其れは席を取るので落ちて来る物は無い。
+    /// (此処が空にならないなら、上の検査は「常に落ちる」を見ているだけ)
+    func testNothingFallsIntoTheDetailWhenTheReasonWon() {
+        XCTAssertTrue(plan(composerDisabled: "Text can't be sent").suppressed.isEmpty)
+        XCTAssertTrue(plan().suppressed.isEmpty)
+    }
+
+    /// 落ちて来るのは**「出来ない理由」だけ**。答えと進行中は時間で消える物なので溜めない
+    /// (溜めると、展開を開いた人が既に終わった話を今の事として読む)。
+    func testOnlyReasonsFallIntoTheDetailNotOutcomesOrInFlight() {
+        let p = plan(composerDisabled: "Text can't be sent",
+                     send: banner("Could not send.", .error), sendInFlight: "Sending…")
+        XCTAssertEqual(p.urgent?.id, "conversation.sendInFlightNotice")
+        // 席を失った理由は残る。
+        XCTAssertEqual(p.suppressed.map(\.id), ["conversation.composerDisabledReason"])
+        // 答え(banner)と進行中は 1 本も落ちて来ない。
+        for id in ["conversation.sendBanner", "conversation.sendInFlightNotice",
+                   "conversation.choiceBanner", "conversation.interruptBanner"] {
+            XCTAssertFalse(p.suppressed.contains { $0.id == id }, "\(id) が展開へ溜まっている")
+        }
     }
 
     /// ★否定対照: 規則を「最初に見つかった物」に潰すと、上の順位の検査が赤になる事を此処で言う。
