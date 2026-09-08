@@ -76,7 +76,7 @@ import { loadRoots, resolveUnderRoots } from "./roots.mjs";
 import { handleRootsList, handleRootsPaths, handleRootsNew, resolveRequestedCwd } from "./rootsroute.mjs";
 import { rootsBody } from "./wire.mjs";
 import { digestOf, digestLine, actionRequired, attentionOf, digestBody } from "./digest.mjs";
-import { storeImage, storeFile, pathOf, sweepOld, ATTACH_MAX_BYTES } from "./attach.mjs";
+import { storeImage, storeFile, pathOf, sweepOld, ATTACH_MAX_BYTES, ATTACH_SWEEP_EVERY_MS } from "./attach.mjs";
 import { loadRules, checkDeny, denyMessage } from "./deny.mjs";
 import { createIdemStore, validKey, IDEM_REFUSAL } from "./idem.mjs";
 
@@ -742,7 +742,18 @@ const manager = new WorkerManager({
     ], { stdio: ["pipe", "pipe", "pipe"], cwd: plan.cwd });
   },
 });
-setInterval(() => manager.sweep(), 30_000).unref();
+// ★添付の掃除も時計で回す(2026-09-08、机の掃引 #4)。**別 job は増やさない** —— 既に回っている
+//   此の掃除に相乗りし、実際に `readdir` するのは `ATTACH_SWEEP_EVERY_MS` に 1 回だけ。
+//   口の中の `sweepOld` は残す(添付した直後に効くのが一番安い)。
+let lastAttachSweep = 0;
+setInterval(() => {
+  manager.sweep();
+  const t = Date.now();
+  if (t - lastAttachSweep >= ATTACH_SWEEP_EVERY_MS) {
+    lastAttachSweep = t;
+    sweepOld(ATTACH_DIR, t);
+  }
+}, 30_000).unref();
 // 注入キューは撤去した(2026-08-01 実測)。生成中に送っても Claude Code 自身がキューして
 // 次のターンとして処理することを実機で確認したので、我々のキューは二重実装だった。
 // 固有の挙動は「状態判定を外した時に本文を滞留させる」ことだけ。★撤去を支えている脚は
