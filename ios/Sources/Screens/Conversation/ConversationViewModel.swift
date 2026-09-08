@@ -59,6 +59,17 @@ final class ConversationViewModel: ObservableObject {
     /// would.
     static let initialLimit = 50
 
+    /// ライブで積む行の上限(2026-09-08、電話の掃引)。
+    /// ★何故要るか: `live` は届く度に足され、消えるのは読み直しの時だけ —— 隙間の出ない長い
+    ///   セッションでは画面が生きている間ずっと伸びる。`history` は `nextHistoryLimit` の
+    ///   `min(500, …)` で縛られていて、其の註は「守りの追加ではなく**要**」と言っている。
+    ///   ライブ側にだけ其の縛りが無かった。
+    /// ★超えた時に落とすのは**古い方**。画面は末尾を見ているので、落ちるのは既に上へ流れた行で、
+    ///   しかも机の転写には残っている(「もっと読む」で戻せる)。新しい方を捨てると、
+    ///   今まさに届いた行が出ない = 利用者から見て「机が黙った」になる。
+    /// 500 は `history` の天井と同じ数。2 つの上限を別々の数にする理由が無い。
+    static let liveCeiling = 500
+
     enum Phase: Equatable {
         case initialLoading
         case loaded
@@ -1700,7 +1711,13 @@ final class ConversationViewModel: ObservableObject {
     private func enterDetached(at anchor: String) async -> JumpOutcome {
         switch await detached.open(at: anchor) {
         case .moved:
-            stopPolling()          // 窓に混ぜない以上、poll を回し続ける理由が無い
+            // ★輪は**止めない**(2026-09-08、電話の掃引で判った)。以前は「窓に混ぜない以上、
+            //   poll を回し続ける理由が無い」として止めていたが、其れが `DetachedHistoryWindow` の
+            //   不変条件 1(「窓には入れない。**代わりに何件届いたか数える**」)を殺していた ——
+            //   数える対象が 1 件も届かなくなるので、`noteLiveWhileDetached` は production から
+            //   呼ばれず(呼び出し元は検査だけ)、「下に N 件」は**絶対に出ない**表示になっていた。
+            //   実害: 過去を読んでいる間に机が許可の確認を出しても、電話は何も知らせない。
+            //   混ぜないのは今も同じ —— 届いた物は `applyReadablePoll` が数へ落とす。
             entriesCache = nil     // `entries` の出所が変わった
             reveal(anchor)
             return .detached
@@ -1748,6 +1765,12 @@ final class ConversationViewModel: ObservableObject {
         // 末尾を読み直す。離脱中に机が伸びているので、閉じた時点の `history` は古い。
         let result = await client.fetch(baseURL: baseURL, apiKey: apiKey, sessionID: sessionID, limit: currentLimit)
         applyInitial(result)
+        // ★読み直しが失敗しても輪は必ず戻す(2026-09-08、電話の掃引)。輪を止めていたのは
+        //   「窓を離脱していたから」で、「読み直しが成功したから」ではない。`applyInitial` が
+        //   輪を張るのは `.success` の枝だけなので、届かない / 割り込まれた時に
+        //   **画面は普通に見えるのに二度と更新されない**状態が残っていた(`.cancelled` は帯すら出ない)。
+        //   `startPolling()` は `pollTask == nil` で冪等なので、成功の枝と二重にはならない。
+        startPolling()
     }
 
     /// ライブが 1 件届いた時に画面側から呼ぶ。離脱中は**数えるだけ**。
@@ -2073,8 +2096,23 @@ final class ConversationViewModel: ObservableObject {
     /// called again from a later successful `load()` (the "再試行" button on a
     /// failure phase) while a loop from an earlier successful load is still running
     /// is a no-op, not a second concurrent loop.
+    /// 輪の世代(2026-09-08、電話の掃引)。輪を張る / 畳む度に進める。
+    /// ★何の為か: `retryPollingNow` は「今の cursor を訊く」為に **await を跨ぐ**。其の間に
+    ///   画面が消えて `stopPolling()` が走ると、戻って来た張り直しが**片付けの済んだ後に**
+    ///   新しい輪を作る —— `drivePolling` は取り消しか `step()` の nil でしか抜けず、`self` を
+    ///   強く持つので、閉じた画面の輪が永久に長ポーリングし続ける。
+    ///   「今すぐ確認」を続けて 2 回押した時も、同じ cursor から輪が 2 本になり、届く行が全部二重に描かれる。
+    ///   世代が変わっていたら張り直しを捨てる = **古い張り直しは新しい状態を踏まない**。
+    private var pollEpoch = 0
+
+    /// 輪が張れているか。**検査の為の窓**(2026-09-08) —— 「離脱中も回っている」「戻る時に
+    /// 失敗しても戻る」は輪の有無でしか測れず、輪は private なので外から見る口が要る。
+    /// 製品の分岐には使わない(使うなら、其れは状態を 2 箇所で持つ事になる)。
+    var isPolling: Bool { pollTask != nil }
+
     func startPolling() {
         guard pollTask == nil else { return }
+        pollEpoch &+= 1
         let now = Date()
         unreadableMeter = UnreadableMeter(lastReadableAt: now)
         lastReadableAt = now
@@ -2093,6 +2131,8 @@ final class ConversationViewModel: ObservableObject {
     /// `URLSession`'s async API, also unblocks any in-flight long-poll `await`) and
     /// the underlying actor's own flag, belt-and-suspenders.
     func stopPolling() {
+        // ★世代を進めてから片付ける。飛んでいる張り直しが此の後に輪を作らない為(2026-09-08)。
+        pollEpoch &+= 1
         pollTask?.cancel()
         pollTask = nil
         if let loop = pollLoop {
@@ -2250,10 +2290,21 @@ final class ConversationViewModel: ObservableObject {
             switch item {
             case .message(let message):
                 if let entries = message.entries, !entries.isEmpty {
-                    live.append(contentsOf: entries)
-                    // 末尾が伸びた。空配列で進めないのは、進んだ札が
-                    // 「見る物が増えた」以外の意味を持たない為。
-                    tailToken += 1
+                    if detached.isOpen {
+                        // ★離脱の窓を読んでいる間は**混ぜず、数える**(不変条件 1)。
+                        //   `tailToken` も進めない —— 進めると、過去を読んでいる画面が
+                        //   勝手に末尾へ飛ぶ(利用者が居る場所を奪う)。
+                        detached.noteLiveArrival(entries.count)
+                    } else {
+                        live.append(contentsOf: entries)
+                        // ★天井(2026-09-08)。超えたら**古い方**から落とす —— 画面は末尾を見ている。
+                        if live.count > Self.liveCeiling {
+                            live.removeFirst(live.count - Self.liveCeiling)
+                        }
+                        // 末尾が伸びた。空配列で進めないのは、進んだ札が
+                        // 「見る物が増えた」以外の意味を持たない為。
+                        tailToken += 1
+                    }
                 }
                 // Worker-route `event` lines (2026-09-06): only the failures are
                 // rendered, as one banner sentence; `user_sent` clears it.
@@ -2277,7 +2328,10 @@ final class ConversationViewModel: ObservableObject {
             }
         }
 
-        if needsHistoryRefetch {
+        // ★離脱の窓を読んでいる間は読み直さない(2026-09-08)。窓は凍っていて、`backToLive` が
+        //   戻る時に必ず末尾を読み直す。此処で走らせると `tailToken` が進み、過去を読んでいる
+        //   画面が末尾へ飛ぶ —— 利用者が居る場所を奪う。
+        if needsHistoryRefetch, !detached.isOpen {
             Task { await performResync() }
         }
     }
@@ -2364,11 +2418,19 @@ final class ConversationViewModel: ObservableObject {
             startPolling()
             return
         }
+        // ★掴んでいる物は**先に手放す**(2026-09-08)。残したままだと、飛んでいる間に
+        //   `stopPolling()` が来ても此の後の張り直しが新しい輪を作ってしまう。
         pollTask?.cancel()
+        pollTask = nil
+        pollLoop = nil
+        pollEpoch &+= 1
+        let epoch = pollEpoch
         Task { [weak self] in
             guard let self else { return }
             let resumeCursor = await oldLoop.currentCursor()
             await oldLoop.cancel()
+            // 待っている間に畳まれた / もう一度押された = 此の張り直しはもう古い。
+            guard self.pollEpoch == epoch else { return }
             // No `await` here: `Task { [weak self] in ... }` created directly inside
             // an already-`@MainActor` method inherits that isolation, so this call
             // never actually hops actors -- confirmed by the build itself (`await

@@ -54,6 +54,9 @@ struct ConversationView: View {
     @State private var attachNotice: String?
     /// 状態の 1 行を展開しているか(案 A の 3 層。既定は畳んだまま)。
     @State private var showDeskState = false
+    /// 道具の出力を開いている行の鍵(2026-09-08)。`EntryBubble` の `@State` から親へ上げた ——
+    /// 位置で覚えると「もっと読む」の後に**別の行が開いて見える**(`HistoryEntry.toolOutputKey` の頭)。
+    @State private var expandedToolOutputs: Set<String> = []
     @StateObject private var viewModel: ConversationViewModel
     /// Brief §3-c's `.notFound` row: "一覧へ戻る", not a retry. `NavigationStack`
     /// already supplies a back chevron when this view is pushed from `ListView` in
@@ -476,7 +479,9 @@ struct ConversationView: View {
                                 // none) -- position is stable for a screen that never
                                 // reorders or removes rendered entries in place.
                                 ForEach(Array(viewModel.entries.enumerated()), id: \.offset) { _, entry in
-                                    EntryBubble(entry: entry)
+                                    EntryBubble(entry: entry,
+                                                isExpanded: isToolOutputExpanded(entry),
+                                                onToggleOutput: { toggleToolOutput(entry) })
                                         // ★2026-09-02: 届いた行は下から入る。
                                         //   `id` は offset なので末尾に足された行だけが
                                         //   挿入として扱われ、既存の行は動かない。
@@ -839,7 +844,9 @@ struct ConversationView: View {
                         // ★`Button` で包まない: 包むと本文の `Text` が Button の label に畳まれ、
                         //   `staticTexts["line 155"]` の様な既存の錨(ConversationSearchUITests)が
                         //   木から消える。`onTapGesture` なら木は前のまま = 泡の中の文字は文字のまま。
-                        EntryBubble(entry: entry, highlight: r.query)
+                        EntryBubble(entry: entry, highlight: r.query,
+                                    isExpanded: isToolOutputExpanded(entry),
+                                    onToggleOutput: { toggleToolOutput(entry) })
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 guard entry.anchor != nil else { return }
@@ -1395,6 +1402,25 @@ struct ConversationView: View {
 
     /// 詳細の行の識別子。時刻を持つ 2 段(遅れている / 応答が確認できない)だけ、畳む前と同じ名前で残す。
     /// 「届かない」段の詳細は時刻を持たないので付けない(無い物に名前を付けると、在ると読まれる)。
+    /// 道具の出力を開いている行(2026-09-08、電話の掃引)。**位置ではなく中身の鍵**で覚える ——
+    /// 鍵の作り方と、位置で覚えていた時に何が起きたかは `HistoryEntry.toolOutputKey` の頭に在る。
+    /// ★探索の面と同じ集合を使う: 同じ項目は同じ錨なので、探索で開いた行は転写でも開いている。
+    private func isToolOutputExpanded(_ entry: HistoryEntry) -> Bool {
+        guard let key = entry.toolOutputKey else { return false }
+        return expandedToolOutputs.contains(key)
+    }
+
+    private func toggleToolOutput(_ entry: HistoryEntry) {
+        guard let key = entry.toolOutputKey else { return }
+        withAnimation(.snappy(duration: 0.22)) {
+            if expandedToolOutputs.contains(key) {
+                expandedToolOutputs.remove(key)
+            } else {
+                expandedToolOutputs.insert(key)
+            }
+        }
+    }
+
     private func connectivityDetailIdentifier(_ stage: Connectivity.Stage) -> String? {
         switch stage {
         case .unreachable: return nil
@@ -1909,8 +1935,15 @@ private struct EntryBubble: View {
     let entry: HistoryEntry
     /// 検索の結果の面でだけ渡る当たり語(対照表 #42、2026-09-03)。nil = 素の本文。
     var highlight: String? = nil
-    /// tool 行の出力を開いているか(対照表 #41)。行ごとの状態、既定は畳む。
-    @State private var showOutput = false
+    /// tool 行の出力を開いているか(対照表 #41)。
+    /// ★2026-09-08 に `@State` をやめ、**親が中身の鍵で覚える**形へ(電話の掃引)。
+    ///   `ForEach` の identity が `offset` なので、`@State` は画面上の**位置**に付いていた ——
+    ///   「もっと読む」で既存の行の offset が全部ずれ、離脱の窓は同じ offset に別の配列を出す。
+    ///   結果、開いた行は畳まれ、其の位置に来た**別の行**が開いた状態で描かれていた。
+    ///   鍵は `HistoryEntry.toolOutputKey`(机の錨。位置ではない)。
+    let isExpanded: Bool
+    /// 押された事だけを親へ伝える(開閉の記憶は親が持つ)。
+    let onToggleOutput: () -> Void
 
     /// 本文。当たり語が渡っていれば其処だけ色 + 太字(規則は `SearchHighlight`、机の一致規則と同じ)。
     private var highlightedText: Text {
@@ -1962,10 +1995,10 @@ private struct EntryBubble: View {
                         Image(systemName: "chevron.down")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.tertiary)
-                            .rotationEffect(.degrees(showOutput ? 180 : 0))
+                            .rotationEffect(.degrees(isExpanded ? 180 : 0))
                             .accessibilityLabel("Tool output")
                             .accessibilityAddTraits(.isButton)
-                            .accessibilityValue(showOutput ? "expanded" : "collapsed")
+                            .accessibilityValue(isExpanded ? "expanded" : "collapsed")
                             .accessibilityIdentifier("conversation.tool.toggle")
                     }
                 }
@@ -1979,10 +2012,10 @@ private struct EntryBubble: View {
                 // `Button` で包むと中の Text が label に畳まれて `staticTexts["⚙ Bash"]` が消える(#3 で実測)。
                 .onTapGesture {
                     guard entry.output != nil else { return }
-                    withAnimation(.snappy(duration: 0.22)) { showOutput.toggle() }
+                    onToggleOutput()
                 }
 
-                if showOutput, let out = entry.output {
+                if isExpanded, let out = entry.output {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(out)
                             .font(.caption)
