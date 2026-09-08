@@ -110,20 +110,11 @@ struct DiffView: View {
             }
 
         case .failed(let message):
-            VStack(spacing: 12) {
-                Text(message)
-                    .font(.callout)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-                Button {
-                    Task { await viewModel.load() }
-                } label: {
-                    Text("Retry").tapTarget()
-                }
-                .accessibilityIdentifier("diff.retry")
+            // ★「読めなかった」の形は 1 つ(2026-09-07、案 C。`RCFailure`)。ボタンは**何を読み直すか**を言う。
+            RCFailure(message: message, verb: "Read the diff again", identifier: "diff.retry") {
+                await viewModel.load()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("diff.failed")
 
         case .loaded(let response):

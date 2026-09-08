@@ -43,20 +43,11 @@ struct SubagentsView: View {
             }
 
         case .failed(let message):
-            VStack(spacing: 12) {
-                Text(message)
-                    .font(.callout)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-                Button {
-                    Task { await viewModel.load() }
-                } label: {
-                    Text("Retry").tapTarget()
-                }
-                .accessibilityIdentifier("subagents.retry")
+            // ★同上(案 C)。
+            RCFailure(message: message, verb: "Read the list again", identifier: "subagents.retry") {
+                await viewModel.load()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("subagents.failed")
 
         case .loaded(let body):

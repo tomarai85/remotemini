@@ -641,15 +641,22 @@ struct ListView: View {
         if viewModel.lastFetchedAtMs > 0 {
             let freshness = Freshness.freshness(viewModel.lastFetchedAtMs, nowMs: Date().timeIntervalSince1970 * 1000)
             if freshness.stale {
-                Text(freshness.text)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
-                    .padding(.vertical, 4)
-                    // ★2026-09-01: 中立灰 → 配色の面(一覧の帯 3 本を同時に寄せた)。
-                    .background(RCTheme.surface)
-                    .accessibilityIdentifier("list.freshness")
+                // ★色は「行動できる物」に取っておく(2026-09-07、案 E)。之は**事実**(一覧が何分前の物か)で、
+                //   押す物ではない —— 直す手は既に在る(引き下げて更新)。橙のままだと、更新の告知(押せる)と
+                //   同じ強さで同時に出て、読み手はどちらに反応すべきか決められない(棚卸し (c))。
+                HStack(spacing: 5) {
+                    Image(systemName: "clock")
+                        .font(.caption2)
+                    Text(freshness.text)
+                        .font(.caption)
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
+                .padding(.vertical, 4)
+                // ★2026-09-01: 中立灰 → 配色の面(一覧の帯 3 本を同時に寄せた)。
+                .background(RCTheme.surface)
+                .accessibilityIdentifier("list.freshness")
             }
         }
     }
@@ -744,7 +751,8 @@ struct ListView: View {
             // ★X2-3。`.padding()` は Button の**外**に在るので、広く見えるのに
             // 押せるのは文字の上だけだった。旅程で「一覧が出ない」は最も起きやすい
             // 失敗で、これはその時に押す唯一の的。
-            Text("Retry").tapTarget()
+            // ★文言を `RCFailure` と揃える(2026-09-07、案 C)—— 押した後に何が起きるかをボタンが言う。
+            Text("Read the list again").tapTarget()
         }
         .padding()
         .accessibilityIdentifier("list.retry")
