@@ -25,6 +25,20 @@ const noop = () => {};
 
 /** 溜める側の上限。総量に依らず記憶は一定(変異 W17 = 外す)。 */
 const TAIL_KEEP_BYTES = 4096;
+/**
+ * ワーカーが死んだ後も、其の会話の輪(`rings`)を残す時間(2026-09-08、机の掃引 #2)。
+ * ★輪を残すのは**意図**: 電話が背面から戻った時に取り零しを拾える。だが之まで**永久に**残っていて、
+ *   `rings` / `gens` / `listeners` / `lastSpawnError` の 4 本は一度も `delete` されなかった —— 常駐の
+ *   daemon なので、worker 経路を通った会話 id が増えるだけ増える。他の cache(`MetaCache` / idem / diff /
+ *   `DeskStopMemory` / agents)は全部 TTL か上限を持っている。此処だけが例外だった。
+ * 30 分 = 電話が背面に居られる現実的な上限より十分長く、常駐の記憶としては短い。
+ */
+const RETAIN_AFTER_DEATH_MS = 30 * 60 * 1000;
+/**
+ * ワーカーの居ない会話を、同時に幾つまで覚えておくか(TTL の内側でも此の数で切る)。
+ * ★TTL だけだと、30 分の窓に大量の会話が流れた時に上限が無い。時間と数の**両方**で縛る。
+ */
+const RETAIN_MAX_SESSIONS = 64;
 /** 出す側の上限(§2.21-a)。電話へ流す量を抑える(変異 W25 = 外す)。 */
 const TAIL_EMIT_LINES = 10;
 const TAIL_EMIT_BYTES = 1024;
@@ -143,6 +157,8 @@ export class WorkerManager {
     //   = H2 そのもの。全員を覚えれば「1人でも未確認なら分岐する」が素直に言える。
     this.dying = new Map();
     this.gens = new Map();    // sessionId -> 世代番号(単調増加)
+    /** sessionId -> ワーカーが居なくなった時刻(ms)。`sweep()` が此れで古い記憶を捨てる(2026-09-08)。 */
+    this.retiredAt = new Map();
     // sessionId -> 生配信の宛先。**entry ではなくセッションが持つ**(2026-08-04、実測で発見)。
     // 旧: `entry.onEvent`。`_emit` が `workers` から entry を引いていたので、**entry を外した後の
     // 通知が繋がっている電話に届かなかった** —— つまり `worker_interrupted` / 死亡通知 /
@@ -407,7 +423,10 @@ export class WorkerManager {
       //   割り込みで退役 → 別の子に差し替わった**後**に届き得る。名前で消すと、その時
       //   生きている次の子が Map から外れ、次の送信がもう1本 spawn する = 1つの転写に
       //   書き手が2人(H2)。`exit`/`close` 側(下)には同じ守りが在って、此処だけ無かった。
-      if (this.workers.get(sessionId) === entry) this.workers.delete(sessionId);
+      if (this.workers.get(sessionId) === entry) {
+        this.workers.delete(sessionId);
+        this.retiredAt.set(sessionId, this.now());
+      }
     });
     // ★`exit` と `close` の両方を購読する。**死んだ事の合図は `exit`**(DESIGN §2.18-10(2)):
     //   `close` は stdio が全部閉じるまで来ないので、孫がパイプを持っていると永久に来ない。
@@ -436,6 +455,7 @@ export class WorkerManager {
       if (this.workers.get(sessionId) !== entry) return;
       this._dropQueued(sessionId, entry, "worker_died");
       this.workers.delete(sessionId);
+      this.retiredAt.set(sessionId, this.now());
       if (code !== 0) {
         this._emit(sessionId, {
           type: "worker_error",
@@ -693,6 +713,31 @@ export class WorkerManager {
         this._emit(sid, { type: "worker_idle_closed" });
       }
     }
+    this._forgetRetired(t);
+  }
+
+  /**
+   * ワーカーの居ない会話の記憶を捨てる(2026-09-08、机の掃引 #2)。時間と数の**両方**で縛る:
+   *   - `RETAIN_AFTER_DEATH_MS` を過ぎた物
+   *   - 残った数が `RETAIN_MAX_SESSIONS` を超える分(古い順)
+   * ★生きているワーカーの会話は絶対に捨てない(`this.workers` に居る間は対象外)。
+   * ★捨てるのは 4 本まとめて —— 片方だけ残すと「輪は無いのに世代だけ在る」形が生まれ、次の spawn が
+   *   世代を継いで再開したつもりになる。
+   */
+  _forgetRetired(t = this.now()) {
+    const dead = [...this.retiredAt].filter(([sid]) => !this.workers.has(sid));
+    const drop = new Set();
+    for (const [sid, at] of dead) if (t - at > RETAIN_AFTER_DEATH_MS) drop.add(sid);
+    const kept = dead.filter(([sid]) => !drop.has(sid)).sort((a, b) => a[1] - b[1]);
+    for (let i = 0; i < kept.length - RETAIN_MAX_SESSIONS; i++) drop.add(kept[i][0]);
+    for (const sid of drop) {
+      this.rings.delete(sid);
+      this.gens.delete(sid);
+      this.listeners.delete(sid);
+      this.lastSpawnError.delete(sid);
+      this.retiredAt.delete(sid);
+    }
+    return drop.size;
   }
 
   /**
