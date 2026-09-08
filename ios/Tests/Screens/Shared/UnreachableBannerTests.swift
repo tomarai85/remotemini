@@ -24,7 +24,9 @@ final class UnreachableBannerTests: XCTestCase {
     func testListWordingIsExactlyTheSpecSentence() {
         XCTAssertEqual(
             UnreachableBanner.detailText(failures: 3, context: .list),
-            "3 fetches in a row have failed. Make sure Tailscale is connected, then retry"
+            // ★末尾の動詞は 2026-09-08 に「then read the list again」へ(案 C: 直ぐ下のボタンと同じ名前にする)。
+            //   下の 2 層(原因を名指ししない / 件数が実測)はこの編集に影響されない。
+            "3 fetches in a row have failed. Make sure Tailscale is connected, then read the list again"
         )
     }
 

@@ -1340,13 +1340,43 @@ struct ConversationView: View {
 
     /// 常設の状態帯の1枠(§9-4)。同時に出るのは最も重い1つだけ。
     /// 識別子は中身の物がそのまま出る(検査の錨は変えない)。
+    /// 机との間の段(通信断 > 応答なし > 遅れ)。`nil` = 異常なし。判断は純関数 `Connectivity`。
+    private var connectivityStage: Connectivity.Stage? {
+        Connectivity.stage(
+            unreachableFailures: viewModel.isBackendUnreachable ? viewModel.reachability.consecutiveFailures : nil,
+            lagging: viewModel.unreadableStage == .degraded,
+            noResponse: viewModel.unreadableStage == .stalled,
+            lastConfirmed: lastReadableTimeText)
+    }
+
+    /// 識別子は段ごとに元の物を使う(検査と UI 自動化が指す字を変えない)。
+    private func connectivityIdentifier(_ stage: Connectivity.Stage) -> String {
+        switch stage {
+        case .unreachable: return "conversation.unreachable"
+        case .lagging: return "conversation.degraded"
+        case .noResponse: return "conversation.stalled"
+        }
+    }
+
+    /// 手当ては「応答が確認できない」段だけ。★2 つのボタンは**何をするか**で名乗る(案 C と同じ) ——
+    /// 「Retry」「Re-read」は同じ衝動の 2 択に見えて、実際は別の事をする(止まった poll を今すぐ回す / 転写を丸ごと取り直す)。
+    private func connectivityActions(_ stage: Connectivity.Stage) -> [RCConnectivityBanner.Action] {
+        guard case .noResponse = stage else { return [] }
+        return [
+            .init(id: "conversation.stalled.retry", label: "Check now") { viewModel.retryPollingNow() },
+            .init(id: "conversation.stalled.reread", label: "Reload the transcript") { viewModel.rereadNow() },
+        ]
+    }
+
     @ViewBuilder
     private var standingStatusSlot: some View {
-        if viewModel.isBackendUnreachable {
-            UnreachableBanner(
-                failures: viewModel.reachability.consecutiveFailures,
-                context: .conversation,
-                identifier: "conversation.unreachable"
+        // ★机との間の異常は 1 本の梯子(2026-09-08、案 D)。通信断・遅れ・応答なしが同じ形で、段は色と太さだけ変わる。
+        //   之まで通信断だけ別の型(赤い箱)で、遅れ / 応答なしは会話の中の素の行だった —— 段階なのに形が場所で分かれていた。
+        if let stage = connectivityStage {
+            RCConnectivityBanner(
+                stage: stage,
+                identifier: connectivityIdentifier(stage),
+                actions: connectivityActions(stage)
             )
         } else {
             queueStrip(viewModel.queueView(nowMs: Date().timeIntervalSince1970 * 1000))
@@ -1587,9 +1617,6 @@ struct ConversationView: View {
             //   劣化の帯を引っ込める — 「応答が確認できません」は「届かない」の下位情報で、
             //   両方出すと同じ事を2枚の帯で言う。届かないが消えた時に、劣化がまだ
             //   続いていれば此処が再び出る(状態は消していない。描画だけ譲る)。
-            if !viewModel.isBackendUnreachable {
-                degradationBanner
-            }
         }
         .padding(.horizontal)
         .padding(.top, 6)
@@ -1809,72 +1836,6 @@ struct ConversationView: View {
         guard choice.canPress else { return choice.options }
         let keyed = Set(choice.buttons.map(\.key))
         return choice.options.filter { !keyed.contains(String($0.n)) }
-    }
-
-    /// Brief §3-b's 3-row table, the 2 non-`.normal` rows: a quiet 1-line notice at
-    /// stage 1 (`.degraded`, no buttons), a warning + `[再試行]`/`[読み直す]` at
-    /// stage 2 (`.stalled`) -- `[再試行]`/`[読み直す]` map to
-    /// `retryPollingNow()`/`rereadNow()` respectively (see those two methods' own doc
-    /// comments in `ConversationViewModel` for the judgment call behind which is
-    /// which).
-    @ViewBuilder
-    private var degradationBanner: some View {
-        switch viewModel.unreadableStage {
-        case .normal:
-            EmptyView()
-
-        case .degraded:
-            HStack(spacing: 4) {
-                Text("Updates are lagging")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Last confirmed \(lastReadableTimeText)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("conversation.lastReadableAt")
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            // ★X2-3。ボタンは無いが `conversation.lastReadableAt` を畳んでいた。
-            // `TapTargetUITests` はこの面で **`.contain` が効いている事そのもの**を
-            // 測る —— 下の `.stalled` と違い、此処には的が無いので「寸法が通った」に
-            // 紛れずに、畳みの解除だけを単独で見られる唯一の面。
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("conversation.degraded")
-
-        case .stalled:
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 4) {
-                    Text("No response confirmed")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.red)
-                    Text("Last confirmed \(lastReadableTimeText)")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .accessibilityIdentifier("conversation.lastReadableAt")
-                }
-                HStack(spacing: 16) {
-                    Button {
-                        viewModel.retryPollingNow()
-                    } label: {
-                        Text("Retry").tapTarget()
-                    }
-                    .accessibilityIdentifier("conversation.stalled.retry")
-                    Button {
-                        viewModel.rereadNow()
-                    } label: {
-                        Text("Re-read").tapTarget()
-                    }
-                    .accessibilityIdentifier("conversation.stalled.reread")
-                }
-                .font(.caption)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            // ★X2-3。この2つは画面で一番小さい的(`.font(.caption)`)であり、かつ
-            // **一番追い詰められた時に押す物**。しかも畳まれていて、寸法を測る以前に
-            // 触る事すらできなかった —— 「居るか」しか聞かない検査では緑のままだった。
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("conversation.stalled")
-        }
     }
 
     private var lastReadableTimeText: String {

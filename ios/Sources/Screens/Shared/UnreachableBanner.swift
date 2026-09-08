@@ -15,57 +15,21 @@ import SwiftUI
 ///
 /// No dismiss affordance, by spec: 「手動で『消す』操作は用意しない」. It goes away when
 /// a request succeeds, and only then.
-struct UnreachableBanner: View {
-    /// Where this banner is drawn, which decides only the trailing hint -- the two
-    /// screens can do different things about it (List can retry the listing; a
-    /// Conversation's poll loop retries itself on its own backoff).
+/// ★2026-09-08(案 D): **view をやめ、文言の権威だけ残した**。机との間の異常を描く帯は `RCConnectivityBanner` の 1 つに
+/// 統合したが、此処の文(spec §5-4、Tom が国外で読む文)と其れを守る検査 —— 原因を名指ししない対照、件数が実測である対照 ——
+/// は其のまま生かす。`Connectivity.message` が此の関数を呼ぶ。
+enum UnreachableBanner {
     enum Context {
         case list
         case conversation
     }
 
-    let failures: Int
-    let context: Context
-    /// Supplied by the call site rather than fixed here. Sprint 2's tests and the
-    /// spec's §5-2 screen table already name `list.unreachable`, and stacking a
-    /// second `.accessibilityIdentifier` on the outside of this view to preserve
-    /// that would leave which of the two wins as a question answerable only by
-    /// running a UI test -- which this project cannot do on demand (no GUI on this
-    /// machine). One identifier, chosen by the caller, has no such question.
-    let identifier: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Can't reach the desk — check Tailscale on this phone")
-                .font(.subheadline.weight(.semibold))
-            Text(detail)
-                .font(.caption)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(Color.red.opacity(0.15))
-        .foregroundStyle(Color.red)
-        .accessibilityIdentifier(identifier)
-    }
-
-    /// The count is printed rather than hard-coded to "3回": the banner stays up past
-    /// the threshold, and a phone that has failed 40 times in a row saying "3回連続" is
-    /// stating a stale measurement as the current one.
-    private var detail: String {
-        Self.detailText(failures: failures, context: context)
-    }
-
-    /// Split out of `detail` (2026-08-07) purely so it can be asserted on. `detail` is
-    /// `private` and a SwiftUI `body` is not readable from a unit test, so until now the
-    /// most consequence-bearing sentences in the app -- the ones Tom reads when the phone
-    /// cannot reach edith from abroad -- had no regression guard at all. The wording here
-    /// is not cosmetic: this view's own doc records that a previous version led with
-    /// 「バックエンドに接続できません」, which asserts one of three indistinguishable causes
-    /// as fact. Nothing stopped an edit from putting that back.
     static func detailText(failures: Int, context: Context) -> String {
         switch context {
         case .list:
-            return "\(failures) fetches in a row have failed. Make sure Tailscale is connected, then retry"
+            // ★末尾の動詞だけ 2026-09-08 に変えた(案 C): 直ぐ下のボタンが `Read the list again` なのに文が「retry」と言うと、
+            //   同じ操作に 2 つの名前が付く。原因を名指ししない性質(下の対照)も件数の実測も、この編集では変わらない。
+            return "\(failures) fetches in a row have failed. Make sure Tailscale is connected, then read the list again"
         case .conversation:
             return "\(failures) fetches in a row have failed. Showing the last data that could be read"
         }
