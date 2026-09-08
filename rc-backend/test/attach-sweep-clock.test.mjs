@@ -54,7 +54,13 @@ test("口の中の掃除は残す(添付した直後に効くのが一番安い)
   assert.ok(calls >= 3, `sweepOld の呼び出しが ${calls} 箇所しかない(口の中が消えた可能性)`);
 });
 
-test("★否定対照: 切り出しているのは時計の本体だけ(file 全体を掴んでいたら上の 3 件は恒真)", () => {
+test("★時計の掃除は消した時だけ記録に残す(誰にも見えない削除を作らない)", () => {
+  const block = clockBlock();
+  assert.ok(block.includes("swept.removed > 0"), "消した時だけ言う条件が無い");
+  assert.ok(block.includes("console.log"), "時計の掃除が何も記録しない = 見えない所で file が消える");
+});
+
+test("★否定対照: 切り出しているのは時計の本体だけ(file 全体を掴んでいたら上の 4 件は恒真)", () => {
   const block = clockBlock();
   assert.ok(block.length < 1200, `切り出しが ${block.length} 文字 = 時計の本体より広い`);
   assert.ok(!block.includes("attachBody"), "口の中の応答まで掴んでいる = 配線の主張が空回りする");

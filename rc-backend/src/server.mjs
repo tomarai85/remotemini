@@ -751,7 +751,13 @@ setInterval(() => {
   const t = Date.now();
   if (t - lastAttachSweep >= ATTACH_SWEEP_EVERY_MS) {
     lastAttachSweep = t;
-    sweepOld(ATTACH_DIR, t);
+    // ★消した時だけ言う(何も消さない時は黙る)。口の中の掃除は消した数を電話へ返すのに、
+    //   時計の掃除は誰にも見えない所で file を消す事になる —— 記録に残らない削除は、
+    //   此のコードベースが他所で避けている形。
+    const swept = sweepOld(ATTACH_DIR, t);
+    if (swept.removed > 0) {
+      console.log(`[rc-backend] 添付の掃除(時計): ${swept.removed}本 消した / ${swept.kept}本 残した`);
+    }
   }
 }, 30_000).unref();
 // 注入キューは撤去した(2026-08-01 実測)。生成中に送っても Claude Code 自身がキューして
