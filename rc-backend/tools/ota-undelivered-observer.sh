@@ -59,7 +59,15 @@ OU_TIMEOUT="${RC_OU_TIMEOUT:-45}"             # 中で ssh を張るので上限
 # ★「続いている」と言える為に、**その間ずっと見えていた**事を要求する上限(Codex 2026-08-31)。
 #   前回 測れてから此れ以上 空いていたら、前の episode との連続性は**証明できない** ——
 #   猶予は壁時計の差ではなく、観測できた時間で数える。
-OU_CONTINUITY_MAX="${RC_OU_CONTINUITY_MAX:-$((2 * ${RC_OU_EVERY:-86400}))}"
+# ★導出が **0 に潰れると警報が永久に鳴らなくなる**(2026-09-08、実測して掴んだ)。
+#   `RC_OU_EVERY=0`(= 毎 tick 測る。対照と、人が手で撃つ時に使う)を渡すと上限が 0 になり、
+#   「1 秒でも経っていたら連続性は証明できない」= episode が**永久に積み上がらない**。
+#   静かに黙る設定 —— 危険な側が既定になっている形。
+#   之が `ota-undelivered-observer-control.sh` の U13b を 3 日以上 断続的に赤くしていた:
+#   状態 file を書いた秒と観測の秒が同じなら差 0 で通り、1 秒跨ぐと数え直して鳴らない。
+#   「`run-controls --all` の中でだけ落ちる」と見えていたのは、並走で秒を跨ぎ易かっただけ。
+#   ★間隔が 0 の時は連続性の上限を間隔から導けない(0 除算と同じ)。既定の1日で代替する。
+OU_CONTINUITY_MAX="${RC_OU_CONTINUITY_MAX:-$(( 2 * ( ${RC_OU_EVERY:-86400} > 0 ? ${RC_OU_EVERY:-86400} : 86400 ) ))}"
 OU_PERL="${RC_OU_PERL:-$(command -v perl 2>/dev/null || echo '')}"
 
 [ -n "${LOG:-}" ]    || LOG="${RC_TUNNEL_LOG:-$HOME/.rc-backend/tunnel-observer.log}"
@@ -84,15 +92,20 @@ ou__bounded() {  # ou__bounded <秒> <台本> → rc
     return "$rc"
 }
 
-# 記録 = "<試みた epoch> <状態> <通知済み 0|1> <この状態になった epoch> <最後に測れた epoch>"
+# 記録 = "<試みた epoch> <状態> <通知済み 0|1> <この状態になった epoch> <最後に測れた epoch>
+#         [<前回見た承認済みビルド>]"
 # ★欄が 5 でない行は丸ごと未知に倒す。欄が1つずれると状態名の場所に epoch が入り、
 #   其のずれは出力に出ない(friday の観測器で同じ形を潰した)。
+# ★6 欄目は 2026-09-08 に足した(下の「配達を跨いだ episode」参照)。**5 欄も受ける** ——
+#   要求を 6 欄に絞ると、既存の記録が丸ごと未知へ倒れて episode が黙って1回消える。
+#   5 欄の時は「前回の承認済みビルドは判らない」= 其の根拠では数え直さない、に倒す。
 ou__read() {
-    local now; now="$(date +%s)"
-    OU_TS=0; OU_STATE_NAME="unknown"; OU_DONE=0; OU_SINCE=0; OU_MEASURED=0
+    local now nf; now="$(date +%s)"
+    OU_TS=0; OU_STATE_NAME="unknown"; OU_DONE=0; OU_SINCE=0; OU_MEASURED=0; OU_BUILD=""
     [ -f "$OU_STATE" ] || return 0
-    [ "$(awk 'NR==1{print NF; exit}' "$OU_STATE" 2>/dev/null)" = "5" ] || return 0
-    read -r OU_TS OU_STATE_NAME OU_DONE OU_SINCE OU_MEASURED _rest < "$OU_STATE" 2>/dev/null || true
+    nf="$(awk 'NR==1{print NF; exit}' "$OU_STATE" 2>/dev/null)"
+    [ "$nf" = "5" ] || [ "$nf" = "6" ] || return 0
+    read -r OU_TS OU_STATE_NAME OU_DONE OU_SINCE OU_MEASURED OU_BUILD _rest < "$OU_STATE" 2>/dev/null || true
     for _n in OU_TS OU_SINCE OU_MEASURED; do
         eval "case \"\${$_n:-}\" in ''|*[!0-9]*) $_n=0 ;; esac"
     done
@@ -102,17 +115,27 @@ ou__read() {
     return 0
 }
 
-ou__write() {  # ou__write <試みた> <状態> <通知済み> <since> <測れた>
+ou__write() {  # ou__write <試みた> <状態> <通知済み> <since> <測れた> <承認済みビルド>
     local tmp
     tmp="$(mktemp "$(dirname "$OU_STATE")/.ota-und.XXXXXX" 2>/dev/null)" || return 0
-    printf '%s %s %s %s %s\n' "$1" "$2" "$3" "$4" "$5" > "$tmp" 2>/dev/null \
+    # ★6 欄目が空でも `-` を書く。空文字を書くと欄が 5 に見え、次の読み取りが
+    #   「古い形」と判定して承認済みビルドの記憶を毎回捨てる(数え直しが永久に効かない)。
+    printf '%s %s %s %s %s %s\n' "$1" "$2" "$3" "$4" "$5" "${6:--}" > "$tmp" 2>/dev/null \
         && mv -f "$tmp" "$OU_STATE" 2>/dev/null || /bin/rm -f "$tmp" 2>/dev/null
     return 0
 }
 
+# 今 **配ってよいと決めてある版**。之が前回の観測から動いていれば、間に配達が起きている。
+# 空 = 読めない(此の機体に木が無い等)。読めない事を「動いていない」と読まない。
+ou__approved() {
+    local f="${RC_OU_APPROVED:-$OU_HERE/../../.ota-approved-build}"
+    [ -f "$f" ] || return 0
+    tr -d '[:space:]' < "$f" 2>/dev/null | head -c 32
+}
+
 # 呼び手から1回。自分の回線が生きている時だけ測る。
 undelivered_observe() {
-    local now state msg announced since measured attempt grace
+    local now state msg announced since measured attempt grace build
     now="$(date +%s)"
     ou__read
     [ $((now - OU_TS)) -lt "$OU_EVERY" ] && return 0
@@ -151,6 +174,31 @@ undelivered_observe() {
         log "ota-undelivered: $(( (now - OU_MEASURED) / 86400 )) 日 見えていなかったので、続いた時間を数え直す"
         since="$now"; announced=0
     fi
+
+    # ★**配達を跨いだ episode は同じ episode ではない**(2026-09-08、実際に踏んだ)。
+    #
+    #   U13 が塞いだのは「見えていなかった時間」。此処が塞ぐのは其の姉家族 ——
+    #   **見えていたが、状態名が同じなので出来事に気付かなかった**時間。
+    #   此の枝は 24 時間に1回しか測らない(`OU_EVERY`)。配るのは其の間に起きるので、
+    #   「配った → 直後に別の commit が入る」と、次の観測は再び `undelivered` を見る。
+    #   状態名が変わらない = episode は続いている、と読むので `since` が据え置かれ、
+    #   **配達を挟んで日数が積み上がる**。
+    #   実測(2026-09-08): 9/7 09:44 に episode 開始 → 9/8 16:58 に build 170 を配った
+    #   → 直後に検査だけの commit が 2 本 → 翌朝の観測は「2 日 配る対象になっていません」。
+    #   配ったのは 16 時間前。**数字が嘘**で、其れは此の file の頭が一番恐れている
+    #   「読まれなくなる警報」そのもの。
+    #
+    #   直し方の要点: 配達は**出来事**なので、状態名の比較では原理的に見えない。
+    #   直接の痕跡(承認してよいと決めた版 = `.ota-approved-build`)を見る。
+    #   ★読めない時は数え直さない(黙る方ではなく**据え置く**方へ倒す)。「読めなかった」を
+    #     「配った」と読むと、木の無い機体で警報が永久に鳴らなくなる。
+    build="$(ou__approved)"
+    if [ -n "$build" ] && [ -n "$OU_BUILD" ] && [ "$OU_BUILD" != "-" ] && [ "$build" != "$OU_BUILD" ]; then
+        log "ota-undelivered: 承認済みが $OU_BUILD → $build(間に配達が在った)ので、続いた時間を数え直す"
+        since="$now"; announced=0
+    fi
+    [ -n "$build" ] || build="$OU_BUILD"   # 読めない回は記憶を消さない
+
     [ "$since" -gt 0 ] || since="$now"
 
     # ★測れた時だけ「測れた時刻」を進める。測れなかった回は**時計も進めない** ——
@@ -190,7 +238,7 @@ undelivered_observe() {
         printf '%s' "$(hostname -s): 出来ている物が配る対象になりました。" | "$NOTIFY" >/dev/null 2>&1 && announced=0
     fi
 
-    ou__write "$attempt" "$state" "$announced" "$since" "$measured"
+    ou__write "$attempt" "$state" "$announced" "$since" "$measured" "$build"
     return 0
 }
 

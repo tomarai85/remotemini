@@ -21,6 +21,8 @@
 #   U11 ★`--once` は周期を待たずに本当に測る(名乗りどおり動く)
 #   U12 ★呼び手が**早期 exit より前**で呼んでいる(配線されて見えるのに走らない形を塞ぐ)
 #   U13 ★見えていなかった時間を『続いた』と数えない(+ 陰性対照 U13b)
+#   U14 ★配達を跨いだ時間を『続いた』と数えない(+ 陰性対照 U14b/U14c/U14d)
+#   U15 ★間隔 0 で連続性の上限が 0 に潰れない(+ 陰性対照 U15b)= U13b の flake の真因
 #   M1 ★変異: 猶予を外すと U2 が赤くなる
 #   M2 ★変異: 回線の判定を外すと U1 が赤くなる
 #   Z  台本を書き換えたまま終わらない
@@ -197,6 +199,94 @@ else
     printf '        [U13b 診断] 継承 NOTIFY=%s LOG=%s RC_OU_EVERY=%s\n' \
         "${NOTIFY:-未設定}" "${LOG:-未設定}" "${RUN_EVERY:-未設定}"
     printf '        [U13b 診断] notified の中身=%s\n' "$(cat "$SB/notified" 2>/dev/null | tr '\n' '|')"
+fi
+
+# ── U14 ★配達を跨いだ時間を「続いた」と数えない(2026-09-08、実際に踏んだ)──────
+# U13 の姉家族。あちらは「見えていなかった時間」、此処は**見えていたのに出来事に
+# 気付かなかった時間**。此の枝は 24 時間に1回しか測らないので、配達は測定と測定の
+# 間に起きる —— 配った直後に別の commit が入れば、次の観測は再び rc=3 を見る。
+# 状態名が同じなので episode が続いていると読み、**配達を挟んで日数が積み上がる**。
+# 実測(2026-09-08): 9/7 に episode 開始 → 9/8 16:58 に build 170 を配布 →
+# 直後に検査だけの commit 2 本 → 翌朝「2 日 配る対象になっていません」。配ったのは 16 時間前。
+: > "$SB/notified"
+NOWE="$(date +%s)"
+printf '%s\n' 170 > "$SB/approved.txt"
+# since は 4 日前(猶予越え)で、ずっと見えていた。だが**承認済みが 160 → 170 に動いている**
+# = 間に配達が在った。数え直すので鳴らない。
+printf '%s undelivered 0 %s %s 160\n' "$NOWE" "$(( NOWE - 4 * DAY ))" "$NOWE" > "$SB/u14.json"
+run "$SB/u14.json" 3 0 RC_OU_APPROVED="$SB/approved.txt"
+if [ "$(notices)" = "0" ]; then
+    ok "U14 ★配達を跨いだ時間を根拠に鳴らない(承認済みが動いたら数え直す)"
+else
+    ng "U14 配達での数え直し" "通知=$(notices) 通 = 配った後も前の episode の日数で鳴いた"
+    printf '        [U14 診断] 状態=%s\n' "$(cat "$SB/u14.json" 2>/dev/null)"
+    printf '        [U14 診断] log=%s\n' "$(tail -3 "$SB/o.log" 2>/dev/null | tr '\n' '|')"
+fi
+# ★陰性対照 1: 承認済みが**動いていない**なら、同じ条件で鳴る(黙り過ぎていない事)。
+#   之が無いと「常に数え直す」実装でも U14 が緑になり、警報を殺した事に気付けない。
+: > "$SB/notified"
+printf '%s undelivered 0 %s %s 170\n' "$NOWE" "$(( NOWE - 4 * DAY ))" "$NOWE" > "$SB/u14b.json"
+run "$SB/u14b.json" 3 0 RC_OU_APPROVED="$SB/approved.txt"
+if [ "$(notices)" = "1" ]; then
+    ok "U14b ★承認済みが動いていなければ猶予越えで鳴る(数え直しが効き過ぎていない)"
+else
+    ng "U14b" "通知=$(notices) 通(1 が期待)= 配っていないのに黙る検査になった"
+    printf '        [U14b 診断] 状態=%s\n' "$(cat "$SB/u14b.json" 2>/dev/null)"
+    printf '        [U14b 診断] 観測器の log=%s\n' "$(tail -4 "$SB/o.log" 2>/dev/null | tr '\n' '|')"
+    printf '        [U14b 診断] 偽の鮮度検査 rc=%s 出力=%s\n' \
+        "$(bash "$SB/chk.sh" >/dev/null 2>&1; echo $?)" "$(bash "$SB/chk.sh" 2>&1 | tr '\n' '/')"
+fi
+# ★陰性対照 2: 承認済みが**読めない**時は数え直さない(据え置く)。
+#   「読めなかった」を「配った」と読むと、木の無い機体で警報が永久に鳴らなくなる。
+: > "$SB/notified"
+printf '%s undelivered 0 %s %s 160\n' "$NOWE" "$(( NOWE - 4 * DAY ))" "$NOWE" > "$SB/u14c.json"
+run "$SB/u14c.json" 3 0 RC_OU_APPROVED="$SB/does-not-exist.txt"
+if [ "$(notices)" = "1" ]; then
+    ok "U14c ★承認済みが読めない時は数え直さない(読めない=配った、にしない)"
+else
+    ng "U14c" "通知=$(notices) 通(1 が期待)= 読めない事を配達と読んで黙った"
+    printf '        [U14c 診断] 状態=%s\n' "$(cat "$SB/u14c.json" 2>/dev/null)"
+fi
+# ★陰性対照 3: 5 欄の古い記録を**未知に倒さない**(倒すと episode が黙って1回消える)。
+: > "$SB/notified"
+printf '%s undelivered 0 %s %s\n' "$NOWE" "$(( NOWE - 4 * DAY ))" "$NOWE" > "$SB/u14d.json"
+run "$SB/u14d.json" 3 0 RC_OU_APPROVED="$SB/approved.txt"
+if [ "$(notices)" = "1" ]; then
+    ok "U14d ★5 欄の古い記録でも episode を保つ(移行で警報が1回消えない)"
+else
+    ng "U14d" "通知=$(notices) 通(1 が期待)= 欄が増えた事で前の episode を捨てた"
+    printf '        [U14d 診断] 状態=%s\n' "$(cat "$SB/u14d.json" 2>/dev/null)"
+fi
+
+# ── U15 ★間隔 0 で連続性の上限が潰れない(2026-09-08、U13b の flake の真因)──────
+# `OU_CONTINUITY_MAX` は `2 * OU_EVERY` から導く。`RC_OU_EVERY=0`(毎 tick 測る = 此の対照と
+# 人が手で撃つ時の指定)だと上限が 0 になり、「1 秒でも経っていたら連続性は証明できない」
+# = episode が**永久に積み上がらない** = 警報が静かに死ぬ。
+# 秒の境界を跨ぐかどうかで結果が変わるので、断続的に赤い検査として 3 日以上 見えていた。
+# ★之は「1 走行だけ緑」では測れない。**確実に 1 秒跨がせて**から観測する。
+: > "$SB/notified"
+NOWE="$(date +%s)"
+printf '%s undelivered 0 %s %s 170\n' "$NOWE" "$(( NOWE - 4 * DAY ))" "$NOWE" > "$SB/u15.json"
+sleep 1.2                      # ★要。跨がないと欠陥の在る版でも緑になる
+run "$SB/u15.json" 3 0 RC_OU_APPROVED="$SB/approved.txt"
+if [ "$(notices)" = "1" ]; then
+    ok "U15 ★間隔 0 でも連続性の上限が潰れない(1 秒跨いでも episode が続く)"
+else
+    ng "U15 上限の潰れ" "通知=$(notices) 通(1 が期待)= 1 秒の経過で episode を数え直した"
+    printf '        [U15 診断] 状態=%s\n' "$(cat "$SB/u15.json" 2>/dev/null)"
+    printf '        [U15 診断] log=%s\n' "$(tail -3 "$SB/o.log" 2>/dev/null | tr '\n' '|')"
+fi
+# ★陰性対照: 上限を**明示**した時は其れが効く(床が指定を上書きしていない事)。
+#   之が無いと「常に 1 日を使う」実装でも U15 が緑になり、U13 の意図を殺した事に気付けない。
+: > "$SB/notified"
+NOWE="$(date +%s)"
+printf '%s undelivered 0 %s %s 170\n' "$(( NOWE - 3 * DAY ))" "$(( NOWE - 4 * DAY ))" "$(( NOWE - 3 * DAY ))" > "$SB/u15b.json"
+run "$SB/u15b.json" 3 0 RC_OU_APPROVED="$SB/approved.txt" RC_OU_CONTINUITY_MAX=3600
+if [ "$(notices)" = "0" ]; then
+    ok "U15b ★上限を明示すれば其れが効く(床が指定を握り潰していない)"
+else
+    ng "U15b 明示した上限" "通知=$(notices) 通(0 が期待)= 3 日 見えていなかったのに数え直さなかった"
+    printf '        [U15b 診断] 状態=%s\n' "$(cat "$SB/u15b.json" 2>/dev/null)"
 fi
 
 # ── 変異 ──────────────────────────────────────────────────────────────────
