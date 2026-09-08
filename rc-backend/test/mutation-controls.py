@@ -553,8 +553,14 @@ MUT = [
  #   巻き添えで消えるのは**生きている次の子**。`error` は kill 失敗でも出るので、
  #   割り込みで差し替わった後に届く。名前で消すと H2(1つの転写に書き手が2人)。
  ("M118 遅れて来た error が、名前で Map を消す(差し替わった後の生きた子を外す)", WRK,
-  "此処だけ無かった。\n      if (this.workers.get(sessionId) === entry) this.workers.delete(sessionId);",
-  "此処だけ無かった。\n      this.workers.delete(sessionId);"),
+  """此処だけ無かった。
+      if (this.workers.get(sessionId) === entry) {
+        this.workers.delete(sessionId);
+        this.retiredAt.set(sessionId, this.now());
+      }""",
+  """此処だけ無かった。
+      this.workers.delete(sessionId);
+      this.retiredAt.set(sessionId, this.now());"""),
 
  # ★2026-08-04 に的が空いていた事が判った。X6 は「猶予後に SIGKILL を撃たない」側で、
  #   「死を確認しても猶予を止めない」側は誰も撃っていなかった。掴む検査 (H2-9b) は
@@ -569,6 +575,16 @@ MUT = [
       this.clearTimer(entry.killTimer);
       entry.killTimer = null;
     }"""),
+
+ # ★2026-09-08、机の掃引 #2 で足した「ワーカーの居ない会話の記憶を捨てる」側の的 2 本。
+ #   守りが 2 つ在るので的も 2 つ: **生きている子を巻き込まない**事と、**時間だけで縛らない**事。
+ ("M120 掃除が生きているワーカーの会話も捨てる(輪を持って行かれ、電話が取り零しを拾えない)", WRK,
+  "    const dead = [...this.retiredAt].filter(([sid]) => !this.workers.has(sid));",
+  "    const dead = [...this.retiredAt];"),
+
+ ("M121 数の上限を外し、保持時間だけで縛る(窓の中に幾らでも溜まる)", WRK,
+  "    for (let i = 0; i < kept.length - RETAIN_MAX_SESSIONS; i++) drop.add(kept[i][0]);",
+  "    void kept; // mutated: 数の上限を外す"),
 
  ("M112 後から積む時に、先の待ちを**断って**捨てる(明示的 flush)", MTX,
   "      const w = { grant, detach: () => {}, priority: !!priority };",
