@@ -16,8 +16,11 @@ final class JumpEntersDetachedModeTests: XCTestCase {
         let all: [HistoryEntry] = (0..<40).map {
             HistoryEntry(role: .user, text: "line \($0)", display: .init(who: "Tom"), anchor: "\($0 * 100):0")
         }
+        /// 末尾の読み直しを落とす(2026-09-08: 戻る時に失敗しても輪が戻る事を測る)。
+        var failTailFetch = false
         func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
             fetchCalls += 1
+            if failTailFetch { return .failure(.unreachable) }
             return .success(HistoryResponse(history: [all[39]], truncated: true))
         }
         func search(baseURL: URL, apiKey: String, sessionID: String, limit: Int, query: String) async -> Result<TranscriptSearchResponse, SessionsFetchError> {
@@ -89,6 +92,36 @@ final class JumpEntersDetachedModeTests: XCTestCase {
         XCTAssertEqual(vm.entries, window, "ライブが窓に混ざった")
         XCTAssertTrue(vm.hasLiveWhileDetached)
         XCTAssertFalse(vm.entries.contains { $0.anchor == "3900:0" }, "末尾の行が窓に混ざっている")
+    }
+
+    /// ★離脱中も**輪は止めない**(2026-09-08、電話の掃引)。
+    ///
+    /// 何が壊れていたか: `enterDetached` が `stopPolling()` を呼んでいた。窓に混ぜないのは正しいが、
+    /// 其れは同時に「何件届いたか数える」(型の不変条件 1)の材料を断っていた ——
+    /// `noteLiveWhileDetached` の呼び出し元は検査だけになり、「下に N 件」は**production で絶対に出ない**
+    /// 表示だった。過去を読んでいる間に机が許可の確認を出しても、電話は何も言わない。
+    func testTheLoopKeepsRunningWhileDetachedSoArrivalsCanBeCounted() async {
+        let desk = DeepDesk()
+        let vm = makeVM(desk)
+        vm.startPolling()
+        XCTAssertTrue(vm.isPolling, "錨: 輪が張れていない")
+        _ = await vm.jump(to: deepHit())
+        XCTAssertTrue(vm.isDetached)
+        XCTAssertTrue(vm.isPolling, "★離脱で輪を止めた = 届いた物を数える材料が無い")
+    }
+
+    /// 戻る時の読み直しが失敗しても、輪は必ず戻る(2026-09-08)。
+    /// 以前は `applyInitial` の `.success` の枝でしか張り直さず、届かない時に
+    /// **画面は普通に見えるのに二度と更新されない**状態が残り得た。
+    func testBackToLiveRestoresTheLoopEvenWhenTheRefetchFails() async {
+        let desk = DeepDesk()
+        let vm = makeVM(desk)
+        vm.startPolling()
+        _ = await vm.jump(to: deepHit())
+        desk.failTailFetch = true
+        await vm.backToLive(reason: "test")
+        XCTAssertFalse(vm.isDetached)
+        XCTAssertTrue(vm.isPolling, "★読み直しが失敗した時に輪が戻っていない(画面が黙る)")
     }
 
     func testWalkingOlderMovesTheWindowAndKeepsBothFlagsIndependent() async {

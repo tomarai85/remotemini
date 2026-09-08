@@ -211,3 +211,22 @@ extension EntryRole: Decodable {
         self = EntryRole(rawValue: raw) ?? .unknown
     }
 }
+
+extension HistoryEntry {
+    /// 道具の出力の展開を覚える鍵。**画面上の位置ではなく中身**(2026-09-08、電話の掃引)。
+    ///
+    /// ★何が問題だったか: 展開は `EntryBubble` の `@State` に在り、`ForEach` の identity が
+    ///   `offset` —— つまり状態が**位置**に付いていた。「もっと読む」は `history` を大きい limit で
+    ///   丸ごと置き換えるので既存の行の offset が全部ずれ、離脱の窓は同じ offset に別の配列を出す。
+    ///   結果、開いた行は畳まれ、**其の位置に来た別の行が開いた状態で描かれる** ——
+    ///   見ていない道具呼び出しの出力が、見ていた行の場所に出る。
+    /// ★錨(`anchor`)は机が付ける安定した鍵で、素の履歴と探索の当たりで同じ項目は同じ値。
+    ///   ライブ(SSE)の行には錨が無いが、其の行には `output` も無い(結果は後の record で届く)。
+    ///   万一 錨の無い出力付きの行が来ても、道具名と出力の組で一意にする —— 位置には戻さない。
+    /// ★開く物が無い行(`output == nil`)は鍵を持たない。持たせると、開けない行の為に集合が育つ。
+    var toolOutputKey: String? {
+        guard let out = output else { return nil }
+        if let anchor { return "a:\(anchor)" }
+        return "c:\(text)|\(out)"
+    }
+}
