@@ -1664,12 +1664,18 @@ final class ConversationViewModel: ObservableObject {
         //   丸ごと抱える」になるので採らず、窓の位置を動かす(離脱窓)。上限の中に在る当たりは
         //   従来通り末尾を伸ばして届かせる —— 其方はライブが混ざったまま読めるので、
         //   態々モードを変える理由が無い。
+        // ★排他(Codex #3): 跳びの最中の再タップ、「以前を読む」との同時走行は受けない。
+        //   遅く返った古い応答が `history` と跳び先を上書きする形を、世代の札でも塞ぐ。
+        // ★★2026-09-08 に**離脱の枝より前へ**移した(電話の掃引)。以前は上限より奥の当たりが
+        //   此の門の**手前**で `enterDetached` へ抜けており、註が主張している排他が其の枝を
+        //   覆っていなかった —— 「以前を読む」が飛んでいる最中に窓を開けてしまう。
+        //   `DetachedHistoryWindow.isWalking` は二重に開く事しか塞がないので、
+        //   `history` を書き換える読み足しと窓の開閉が同時に走り得た。
+        //   門は判定だけを先に置く(旗を立てるのは従来どおり此の後 = 離脱の道は旗を持たない)。
+        guard !isJumping, !isFetchingEarlier else { return .busy }
         guard (0..<Self.deskHistoryLimitCeiling).contains(fromEnd) else {
             return await enterDetached(at: anchor)
         }
-        // ★排他(Codex #3): 跳びの最中の再タップ、「以前を読む」との同時走行は受けない。
-        //   遅く返った古い応答が `history` と跳び先を上書きする形を、世代の札でも塞ぐ。
-        guard !isJumping, !isFetchingEarlier else { return .busy }
         isJumping = true
         isFetchingEarlier = true
         jumpGeneration += 1

@@ -2126,17 +2126,28 @@ final class ConversationViewModelTests: XCTestCase {
 
     // MARK: 読み直しの追い越し(2026-09-08 の掃引 #2)
 
-    /// 遅い応答を返す机。**何本目の呼び出しか**で待ち時間と応答を変えられる ——
-    /// 「先に始まった方が後に返る」を作る為の道具。
-    private final class SlowThenFastDesk: HistoryFetching, @unchecked Sendable {
+    /// 「先に始まった方が後に返る」を**門で**作る机。
+    ///
+    /// ★最初は遅延(sleep)で作ろうとしたが、其れは**非決定的**だった: `performResync` は
+    ///   世代を入口で採番し、応答は fetch へ**到達した順**で選ばれる —— 2 つの順序は
+    ///   保証されないので、遅い応答が新しい世代を持つ組み合わせが起き得る(実測で赤)。
+    ///   門にすると「1 本目が fetch に入った」を検査が確認してから 2 本目を始められるので、
+    ///   世代の順と応答の順が必ず一致する。
+    private final class GatedDesk: HistoryFetching, @unchecked Sendable {
         var responses: [Result<HistoryResponse, SessionsFetchError>] = []
-        var delays: [Duration] = []
+        /// 何本目の呼び出しを門で止めるか(nil = 止めない)。
+        var holdCall: Int?
         private(set) var callCount = 0
+        private(set) var entered: [Int] = []
+        var released = false
 
         func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
             let i = callCount
             callCount += 1
-            if i < delays.count, delays[i] > .zero { try? await Task.sleep(for: delays[i]) }
+            entered.append(i)
+            if i == holdCall {
+                while !released { try? await Task.sleep(for: .milliseconds(5)) }
+            }
             return i < responses.count ? responses[i] : .failure(.unreachable)
         }
 
@@ -2157,27 +2168,43 @@ final class ConversationViewModelTests: XCTestCase {
     /// 制限の無いボタン「読み直す」。遅い方が後に返ると `history` を丸ごと古い写しへ戻し、
     /// `live` も空にする = **画面が時間を遡り、間に届いた行が消える**。
     func testASlowResyncDoesNotOverwriteTheOneThatStartedAfterIt() async {
-        let desk = SlowThenFastDesk()
+        let desk = GatedDesk()
         desk.responses = [
             .success(HistoryResponse(history: [e(.assistant, "最初")], truncated: false)),
             .success(HistoryResponse(history: [e(.assistant, "古い行")], truncated: false)),
             .success(HistoryResponse(history: [e(.assistant, "新しい行")], truncated: false)),
         ]
-        // 1 本目の読み直しだけ遅い。之が「先に始まって後に返る」形。
-        desk.delays = [.zero, .milliseconds(400), .zero]
+        desk.holdCall = 1                      // 1 本目の読み直しを門で止める
         let vm = makeViewModel(client: desk)
         await vm.load()
 
-        vm.rereadNow()          // 遅い方(古い行)
-        vm.rereadNow()          // 速い方(新しい行)
-        try? await Task.sleep(for: .milliseconds(900))
+        vm.rereadNow()                         // 先に始まる方(古い行)
+        // ★錨: 1 本目が**確かに机へ入った**まで待つ。之で世代の順と応答の順が揃う
+        //   (待たずに 2 本目を始めると、どちらが先に fetch へ着くかは保証されない)。
+        await waitUntil { desk.callCount == 2 }
+        XCTAssertEqual(desk.entered, [0, 1], "錨: 読み直しが机へ入っていない")
+
+        vm.rereadNow()                         // 後から始まる方(新しい行)
+        await waitUntil { vm.entries.map(\.text) == ["新しい行"] }
+
+        desk.released = true                   // 止めていた古い応答を返す
+        try? await Task.sleep(for: .milliseconds(250))
 
         XCTAssertEqual(desk.callCount, 3, "錨: 読み直しが 2 本とも机へ行っていない")
         XCTAssertEqual(vm.entries.map(\.text), ["新しい行"],
                        "★古い応答が新しい転写を上書きした(画面が時間を遡り、間の行が消える)")
     }
 
-    // MARK: 危険な確認の二段構え(2026-09-08 の掃引で見つけた、電話から答えられない形)    // MARK: 危険な確認の二段構え(2026-09-08 の掃引で見つけた、電話から答えられない形)
+    /// 条件が満たされるまで待つ(上限つき)。満たされなければ其の儘 assert が落ちる。
+    private func waitUntil(_ limit: Duration = .seconds(3), _ cond: @MainActor () -> Bool) async {
+        let deadline = ContinuousClock.now.advanced(by: limit)
+        while ContinuousClock.now < deadline {
+            if cond() { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    // MARK: 危険な確認の二段構え(2026-09-08 の掃引で見つけた、電話から答えられない形)
 
     /// ★1 タップ目は**構えるだけ** —— サーバへ行かないので、「送信中」を名乗ってはいけない。
     ///

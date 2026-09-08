@@ -18,8 +18,11 @@ final class JumpEntersDetachedModeTests: XCTestCase {
         }
         /// 末尾の読み直しを落とす(2026-09-08: 戻る時に失敗しても輪が戻る事を測る)。
         var failTailFetch = false
+        /// 読み足しを遅らせる(2026-09-08: 「飛んでいる最中」を作る)。
+        var fetchDelay: Duration = .zero
         func fetch(baseURL: URL, apiKey: String, sessionID: String, limit: Int) async -> Result<HistoryResponse, SessionsFetchError> {
             fetchCalls += 1
+            if fetchDelay > .zero { try? await Task.sleep(for: fetchDelay) }
             if failTailFetch { return .failure(.unreachable) }
             return .success(HistoryResponse(history: [all[39]], truncated: true))
         }
@@ -122,6 +125,35 @@ final class JumpEntersDetachedModeTests: XCTestCase {
         await vm.backToLive(reason: "test")
         XCTAssertFalse(vm.isDetached)
         XCTAssertTrue(vm.isPolling, "★読み直しが失敗した時に輪が戻っていない(画面が黙る)")
+    }
+
+    /// ★離脱の枝も排他の**内側**に在る(2026-09-08、電話の掃引の最後の 1 件)。
+    ///
+    /// 以前は上限より奥の当たりが `guard !isJumping, !isFetchingEarlier` の**手前**で
+    /// `enterDetached` へ抜けており、註が主張している排他が其の枝を覆っていなかった ——
+    /// 「以前を読む」が飛んでいる最中に窓が開き、`history` を書き換える読み足しと
+    /// 窓の開閉が同時に走り得た(`isWalking` は二重に開く事しか塞がない)。
+    /// ★検査専用の setter は置かない(状態を 2 箇所で持つ事になる)。**本物の読み足しを
+    ///   返らないままにして**跳ぶ = 実機で起きる形をそのまま作る。
+    func testAFarJumpIsRefusedWhileAnEarlierFetchIsInFlight() async {
+        let desk = DeepDesk()
+        let vm = makeVM(desk)
+        // ★錨 1: 先に読み込む。読み込む前の `loadEarlier()` は即返るので、
+        //   之を飛ばすと「飛んでいる最中」が作れず、検査は何も測らない(最初に書いた版が其れだった)。
+        await vm.load()
+        XCTAssertEqual(vm.loadEarlierState, .available, "錨: もっと読める状態になっていない")
+
+        desk.fetchDelay = .milliseconds(600)   // 読み足しを飛んだままにする
+        let callsBefore = desk.fetchCalls
+        let earlier = Task { await vm.loadEarlier() }
+        try? await Task.sleep(for: .milliseconds(120))
+        // ★錨 2: 本当に机を叩いて返って来ていない事。之が立たなければ以下は空振り。
+        XCTAssertEqual(desk.fetchCalls, callsBefore + 1, "錨: 読み足しが飛んでいない")
+
+        let outcome = await vm.jump(to: deepHit())
+        XCTAssertEqual(outcome, .busy, "★読み足しの最中に離脱の窓が開いた(排他の外に居る)")
+        XCTAssertFalse(vm.isDetached)
+        await earlier.value
     }
 
     func testWalkingOlderMovesTheWindowAndKeepsBothFlagsIndependent() async {
