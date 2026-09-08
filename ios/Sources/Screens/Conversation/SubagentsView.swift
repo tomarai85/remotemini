@@ -161,6 +161,11 @@ private struct SubagentRowCard: View {
                 .disabled(busy)
                 .accessibilityIdentifier("subagents.row.stop")
                 .accessibilityValue(stopping ? "stopping" : armed ? "armed" : "idle")
+                // ★構えが**見える**(2026-09-07、案 F)。此処はアプリで唯一の「取り消せない操作の 2 段タップ」なのに、
+                //   ラベルも色も 1 フレームで入れ替わっていた —— 押した手応えが無いと、人は 1 度目を見落として 2 度押す。
+                //   `armed` / `stopping` が変わった時だけ動く(値駆動。時間で動く物は置かない)。
+                .animation(.snappy(duration: 0.2), value: armed)
+                .animation(.snappy(duration: 0.2), value: stopping)
             }
         }
         .padding(10)

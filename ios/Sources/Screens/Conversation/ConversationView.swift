@@ -29,6 +29,8 @@ struct ConversationView: View {
     @State private var pickedPhoto: PhotosPickerItem?
     /// 文書の添付(対照表 #23)の Files 画面を出す合図。
     @State private var showFileImporter = false
+    /// 写真の選択(案 B で `+` の menu から開く)。
+    @State private var showPhotoPicker = false
     /// 入力欄の focus(対照表 #43 の「Hide」が畳む為)。
     @FocusState private var composerFocused: Bool
 
@@ -50,6 +52,8 @@ struct ConversationView: View {
     @State private var attachBusy = false
     /// 結果の1文。**「送れました」で丸めない**(置けたが載っていない状態が実在する)。
     @State private var attachNotice: String?
+    /// 状態の 1 行を展開しているか(案 A の 3 層。既定は畳んだまま)。
+    @State private var showDeskState = false
     @StateObject private var viewModel: ConversationViewModel
     /// Brief §3-c's `.notFound` row: "一覧へ戻る", not a retry. `NavigationStack`
     /// already supplies a back chevron when this view is pushed from `ListView` in
@@ -922,6 +926,30 @@ struct ConversationView: View {
         attachNotice = AttachWording.text(for: outcome)
     }
 
+    /// 入力欄の上に何を出すかの唯一の判断(純関数 `ComposerNotices`)。画面は結果を描くだけ。
+    private var composerNotices: ComposerNotices.Plan {
+        ComposerNotices.plan(
+            limited: Self.limitedNotice(viewModel.screen),
+            composerDisabled: viewModel.composerDisabledReason,
+            interruptDisabled: viewModel.interruptDisabledReason,
+            send: viewModel.sendBanner,
+            interrupt: viewModel.interruptBanner,
+            choice: viewModel.choiceBanner,
+            queue: viewModel.queueBanner?.text,
+            attach: attachNotice,
+            sendInFlight: viewModel.sendInFlightNotice,
+            interruptInFlight: viewModel.interruptInFlightNotice,
+            choiceInFlight: viewModel.choiceInFlightNotice,
+            deskWorking: viewModel.deskIsWorking,
+            currentTool: viewModel.currentTool,
+            waitingOnYou: viewModel.screen?.classification == .choice,
+            runtime: viewModel.awayDigest?.session?.line,
+            permissionMode: viewModel.permissionMode,
+            digest: viewModel.awayDigest?.line,
+            digestUrges: viewModel.awayDigest?.shouldUrge == true
+        )
+    }
+
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
             // ★2026-08-16(§9-4 / spec-audit A5): 常設の**状態**帯は同時に1枠だけ。
@@ -932,181 +960,86 @@ struct ConversationView: View {
             //   (各 banner の註に実測の経緯)。畳んだのは常設の状態だけ。
             standingStatusSlot
 
-            // ★机が**今**どうなっているか(2026-08-29)。留守中の要約(下の awayDigest)は
-            //   「留守の間に何が在ったか」で、これは「今」— 別の問い、別の枠。
-            //   ★観測できていない時は**何も出さない**。「Idle」と「読めていない」を
-            //   同じ言葉にすると、机が見えない事故が「静かで正常」に見える。
-            if let working = viewModel.deskIsWorking {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(working ? RCTheme.accent : Color.secondary)
-                        .frame(width: 7, height: 7)
-                    // ★「止まっている」と「**あなたを待っている**」は別(2026-08-31)。
-                    //   `.choice`(承認/選択の画面)でも `deskIsWorking == false` になるので、
-                    //   以前は机が返事を待って止まっている時に **`Idle`** と出ていた ——
-                    //   此の app の存在理由そのものの状態で、語が逆を向いていた。
-                    // 2026-09-02: 走っている道具の名前を添える(対照表 #7)。「Working」だけだと
-                    // 10 分間 何をしているか判らない。名前は転写の末尾から(机の口は増やさない)。
-                    Text(working ? (viewModel.currentTool.map { "Working · \($0)" } ?? "Working")
-                         : (viewModel.screen?.classification == .choice ? "Waiting on you" : "Idle"))
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
+            // ★入力欄の上は **3 層**(2026-09-07、案 A。規則は `ComposerNotices`)。
+            //   之まで此処には独立に条件づけられた行が 15 本並び、最悪 5 本以上が積んだ(「帯 3 段」の事故)。
+            //   画面の `if` の並び順が事実上の優先順位で、規則がどこにも書かれていなかった。
+            //   今: 急ぎ **1 本**(止まっている理由 > 直前の操作の答え(失敗が先)> 進行中 > 成功)+ 状態 **1 行**(押すと内訳)。
+            //   識別子は元の物を其のまま使う(検査と UI 自動化が指す字を変えない)。
+            let notices = composerNotices
+            if let u = notices.urgent {
+                Text(u.text)
+                    .font(.caption)
+                    .foregroundStyle(ConversationView.color(for: u.tone))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier(u.id)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .id(u.id)
+            }
+            // ★停止は「止める対象」の隣(2026-09-07、案 B)。入力欄の常設 4 アイコンから外し、机が動いている時だけ
+            //   状態の行の右端に出す —— 押せない停止ボタンが常に見えている状態を無くす。識別子は元のまま。
+            let showsStop = viewModel.deskIsWorking == true || viewModel.isInterrupting
+            if notices.state != nil || showsStop {
+                HStack(spacing: 8) {
+                    Button {
+                        withAnimation(.snappy(duration: 0.22)) { showDeskState.toggle() }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(viewModel.deskIsWorking == true ? RCTheme.accent : Color.secondary)
+                                .frame(width: 6, height: 6)
+                            Text(notices.stateHeadline ?? "Working")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            if notices.stateDetail.count > 1 {
+                                Image(systemName: showDeskState ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 8, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(notices.stateDetail.count <= 1)
+                    .accessibilityIdentifier("conversation.deskState")
+
+                    if showsStop {
+                        Button {
+                            Task { await viewModel.interrupt() }
+                        } label: {
+                            Group {
+                                if viewModel.isInterrupting {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Image(systemName: "stop.circle").font(.system(size: 18))
+                                }
+                            }
+                            .frame(width: 30, height: 30)
+                        }
+                        .disabled(!viewModel.canInterrupt)
+                        .accessibilityLabel("Interrupt")
+                        .accessibilityIdentifier("conversation.interruptButton")
+                        .transition(.opacity.combined(with: .scale(scale: 0.85)))
+                    }
                 }
-                .accessibilityIdentifier("conversation.deskState")
-            }
-
-            // ★会話が今 何で走っているか(2026-09-02、対照表 #14-16)。公式は接続端末に
-            //   現用モデルを出す。此処は**読むだけ** —— 選ぶ操作は別の裁定(D4)に触る。
-            //   ★無ければ出さない。古い机は送らないし、要約が取れない間も無い。
-            if let sess = viewModel.awayDigest?.session, let line = sess.line {
-                HStack(spacing: 5) {
-                    Image(systemName: "cpu")
-                        .font(.caption2)
-                    Text(line)
-                        .font(.caption2.monospaced())
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                if showDeskState {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(notices.stateDetail, id: \.self) { part in
+                            Text(part)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    .padding(.leading, 11)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("conversation.deskStateDetail")
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier("conversation.sessionRuntime")
-            }
-
-            // ★机が**今**の permission mode(2026-09-02、対照表 #16)。公式は接続端末に
-            //   現用の mode を出す。此処も**読むだけ** —— 電話から変える操作は作らない
-            //   (D4/#17 の裁定「自動化に安全確認を押させない」に触れる領域なので)。
-            //   ★静かなチップにする —— bypass でも警告色にしない。危険度を煽る役目は
-            //   choice 画面の hard-stop が既に持っている。此処は状態の名乗りであって
-            //   注意喚起ではない。
-            //   ★無ければ出さない。取れない事は異常ではないので、
-            //   「不明」と描いて帯を1本占有させない。
-            if let mode = viewModel.permissionMode {
-                HStack(spacing: 4) {
-                    Image(systemName: "lock")
-                        .font(.caption2)
-                    Text(mode)
-                        .font(.caption2.monospaced())
-                        .lineLimit(1)
-                }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .modifier(RCChip(tint: RCTheme.surfaceStroke))
-                .accessibilityIdentifier("conversation.permissionMode")
-            }
-
-            // 留守中に何が起きたか(2026-08-26)。★**常設の状態帯とは別枠**。
-            //   §9-4 の「常設の状態帯は同時に1枠だけ」は「今どうなっているか」を争う
-            //   帯の話で、これは「留守の間に何が在ったか」= 一度読めば済む物。
-            //   同じ枠を争わせると、届かない / 応答が読めない / 送信待ちのどれかを押し出す。
-            // ★取れなかった時は**何も出さない**。要約が無い事は異常ではないので、
-            //   「要約を取れませんでした」を常設で出すと、直しようの無い帯が居座る。
-            if let d = viewModel.awayDigest, !d.line.isEmpty {
-                // ★裸のオレンジの1行をやめる(2026-08-29)。地の上に生の警告色を置くと
-                //   帯が「壊れている」に見え、実際には「留守中の要約」でしかない。
-                //   チップに入れて、色は**文字と縁だけ**に持たせる(面は glass の系のまま)。
-                Text(d.line)
-                    .font(.caption)
-                    .foregroundStyle(d.shouldUrge ? AnyShapeStyle(RCTheme.caution) : AnyShapeStyle(.secondary))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .modifier(RCChip(tint: d.shouldUrge ? RCTheme.caution : RCTheme.surfaceStroke))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("conversation.awayDigest")
-            }
-
-            if let banner = viewModel.queueBanner {
-                // 専用の band(sendBanner / interruptBanner と同じ理由 —— 主語を混ぜない)。
-                Text(banner.text)
-                    .font(.caption)
-                    .foregroundStyle(Self.color(forQueue: banner))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("conversation.queueBanner")
-            }
-
-            if let banner = viewModel.sendBanner {
-                Text(banner.text)
-                    .font(.caption)
-                    .foregroundStyle(Self.color(for: banner.tone))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("conversation.sendBanner")
-            }
-
-            // Its own row, never merged with `sendBanner` above -- see
-            // `ConversationViewModel.interruptBanner`. These two are the operations
-            // most likely to be fired seconds apart, and one slot would make the
-            // surviving sentence unattributable.
-            if let banner = viewModel.interruptBanner {
-                Text(banner.text)
-                    .font(.caption)
-                    .foregroundStyle(Self.color(for: banner.tone))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("conversation.interruptBanner")
-            }
-
-            if let reason = viewModel.interruptDisabledReason {
-                Text(reason)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("conversation.interruptDisabledReason")
-            }
-
-            // ★DESIGN §2.56: 割り込みが飛んでいる間の一文。割り込みの帯の**続き**に置く
-            // (banner → 押せない理由 → 飛んでいる)—— 3操作が同じ縦列に文を出す画面で、
-            // 読み手が「これはどの操作の話か」を位置で判別できる様に。
-            //
-            // 下の送信と同じ `.secondary` の caption。§2.54 の2つの理由がそのまま効く:
-            // `interruptBanner` は `interrupt()` の入口で明示的に `nil` にされるし、
-            // `ResultDisplay.Tone` に中立色が無い。
-            if let notice = viewModel.interruptInFlightNotice {
-                Text(notice)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("conversation.interruptInFlightNotice")
-            }
-
-            // ★DESIGN §2.54: 要求が飛んでいる間の一文。
-            //
-            // **`sendBanner` に入れない。** 理由は2つあり、どちらも構造的:
-            //
-            // 1. `send()` は入口で `sendBanner = nil` を明示的にやっていて、そこには
-            //    理由が書いてある —— 前回の「送りました」が飛んでいる送信の下に残ると、
-            //    古い成功が今回の結果として読まれる。あの空白は事故ではなく設計で、
-            //    ここに文を入れるのはその設計を壊しに行く方向。
-            // 2. `ResultDisplay.Tone` は ok / refused / error / warn の4つで、**中立が
-            //    無い**。まだ何も起きていない状態を warn で塗ると、warn という色が
-            //    「気にしなくていい事」を指し始める —— 一番使われる色を鈍らせる取引。
-            //
-            // なので下の `composerDisabledReason` と同じ、電話が今の状態を説明する
-            // `.secondary` の行に置く。この画面は既に「操作の答え(SendBanner)」と
-            // 「状態の説明(secondary caption)」を型で分けていて、§2.52 の
-            // 「途中経過は答えではない」を**文言でなく置き場所で**守れる。
-            if let notice = viewModel.sendInFlightNotice {
-                Text(notice)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("conversation.sendInFlightNotice")
-            }
-
-            if let reason = viewModel.composerDisabledReason {
-                // Shown IN ADDITION to the disabled field, not instead of it: a
-                // composer that vanishes tells the user nothing about why, and the two
-                // states this can be in (`CHOICE`, `UNKNOWN`) both need explaining.
-                Text(reason)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("conversation.composerDisabledReason")
             }
 
             // Below the reason line on purpose: that line says 「下の選択肢から選んで
@@ -1115,55 +1048,6 @@ struct ConversationView: View {
             // thing on screen the user is being asked to *do* -- it belongs where the
             // thumb already is, not at the far end of the screen from it.
             choiceCard
-
-            // ★DESIGN §2.56: 打鍵が飛んでいる間の一文。**カードの中に置かない。**
-            //
-            // 理由が構造的: カードは `visibleChoice` が決めていて、飛んでいる最中に
-            // poll が `CHOICE` でない画面を届けるとカードは消える。中に置いた文は
-            // その時**一緒に消える** —— 押した直後に画面から全部消えるのが、この節が
-            // 直している当の症状。外に置けば、カードが消えても「今飛んでいる」は残る。
-            //
-            // 代わりに失う物(どの鍵を押したのか)は下のボタン側のスピナが持つ。
-            // 文は「飛んでいる事」、スピナは「どれを押したか」で、分担が違う。
-            if let notice = viewModel.choiceInFlightNotice {
-                Text(notice)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("conversation.choiceInFlightNotice")
-            }
-
-            // ★添付の結果は composer のすぐ上に出す。入力欄にパスが載ったのかどうかを、
-            //   入力欄を見る前に読める位置に置く為(「送れました」だけだと、載っていない
-            //   時に人は入力欄を見て『消えた』と思う)。
-            if let notice = attachNotice {
-                Text(notice)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("conversation.attachNotice")
-            }
-
-            // ★上限の告知(2026-08-30、CF-15)。**composer の直ぐ上**に置く ——
-            //   一覧にも同じ事実は出るが、送るのは此処で、判断が要るのも此処。
-            //   前の画面で見た事は、次の画面で忘れる。
-            //
-            // ★★2026-08-31: 此処へ**移した**。以前は `if RCTheme.usesGlass` の **else 側**、
-            //   しかも `HStack` の子として置かれていた。既定の variant は `.glassFull` なので
-            //   `usesGlass == true` = **電話では一度も描かれていなかった**。
-            //   非 glass の系でも壊れていて、`HStack` の兄弟なので入力欄の**左**に
-            //   縦長の列として出る(註が言う「直ぐ上」にならない)。
-            //   検査(`LimitedNoticeTests`)は純関数 `limitedNotice()` しか見ていないので
-            //   **緑のまま死んでいた** —— 描画に触れない検査は、描かれない事を検出しない。
-            if let notice = Self.limitedNotice(viewModel.screen) {
-                Text(notice)
-                    .font(.caption2)
-                    .foregroundStyle(RCTheme.caution)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("conversation.limitedNotice")
-            }
 
             // ★机の slash command を画面に出す(2026-08-31、調査の3位)。
             //
@@ -1289,61 +1173,32 @@ struct ConversationView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
-                // Left of the field, deliberately far from the send button: these two
-                // do opposite things and a mis-tap on a phone in one hand is the
-                // ordinary case, not the edge case.
-                Button {
-                    Task { await viewModel.interrupt() }
-                } label: {
-                    // ★`Group` で束ねて `.tapTarget()` を**内側**に当てる(X2-3)。
-                    // 枝ごとに当てると、飛んでいる間の `ProgressView` に付け忘れた時に
-                    // 「押し直しを止めたい局面でだけ的が縮む」が起きる —— 実測で
-                    // idle 25.33×26.0 に対し飛行中は 20.0×20.0 だった。
-                    Group {
-                        if viewModel.isInterrupting {
-                            ProgressView()
-                        } else {
-                            Image(systemName: "stop.circle")
-                                .font(.title2)
-                        }
+                // ★添付は `+` の 1 つに畳む(2026-09-07、案 B)。写真とファイルは押した時に選ぶ ——
+                //   常設の 4 アイコンのうち 2 つが「後で使うかもしれない道具」で、入力欄の幅を毎回削っていた。
+                //   停止は此処から外し、状態の行(止める対象の隣)へ移した。識別子は 3 つとも元のまま。
+                Menu {
+                    Button {
+                        showPhotoPicker = true
+                    } label: {
+                        Label("Photo", systemImage: "photo.on.rectangle")
                     }
-                    .tapTarget()
-                    // ★見た目だけで状態を語る(2026-08-29)。押せる範囲は変えない ——
-                    //   机が動いていると**判った**時だけ濃く、止まっていると**判った**時は淡く、
-                    //   判らない時は中間。「押せない」に見せないのが要点で、
-                    //   `interruptEnabled` の裁定(いつでも干渉できる)はそのまま生きている。
-                    .opacity(viewModel.deskIsWorking == false ? 0.45 : 1)
-                }
-                .disabled(!viewModel.canInterrupt)
-                .accessibilityLabel("Interrupt")
-                .accessibilityIdentifier("conversation.interruptButton")
-
-                // ★写真(2026-08-26)。研究の1位で、**電話でしか出来ない用途** ——
-                //   手の中の端末で起きているバグを、机まで持って行かずに撮って送る。
-                //   置いた後もパスを差し込むだけで**送信はしない**(送るかは人が決める)。
-                PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
-                    Image(systemName: attachBusy ? "hourglass" : "photo.on.rectangle")
-                        .font(.system(size: 22))
-                        .foregroundStyle(viewModel.composerEnabled ? Color.accentColor : Color.secondary)
-                        .frame(width: 34, height: 34)
-                }
-                .disabled(!viewModel.composerEnabled || attachBusy)
-                .accessibilityIdentifier("conversation.attachButton")
-                .accessibilityLabel("Attach a photo")
-
-                // ★文書の添付(対照表 #23、2026-09-03)。写真とは別のボタン: `PhotosPicker` は写真の口、
-                //   `fileImporter` は Files の口で、1 つのボタンに畳むと片方が必ず 1 段深くなる。
-                Button {
-                    showFileImporter = true
+                    .accessibilityIdentifier("conversation.attachButton")
+                    Button {
+                        showFileImporter = true
+                    } label: {
+                        Label("File", systemImage: "doc.badge.plus")
+                    }
+                    .accessibilityIdentifier("conversation.attachFileButton")
                 } label: {
-                    Image(systemName: "doc.badge.plus")
+                    Image(systemName: attachBusy ? "hourglass" : "plus.circle")
                         .font(.system(size: 22))
                         .foregroundStyle(viewModel.composerEnabled ? Color.accentColor : Color.secondary)
                         .frame(width: 34, height: 34)
                 }
                 .disabled(!viewModel.composerEnabled || attachBusy)
-                .accessibilityIdentifier("conversation.attachFileButton")
-                .accessibilityLabel("Attach a text file")
+                .accessibilityIdentifier("conversation.attachMenu")
+                .accessibilityLabel("Attach")
+                .photosPicker(isPresented: $showPhotoPicker, selection: $pickedPhoto, matching: .images, photoLibrary: .shared())
                 .fileImporter(isPresented: $showFileImporter,
                               // `.pdf` は机が magic bytes(`%PDF-`)で見て受ける唯一の binary(2026-09-03)。
                               allowedContentTypes: [.plainText, .utf8PlainText, .text, .json, .commaSeparatedText,
@@ -1423,6 +1278,9 @@ struct ConversationView: View {
                 .accessibilityIdentifier("conversation.sendButton")
             }
         }
+        // ★動き(2026-09-07、案 F)。棚卸し: 転写の行の挿入は凝ったアニメーションなのに、其の真下の帯は無遷移で
+        //   1 フレームで差し替わっていた。急ぎの 1 本と状態の行は**同じ計画の値**が変わった時だけ動く。
+        .animation(.snappy(duration: 0.25), value: composerNotices)
         .padding(.horizontal)
         .padding(.vertical, 8)
         // ★`bar-is-composer-only` の錨(2026-08-18)は「**帯を composer 以外に敷くな**」で
