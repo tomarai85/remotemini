@@ -164,6 +164,19 @@ bash "$ROOT/rc-backend/tools/port-coverage-gate.sh" || exit $?
 #   2.3 秒。非ゼロ(赤 1 / 未測定 2)はどちらも止める。
 bash "$ROOT/rc-backend/tools/orphan-instrument-scan.sh" || exit $?
 
+# ★2026-09-08 追加: **UI 検査の class が門から到達できるか**を毎回 全数で数える。
+#   本体 = ios/tools/uitest-reachability-gate.sh
+#   対照 = ios/tools/uitest-reachability-control.sh(8 本、xcodebuild 不要で 1 秒未満)
+#   経緯: `.harness/evidence-2026-09-08/ui-tests-were-never-in-the-commit-path.md` で
+#   UI 検査 8 本が赤いまま出荷された(誰も走らせていないので赤である事すら判らない)。
+#   其の時は対照を1本足して塞いだが、同日の掃引で **27 class 中 10 本しか
+#   commit の門で走っていない**事が判った —— 1 本ずつ塞ぐ限り次の1本が同じ穴に落ちる。
+#   ★staged な file を見ない。走るたびに `ios/UITests/*.swift` を全部数え直す ——
+#   変更点だけ見る門は、古い門が通した物に永久に盲目だから
+#   (memory: method_a_change_gate_cannot_see_what_an_older_gate_admitted)。
+#   ★安い(grep だけ、xcodebuild を起動しない)ので此の位置。非ゼロは止める。
+bash "$ROOT/ios/tools/uitest-reachability-gate.sh" || exit $?
+
 # ★2026-08-03 追加(同日2件目): **この commit が触れた対照**を回す。
 #   本体 = rc-backend/tools/staged-controls-gate.sh
 #   対照 = rc-backend/test/staged-controls-gate-controls.sh(15 本)
