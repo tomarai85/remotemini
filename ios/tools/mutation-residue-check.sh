@@ -166,11 +166,17 @@ if [ "$covered" -ne "$mutators" ]; then
 fi
 
 # 重複を落とす(複数の対照が同じ file を触る)。
+# ★`$targets` の分割は**意図的**で、しかも安全: 出所は各対照の `# controls-for: a b c`
+#   宣言で、**書式そのものが空白区切り**なので空白を含む path は入力段階で表現できない
+#   (`staged-controls-gate.sh` も同じ読み方をする)。「空白で割れる」ではなく
+#   「割るのが正しい読み方」の側。だが此処から下は **path として** git へ渡るので、
+#   一度 改行区切りへ正規化し、以降は配列で運ぶ(2026-09-09)。
+# shellcheck disable=SC2086  # 宣言の書式が空白区切りなので、ここで割るのが正しい読み方
 uniq_targets="$(printf '%s\n' $targets | sort -u)"
 # ★剥がし損ねた path を黙って通さない。`$ROOT/...` のまま残ると `git diff -- <path>` に
 #   当たらず、**その file だけ照合から静かに抜ける**。抜けた事は出力に出ないので、
 #   気付く道が無い —— 数える側で止める。
-bad="$(printf '%s\n' $uniq_targets | grep -E '^[$/]' || true)"
+bad="$(printf '%s\n' "$uniq_targets" | grep -E '^[$/]' || true)"
 # ★**写しを指す宣言は追跡対象から外す**(2026-08-30)。数える対象を門と揃えた事で、
 #   `$MUT/...`(= `mktemp -d`)や `$SCRATCH/...` の様な**作業中の木ではない** path が
 #   混ざる様になった。之を「相対化できない」として止めると、正しく写しの上で撃つ
@@ -191,16 +197,22 @@ if [ -n "$bad" ]; then
     done
     if [ -n "${still_bad// /}" ]; then
         echo "mutation-residue: 相対化できない path が在る = **測定不成立**" >&2
-        printf '%s\n' $still_bad | sed 's/^/  /' >&2
+        printf '%s\n' "$still_bad" | sed 's/^/  /' >&2
         echo "  (写しなら其の変数を mktemp / TMPDIR で作る事。確かめられない物は止める)" >&2
         exit 2
     fi
-    uniq_targets="$(printf '%s\n' $uniq_targets | grep -vE '^[$/]' || true)"
+    uniq_targets="$(printf '%s\n' "$uniq_targets" | grep -vE '^[$/]' || true)"
 fi
-dirty="$( cd "$ROOT" && git diff --name-only -- $uniq_targets 2>/dev/null )"
+# ★git へ渡す前に配列へ移す(2026-09-09)。`-- $uniq_targets` の生展開は、
+#   空白を含む path が 1 本でも混ざった日に **2 つの当たらない path** として渡り、
+#   `git diff` は当たらない path を黙って無視する = **其の file だけ照合から静かに抜ける**。
+#   此の検査の一線(「静かに抜ける path を作らない」)を、其の儘 引数の渡し方でも守る。
+target_args=()
+while IFS= read -r _t; do [ -n "$_t" ] && target_args+=("$_t"); done <<< "$uniq_targets"
+dirty="$( cd "$ROOT" && git diff --name-only -- ${target_args[@]+"${target_args[@]}"} 2>/dev/null )"
 
 if [ -z "$dirty" ]; then
-    echo "mutation-residue: 残骸なし($mutators 本の対照が宣言する $(printf '%s\n' $uniq_targets | wc -l | tr -d ' ') file を見た)"
+    echo "mutation-residue: 残骸なし($mutators 本の対照が宣言する ${#target_args[@]} file を見た)"
     [ -n "${scratch_dropped:-}" ] && echo "  (写しを指す宣言は外した:$scratch_dropped)"
     [ -n "${sandbox_dropped:-}" ] && echo "  (砂場を指す宣言は外した: $(printf '%s' "$sandbox_dropped" | wc -w | tr -d ' ') 件)"
     exit 0
@@ -209,9 +221,20 @@ fi
 echo "mutation-residue: ★変異対照が触る file に索引との差が在る"
 printf '%s\n' "$dirty" | sed 's/^/  /'
 if [ "$RESTORE" -eq 1 ]; then
-    ( cd "$ROOT" && git checkout -- $dirty ) || { echo "戻せない" >&2; exit 2; }
+    # ★戻す対象も配列で渡す。破壊的な操作なので、渡し方が曖昧なまま撃たない。
+    # ★★**戻すのは `git diff` が返した具体的な path だけ**(Codex 2026-09-09)。
+    #   引用は shell の展開を止めるが、**git は pathspec を自分で glob として解釈する** ——
+    #   実測: `git checkout -- "dir/*.swift"` は引用しても両方の file を戻した。
+    #   宣言(`# controls-for:`)は glob を許すので(実例 `tools/*.plist`)、もし此処へ
+    #   `target_args` を渡すと、**照合で一度も見ていない file まで戻る**事になる。
+    #   今の形は `$dirty` = `git diff --name-only` の出力 = 具体的な path しか来ない。
+    #   ★之は最適化で壊れやすい不変条件なので、対照 `rc-backend/test/path-with-space-controls.sh`
+    #     の P5/P6 が「git は glob を展開する」と「戻す側は git の出力を使っている」を測る。
+    dirty_args=()
+    while IFS= read -r _d; do [ -n "$_d" ] && dirty_args+=("$_d"); done <<< "$dirty"
+    ( cd "$ROOT" && git checkout -- ${dirty_args[@]+"${dirty_args[@]}"} ) || { echo "戻せない" >&2; exit 2; }
     echo "  戻した(索引の版へ)"
-    still="$( cd "$ROOT" && git diff --name-only -- $uniq_targets 2>/dev/null )"
+    still="$( cd "$ROOT" && git diff --name-only -- ${target_args[@]+"${target_args[@]}"} 2>/dev/null )"
     if [ -n "$still" ]; then
         echo "★戻したのに差が残っている:"; printf '%s\n' "$still" | sed 's/^/  /'
         exit 1   # 戻せていない = 修理は失敗

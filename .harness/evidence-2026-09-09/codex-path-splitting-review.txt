@@ -1,0 +1,43 @@
+[codex-quick started pid=461 05:43:17 timeout=150s — background callers: wait on the pid, do not read the output early]
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a085c3-d04a-7870-a119-89f711a2f6b7
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+One question, under 200 words, concrete only.
+
+I swept a repo of 118 bash tools for SC2086/SC2115 (unquoted expansion) and reached zero. What I did:
+- converted 5 list variables to arrays (flag lists, PID lists, git-rev lists, path lists) and pass them as "${arr[@]}"
+- quoted 3 display sites that printed path lists
+- left 2 sites as `# shellcheck disable=SC2086  # <reason>` where the value is an env-supplied argument string (word splitting IS the contract)
+- one site kept splitting because its input format (a '# controls-for: a b c' comment) is itself space-separated, so a path with a space cannot be expressed; annotated with that reason
+- found and fixed a live bug on the way: a diagnostic written as "...`git checkout HEAD -- $RULE`..." inside DOUBLE quotes actually EXECUTED the git checkout when the failure path fired
+
+I also added a control that plants a file named 'dir/my file.swift', proves git diff/checkout find and restore it when passed via an array, and proves the raw $var form does NOT find it.
+
+Name ONE concrete way this sweep still leaves a silent-wrong-target hole in such a codebase. Be specific enough to write as a test.
+2026-09-09T10:43:18.405186Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-09T10:43:18.447166Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-09T10:43:18.985787Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+Git pathspec expansion remains: quoting only stops the shell, not Git.
+
+Test: track files named `dir/*.swift`, `dir/a.swift`, and `dir/b.swift`; modify all three; pass the array element `dir/*.swift` to `git checkout HEAD -- "${paths[@]}"`. Git may restore all matching `.swift` files, not only the literal `dir/*.swift`.
+
+Use `git --literal-pathspecs ...` or prefix each path with `:(literal)`.
+tokens used
+11,851
+Git pathspec expansion remains: quoting only stops the shell, not Git.
+
+Test: track files named `dir/*.swift`, `dir/a.swift`, and `dir/b.swift`; modify all three; pass the array element `dir/*.swift` to `git checkout HEAD -- "${paths[@]}"`. Git may restore all matching `.swift` files, not only the literal `dir/*.swift`.
+
+Use `git --literal-pathspecs ...` or prefix each path with `:(literal)`.

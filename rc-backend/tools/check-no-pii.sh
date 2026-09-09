@@ -184,7 +184,13 @@ hraw=""
 # ★条件は「HEAD があるか」ではなく「**到達できる commit があるか**」。HEAD で判定すると、
 #   `git checkout --orphan` 直後の様に HEAD が未生成でも他の ref には commit がある木で
 #   履歴段を丸ごと飛ばす。push が運ぶのは ref であって HEAD ではない。
+# ★配列で持つ(2026-09-09)。SHA に空白は入らないので分割は安全だが、
+#   生展開は「引用し忘れ」と見分けが付かない —— 意図なら意図として書く。
+#   ★`git rev-list` は**1 回だけ**呼ぶ。2 回呼ぶと、間に ref が動いた時に
+#     「空かどうかの判定」と「実際に走査する集合」が別の物になる。
 revs=$(git rev-list --all) || { echo "PII 検査: **判定不能** — git rev-list が失敗した。" >&2; exit 2; }
+revs_arr=()
+while IFS= read -r _r; do [ -n "$_r" ] && revs_arr+=("$_r"); done <<< "$revs"
 if [ -n "$revs" ]; then
   # 小さい repo 用の素朴な走査(全 commit x 全 tree)。数千 commit 規模になったら
   # `git rev-list --objects --all` + `cat-file --batch` へ書き換える事。
@@ -192,7 +198,7 @@ if [ -n "$revs" ]; then
   # 同じ扱いにすると、履歴を一切見ないまま緑が出る**(commit 数が増えて引数が
   # ARG_MAX を超えた時などに実際に起きる)。エラーは判定不能として落とす。
   # 2種類まとめて1回で走査する(履歴の走査が一番重い)。仕分けは下でやる。
-  hraw=$(git grep -IE "$PAT_ANY" $revs -- 2>/dev/null); grc=$?
+  hraw=$(git grep -IE "$PAT_ANY" ${revs_arr[@]+"${revs_arr[@]}"} -- 2>/dev/null); grc=$?
   if [ "$grc" -gt 1 ]; then
     echo "PII 検査: **判定不能** — 履歴の走査に失敗した(git grep exit=$grc)。" >&2
     echo "  commit 数が増えて引数が長すぎる可能性。走査を rev-list --objects 方式へ書き換える事。" >&2
@@ -255,7 +261,7 @@ hist_mach=$(hist_of "$PAT_MACH" -)
 #   122 個の SHA が1つの引数になって `unable to resolve revision` = exit 128 になる —— 実測)。
 hist_host=""; hist_host_ex=""; hist_hostpath=""   # ★`set -u` の下では宣言を省けない(分岐の中でしか入らない)
 if [ -n "$revs" ] && [ "$host_checked" -eq 1 ]; then
-  hhout=$(git grep -IilF -e "$HOST_SELF" $revs -- 2>/dev/null); hhrc=$?
+  hhout=$(git grep -IilF -e "$HOST_SELF" ${revs_arr[@]+"${revs_arr[@]}"} -- 2>/dev/null); hhrc=$?
   if [ "$hhrc" -gt 1 ]; then
     echo "PII 検査: **判定不能** — 履歴の走査(種類3)に失敗した(git grep exit=${hhrc})。" >&2
     exit 2

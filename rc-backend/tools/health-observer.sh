@@ -771,6 +771,7 @@ check_ota_fresh() {
     #   3.2 で、`set -u` の下では空配列の `"${a[@]}"` 自体が落ちる —— 此の file が
     #   `RESOLVE` で同じ結論に到達している。
     if [ -n "$OTA_ARGS" ]; then
+        # shellcheck disable=SC2086  # OTA_ARGS は env から来る**引数列**。分割が意図で、引用すると 1 引数に潰れて渡らない
         out="$(run_bounded "$OTA_TIMEOUT" "$OTA_CHECK" $OTA_ARGS)"; rc=$?
     else
         out="$(run_bounded "$OTA_TIMEOUT" "$OTA_CHECK")"; rc=$?

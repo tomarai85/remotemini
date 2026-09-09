@@ -436,13 +436,18 @@ settle_sim() {
 #   其れまで此の class は `setUp`/`tearDown` の `clear()` が製品の項目を消していたので、
 #   変異の度に走らせる = simulator の資格情報を毎回消す事だった。座標を分けた今は
 #   別の項目しか触らない。
-UNIT_ONLY="-only-testing:RemoteMiniTests/AppStateTests \
--only-testing:RemoteMiniTests/SignOutNoticeStoreTests \
--only-testing:RemoteMiniTests/KeyEntryViewTests \
--only-testing:RemoteMiniTests/KeyEntryViewModelTests \
--only-testing:RemoteMiniTests/ProvisioningTests \
--only-testing:RemoteMiniTests/KeychainCredentialStoreTests \
--only-testing:RemoteMiniTests/DisconnectedViewTests"
+# ★配列で持つ(2026-09-09)。1 本の文字列を引用せずに生展開すると
+#   `shellcheck` が SC2086 を出し、其れを黙らせる為の disable が増える ——
+#   分割が要件なら、**分割を意図として書ける形**(配列)にするのが筋。
+UNIT_ONLY=(
+    -only-testing:RemoteMiniTests/AppStateTests
+    -only-testing:RemoteMiniTests/SignOutNoticeStoreTests
+    -only-testing:RemoteMiniTests/KeyEntryViewTests
+    -only-testing:RemoteMiniTests/KeyEntryViewModelTests
+    -only-testing:RemoteMiniTests/ProvisioningTests
+    -only-testing:RemoteMiniTests/KeychainCredentialStoreTests
+    -only-testing:RemoteMiniTests/DisconnectedViewTests
+)
 
 # UI の class も**変数で一度だけ**名乗る。runner が字面で書くと、下の extract() が
 # 持つ一覧と2つ目の写しになる。
@@ -481,15 +486,16 @@ xcb() { # $1 = log, 残り = -only-testing 群
 
 # ★診断を stdout に書かない事。呼び出し側は `rc=$(run_… )` で**標準出力を
 #   そのまま rc として読む**ので、1行混ぜるだけで rc が壊れて全部の probe が狂う。
-# ★zsh ではなく bash で走る(shebang)ので、引用しない $UNIT_ONLY は単語分割される。
+# ★flag の一覧は配列で渡す(2026-09-09 に文字列から移した)。分割は要件だが、
+#   要件なら**意図として書ける形**にする —— 生展開だと「引用し忘れ」と区別が付かない。
 run_unit() { # $1 = log path -> rc を印字
     local log="$1" rc
     settle_sim
-    rc="$(xcb "$log" $UNIT_ONLY)"
+    rc="$(xcb "$log" "${UNIT_ONLY[@]}")"
     if [ "$(ran_count "$log")" -eq 0 ]; then
         echo "     (検査が1本も走っていない = 測定が起きていない。app を落として1度だけ取り直す)" >&2
         settle_sim
-        rc="$(xcb "$log" $UNIT_ONLY)"
+        rc="$(xcb "$log" "${UNIT_ONLY[@]}")"
     fi
     printf '%s' "$rc"
 }
@@ -498,11 +504,11 @@ run_unit() { # $1 = log path -> rc を印字
 run_screen() { # $1 = log path -> rc を印字
     local log="$1" rc
     settle_sim
-    rc="$(xcb "$log" $UNIT_ONLY -only-testing:$UI_KEYENTRY)"
+    rc="$(xcb "$log" "${UNIT_ONLY[@]}" "-only-testing:$UI_KEYENTRY")"
     if [ "$(ran_count "$log")" -eq 0 ]; then
         echo "     (検査が1本も走っていない = 測定が起きていない。app を落として1度だけ取り直す)" >&2
         settle_sim
-        rc="$(xcb "$log" $UNIT_ONLY -only-testing:$UI_KEYENTRY)"
+        rc="$(xcb "$log" "${UNIT_ONLY[@]}" "-only-testing:$UI_KEYENTRY")"
     fi
     printf '%s' "$rc"
 }
@@ -511,11 +517,11 @@ run_screen() { # $1 = log path -> rc を印字
 run_firstrun() { # $1 = log path -> rc を印字
     local log="$1" rc
     settle_sim
-    rc="$(xcb "$log" $UNIT_ONLY -only-testing:$UI_FIRSTRUN)"
+    rc="$(xcb "$log" "${UNIT_ONLY[@]}" "-only-testing:$UI_FIRSTRUN")"
     if [ "$(ran_count "$log")" -eq 0 ]; then
         echo "     (検査が1本も走っていない = 測定が起きていない。app を落として1度だけ取り直す)" >&2
         settle_sim
-        rc="$(xcb "$log" $UNIT_ONLY -only-testing:$UI_FIRSTRUN)"
+        rc="$(xcb "$log" "${UNIT_ONLY[@]}" "-only-testing:$UI_FIRSTRUN")"
     fi
     printf '%s' "$rc"
 }
@@ -526,13 +532,13 @@ run_firstrun() { # $1 = log path -> rc を印字
 run_base() { # $1 = log path -> rc を印字
     local log="$1" rc
     settle_sim
-    rc="$(xcb "$log" $UNIT_ONLY -only-testing:$UI_KEYENTRY \
-          -only-testing:$UI_FIRSTRUN)"
+    rc="$(xcb "$log" "${UNIT_ONLY[@]}" "-only-testing:$UI_KEYENTRY" \
+          "-only-testing:$UI_FIRSTRUN")"
     if [ "$(ran_count "$log")" -eq 0 ]; then
         echo "     (検査が1本も走っていない = 測定が起きていない。app を落として1度だけ取り直す)" >&2
         settle_sim
-        rc="$(xcb "$log" $UNIT_ONLY -only-testing:$UI_KEYENTRY \
-              -only-testing:$UI_FIRSTRUN)"
+        rc="$(xcb "$log" "${UNIT_ONLY[@]}" "-only-testing:$UI_KEYENTRY" \
+              "-only-testing:$UI_FIRSTRUN")"
     fi
     printf '%s' "$rc"
 }
@@ -546,7 +552,7 @@ run_base() { # $1 = log path -> rc を印字
 #   錨チェックが「緑になっていない」と正しく止めた。写しを2つ持つと、片方を直した
 #   人がもう片方の存在を知らない。**一覧は1つ、残りは導出。**
 CLASS_ALT="$(
-    { printf '%s\n' $UNIT_ONLY | sed -n 's|^-only-testing:RemoteMini\(UI\)\{0,1\}Tests/||p'
+    { printf '%s\n' "${UNIT_ONLY[@]}" | sed -n 's|^-only-testing:RemoteMini\(UI\)\{0,1\}Tests/||p'
       printf '%s\n' "$UI_KEYENTRY" "$UI_FIRSTRUN" | sed 's|^RemoteMini\(UI\)\{0,1\}Tests/||'
     } | sort -u | paste -sd'|' -
 )"

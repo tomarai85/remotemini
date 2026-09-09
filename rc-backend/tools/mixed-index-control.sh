@@ -29,6 +29,7 @@ printf 'v1\n' > "$R/rc-backend/tools/thing.sh"
 
 run_gate() { # stdout = 出力、return = rc。$1 = 追加 env(空可)
     local extra="${1:-}"
+    # shellcheck disable=SC2086  # extra は `A=1 B=2` の形の**env 代入列**。分割が意図で、引用すると 1 個の変数名に潰れる
     ( cd "$R" && env $extra RC_STAGED_FILES="" /bin/bash "$GATE" 2>&1 )
 }
 

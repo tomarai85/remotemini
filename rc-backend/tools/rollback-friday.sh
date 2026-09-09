@@ -145,7 +145,10 @@ prune)
     # 固定されている物は数に入れず、消しもしない。
     victims="$(printf '%s\n' "$out" | awk -F'\t' '$4 != "PINNED" {print $1}' | tail -n +$((keep + 1)))"
     if [ -z "$victims" ]; then echo "間引く物は無い(完全な世代が $keep 個以下)"; exit 0; fi
-    echo "消す世代:"; printf '  %s\n' $victims
+    echo "消す世代:"
+    # ★引用する(2026-09-09)。消す対象の名前が空白で割れて表示されると、
+    #   人が「何が消えるのか」を誤って読む —— 消す操作の直前の表示で其れは危険。
+    printf '  %s\n' "$victims"
     if [ "$DRY" -eq 1 ]; then echo "DRY: ここで止める"; exit 0; fi
     for v in $victims; do
         valid_name "$v" || { echo "★名前が不正なので消さない: $v" >&2; continue; }
