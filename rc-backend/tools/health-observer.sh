@@ -20,7 +20,7 @@
 set -uo pipefail
 
 CONF="${RC_HEALTH_CONF:-$HOME/.rc-backend/observer.conf}"
-# shellcheck disable=SC1090
+# shellcheck disable=SC1090  # 読み込む先は実行時に決まる設定 file(静的には辿れない)
 [ -f "$CONF" ] && . "$CONF"
 
 HOST="${RC_HEALTH_HOST:desk.tailnet.example}"
@@ -389,7 +389,7 @@ check_key_expiry
 #   何も残らない。ここは防止ではなく検出で、防止は別の層(机が鍵を要求する事、
 #   `rc-backend-launch.sh` が `funneled` の入口へ自分から乗らない事)が受け持つ。
 check_exposure() {
-    local now verdict prev_v prev_blind out rc
+    local now prev_v prev_blind out rc
     now="$(date +%s)"
     prev_v="safe"; prev_blind=0
     if [ -f "$EXP_MARK" ]; then

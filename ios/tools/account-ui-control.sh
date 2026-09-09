@@ -27,7 +27,6 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # = ios/
-ROOT="$(cd "$HERE/.." && pwd)"
 IOS="$HERE"
 # ★機の既定は tools/sim-device.sh が持つ(2026-08-26)。此処で直に dogfood を既定に
 #   していた間、`xcodebuild test` が対照のたびに **Tom が見る機**へ種なしの Debug 版を
@@ -48,7 +47,8 @@ VM="$MS_TREE/Sources/Screens/Shared/AccountViewModel.swift"
 BAR="$MS_TREE/Sources/Screens/Shared/AccountBar.swift"
 CL="$MS_TREE/Sources/Core/AccountClient.swift"
 SV="$MS_TREE/Sources/Screens/Settings/SettingsView.swift"
-TARGETS=("$VM" "$BAR" "$CL" "$SV")
+# ★TARGETS は持たない: 復元は `restore_all` = `ms_prepare`(砂場を丸ごと張り直す)
+#   なので、file の一覧を別に持つと **2 つ目の真実**になる(2026-09-09)。
 
 # ★**git を復元の正本にする**(2026-08-12、事故の直後に書き直した)。
 #

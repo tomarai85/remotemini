@@ -27,6 +27,14 @@ set -u
 
 HOST="${RC_EDITH_HOST:-edith@10.0.0.0}"
 JOB="gui/501/com.edith.rc-backend"
+# ★同じ文字列が下の引用符付きヒアドキュメント(remote 側)にも `job=` として在る。
+#   あちらから此の変数は見えないので**構造上 2 枚**になる —— 片方だけ直る日を
+#   待たない為に、走る前に**一致を機械で確かめる**(2026-09-09、SC2034 が
+#   「JOB は使われていない」と指した所から辿って見つけた重複)。
+grep -q "^job=$JOB$" "${BASH_SOURCE[0]}" || {
+    echo "verify-rc-backend-state: 手元の JOB と remote の job= が食い違う(片方だけ直した)= 測れない" >&2
+    exit 2
+}
 ART_DIR="${VERIFY_ARTIFACT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.harness/evidence-$(date +%Y-%m-%d)}"
 MODE="observe"
 [ "${1:-}" = "--prove-stop" ] && MODE="prove-stop"

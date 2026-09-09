@@ -545,6 +545,12 @@ LOCAL_CTLS=(
                                      # それでも外さないのは、上に書いた欠陥を捕まえられる対照が
                                      # 此処にしか無いから(規則を測る対照は5 sprint 緑を出し続けた)。
                                      # 冷えて伸びる時の作法は下と同じ = **外すのではなく温めてから回す**。
+    test/shellcheck-gate-controls.sh # ★2026-09-09。shellcheck の門が本当に赤を出せるか。
+                                     #   此の門は「指摘 0 件」を出す物なので、壊れ方は必ず
+                                     #   静かな緑で来る —— 走査が空振りしても 0 件、道具が
+                                     #   居なくても 0 件、disable を撒いても 0 件。
+                                     #   G5/G6/G4 が其の 3 通りを作り木の上で実際に撃つ。
+                                     #   費用: 1 秒未満。
     ../ios/tools/uitest-reachability-control.sh # ★2026-09-08。門 `ios/tools/uitest-reachability-gate.sh`
                                      #   が本当に赤を出せるかだけを測る(砂場の作り木、8 通り)。
                                      #   門の最初の版は class 名を grep していて、註や evidence の

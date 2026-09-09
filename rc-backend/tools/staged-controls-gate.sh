@@ -285,6 +285,7 @@ while IFS= read -r f; do
         if [ -n "$k" ]; then
             for _d in ${DECLS[$i]}; do
                 # `case` の右辺は**引用しない** = 宣言側の glob をそのまま効かせる為
+                # shellcheck disable=SC2254  # 引用しないのが要件(宣言側の glob を効かせる)
                 case "$k" in $_d) add_sel "${CTLS[$i]}"; hit=1; break ;; esac
             done
         fi
