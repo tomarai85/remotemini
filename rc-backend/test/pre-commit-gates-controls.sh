@@ -69,9 +69,14 @@ fi
 #   外さないと `staged-controls-gate` が一覧に2回入り、門の本数も `sed -n '2p'` で
 #   選ぶ「赤にする門」の位置も1つずつずれる。実測: 外す前は 12 本中 5 本が赤で、
 #   その5本は全部この1点から派生していた(門の本数 / 書類だけの3通 / 赤の後ろ)。
+# ★2026-09-09: 一覧を **path ごと**取る。以前は `rc-backend/tools/` 固定だったので、
+#   `ios/tools/uitest-reachability-gate.sh` を本体へ足した瞬間、対照は其の門を
+#   一覧に入れず stub も作らず、本体が呼んだ所で `127`(file が無い)で倒れた ——
+#   赤の理由は「門が壊れた」ではなく「対照が門の**置き場**を手で決め打ちしていた」。
+#   置き場を仮定しなければ、次に別の木へ門が増えても此処は追随する。
 GATES="$(grep -v -- '--would-select' "$SUBJECT" \
-         | grep -oE 'bash "\$ROOT/rc-backend/tools/[a-z-]+\.sh"' \
-         | sed -E 's#.*/([a-z-]+)\.sh"#\1#')"
+         | grep -oE 'bash "\$ROOT/[a-z0-9/_-]+\.sh"' \
+         | sed -E 's#^bash "\$ROOT/(.*)\.sh"$#\1#')"
 NGATES="$(printf '%s\n' "$GATES" | grep -c . )"
 
 # ★門は2群に分かれる(2026-08-05)。**絞り込みより前**に無条件で呼ぶ門と、
@@ -82,8 +87,8 @@ NGATES="$(printf '%s\n' "$GATES" | grep -c . )"
 NARROW_LN="$(grep -nE '^if ! echo "\$staged" \| grep -qE' "$SUBJECT" | head -1 | cut -d: -f1)"
 DOC_GATES="$(awk -v n="${NARROW_LN:-0}" 'NR < n' "$SUBJECT" \
              | grep -v -- '--would-select' \
-             | grep -oE 'bash "\$ROOT/rc-backend/tools/[a-z-]+\.sh"' \
-             | sed -E 's#.*/([a-z-]+)\.sh"#\1#')"
+             | grep -oE 'bash "\$ROOT/[a-z0-9/_-]+\.sh"' \
+             | sed -E 's#^bash "\$ROOT/(.*)\.sh"$#\1#')"
 NDOC="$(printf '%s\n' "$DOC_GATES" | grep -c . )"
 
 # 呼ばれた門が「絞り込み前の群」ちょうどか。順序も込みで見る。
@@ -114,7 +119,8 @@ mk_repo() {  # $1=根 $2=赤にする門の名前(空なら全部緑)
         #   探りで水増しされ、書類だけの commit が code の門を呼んだ様に見える。
         #   答えは `RC_FAKE_WOULD_SELECT` で外から決める: ここで測るのは
         #   *下流が正しく選ぶか* ではなく **呼ぶ側がその答えに従うか**。
-        cat > "$r/rc-backend/tools/$g.sh" <<STUB
+        mkdir -p "$r/$(dirname "$g")"
+        cat > "$r/$g.sh" <<STUB
 #!/bin/bash
 if [ "\${1:-}" = "--would-select" ]; then
     printf '%s' "\${RC_FAKE_WOULD_SELECT:-}"
@@ -123,7 +129,7 @@ fi
 echo "$g" >> "\$RCLOG"
 exit $code
 STUB
-        chmod +x "$r/rc-backend/tools/$g.sh"
+        chmod +x "$r/$g.sh"
     done
 }
 

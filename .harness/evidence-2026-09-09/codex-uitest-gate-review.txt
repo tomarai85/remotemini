@@ -1,0 +1,79 @@
+[codex-quick started pid=49247 00:56:05 timeout=150s — background callers: wait on the pid, do not read the output early]
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a084bc-e006-7253-b5f3-94e6621119c5
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+Review a gate I just added to a Swift/iOS repo. Be adversarial: find the way it is WRONG or VACUOUS, not the ways it is fine.
+
+CONTEXT
+A prior incident: 8 XCUITest classes shipped red because no script ran them. A sweep then found that of 27 XCUITest classes, only 10 were run by anything in the commit path.
+
+WHAT I ADDED
+1. ios/tools/uitest-reachability-gate.sh — runs on every commit (wired into pre-commit-gates.sh). It:
+   - enumerates classes from ios/UITests/*.swift via: grep -rhoE '^(final )?class [A-Za-z0-9_]+UITests'
+   - refuses (exit 2) if the count is below a floor (default 20)
+   - for each class, searches *.sh/*.mjs under ios/tools, rc-backend/tools, rc-backend/test, .harness for the LITERAL string "RemoteMiniUITests/<class>"
+   - then requires at least one such naming file to ALSO be gate-registered: it either contains a line starting "# controls-for:" OR its basename appears in rc-backend/tools/run-controls.sh
+   - else the class must appear in a hardcoded DECLARED array as "Name|reason", reason >= 12 chars (else exit 2)
+   - any class neither reachable nor declared -> exit 1, printing the names
+2. ios/tools/uitest-reachability-control.sh — 8 cases on synthetic trees: green when all named; red + names the orphan; a name appearing only in a COMMENT must not count; a naming script that is not gate-registered must not count (plus the inverse: registering it flips to green); declared-with-reason is green; a too-short reason is exit 2; below-floor is exit 2.
+
+MY FIRST VERSION was wrong: it grepped the bare class name, so mentions inside comments and .harness evidence files counted as "reachable", and it returned 27/27 green when the true number was 10.
+
+QUESTIONS
+- What false GREEN can this gate still produce? Name a concrete file arrangement.
+- What false RED (blocking a legitimate commit)?
+- Is the "gate-registered" predicate (controls-for: line OR basename in run-controls.sh) sound? basename matching in particular.
+- Is the DECLARED escape hatch going to rot into an exemption list, and if so what would stop it?
+- Anything about the floor, or about enumeration by regex on Swift source, that is unsafe.
+Answer in under 400 words, concrete arrangements only.
+
+FOLLOW-UP: I already applied three fixes from your first pass — (1) enumeration is now done TWICE with different regexes and the gate exits 2 if the counts disagree, printing the names only the loose pass saw; (2) the registration predicate now matches the repo-relative path in run-controls.sh instead of the basename; (3) a class that IS reachable but also appears in DECLARED is now exit 2 as a stale declaration. Each has a control case that proves it goes red. Given those, what is the single most likely way this gate still produces a false GREEN in THIS repo (no .xctestplan exists, no basename collisions today)? One concrete arrangement, under 150 words.
+2026-09-09T05:56:06.609574Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-09T05:56:06.689800Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-09T05:56:07.143097Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+The likeliest false green is **dead configuration inside a genuinely registered script**.
+
+Concrete arrangement:
+
+```sh
+# ios/tools/nightly-ui.sh
+LEGACY_TESTS=(
+  "RemoteMiniUITests/PaymentUITests"
+)
+
+xcodebuild test -only-testing:"RemoteMiniUITests/LoginUITests"
+```
+
+`rc-backend/tools/run-controls.sh` genuinely invokes `ios/tools/nightly-ui.sh`, so registration passes. `PaymentUITests` appears as a non-comment literal, so reachability passes. But the array is never consumed; only `LoginUITests` runs.
+
+The gate proves textual association with a registered file, not data flow into an executed `xcodebuild test` selector. A control should register a real runner containing an unused test list entry and require red. Ultimately, validate the resolved `-only-testing`/`-skip-testing` arguments—or compare against actual test execution output.
+tokens used
+12,236
+The likeliest false green is **dead configuration inside a genuinely registered script**.
+
+Concrete arrangement:
+
+```sh
+# ios/tools/nightly-ui.sh
+LEGACY_TESTS=(
+  "RemoteMiniUITests/PaymentUITests"
+)
+
+xcodebuild test -only-testing:"RemoteMiniUITests/LoginUITests"
+```
+
+`rc-backend/tools/run-controls.sh` genuinely invokes `ios/tools/nightly-ui.sh`, so registration passes. `PaymentUITests` appears as a non-comment literal, so reachability passes. But the array is never consumed; only `LoginUITests` runs.
+
+The gate proves textual association with a registered file, not data flow into an executed `xcodebuild test` selector. A control should register a real runner containing an unused test list entry and require red. Ultimately, validate the resolved `-only-testing`/`-skip-testing` arguments—or compare against actual test execution output.

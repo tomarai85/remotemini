@@ -545,6 +545,16 @@ LOCAL_CTLS=(
                                      # それでも外さないのは、上に書いた欠陥を捕まえられる対照が
                                      # 此処にしか無いから(規則を測る対照は5 sprint 緑を出し続けた)。
                                      # 冷えて伸びる時の作法は下と同じ = **外すのではなく温めてから回す**。
+    ../ios/tools/uitest-reachability-control.sh # ★2026-09-08。門 `ios/tools/uitest-reachability-gate.sh`
+                                     #   が本当に赤を出せるかだけを測る(砂場の作り木、8 通り)。
+                                     #   門の最初の版は class 名を grep していて、註や evidence の
+                                     #   言及まで到達可能に数え **27/27 緑**という嘘を返した。C3/C4 が其処を撃つ。
+                                     #   費用: 1 秒未満(xcodebuild を使わない)。
+    ../ios/tools/uitest-orphan-surface-control.sh # ★2026-09-08。誰も走らせていなかった UI 検査
+                                     #   11 class を門に載せる。`ui-tests-were-never-in-the-commit-path.md`
+                                     #   の 2 度目 —— 27 class 中 commit の門で走るのは 10 本だけだった。
+                                     #   MU1 = 当日直した「名前変更が机を叩かない」を植え直す /
+                                     #   MU2 = 版を名乗らせない。費用: 基準 537 秒 実測、xcodebuild 3 回。
     ../ios/tools/composer-surface-control.sh # ★2026-09-08。**画面を描く file を触ったら、画面を
                                      # 描いて測る検査が回る**事を門で保証する。
                                      # 何故要ったか: 9/7 の UI 作り直しを「単体 全件 緑」で出荷し、
