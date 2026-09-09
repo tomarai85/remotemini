@@ -114,7 +114,24 @@ if ! echo "$staged" | grep -qE '^(rc-backend/(src|test|tools)|ios/(Sources|Tests
     #     届く範囲だけが下流の能力に自動追随する。
     #   ★聞くだけで走らせない(`--would-select`)。書類だけの commit に足す費用は
     #     この一往復だけ(実測 0.1 秒未満。本番の走行は 20〜1651 秒)。
-    if [ -z "$(bash "$ROOT/rc-backend/tools/staged-controls-gate.sh" --would-select)" ]; then
+    #   ★**空かどうかではなく終了コードで決める**(2026-09-09、実測して確定)。
+    #     以前は `[ -z "$(… --would-select)" ]` = 出力が空なら skip、だった。
+    #     下流が壊れて何も出さずに落ちた時、其れは「回す物が無い」と**同じ形**になる ——
+    #     実測: `--would-select` を rc=3 で落とすと、11 本の門のうち **3 本しか走らず**
+    #     commit は成功した(8 本が黙って飛ぶ)。壊れた門は「門が無い」より悪い。
+    #     聞けなかったなら絞り込みの根拠が無いので、skip せず**測定不成立で止める**。
+    #   ★残る依存(Codex 2026-09-09、閉じずに書く): 此の判定の正しさは
+    #     **下流が自分の失敗を非零で伝える事**に乗っている。下流の中でパイプの終端が
+    #     0 を返す形(`pipefail` 無し)が在れば、失敗は 0 に化けて此処は素通しする。
+    #     文章では守れないので、対照 `test/unmeasurable-staged-controls.sh` の U5 が
+    #     「下流が pipefail を宣言している」を毎回 直に見る(検査できる前提条件へ置換)。
+    ws_out="$(bash "$ROOT/rc-backend/tools/staged-controls-gate.sh" --would-select)"; ws_rc=$?
+    if [ "$ws_rc" -ne 0 ]; then
+        echo "pre-commit-gates: ★『回すなら何が回るか』を聞けなかった(rc=$ws_rc)。" >&2
+        echo "  絞り込みの根拠が無いので skip しない。staged-controls-gate.sh を直す事" >&2
+        exit 2
+    fi
+    if [ -z "$ws_out" ]; then
         exit 0   # 的が指す物も、検査の本体も、**どの対照の見張り先も**入っていない
     fi
 fi
