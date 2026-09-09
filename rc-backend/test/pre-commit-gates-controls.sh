@@ -241,7 +241,9 @@ fi
 # ── 10c: 陰性対照。聞く枝を潰すと 10 が赤くなるか ──────────────────────────
 #   10 は「全部の門が呼ばれた」で緑になるので、**元の素通しに戻した変異体**を同じ
 #   判定に食わせて赤を確かめる。赤に出来ない検査は緑を主張する資格が無い。
-sed 's#if \[ -z "$(bash "$ROOT/rc-backend/tools/staged-controls-gate.sh" --would-select)" \]; then#if true; then#' \
+# ★2026-09-09: 聞き方が「出力が空か」から**終了コード + 出力**へ変わったので、
+#   変異の的も付け替えた。素通しへ戻すには `[ -z "$ws_out" ]` を真に潰せばよい。
+sed 's#if \[ -z "$ws_out" \]; then#if true; then#' \
     "$SUBJECT" > "$T/mutant-probe.sh"
 if cmp -s "$SUBJECT" "$T/mutant-probe.sh"; then
     ng "10c 聞く枝を潰すと 10 が赤くなる" "変異の的が消えている = この対照が古い(聞き方が変わった)"
