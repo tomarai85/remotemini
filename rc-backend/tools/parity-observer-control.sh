@@ -28,19 +28,35 @@
 # 使い方: bash rc-backend/tools/parity-observer-control.sh
 # 終了コード: 0=全部緑 / 1=1本でも赤
 #
-# no-operator: `staged-controls-gate` が `controls-for:` で拾って回す。
+# 走らせる物: `rc-backend/test/observer-control-sandbox-controls.sh`(2026-09-08 新設)が
+#   `controls-for:` で此の file を名指しし、`run-controls.sh` の掃引にも登録されている。
+#   ★以前は `no-operator:` の印が付いていた。あれは「誰も走らせない」という**事実の宣言**で、
+#     走らせる物が出来た日に嘘になる —— `orphan-instrument-scan` が「腐った印」として
+#     名指しした。印は免除の札ではない。
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"     # = rc-backend/tools
-SUT="$HERE/parity-observer.sh"
+# ★変異させるのは**写し**。実物は1バイトも触らない(2026-09-08)。
+#   之より前は `SUT` が実物を指し、`mutate()` が本番の観測器をその場で書き換えていた。
+#   `trap 'rm -rf "$SB"' EXIT` は砂場を消すだけで実物を戻さないので、変異と復元の間で
+#   殺されると **変異した観測器が木に残り、唯一の控えも消える**。`tunnel-observer.sh`
+#   が此の実物を source し、`com.tomtim.rc-tunnel-observer` が 10 分毎に走らせる。
+#   殺され方は珍しくない: `run-controls.sh` は各対照を `perl -e 'alarm …'` で時間切れに
+#   するので、上限に当たった走行は SIGALRM で死ぬ。
+#   ★trap を強くする直しは採らない —— ios 側の裁定
+#     (`ios/tools/mutation-sandbox.sh` の頭)が「殺されても木に変異は残らない ——
+#     trap が走るかどうかに安全が依存しなくなる」と書いている。同じ原理を写し1枚で満たす。
+LIVE="$HERE/parity-observer.sh"      # 本番(tunnel-observer.sh が source する)実物
 TUN="$HERE/tunnel-observer.sh"
-for f in "$SUT" "$TUN"; do [ -f "$f" ] || { echo "測る対象が無い: $f"; exit 1; }; done
+for f in "$LIVE" "$TUN"; do [ -f "$f" ] || { echo "測る対象が無い: $f"; exit 1; }; done
 
 pass=0; fail=0
 ok() { echo "PASS  $1"; pass=$((pass + 1)); }
 ng() { echo "FAIL  $1  ($2)"; fail=$((fail + 1)); }
 SB="$(mktemp -d)"; trap 'rm -rf "$SB"' EXIT
-cp "$SUT" "$SB/orig.sh"
+cp "$LIVE" "$SB/orig.sh"
+# 以降 `$SUT` は**砂場の写し**。`mutate` も `restore` も `source` も `--report`/`--once` も此方。
+SUT="$SB/sut.sh"; cp "$LIVE" "$SUT"
 
 # ★台帳の宛先は **suite 全体で export** する(2026-08-31、実際に汚した後)。
 #   最初は `run()` にだけ差したが、直に `. "$SUT"; parity_observe` を撃つ枝が4本在り、
@@ -206,8 +222,17 @@ if mutate '    [ $((now - PO_TS)) -lt "$PO_EVERY" ] && { po__bump PO_L_SKIP_NOTD
                        || ng "M3" "変異が効いていない(t1=$t1 t2=$t2)"
 else ng "M3" "錨が動いた"; restore; fi
 
-cmp -s "$SUT" "$SB/orig.sh" && ok "Z 台本を書き換えたまま終わらない" \
-                            || ng "Z 台本が汚れている" "手で git checkout -- する事"
+# ★Z は 2 つの主張の**連言**。片方だけでは恒真になる —— 「実物が無傷」だけなら変異を
+#   1つも植えていない走行でも通り、「写しが戻っている」だけなら実物を汚したまま通る。
+#   上の M1..M3 が「錨が動いた」= 変異が本当に当たった事を assert しているので、
+#   此処で「変異は起きた、なのに実物は無傷」が言える。
+if ! cmp -s "$SUT" "$SB/orig.sh"; then
+    ng "Z 写しが戻っていない" "変異が残ったまま終わった(次の probe が汚れた基準点を使う)"
+elif ! cmp -s "$LIVE" "$SB/orig.sh"; then
+    ng "Z ★実物が汚れている" "本番が source する $LIVE が書き換わった。手で git checkout -- rc-backend/tools/parity-observer.sh する事"
+else
+    ok "Z 変異を植えても実物は1バイトも動かない(写しの上だけで測っている)"
+fi
 
 # ── P9 ★測れなかった回は**時計を進めない**(Codex 2026-08-31 の指摘3)──────
 # 進めると其の1回が丸一日を食う。此の機体は実測で半分の時間オフラインなので、

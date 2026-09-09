@@ -32,15 +32,31 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"     # = rc-backend/tools
-SUT="$HERE/ota-undelivered-observer.sh"
+# ★変異させるのは**写し**。実物は1バイトも触らない(2026-09-08)。
+#
+#   之より前は `SUT` が実物を指していて、`mutate()` が本番の観測器をその場で書き換えていた。
+#   `trap 'rm -rf "$SB"' EXIT` は砂場を消すだけで**実物を戻さない**ので、
+#   変異と復元の間で殺されると **変異した観測器が木に残り、唯一の控えも消える**。
+#   `tunnel-observer.sh` は此の実物を source し、`com.tomtim.rc-tunnel-observer` が
+#   10 分毎に走らせる —— つまり本番が静かに壊れた版で回る。
+#   ★実測(2026-09-08、写しの上で再現): 変異が当たった瞬間に TERM を撃つと
+#     `grace=0`(= 猶予なしで毎回鳴る)が実物に残った。控えは trap に消されていた。
+#   ★trap を強くする直し方は採らない。ios 側が同じ事故の後に出した裁定が
+#     `ios/tools/mutation-sandbox.sh` の頭に在る ——「殺されても木に変異は残らない ——
+#     **trap が走るかどうかに安全が依存しなくなる**」。あちらは xcodebuild の入力を
+#     丸ごと同期する重い装置だが、此処は shell を1本 source するだけなので、
+#     同じ原理を写し1枚で満たせる。
+LIVE="$HERE/ota-undelivered-observer.sh"      # 本番(tunnel-observer.sh)が source する実物
 HOST_OBS="$HERE/tunnel-observer.sh"
-[ -f "$SUT" ] || { echo "測る対象が無い: $SUT"; exit 1; }
+[ -f "$LIVE" ] || { echo "測る対象が無い: $LIVE"; exit 1; }
 
 pass=0; fail=0
 ok() { echo "PASS  $1"; pass=$((pass + 1)); }
 ng() { echo "FAIL  $1  ($2)"; fail=$((fail + 1)); }
 SB="$(mktemp -d)"; trap 'rm -rf "$SB"' EXIT
-cp "$SUT" "$SB/orig.sh"
+cp "$LIVE" "$SB/orig.sh"
+# 以降 `$SUT` は**砂場の写し**。`mutate` も `restore` も `source` も此方を見る。
+SUT="$SB/sut.sh"; cp "$LIVE" "$SUT"
 restore() { cp -f "$SB/orig.sh" "$SUT"; }
 
 # 偽の鮮度検査。<rc> を返すだけ。
@@ -317,8 +333,18 @@ if mutate '        self_link_state || return 0' '        self_link_state || true
     restore
 else ng "M2" "錨が動いた"; restore; fi
 
-if cmp -s "$SUT" "$SB/orig.sh"; then ok "Z 台本を書き換えたまま終わらない"
-else ng "Z 木が汚れている" "手で git checkout -- rc-backend/tools/ota-undelivered-observer.sh する事"; fi
+# ★Z は 2 つの主張の**連言**にする。片方だけだと恒真になる:
+#   「実物が無傷」だけなら、変異を1つも植えていない走行でも通る。
+#   「写しが戻っている」だけなら、実物を汚したまま通る。
+#   上の M1/M2 は「錨が動いた」= 変異が本当に当たった事を各々 assert しているので、
+#   此処で「変異は起きた、なのに実物は無傷」が言える。
+if ! cmp -s "$SUT" "$SB/orig.sh"; then
+    ng "Z 写しが戻っていない" "変異が残ったまま終わった(次の probe が汚れた基準点を使う)"
+elif ! cmp -s "$LIVE" "$SB/orig.sh"; then
+    ng "Z ★実物が汚れている" "本番が source する $LIVE が書き換わった。手で git checkout -- rc-backend/tools/ota-undelivered-observer.sh する事"
+else
+    ok "Z 変異を植えても実物は1バイトも動かない(写しの上だけで測っている)"
+fi
 
 echo ""
 echo "OTA-UNDELIVERED-OBSERVER-CONTROLS: pass=$pass fail=$fail"
