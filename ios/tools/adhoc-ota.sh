@@ -105,15 +105,23 @@ fi
 #   `tools/build.sh`(版と種を焼き込む)は**成果物を変える**。
 #   ★汚れたまま焼くと、**同じ CFBundleVersion で中身が違う束**が出来る ——
 #     版番号で古さを見る鎖が、そこから先ずっと嘘を言う。
-ART_PATHS="ios/Sources ios/Assets.xcassets ios/project.yml ios/Info.plist ios/tools/build.sh"
+# ★配列で持つ(2026-09-09)。1 本の文字列にして `-- $ART_PATHS` と展開すると、
+#   空白を含む path を足した日に **黙って別の 2 つの path として渡る** ——
+#   `git status` は当たらない path を無視するので、汚れの検査が静かに痩せる。
+ART_PATHS=(ios/Sources ios/Assets.xcassets ios/project.yml ios/Info.plist ios/tools/build.sh)
 step "0. 木が汚れていないか(変異の残骸を配らない)"
-DIRTY="$(cd "$HERE/.." && git status --porcelain -- $ART_PATHS 2>/dev/null)"
+DIRTY="$(cd "$HERE/.." && git status --porcelain -- "${ART_PATHS[@]}" 2>/dev/null)"
 if [ -n "$DIRTY" ]; then
     echo "$DIRTY" >&2
     echo "★ 成果物を変える path に未コミットの差分が在る。**変異試験の残骸かもしれない**。" >&2
-    echo "  見る範囲: $ART_PATHS" >&2
-    echo "  確かめる: git diff -- $ART_PATHS" >&2
-    echo "  戻す:     git checkout -- $ART_PATHS" >&2
+    # ★配列を `$ART_PATHS` と裸で書くと**先頭の 1 個しか出ない**(SC2128)。
+    #   2026-09-09 に配列へ移した時、此の 3 行を取り零して「見る範囲: ios/Sources」
+    #   とだけ言う版を一瞬 作った —— 読んだ人は残り 4 つの path を知らないまま
+    #   `git checkout` を撃つ事になる。助言の文が**嘘の範囲**を名乗る形。
+    ART_LIST="${ART_PATHS[*]}"
+    echo "  見る範囲: $ART_LIST" >&2
+    echo "  確かめる: git diff -- $ART_LIST" >&2
+    echo "  戻す:     git checkout -- $ART_LIST" >&2
     # ★**変異の残骸か、意図した編集か**を切り分ける(2026-08-30)。此処が「汚れている」しか
     #   言えないと、読んだ人は自分の作業まで捨てかねない。残骸なら1コマンドで戻せる事も言う。
     if bash "$HERE/tools/mutation-residue-check.sh" >/dev/null 2>&1; then

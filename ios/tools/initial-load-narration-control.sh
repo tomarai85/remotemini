@@ -73,7 +73,13 @@ rm -rf "$(dirname "$MUT")"
 if grep -q 'elapsedSeconds >= attentionLimitSeconds ? .abnormal : .normal' "$RULE"; then
   ok "本物の木は無傷(変異は複製にしか当てていない)"
 else
-  bad "本物の木" "★実 file に変異が残っている。`git checkout HEAD -- $RULE` で戻す事"
+  # ★診断文は**単一引用符**で出す(2026-09-09、SC2086 の掃引で見つけた)。
+  #   二重引用符の中の backtick は命令として**実行される** —— 此の行は
+  #   「変異が残っている」と気付いた瞬間に `git checkout HEAD -- <file>` を
+  #   本当に走らせ、利用者の作業中の変更を黙って捨てていた(実測で確認)。
+  #   しかも印字されるのは命令の**出力**なので、助言の文言も消えていた。
+  #   同じ罠は `rc-backend/tools/staged-controls-gate.sh` の註にも書いてある。
+  bad "本物の木" '★実 file に変異が残っている。git checkout HEAD -- <上の RULE の file> で戻す事'
 fi
 
 # --- (2) 画面が規則を使っているか -----------------------------------------

@@ -86,8 +86,13 @@ ng() { echo "  NG   $1"; FAIL=$((FAIL+1)); }
 un() { echo "  UNMEASURED  $1"; UNMEASURED=$((UNMEASURED+1)); }
 
 # 単体2 class + UI は A5 / A7 が要る。既定は単体のみ(安い方)。
-UNIT_ONLY="-only-testing:RemoteMiniTests/AccountViewModelTests \
--only-testing:RemoteMiniTests/AccountClientTests"
+# ★配列で持つ(2026-09-09)。1 本の文字列を引用せずに生展開すると
+#   `shellcheck` が SC2086 を出し、其れを黙らせる為の disable が増える ——
+#   分割が要件なら、**分割を意図として書ける形**(配列)にするのが筋。
+UNIT_ONLY=(
+    -only-testing:RemoteMiniTests/AccountViewModelTests
+    -only-testing:RemoteMiniTests/AccountClientTests
+)
 UI_ACCOUNT="RemoteMiniUITests/AccountUITests"
 
 # 1回の走行に掛ける上限(秒)。
@@ -179,7 +184,7 @@ WANTS="$WANT_RACE $WANT_SWITCH_WINDOW $WANT_REREAD $WANT_VM_NORETRY $WANT_CLIENT
 
 echo "=== 基準(変異なし)"
 BASE_LOG="$LOGDIR/account-ui-base.log"
-rc=$(xcb "$BASE_LOG" $UNIT_ONLY "-only-testing:$UI_ACCOUNT")
+rc=$(xcb "$BASE_LOG" "${UNIT_ONLY[@]}" "-only-testing:$UI_ACCOUNT")
 if [ "$(ran_count "$BASE_LOG")" -eq 0 ]; then
     un "基準で検査が一度も走っていない = 機械の側が動いていない。全文: $BASE_LOG"
     echo "--- 合計: PASS $PASS / FAIL $FAIL / UNMEASURED $UNMEASURED ---"
@@ -300,7 +305,7 @@ probe() { # $1=名前 $2=変異関数 $3=対象file $4=赤くなるべき検査 
     if [ -n "$ui" ]; then
         rc=$(xcb "$log" "-only-testing:$UI_ACCOUNT")
     else
-        rc=$(xcb "$log" $UNIT_ONLY)
+        rc=$(xcb "$log" "${UNIT_ONLY[@]}")
     fi
     if [ "$(ran_count "$log")" -eq 0 ]; then
         un "$name: 検査が一度も走っていない = 変異の当たり外れは測っていない。全文: $log"

@@ -93,7 +93,9 @@ if [ "${RC_ALLOW_MIXED_INDEX:-0}" != "1" ]; then
         echo "staged-controls-gate: ★index と作業木がずれている file が在る。commit を止めた。"
         echo "  この門は**作業木**を走らせるが、commit に載るのは**index**。ずれたままだと"
         echo "  緑が「載る物」ではなく「手元の物」を証明する事になる(2026-08-26 に実際に起きた)。"
-        printf '    %s\n' $mixed
+        # ★引用する(2026-09-09)。以前は空白を含む path が途中で切れて報告され、
+        #   混在の警告を読む人が**別の file の話**として読む形だった。
+        printf '    %s\n' "$mixed"
         echo "  直し: git add -A (または該当 file を add) してから commit し直す。"
         echo "  どうしても意図的にずらすなら RC_ALLOW_MIXED_INDEX=1 を明示する事。"
         exit 2

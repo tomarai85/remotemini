@@ -60,14 +60,16 @@ export RC_XTL_FAIL_CODE
 
 WORK="$(mktemp -d)"
 DD="$WORK/build"
-LOAD_PIDS=""
+# ★配列で持つ(2026-09-09)。PID に空白は入らないが、`kill $LOAD_PIDS` の生展開は
+#   引用し忘れと同じ形で、読む人が「壊れているのか意図なのか」を判じられない。
+LOAD_PIDS=()
 cleanup() {
-    [ -n "$LOAD_PIDS" ] && kill $LOAD_PIDS 2>/dev/null
+    [ "${#LOAD_PIDS[@]}" -gt 0 ] && kill "${LOAD_PIDS[@]}" 2>/dev/null
     # ★並走の輪は**孫まで殺す**。輪の shell を殺しても、其の下の `xcodebuild` は
     #   親を失って走り続け、次の走行の判定を汚す(= 消し忘れた負荷が「混んでいる」を
     #   勝手に作る)。名指しは並走用の simulator に限る —— 測定側を巻き込まない為。
     /usr/bin/pkill -f "name=${CO_SIM:-__none__}" 2>/dev/null
-    wait $LOAD_PIDS 2>/dev/null
+    wait ${LOAD_PIDS[@]+"${LOAD_PIDS[@]}"} 2>/dev/null
     /bin/rm -rf "$WORK"
 }
 # ★解錠は**此の行に書く**。`trap ... EXIT` は加算されず後から掛けた方が前を置き換えるので、
@@ -128,13 +130,13 @@ if [ "${CLS_CO_LOAD:-0}" = "1" ]; then
                 -only-testing:"$CO_TEST" test-without-building ) >/dev/null 2>&1
         done
     ) &
-    LOAD_PIDS="$LOAD_PIDS $!"
+    LOAD_PIDS+=("$!")
     echo "   並走: $CO_SIM で $CO_TEST を回し続ける(倒れた時と同じ形)"
 fi
 if [ "$LOAD" -gt 0 ]; then
     for _ in $(/usr/bin/seq "$LOAD"); do
         yes >/dev/null 2>&1 &
-        LOAD_PIDS="$LOAD_PIDS $!"
+        LOAD_PIDS+=("$!")
     done
     echo "   負荷 ${LOAD} 本 起動"
 fi
@@ -158,7 +160,29 @@ fi
 #
 #   ★渡し口は `simctl ... launchctl setenv`。`TEST_RUNNER_` 接頭辞は
 #     `test-without-building` では検査プロセスに**届かない**(実測 `runner=[unset]`)。
+# ★破壊口の注入は **読み戻して確かめる**(2026-09-09、実測で判った)。
+#   `simctl spawn <sim> launchctl setenv` は **simulator が停止中だと失敗する**
+#   (`device is not booted`)。旧版は出力も終了コードも捨てていたので、注入が
+#   一度も起きないまま E/C が赤くなり、**「製品が壊れている」と読める赤**が出ていた。
+#   しかも `xcodebuild` が simulator を起こすのは setenv の**後**なので、
+#   緑だったのは前の走行で偶然 起動が残っていた時だけ —— 順序の競合。
+#   実測: gate-23/24/51/53/54 は 4/0 緑、gate-76 は 3/2 赤。間で製品側の
+#   該当コードは 1 行も動いていない(`git diff 37d117e HEAD` で確認)。
 sim() { /usr/bin/xcrun simctl spawn "$SIM_NAME" launchctl "$@" >/dev/null 2>&1; }
+sim_get() { /usr/bin/xcrun simctl spawn "$SIM_NAME" launchctl getenv "$1" 2>/dev/null | tr -d "[:space:]"; }
+# 破壊口を差して、**本当に差さった事**を読み戻しで確かめる。差せなければ測定不成立。
+sim_set_verified() {  # sim_set_verified <名前> <値>
+    sim setenv "$1" "$2"
+    if [ "$(sim_get "$1")" != "$2" ]; then
+        echo "  未測定 破壊口 $1 を差せない(simulator が起きていない?)= 何も測っていない" >&2
+        echo "    ★之を赤にしてはいけない —— 注入が起きなかっただけで、製品の話ではない。" >&2
+        return 1
+    fi
+    return 0
+}
+# ★setenv より**前**に起こす。`xcodebuild` が起こすのは後なので、順序が逆だと必ず外れる。
+/usr/bin/xcrun simctl bootstatus "$SIM_NAME" -b >/dev/null 2>&1 || \
+    /usr/bin/xcrun simctl boot "$SIM_NAME" >/dev/null 2>&1 || true
 sim unsetenv RC_UI_LANDING_SABOTAGE
 sim unsetenv RC_UI_LANDING_NOLOOP
 sim unsetenv RC_UI_MAIN_HOG_MS
@@ -179,7 +203,7 @@ ok() { PASS=$((PASS+1)); echo "  OK   $1"; }
 ng() { FAIL=$((FAIL+1)); echo "  NG   $1"; }
 
 # ── E 破壊口 ON + 輪 動作 ────────────────────────────────────────────────────
-sim setenv RC_UI_LANDING_SABOTAGE 1
+sim_set_verified RC_UI_LANDING_SABOTAGE 1 || { echo "CONVERSATION-LANDING-STRESS: 未測定"; exit 2; }
 e_rc="$(one_run "$WORK/e.log")"; e_out="$(readout "$WORK/e.log")"
 echo "  E 破壊口ON/輪ON  rc=$e_rc  [$e_out]"
 case "$e_out" in
@@ -208,7 +232,7 @@ case "$e_out" in
 esac
 
 # ── C ★★破壊口 ON + 輪 停止 —— 倒れねばならない ─────────────────────────────
-sim setenv RC_UI_LANDING_NOLOOP 1
+sim_set_verified RC_UI_LANDING_NOLOOP 1 || { echo "CONVERSATION-LANDING-STRESS: 未測定"; exit 2; }
 c_rc="$(one_run "$WORK/c.log")"; c_out="$(readout "$WORK/c.log")"
 echo "  C 破壊口ON/輪OFF rc=$c_rc  [$c_out]"
 # ★C も「着地の失敗で倒れた」でなければ意味が無い。別の失敗で倒れても
