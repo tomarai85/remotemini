@@ -168,7 +168,14 @@ fi
 echo "=== 3. 設定 file が机に在るか(在っても『効いている』とは限らない)==="
 # ★repo に例が在る物は、本番に**実物**が在るべき。例だけ在って実物が無い =
 #   「作ったが配っていない」の一番よく出る形(2026-08-26 の拒否規則がこれ)。
-for pair in "deny.example.json:deny.json"; do
+# ★表は 1 行ではない(2026-09-09)。shellcheck の SC2043「このループは 1 回しか
+#   回らない」から辿って判った **本物の被覆漏れ** —— `tools/` には例が 3 本 在るのに、
+#   此処は `deny` しか見ていなかった。`observer.conf` は同じ `~/.rc-backend/` に
+#   置かれる(`health-observer.sh` の `CONF`)ので、同じ規則がそのまま当たる。
+#   ★`com.fleet.rc-health-observer.plist.example` は**足さない**: 実物は
+#   `~/Library/LaunchAgents/` に在り、其れが載っているかは §2 が launchctl で
+#   直に見ている(file の存在より強い測り方)。二重に見ると弱い方が答えになる。
+for pair in "deny.example.json:deny.json" "observer.conf.example:observer.conf"; do
     ex="${pair%%:*}"; live="${pair##*:}"
     if [ ! -f "$REPO/tools/$ex" ]; then continue; fi
     if rexec "[ -f $REMOTE_HOME/.rc-backend/$live ]"; then good "$live が机に在る"

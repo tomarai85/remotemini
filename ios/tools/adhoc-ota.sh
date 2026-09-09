@@ -65,6 +65,7 @@ cleanup_all() { local f; for f in ${CLEANUP+"${CLEANUP[@]}"}; do /bin/rm -f "$f"
 # ★rc を取った直後に `set +e` する(2026-08-30、Codex が実測)。掃除が失敗すると
 #   `set -e` が診断の**前に**止め、元の rc も失う —— Codex の実測では `exit 7` が
 #   無言の `exit 1` に化けた。掃除の失敗は警告に留め、元の rc を返す。
+# shellcheck disable=SC2154  # `rc` は下の trap の単引用符の中で `rc=$?` として代入される
 trap 'rc=$?; set +e; cleanup_all || echo "★掃除に失敗した(rc=$rc は保つ)" >&2; [ "$rc" -ne 0 ] && echo "★ adhoc-ota.sh は rc=$rc で止まった(直前に出た行の次が犯人)" >&2; exit $rc' EXIT
 
 # --- 秘密の一段。**一度作ったら変えない** -----------------------------------
@@ -176,7 +177,10 @@ echo "    profile 期限 $PEXP"
 
 # --- 2. Ad Hoc で署名し直す --------------------------------------------------
 step "2. Ad Hoc で署名し直す(get-task-allow を落とす)"
-rm -rf "$STAGE/Payload" "$STAGE/$IPA"
+# ★`${STAGE:?}` —— 空なら `rm -rf` が別の場所を消す前に**大声で落ちる**(SC2115)。
+#   `STAGE` は `$DERIVED/adhoc` 由来で、`DERIVED` が空になる経路は今は無いが、
+#   `rm -rf` の引数に生の変数を置く事自体が、その日を待つ形。
+rm -rf "${STAGE:?}/Payload" "${STAGE:?}/$IPA"
 mkdir -p "$STAGE/Payload"
 cp -R "$SIGNED" "$STAGE/Payload/"
 APP="$STAGE/Payload/$APPNAME"

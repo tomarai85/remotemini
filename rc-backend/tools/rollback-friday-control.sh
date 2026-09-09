@@ -124,7 +124,8 @@ if [ -d "$FAKE/rc-releases/$SNAP" ]; then
 else
     printf '  ★固定したのに消された(悪い配備が連続した時に最後の良品を失う形)\n'; fail=1
 fi
-left="$(ls -1 "$FAKE/rc-releases" | grep -v '^\.' | wc -l | tr -d ' ')"
+# ★`ls | grep` を使わない(SC2010)。変な名前の file で壊れる。glob で数える。
+left=0; for _e in "$FAKE/rc-releases"/*; do [ -e "$_e" ] && left=$((left+1)); done
 printf '  残り %s 個(固定1 + keep2 = 3 を期待)\n' "$left"
 [ "$left" = 3 ] || { printf '  ★数が合わない\n'; fail=1; }
 

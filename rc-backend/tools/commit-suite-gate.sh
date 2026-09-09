@@ -77,7 +77,7 @@ fi
 ) > "$OUT" 2>&1 &
 suite_pid=$!
 descendants() { # descendants <pid> → 子孫の pid を深さ優先で(自分は含めない)
-    local p c
+    local c
     for c in $(/usr/bin/pgrep -P "$1" 2>/dev/null); do echo "$c"; descendants "$c"; done
 }
 elapsed=0

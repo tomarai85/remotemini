@@ -213,7 +213,7 @@ po__ago() {  # 秒 → 人が読む長さ
 
 # 呼び手から1回。自分の回線が生きている時だけ測る。
 parity_observe() {
-    local now state msg announced since
+    local now state announced since
     now="$(date +%s)"
     po__read
     [ $((now - PO_TS)) -lt "$PO_EVERY" ] && { po__bump PO_L_SKIP_NOTDUE; return 0; }

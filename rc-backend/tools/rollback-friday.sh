@@ -200,7 +200,7 @@ r "launchctl kickstart -k gui/\$(id -u)/$JOB" >/dev/null 2>&1 || \
 # 4) ★**本物の健康確認**。rsync が 0 で帰った事を成功と呼ばない。
 #    版まで見る —— 200 が返るだけなら別の物が答えている可能性がある。
 ok=0
-for i in 1 2 3 4 5 6 7 8 9 10; do
+for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 3
     got="$(curl -s --max-time 10 "$HEALTH" 2>/dev/null \
            | /usr/bin/python3 -c 'import json,sys;print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)"

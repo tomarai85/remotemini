@@ -177,6 +177,16 @@ bash "$ROOT/rc-backend/tools/orphan-instrument-scan.sh" || exit $?
 #   ★安い(grep だけ、xcodebuild を起動しない)ので此の位置。非ゼロは止める。
 bash "$ROOT/ios/tools/uitest-reachability-gate.sh" || exit $?
 
+# ★2026-09-09 追加: shell の道具に warning 以上の shellcheck 指摘を入れない。
+#   本体 = rc-backend/tools/shellcheck-gate.sh
+#   対照 = rc-backend/test/shellcheck-gate-controls.sh(6 本、作り木の上で 1 秒未満)
+#   経緯: 一度も走らせた事が無く、撃ったら 16 件出て **3 件は本物の欠陥**だった ——
+#   `ios/tools/adhoc-ota.sh` の `rm -rf` が生の変数、`delivery-check.sh` の被覆表が 1 行、
+#   `verify-rc-backend-state.sh` の job id が 2 枚で片方は誰も読んでいなかった。
+#   ★理由の無い `# shellcheck disable=` も赤にする。理由が無い disable は
+#   「安全」ではなく「黙らせた」で、次に読む人が最初から調べ直す事になる。
+bash "$ROOT/rc-backend/tools/shellcheck-gate.sh" || exit $?
+
 # ★2026-08-03 追加(同日2件目): **この commit が触れた対照**を回す。
 #   本体 = rc-backend/tools/staged-controls-gate.sh
 #   対照 = rc-backend/test/staged-controls-gate-controls.sh(15 本)

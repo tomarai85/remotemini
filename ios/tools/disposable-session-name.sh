@@ -1,3 +1,6 @@
+#!/bin/bash
+# ★shebang は必須(2026-09-09)。source される前提でも、無いと shellcheck は
+#   どの shell か判らず**何も検査できない**(SC2148)= 静かに無検査になる。
 # live-* の3本が共有する「自分が建てた会話の名前」の決め方(2026-08-28)。
 #
 # ★名前が `live-` で始まらない理由: `rc-backend/test/live-exit-codes.test.mjs` が

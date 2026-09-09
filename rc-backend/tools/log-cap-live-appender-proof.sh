@@ -43,7 +43,6 @@ set -uo pipefail
 
 HOST="${RC_PROOF_HOST:-athenas}"
 SSH_BIN="${RC_PROOF_SSH:-ssh}"
-LABEL="com.fleet.rc-capproof"
 
 # ── 解析だけ(此処を分けるのが要)────────────────────────────────────────────
 # 実測は friday と launchd が要るので高い。**抜けを見つける論理**だけを切り出して
