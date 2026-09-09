@@ -1,0 +1,45 @@
+[codex-quick started pid=66992 07:19:06 timeout=150s — background callers: wait on the pid, do not read the output early]
+Reading additional input from stdin...
+OpenAI Codex v0.144.3
+--------
+workdir: /Users/tomtim/Infra/mobile-work
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a0861b-89d4-76b0-b648-21cf394c2cfe
+--------
+user
+DO NOT read any files or run any commands — answer purely from this prompt; everything you need is inline. Be concise and direct.
+One question, under 180 words, concrete only.
+
+I built a census over 119 bash tools: a script enumerates candidates (any file with a state-changing command OUTSIDE comments: launchctl bootstrap/bootout/kickstart, rsync, scp, simctl install/erase/boot, /bin/mv, /bin/cp, git checkout/push, defaults write, PlistBuddy Set) and requires each candidate to have a hand-written verdict row 'path|verdict|reason' in a table inside the script. Verdicts: readback / atomic / sandbox / not-mutating / no-readback (the last needs >=20 chars of reason). Any candidate with no row -> exit 1 naming it. Fewer than FLOOR candidates -> exit 2. It writes a TSV and re-reads it to print the breakdown. Current result: 32 candidates, all judged, 0 no-readback.
+
+Name ONE concrete way a script that genuinely mutates state without reading it back can be present in those two directories and NOT appear as a candidate. Be specific enough to write as a test file.
+2026-09-09T12:19:07.653051Z ERROR codex_memories_write::phase2: Phase 2 no changes
+2026-09-09T12:19:07.724995Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-09T12:19:07.763344Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+2026-09-09T12:19:08.224285Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)
+codex
+A script can invoke the mutator indirectly through a variable:
+
+```bash
+#!/usr/bin/env bash
+tool=defaults
+"$tool" write com.example.untracked Enabled -bool true
+```
+
+This genuinely changes macOS preferences and performs no readback, but a census matching the literal command `defaults write` will not detect it because that token sequence never appears.
+tokens used
+11,523
+A script can invoke the mutator indirectly through a variable:
+
+```bash
+#!/usr/bin/env bash
+tool=defaults
+"$tool" write com.example.untracked Enabled -bool true
+```
+
+This genuinely changes macOS preferences and performs no readback, but a census matching the literal command `defaults write` will not detect it because that token sequence never appears.

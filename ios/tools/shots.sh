@@ -76,7 +76,14 @@ if ! echo "$DEV_LINE" | grep -q "Booted"; then
     xcrun simctl bootstatus "$DEV" -b >/dev/null 2>&1
 fi
 
-xcrun simctl install "$DEV" "$APP"
+# ★入れた事を**確かめる**(2026-09-09、行為の読み戻しの棚卸しで見つけた)。
+#   以前は入れっぱなしで結果を見ていなかった —— 入れ損ねると、以降の撮影は
+#   **前に入っていた古い app** を撮る。人は其れを「今の画面」として読む =
+#   出力が静かに嘘になる、此の repo が一番嫌う形。
+if ! xcrun simctl install "$DEV" "$APP"; then
+    echo "★ app を simulator へ入れられなかった。撮っても古い版になるので止める" >&2
+    exit 1
+fi
 
 for state in "${STATES[@]}"; do
     SIMCTL_CHILD_RC_UI_FIXTURE="$state" \
@@ -85,6 +92,12 @@ for state in "${STATES[@]}"; do
     # no top-level bare `sleep`, only inside this script, per brief §5-c.
     sleep 2
     xcrun simctl io "$DEV" screenshot "$OUT_DIR/$state.png"
-    echo "==> $OUT_DIR/$state.png"
+    # ★撮れた事も確かめる。0 バイトの png を「撮れた」と報告すると、
+    #   人は開くまで気付かず、開いた時には何故 空なのかが判らない。
+    if [ ! -s "$OUT_DIR/$state.png" ]; then
+        echo "★ $state の撮影が空だった($OUT_DIR/$state.png)" >&2
+        exit 1
+    fi
+    echo "==> $OUT_DIR/$state.png ($(wc -c < "$OUT_DIR/$state.png" | tr -d " ") バイト)"
     xcrun simctl terminate "$DEV" "$BUNDLE" >/dev/null 2>&1
 done

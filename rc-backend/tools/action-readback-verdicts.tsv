@@ -1,0 +1,49 @@
+# 行為の読み戻しの判定表。path<TAB>verdict<TAB>理由
+# ★script の外に置く理由(2026-09-09): 判定表の行は **path を含む非註の行**なので、
+#   `orphan-instrument-scan` が「此の台帳が其の道具を走らせている」と読み、他の道具の
+#   `no-operator:`(誰も走らせない、という事実の宣言)を一斉に腐った印へ変えてしまう。
+#   走査は *.sh/*.py/*.mjs/*.json/*.plist/*.yml しか見ないので、.tsv なら data として置ける。
+#   ★逃げではなく分離: 表は判定の**データ**で、走らせる宣言ではない。
+ios/tools/bar-material-control.sh	sandbox	砂場の写しだけを変異させ、走行の最後に走る前のバイトと一致する事を確かめる
+ios/tools/composer-surface-control.sh	sandbox	同上。共有の復旧区間を持ち、mutation-recovery-copy.test.mjs が全対照の一字一句一致を縛る
+ios/tools/conversation-ui-control.sh	sandbox	同上。砂場の写しを変異させ、最後にバイト一致で確認する
+ios/tools/inflight-sentence-control.sh	sandbox	同上。変異ごとに restore_all を通し、最後に的の file のバイトを突き合わせる
+ios/tools/list-return-refresh-control.sh	sandbox	同上。砂場の写しだけを触り、走行の最後に一致を確かめる
+ios/tools/signout-notice-control.sh	sandbox	同上。共有の復旧区間を持ち、Z で走る前のバイトと突き合わせる
+ios/tools/uitest-orphan-surface-control.sh	sandbox	同上。2026-09-09 新設。Z が対象 2 file のバイト一致を確かめる
+rc-backend/tools/ota-undelivered-observer-control.sh	sandbox	2026-09-09 に砂場へ移した。Z が『変異は起きた、なのに実物は無傷』の連言を確かめる
+rc-backend/tools/parity-observer-control.sh	sandbox	同上。実物は読むだけで、変異は砂場の写しに当てる
+ios/tools/xcode-tree-lock.sh	atomic	錠は mkdir の原子性そのもの。既に在れば失敗するので、取得の成否は別に読み直す物ではない
+ios/tools/mutation-sandbox.sh	atomic	砂場の錠も mkdir。同期は rsync --delete の後に指紋を突き合わせ、走行後に本物側の指紋を取り直す
+rc-backend/tools/deploy-to-friday.sh	readback	配った後に healthz の version を読み、観測器の木も指紋で突き合わせる(実測: 30b2944 -> a2a2956 を確認)
+rc-backend/tools/deploy-observer-to-friday.sh	readback	段 4『一致したか(独立の測り手)』で observer-parity-check を撃ち、一致しなければ rollback する
+rc-backend/tools/deploy-to-edith.sh	readback	配った後に遠隔の状態を読み直す段を持つ(launchctl と file の両方)
+rc-backend/tools/rollback-friday.sh	readback	書き戻した後 healthz が期待の版を名乗るまで確かめ、名乗らなければ別の文言で赤にする
+rc-backend/tools/verify-rc-backend-state.sh	readback	launchctl と pid と実プロセスを遠隔で読み直す。手元の JOB と remote の job= の一致も走る前に確かめる
+rc-backend/tools/verify-on-edith.sh	readback	停止を主張する前に launchctl と残留プロセスを読み直す(F3 由来の verifier)
+rc-backend/tools/edith-gui-run.sh	readback	遠隔の launchd に載せた後、rc file が出るまで待って終了コードを持ち帰り、残骸の有無も読む
+rc-backend/tools/log-cap-live-appender-proof.sh	readback	載せた後に launchctl と実 file の大きさを読み直して、追記が続いている事を確かめる
+rc-backend/tools/post-gate-batch.sh	readback	各段の後に遠隔の状態を読み、不在まで確認してから次へ進む(dry の印字にも読み直しの手順が出る)
+rc-backend/tools/run-controls.sh	readback	各対照の終了コードと出力を読み、台帳へ落とす。3 値(緑/赤/未測定)を潰さない
+rc-backend/tools/fleet-plist-parity-check.sh	readback	遠隔の plist を読み直して手元と突き合わせる。読めなければ『一致』と言わない
+rc-backend/tools/departure-survivability-check.sh	readback	載せ直した後に launchctl の state を読み、起動できたかを別に確かめる
+ios/tools/build.sh	readback	焼いた後に成果物の存在と刻印(RC_BUILD_REV)を読み直し、作業木の汚れも別に測る
+ios/tools/adhoc-ota.sh	readback	置いた後に段 6 が manifest / ipa / 頁 を外から取り直し、版と bundle id の一致まで見る
+ios/tools/shots.sh	readback	2026-09-09 に足した。install の終了コードを見て、撮った png が空でない事も 1 枚ずつ確かめる
+ios/tools/mutation-residue-check.sh	readback	戻した後に git diff を取り直し、差が残っていれば『戻せていない』として赤にする
+ios/tools/mutation-residue-controls.sh	readback	作り木の上で、戻した結果を読み直して確かめる
+ios/tools/conversation-landing-stress-control.sh	readback	2026-09-09 に足した。破壊口を差した後に読み戻し、差さらなければ赤ではなく測定不成立にする
+ios/tools/initial-load-narration-control.sh	readback	変異は複製に当て、最後に本物の木が無傷である事を grep で確かめる
+ios/tools/mutation-deferral-control.sh	readback	繰り延べた対照が後で本当に走った事を台帳から読み直す
+ios/tools/ui-fixture-behavior-control.sh	readback	差した面が実際に出た事を検査の結果から読み直す
+rc-backend/tools/mixed-index-control.sh	readback	門を偽の木で走らせ、其の出力と終了コードを読んで判定する
+rc-backend/tools/action-readback-census.sh	readback	台帳の TSV を書いた後、其の file を awk で読み直して判定の内訳を印字する。書きっぱなしにしない
+rc-backend/tools/check-mutation-targets.sh	not-mutating	変異の的を照合するだけ。註の外に状態を変える行が無い
+rc-backend/tools/vacuous-gate.sh	not-mutating	空虚な検査を探す読み取り専用の門。変更の語は註の中だけ
+rc-backend/tools/controls-registration-gate.sh	not-mutating	登録の有無を読むだけ。註の外に変更の行が無い
+rc-backend/tools/ota-freshness-check.sh	not-mutating	配布/承認/HEAD の版を読み比べるだけ
+rc-backend/tools/delivery-check.sh	not-mutating	launchctl の継ぎ目を持つが list を読むだけ。3 側の版と設定と経路を読み、自分では何も変えない
+rc-backend/tools/coldboot-chain.sh	not-mutating	停電から戻れるかを読むだけ。実際に落として起こす操作は持たない
+rc-backend/tools/update-notice-live-proof.sh	not-mutating	生きた机の応答を読んで確かめるだけ
+ios/tools/device-ui-check.sh	not-mutating	実機で検査を走らせる入口。変更の語は註と -only-testing の並びだけ
+ios/tools/ota-verify.sh	not-mutating	配った物を外から読み直す検査。自分では何も変えない
