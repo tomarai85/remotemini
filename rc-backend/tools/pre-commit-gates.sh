@@ -204,6 +204,19 @@ bash "$ROOT/ios/tools/uitest-reachability-gate.sh" || exit $?
 #   「安全」ではなく「黙らせた」で、次に読む人が最初から調べ直す事になる。
 bash "$ROOT/rc-backend/tools/shellcheck-gate.sh" || exit $?
 
+# ★2026-09-09 追加: 状態を変える台本が、変えた結果を読み戻しているかの台帳。
+#   本体 = rc-backend/tools/action-readback-census.sh
+#   対照 = rc-backend/test/action-readback-census-controls.sh(9 本、作り木で 1 秒未満)
+#   経緯: 此の repo の観測器の設計は「配った台本の自己申告は配った証拠ではない」に
+#   乗っているのに、どの台本が読み戻しているかを**母集団として**数えた事が無かった。
+#   数えたら `ios/tools/shots.sh` が install も撮影結果も確かめておらず、入れ損ねると
+#   **前に入っていた古い app** を撮り続ける形だった(人は其れを今の画面として読む)。
+#   ★門に載せる理由: 台帳の値打ちは「今 0 件」ではなく **新しく足された変更する台本が
+#   判定を書くまで通らない**事。宣言(controls-for)を両 dir へ広げると
+#   `orphan-instrument-scan` から「私が全部を走らせている」と読まれて他の印を壊すので、
+#   宣言は自分だけにして、代わりに此処で毎 commit 走らせる。安い(grep と表引きだけ)。
+bash "$ROOT/rc-backend/tools/action-readback-census.sh" >/dev/null || exit $?
+
 # ★2026-08-03 追加(同日2件目): **この commit が触れた対照**を回す。
 #   本体 = rc-backend/tools/staged-controls-gate.sh
 #   対照 = rc-backend/test/staged-controls-gate-controls.sh(15 本)
